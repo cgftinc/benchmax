@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "sandbox"
+version = "0.1.0"
+description = ""
+authors = ["Test <girishvilla@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.13"
+fastmcp = "^2.9.2"
+verifiers = "^0.1.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
