@@ -60,16 +60,6 @@ class MCPSandbox(BaseSandbox):
         self._run_async(self._init_pool())
         
         super().__init__()
-    
-    def _run_event_loop(self) -> None:
-        """Run the event loop in a separate thread."""
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
-    
-    def _run_async(self, coro):
-        """Run a coroutine in the event loop thread and wait for its result."""
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result()
 
     def shutdown(self) -> None:
         """Clean up resources and stop the event loop."""
@@ -86,7 +76,6 @@ class MCPSandbox(BaseSandbox):
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._loop_thread.join()
         self._loop.close()
-
     # ---- Public API Methods ----
     
     def list_tools(self) -> List[ToolDefinition]:
@@ -191,6 +180,16 @@ class MCPSandbox(BaseSandbox):
 
     # ---- Private Helper Methods ----
 
+    def _run_event_loop(self) -> None:
+        """Run the event loop in a separate thread."""
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+    
+    def _run_async(self, coro):
+        """Run a coroutine in the event loop thread and wait for its result."""
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result()
+    
     async def _create_clients_parallel(self, count: int) -> None:
         """Create multiple clients in parallel and add them to the pool"""
         if count <= 0:
