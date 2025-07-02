@@ -61,6 +61,7 @@ class MCPSandbox(BaseSandbox):
         
         super().__init__()
 
+    # ---- Public API Methods ----
     def shutdown(self) -> None:
         """Clean up resources and stop the event loop."""
         # Close all active clients
@@ -76,7 +77,6 @@ class MCPSandbox(BaseSandbox):
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._loop_thread.join()
         self._loop.close()
-    # ---- Public API Methods ----
     
     def list_tools(self) -> List[ToolDefinition]:
         """List available tools, using cached definitions if available"""
