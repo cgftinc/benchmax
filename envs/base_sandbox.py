@@ -25,14 +25,7 @@ class RewardFunction(Protocol):
 class BaseSandbox(ABC):
     """Base sandbox for tool execution and reward computation"""
     
-    def __init__(self) -> None:
-        # Private attributes for internal use only
-        self._reward_funcs: List[RewardFunction] = []
-    
-    @abstractmethod
-    def init_tools(self, config: Dict[str, Any], allowed_tools: Optional[List[str]] = None) -> None:
-        """Set up tool environment with given config and optional tool allowlist"""
-        pass
+    _reward_funcs: List[RewardFunction] = []
 
     @abstractmethod
     def list_tools(self) -> List[ToolDefinition]:
