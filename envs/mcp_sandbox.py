@@ -119,11 +119,11 @@ class MCPSandbox(BaseSandbox):
             name=tool_name,
             arguments=tool_args if tool_args else None
         )
-        
+
         try:
             # Call tool and get result
-            content_list = self._run_async(pair.client.call_tool(tool_name, params.arguments))
-            
+            content_list = self._run_async(pair.client.call_tool(tool_name, params.arguments)).content
+
             # Process content based on type
             for content in content_list:
                 # Text content
