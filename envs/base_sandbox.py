@@ -1,30 +1,14 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Dict, List, Any, Optional, Protocol
+from typing import Dict, List, Any, Optional
 from pathlib import Path
 
-@dataclass
-class ToolDefinition:
-    """Definition of a tool's interface"""
-    name: str
-    description: str
-    input_schema: Optional[Dict[str, Any]] = None
-
-class RewardFunction(Protocol):
-    """Function that evaluates model interactions"""
-    def __call__(
-        self,
-        prompt: str,         # Input prompt given to the model
-        completion: str,     # Model's generated completion/response
-        ground_truth: Any,   # Expected/correct output to compare against
-        workspace: Path,     # Path to rollout's workspace with tool outputs
-        **kwargs: Any        # Additional context for reward computation
-    ) -> float:             # Reward score (typically in range [0, 1])
-        ...
+from envs.types import RewardFunction, ToolDefinition
+from prompts.tools import render_tools_prompt
 
 class BaseSandbox(ABC):
     """Base sandbox for tool execution and reward computation"""
     
+    system_prompt: Optional[str] = ""
     _reward_funcs: List[RewardFunction] = []
 
     @abstractmethod
@@ -94,3 +78,10 @@ class BaseSandbox(ABC):
                 results[func_name] = float('nan')
                 print(f"[WARN] reward {func_name} failed: {e}")
         return results
+    
+    def get_system_prompt(self, add_tool_defs: bool = False) -> str:
+        """Get system prompt. To add tool definitions, set add_tool_defs to True."""
+        if add_tool_defs:
+            return render_tools_prompt(self.list_tools(), self.system_prompt or "")
+        else:
+            return self.system_prompt or ""
