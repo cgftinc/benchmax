@@ -56,6 +56,10 @@ class BaseSandbox(ABC):
         """Add a reward computation function"""
         self._reward_funcs.append(func)
     
+    def get_reward_funcs(self) -> List[RewardFunction]:
+        """Get all registered reward functions"""
+        return self._reward_funcs
+    
     def compute_reward(
         self,
         rollout_id: str,
