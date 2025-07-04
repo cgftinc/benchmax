@@ -1,6 +1,7 @@
-from typing import Dict, List, Any, Optional, NamedTuple
+from typing import Dict, List, Any, Optional, NamedTuple, Union
 from pathlib import Path
 import asyncio
+import json
 from threading import Thread
 from fastmcp import Client as FastMCPClient
 from fastmcp.exceptions import ToolError
@@ -21,8 +22,8 @@ class ClientWorkspacePair(NamedTuple):
     client: FastMCPClient
     workspace: Path
 
-class MCPSandbox(BaseSandbox):
-    """MCP sandbox implementation supporting workspace-independent client pooling.
+class LocalMCPSandbox(BaseSandbox):
+    """Local MCP sandbox implementation supporting workspace-independent client pooling.
     
     This implementation maintains a pool of pre-warmed clients, each with their own
     workspace. When a rollout needs a client, it can borrow from the pool and
@@ -33,13 +34,18 @@ class MCPSandbox(BaseSandbox):
     """
     def __init__(
         self,
-        config: Dict[str, Any],
+        mcp_config: Union[Dict[str, Any], str, Path],
         allowed_tools: Optional[List[str]] = None,
         pool_size: int = 3,
         workspace_dir: Optional[Path] = None
     ) -> None:
         """Initialize the sandbox with configuration and pool settings."""
-        self._config = config
+        # Load config from file if path provided
+        if isinstance(mcp_config, (str, Path)):
+            with open(mcp_config) as f:
+                self._config = json.load(f)
+        else:
+            self._config = mcp_config
         self._allowed_tools = allowed_tools if allowed_tools is not None else []
         self._pool_size = pool_size
         self._workspace_dir = workspace_dir or Path("workspaces")
