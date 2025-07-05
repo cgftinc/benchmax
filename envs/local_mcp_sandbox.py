@@ -1,4 +1,4 @@
-from typing import Dict, List, Any, Optional, NamedTuple, Union
+from typing import Dict, List, Any, Optional, NamedTuple, Union, Callable
 from pathlib import Path
 import asyncio
 import json
@@ -26,7 +26,7 @@ class LocalMCPSandbox(BaseSandbox):
     """Local MCP sandbox implementation supporting workspace-independent client pooling.
     
     This implementation maintains a pool of pre-warmed clients, each with their own
-    workspace. When a rollout needs a client, it can borrow from the pool and
+    workspace. When a rollout needs a client, it will retrieve from the pool and
     reconfigure the workspace as needed. This allows for:
     1. Independent workspace and rollout management
     2. Pre-warming with arbitrary workspaces
@@ -48,6 +48,7 @@ class LocalMCPSandbox(BaseSandbox):
             self._config = mcp_config
         self._allowed_tools = allowed_tools if allowed_tools is not None else []
         self._pool_size = pool_size
+        self._output_parsers: Dict[str, Callable[[str], Any]] = {}
         self._workspace_dir = workspace_dir or Path("workspaces")
         self._workspace_dir.mkdir(parents=True, exist_ok=True)
         
@@ -134,11 +135,11 @@ class LocalMCPSandbox(BaseSandbox):
             for content in content_list:
                 # Text content
                 if isinstance(content, TextContent):
-                    return content.text
+                    result = content.text
                 
                 # Image content
                 elif isinstance(content, ImageContent):
-                    return {
+                    result = {
                         "type": "image",
                         "data": content.data,
                         "mimeType": content.mimeType
@@ -146,7 +147,7 @@ class LocalMCPSandbox(BaseSandbox):
                 
                 # Audio content
                 elif isinstance(content, AudioContent):
-                    return {
+                    result = {
                         "type": "audio",
                         "data": content.data,
                         "mimeType": content.mimeType
@@ -156,8 +157,16 @@ class LocalMCPSandbox(BaseSandbox):
                 elif isinstance(content, EmbeddedResource):
                     resource = content.resource
                     if isinstance(resource, TextContent):
-                        return resource.text
-            return None
+                        result = resource.text
+                    else:
+                        result = None
+                else:
+                    result = None
+
+                # Apply output parser if available
+                if tool_name in self._output_parsers and isinstance(result, str):
+                    return self._output_parsers[tool_name](result)
+                return result
             
         except ToolError as e:
             print(f"[ERROR] Tool call returned error: {str(e)}")

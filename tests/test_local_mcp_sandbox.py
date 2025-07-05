@@ -118,6 +118,22 @@ class TestLocalMCPSandbox:
         finally:
             sandbox.shutdown()
 
+    def test_output_parsing(self, sandbox: LocalMCPSandbox) -> None:
+        """Test that tool output parsing works correctly"""
+        # Define a mock parser
+        def mock_parser(output):
+            return f"Parsed: {output}"
+        
+        # Add the parser to the sandbox
+        sandbox._output_parsers["time_current_time"] = mock_parser
+        
+        # Mock the tool output
+        sandbox.init_rollout("test_rollout")
+        result = sandbox.run_tool("test_rollout", "time_current_time", format="YYYY-MM-DD HH:mm:ss")
+        
+        # Verify the parser was applied
+        assert result.startswith("Parsed: "), f"Unexpected parsed result: {result}"
+
     def test_run_tool_synchronously(self, sandbox: LocalMCPSandbox) -> None:
         """Test running tools synchronously with actual time tool"""
         result: Optional[str] = sandbox.run_tool("test_rollout", "time_current_time", format="YYYY-MM-DD HH:mm:ss")
