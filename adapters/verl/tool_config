@@ -1,6 +1,0 @@
-# Example tool config for verl
-tools:
-  - class_name: sandbox.envs.mcp_sandbox.MCPSandbox
-    config:
-      allowed_tool_list: mcp
-      mcp_servers_config_path: ./resource/tool_configs/mcp_server.json
