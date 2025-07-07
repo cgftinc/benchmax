@@ -42,8 +42,12 @@ class LocalMCPSandbox(BaseSandbox):
         """Initialize the sandbox with configuration and pool settings."""
         # Load config from file if path provided
         if isinstance(mcp_config, (str, Path)):
-            with open(mcp_config) as f:
-                self._config = json.load(f)
+            mcp_config_path = Path(mcp_config)
+            if not mcp_config_path.exists() and isinstance(mcp_config, str):
+                self._config = json.loads(mcp_config)
+            else:
+                with open(mcp_config) as f:
+                    self._config = json.load(f)
         else:
             self._config = mcp_config
         self._allowed_tools = allowed_tools if allowed_tools is not None else []
