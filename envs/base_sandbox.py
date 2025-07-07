@@ -35,14 +35,16 @@ class BaseSandbox(ABC):
     def get_rollout_workspace(self, rollout_id: str) -> Path:
         """Get the workspace path for a specific rollout"""
         pass
-
-    def add_reward_func(self, func: RewardFunction) -> None:
-        """Add a reward computation function"""
-        self._reward_funcs.append(func)
     
-    def get_reward_funcs(self) -> List[RewardFunction]:
+    @classmethod
+    def add_reward_func(cls, func: RewardFunction) -> None:
+        """Add a reward computation function"""
+        cls._reward_funcs.append(func)
+    
+    @classmethod
+    def get_reward_funcs(cls) -> List[RewardFunction]:
         """Get all registered reward functions"""
-        return self._reward_funcs
+        return cls._reward_funcs
     
     def compute_reward(
         self,
