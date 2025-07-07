@@ -66,10 +66,11 @@ def _safe_request(
     timeout: float = 10.0,
     json: Any | None = None,
     max_retries: int = 3,
-    backoff_factor: float = 1.5,
+    retry_delay_seconds: float = 20,
+    rate_limit_seconds: float = 2.5,
 ) -> requests.Response:
     """HTTP request helper that retries on 429 using exponential back‑off."""
-    time.sleep(2.5)  # Short delay to avoid hammering the server immediately
+    time.sleep(rate_limit_seconds)  # Short delay to avoid hammering the server immediately
     for attempt in range(max_retries + 1):
         resp = requests.request(
             method, url, headers=headers, params=params, json=json, timeout=timeout
@@ -81,12 +82,8 @@ def _safe_request(
             raise RateLimitExceeded(
                 f"Rate‑limit hit and {max_retries} retries exhausted."
             )
-
-        # Respect server‑suggested delay if provided, else exponential back‑off
-        retry_after = resp.headers.get("Retry-After")
-        sleep_seconds = 20#float(retry_after) if retry_after else backoff_factor * (attempt + 1)
-        print(f"Rate limit hit, retrying in {sleep_seconds:.1f} seconds...")
-        time.sleep(sleep_seconds)
+        print(f"Rate limit hit, retrying in {retry_delay_seconds:.1f} seconds...")
+        time.sleep(retry_delay_seconds)
 
     return resp
 
