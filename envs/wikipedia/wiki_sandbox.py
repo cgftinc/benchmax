@@ -32,7 +32,7 @@ def reward_func(prompt: str, completion: str, ground_truth: str, workspace: Path
     return float(ground_truth.lower() == answer_text)
 
 class APIKeyRotator:
-    """Round‑robin iterator over a list of Wikimedia API keys.
+    """Round‑robin iterator over a list of Wikipedia API keys.
 
     Rotation is **thread‑safe** so that concurrent tool calls running in
     different threads (or async tasks) cannot race and pick the same key.
@@ -54,7 +54,7 @@ class APIKeyRotator:
 
 
 class RateLimitExceeded(Exception):
-    """Raised when the Wikimedia API repeatedly returns HTTP 429."""
+    """Raised when the Wikipedia API repeatedly returns HTTP 429."""
 
 
 def _safe_request(
@@ -88,15 +88,15 @@ def _safe_request(
     return resp
 
 
-def _make_wikimedia_tools(key_rotator: APIKeyRotator):
-    """Return concrete implementations of Wikimedia search tools."""
+def _make_wikipedia_tools(key_rotator: APIKeyRotator):
+    """Return concrete implementations of Wikipedia search tools."""
 
     def _headers() -> Dict[str, str]:
         api_key = key_rotator.next()
         return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     # — Search tool ————————————————————————————
-    def wikimedia_search_tool(q: str, limit: int = 10, **kwargs) -> Any:
+    def wikipedia_search_tool(q: str, limit: int = 10, **kwargs) -> Any:
         query = q
         if not query:
             return "Error: Missing required parameter: 'q'"
@@ -117,13 +117,12 @@ def _make_wikimedia_tools(key_rotator: APIKeyRotator):
             )
             if resp.status_code != 200:
                 return f"Error: API request failed with status {resp.status_code}"
-            print("Wikimedia search response:")
             return resp.json()["query"]["search"]
         except Exception as e:
             return f"Error: {str(e)}"
 
     # — Article‑summary tool —————————————————————————
-    def wikimedia_get_article_tool(title: str, **kwargs) -> Any:
+    def wikipedia_get_article_tool(title: str, **kwargs) -> Any:
         if not title:
             return "Error: Missing required parameter: 'title'"
 
@@ -135,21 +134,20 @@ def _make_wikimedia_tools(key_rotator: APIKeyRotator):
             )
             if resp.status_code != 200:
                 return f"Error: API request failed with status {resp.status_code}"
-            print("Wikimedia article response:")
             return resp.json()
         except Exception as e:
             return f"Error: {str(e)}"
 
-    return wikimedia_search_tool, wikimedia_get_article_tool
+    return wikipedia_search_tool, wikipedia_get_article_tool
 
 
-class WikimediaSandbox(BaseSandbox):
-    """A `BaseSandbox` pre-loaded with Wikimedia tools and key rotation.
+class WikipediaSandbox(BaseSandbox):
+    """A `BaseSandbox` pre-loaded with Wikipedia tools and key rotation.
 
     Parameters
     ----------
     api_keys : list[str] | None
-        A list of Wikimedia REST API keys to rotate through.  If *None*
+        A list of Wikipedia REST API keys to rotate through.  If *None*
         or empty, requests are made unsigned.
     """
     system_prompt: Optional[str] = SYSTEM_PROMPT
@@ -160,13 +158,12 @@ class WikimediaSandbox(BaseSandbox):
         api_keys: Optional[List[str]] | None = None,
         **kwargs,
     ):
-        print("GOT", len(api_keys or []), "API keys for WikimediaSandbox")
         # rotate api keys to circumvent timeouts
         self._key_rotator = APIKeyRotator(api_keys)
 
-        search_tool, article_tool = _make_wikimedia_tools(self._key_rotator)
+        search_tool, article_tool = _make_wikipedia_tools(self._key_rotator)
         search_tool_definition = ToolDefinition(
-            name="search_wikimedia",
+            name="search_wikipedia",
             description="Search Wikipedia articles by keyword.",
             input_schema={
                 "type": "object",
@@ -184,7 +181,7 @@ class WikimediaSandbox(BaseSandbox):
             }
         )
         article_tool_definition = ToolDefinition(
-            name="get_wikimedia_article",
+            name="get_wikipedia_article",
             description="Fetch the summary paragraph for a Wikipedia article.",
             input_schema={
                 "type": "object",
