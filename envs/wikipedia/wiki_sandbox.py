@@ -1,14 +1,11 @@
 from html import unescape
 from pathlib import Path
 import re
-import time
-import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
-
-import requests
 
 from envs.base_sandbox import BaseSandbox, ToolDefinition
 from envs.types import RewardFunction
+from envs.wikipedia.utils import APIKeyRotator, clean_html, safe_request
 
 SYSTEM_PROMPT = """Please use the tools provided to get accurate, up-to-date information.
 Formulate each search query as a concise 1–2 word entity.
@@ -16,11 +13,18 @@ Write your complete answer on the final line only, within the xml tags <answer><
 """
 
 def reward_func(prompt: str, completion: str, ground_truth: str, workspace: Path, **kwargs) -> float:
-    """
-    Reward = 1 if `ground_truth` (case-insensitive) appears anywhere *inside*
-    the first <answer> … </answer> block of `completion`; otherwise 0.
+    """Score 1.0 if the ground-truth answer appears exactly inside
+    the first `<answer>...</answer>` block; otherwise 0.0.
 
-    Falls back to 0 if the tag is missing or empty.
+    Args:
+        prompt:   The user’s original query.
+        completion:  The model’s generated text.
+        ground_truth:  Expected answer to match (case-insensitive).
+        workspace:  Path to the current workspace (unused).
+        **kwargs:  Catch-all for BaseSandbox signature compatibility.
+    Returns:
+        1.0 if `ground_truth` (lowercased) exactly matches the unescaped
+        text inside the first `<answer>` block, else 0.0.
     """
     # Grab only the text inside the first <answer> … </answer> pair (case-insensitive).
     m = re.search(r'<answer>(.*?)</answer>', completion, flags=re.IGNORECASE | re.DOTALL)
@@ -29,64 +33,8 @@ def reward_func(prompt: str, completion: str, ground_truth: str, workspace: Path
 
     # Unescape any XML entities (&amp; → &, etc.) and normalise whitespace.
     answer_text = unescape(m.group(1)).strip().lower()
+    print(answer_text, ground_truth)
     return float(ground_truth.lower() == answer_text)
-
-class APIKeyRotator:
-    """Round‑robin iterator over a list of Wikipedia API keys.
-
-    Rotation is **thread‑safe** so that concurrent tool calls running in
-    different threads (or async tasks) cannot race and pick the same key.
-    """
-
-    def __init__(self, keys: Optional[List[str]] = None):
-        self._keys: List[str] = keys or []
-        self._lock = threading.Lock()
-        self._idx = 0
-
-    def next(self) -> Optional[str]:
-        """Return the *next* key, or *None* if no keys were configured."""
-        if not self._keys:
-            return None
-        with self._lock:
-            key = self._keys[self._idx]
-            self._idx = (self._idx + 1) % len(self._keys)
-            return key
-
-
-class RateLimitExceeded(Exception):
-    """Raised when the Wikipedia API repeatedly returns HTTP 429."""
-
-
-def _safe_request(
-    method: str,
-    url: str,
-    *,
-    headers: Dict[str, str],
-    params: Dict[str, Any] | None = None,
-    timeout: float = 10.0,
-    json: Any | None = None,
-    max_retries: int = 3,
-    retry_delay_seconds: float = 20,
-    rate_limit_seconds: float = 2.5,
-) -> requests.Response:
-    """HTTP request helper that retries on 429 using exponential back‑off."""
-    time.sleep(rate_limit_seconds)  # Short delay to avoid hammering the server immediately
-    for attempt in range(max_retries + 1):
-        resp = requests.request(
-            method, url, headers=headers, params=params, json=json, timeout=timeout
-        )
-        if resp.status_code != 429:
-            return resp  # Success *or* non‑rate‑limit error → caller handles
-
-        if attempt == max_retries:
-            raise RateLimitExceeded(
-                f"Rate‑limit hit and {max_retries} retries exhausted."
-            )
-        print(f"Rate limit hit, retrying in {retry_delay_seconds:.1f} seconds...")
-        time.sleep(retry_delay_seconds)
-
-    return resp
-
 
 def _make_wikipedia_tools(key_rotator: APIKeyRotator):
     """Return concrete implementations of Wikipedia search tools."""
@@ -97,12 +45,20 @@ def _make_wikipedia_tools(key_rotator: APIKeyRotator):
 
     # — Search tool ————————————————————————————
     def wikipedia_search_tool(q: str, limit: int = 10, **kwargs) -> Any:
+        """Search Wikipedia articles by keyword.
+        
+        Args:
+            q: The query string to search for.
+            limit: Maximum number of results to return (default 10).
+        Returns:
+            A string with the search results, or an error message.
+        """
         query = q
         if not query:
             return "Error: Missing required parameter: 'q'"
 
         try:
-            resp = _safe_request(
+            resp = safe_request(
                 "GET",
                 "https://en.wikipedia.org/w/api.php",
                 headers=_headers(),
@@ -117,24 +73,60 @@ def _make_wikipedia_tools(key_rotator: APIKeyRotator):
             )
             if resp.status_code != 200:
                 return f"Error: API request failed with status {resp.status_code}"
-            return resp.json()["query"]["search"]
+
+            hits = resp.json().get("query", {}).get("search", [])
+            if not hits:
+                return "No results found."
+
+            lines = []
+            for i, item in enumerate(hits, start=1):
+                title = item.get("title", "—")
+                snippet = clean_html(item.get("snippet", ""))
+                lines.append(f"{i}. {title}\n   {snippet}")
+            return "\n\n".join(lines)
         except Exception as e:
             return f"Error: {str(e)}"
 
-    # — Article‑summary tool —————————————————————————
-    def wikipedia_get_article_tool(title: str, **kwargs) -> Any:
+    # — Article‑tool —————————————————————————
+    def wikipedia_get_article_tool(title: str, max_chars: int = 10000, **kwargs) -> Any:
+        """
+        Fetches the full plaintext of a Wikipedia article.
+
+        Args:
+            title: The page title (e.g. "Python_(programming_language)")
+            max_chars: Maximum number of characters to return (default 10,000).
+        Returns:
+            A string with the full article text, or an error message.
+        """
         if not title:
             return "Error: Missing required parameter: 'title'"
+        api_url = "https://en.wikipedia.org/w/api.php"
+        params = {
+            "action": "query",
+            "format": "json",
+            "prop": "extracts",
+            "explaintext": True,      # get plain text, not HTML
+            "redirects": True,        # follow any redirects
+            "titles": title
+        }
 
         try:
-            resp = _safe_request(
-                "GET",
-                f"https://en.wikipedia.org/api/rest_v1/page/summary/{title}",
-                headers=_headers(),
-            )
+            resp = safe_request("GET", api_url, params=params, headers=_headers())
             if resp.status_code != 200:
                 return f"Error: API request failed with status {resp.status_code}"
-            return resp.json()
+
+            data = resp.json()
+            pages = data.get("query", {}).get("pages", {})
+            if not pages:
+                return f"Error: No pages found for title '{title}'"
+
+            # pages is a dict keyed by pageid; grab the first one
+            page = next(iter(pages.values()))
+            extract = page.get("extract")
+            if extract is None:
+                return f"Error: No extract found for '{title}'"
+            return extract[:max_chars]
+
         except Exception as e:
             return f"Error: {str(e)}"
 
@@ -142,14 +134,8 @@ def _make_wikipedia_tools(key_rotator: APIKeyRotator):
 
 
 class WikipediaSandbox(BaseSandbox):
-    """A `BaseSandbox` pre-loaded with Wikipedia tools and key rotation.
+    """Wikipedia Sandbox environment with Wikipedia search & fetch tools."""
 
-    Parameters
-    ----------
-    api_keys : list[str] | None
-        A list of Wikipedia REST API keys to rotate through.  If *None*
-        or empty, requests are made unsigned.
-    """
     system_prompt: Optional[str] = SYSTEM_PROMPT
     _reward_funcs: List[RewardFunction] = [reward_func]
 
@@ -206,8 +192,15 @@ class WikipediaSandbox(BaseSandbox):
         ]
     
     def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
-        """Execute a tool.
-        Rollout_id isn't necessary since there is no statefulness for this wikipedia environment
+        """Execute a tool. Rollout_id isn't necessary since there is no statefulness
+        for this wikipedia environment.
+
+        Args:
+            rollout_id: Identifier for the current rollout (not used here).
+            tool_name: Name of the tool to run (e.g. "search_wikipedia").
+            **tool_args: Arguments for the tool function.
+        Returns:
+            The result of the tool function, or an error message.
         """
         _, tool_function = self.tools[tool_name]
         return tool_function(**tool_args)
@@ -220,4 +213,3 @@ class WikipediaSandbox(BaseSandbox):
     
     def get_rollout_workspace(self, rollout_id: str) -> Path:
         return super().get_rollout_workspace(rollout_id)
-    
