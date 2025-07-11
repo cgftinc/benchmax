@@ -1,8 +1,8 @@
 [tool.poetry]
-name = "sandbox"
+name = "benchmax"
 version = "0.1.0"
-description = ""
-authors = ["Test <girishvilla@gmail.com>"]
+description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
+authors = ["cgft.io"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
