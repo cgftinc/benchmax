@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Dict, Optional, Protocol, TypedDict
 
 
 @dataclass
@@ -20,4 +20,13 @@ class RewardFunction(Protocol):
         workspace: Path,     # Path to rollout's workspace with tool outputs
         **kwargs: Any        # Additional context for reward computation
     ) -> float:             # Reward score (typically in range [0, 1])
+        ...
+
+class DatasetProcResult(TypedDict, total=False):
+    rollout_init_args: Dict[str, Any]
+    # other possible keys can be added here as needed
+
+class DatasetProcFunction(Protocol):
+    """Function that processes a dataset example"""
+    def __call__(self, example: Dict[str, Any]) -> DatasetProcResult:
         ...

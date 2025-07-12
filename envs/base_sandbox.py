@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 from pathlib import Path
 
 from envs.types import RewardFunction, ToolDefinition
@@ -8,7 +8,7 @@ from prompts.tools import render_tools_prompt
 class BaseSandbox(ABC):
     """Base sandbox for tool execution and reward computation"""
     
-    system_prompt: Optional[str] = ""
+    system_prompt: str = ""
     _reward_funcs: List[RewardFunction] = []
 
     @abstractmethod
@@ -86,4 +86,4 @@ class BaseSandbox(ABC):
         if add_tool_defs:
             return render_tools_prompt(self.list_tools(), self.system_prompt or "")
         else:
-            return self.system_prompt or ""
+            return self.system_prompt
