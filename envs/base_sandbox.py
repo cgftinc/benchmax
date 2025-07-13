@@ -9,7 +9,7 @@ class BaseSandbox(ABC):
     """Base sandbox for tool execution and reward computation"""
     
     system_prompt: str = ""
-    _reward_funcs: List[RewardFunction] = []
+    reward_funcs: List[RewardFunction] = []
 
     @abstractmethod
     def list_tools(self) -> List[ToolDefinition]:
@@ -22,7 +22,7 @@ class BaseSandbox(ABC):
         pass
 
     @abstractmethod
-    def init_rollout(self, rollout_id: str) -> None:
+    def init_rollout(self, rollout_id: str, **rollout_args) -> None:
         """Initialize resources for a new rollout"""
         pass
     
@@ -35,16 +35,6 @@ class BaseSandbox(ABC):
     def get_rollout_workspace(self, rollout_id: str) -> Path:
         """Get the workspace path for a specific rollout"""
         pass
-    
-    @classmethod
-    def add_reward_func(cls, func: RewardFunction) -> None:
-        """Add a reward computation function"""
-        cls._reward_funcs.append(func)
-    
-    @classmethod
-    def get_reward_funcs(cls) -> List[RewardFunction]:
-        """Get all registered reward functions"""
-        return cls._reward_funcs
     
     def compute_reward(
         self,
@@ -63,7 +53,7 @@ class BaseSandbox(ABC):
             raise ValueError(f"No workspace found for rollout {rollout_id}")
             
         results: Dict[str, float] = {}
-        for func in self._reward_funcs:
+        for func in self.reward_funcs:
             try:
                 # Get function name, falling back to string representation if not available
                 func_name = getattr(func, "__name__", str(func))

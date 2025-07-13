@@ -1,6 +1,4 @@
-from html import unescape
 from pathlib import Path
-import re
 from typing import List
 
 from envs.local_mcp_sandbox import LocalMCPSandbox
@@ -38,7 +36,7 @@ class MathSandbox(LocalMCPSandbox):
     """Sandbox for math problems, using local MCP tools."""
 
     system_prompt: str = SYSTEM_PROMPT
-    _reward_funcs: List[RewardFunction] = [reward_func]
+    reward_funcs: List[RewardFunction] = [reward_func]
 
     def __init__(self):
         super().__init__(MCP_CONFIG)

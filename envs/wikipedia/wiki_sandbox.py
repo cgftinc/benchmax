@@ -136,8 +136,8 @@ def _make_wikipedia_tools(key_rotator: APIKeyRotator):
 class WikipediaSandbox(BaseSandbox):
     """Wikipedia Sandbox environment with Wikipedia search & fetch tools."""
 
-    system_prompt: Optional[str] = SYSTEM_PROMPT
-    _reward_funcs: List[RewardFunction] = [reward_func]
+    system_prompt: str = SYSTEM_PROMPT
+    reward_funcs: List[RewardFunction] = [reward_func]
 
     def __init__(
         self,
@@ -205,8 +205,8 @@ class WikipediaSandbox(BaseSandbox):
         _, tool_function = self.tools[tool_name]
         return tool_function(**tool_args)
 
-    def init_rollout(self, rollout_id: str) -> None:
-        return super().init_rollout(rollout_id)
+    def init_rollout(self, rollout_id: str, **rollout_args) -> None:
+        return super().init_rollout(rollout_id, **rollout_args)
     
     def cleanup_rollout(self, rollout_id: str) -> None:
         return super().cleanup_rollout(rollout_id)

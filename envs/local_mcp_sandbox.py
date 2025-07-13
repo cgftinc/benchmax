@@ -179,7 +179,7 @@ class LocalMCPSandbox(BaseSandbox):
             print(f"[ERROR] Tool call failed: {str(e)}")
             return None
 
-    def init_rollout(self, rollout_id: str) -> None:
+    def init_rollout(self, rollout_id: str, **rollout_args) -> None:
         """Initialize resources for a new rollout"""
         pair = self._run_async(self._get_client_workspace_pair())
         self._active_clients[rollout_id] = pair
