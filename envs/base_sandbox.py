@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from pathlib import Path
 
 from envs.types import RewardFunction, ToolDefinition
