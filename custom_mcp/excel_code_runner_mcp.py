@@ -35,6 +35,8 @@ def excel_to_str_repr(excel_path: str) -> str:
                 if cell_raw.fill.start_color.index != "00000000":
                     is_default_background = False
                     style.append(f"bg:{cell_raw.fill.start_color.rgb}")
+                if cell_raw.font.color and cell_raw.font.color.rgb:
+                    style.append(f"color:{cell_raw.font.color.rgb}")
                 if cell_raw.font.bold:
                     style.append("bold")
                 if cell_raw.font.italic:
