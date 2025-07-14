@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
-from envs.types import RewardFunction, ToolDefinition
+from envs.types import RewardFunction, ToolDefinition, StandardizedExample
 from prompts.tools import render_tools_prompt
 
 class BaseSandbox(ABC):
@@ -10,6 +10,20 @@ class BaseSandbox(ABC):
     
     system_prompt: str = ""
     reward_funcs: List[RewardFunction] = []
+
+    # Override this method if your example does not match the default structure
+    def dataset_preprocess(self, example: Any) -> StandardizedExample:
+        """
+        Preprocess a single dataset example into a dict with keys:
+        - "prompt": str
+        - "ground_truth": Any
+        - "init_rollout_args": Optional[Dict[str, Any]]
+        """
+        return {
+            "prompt": example.get("prompt", ""),
+            "ground_truth": example.get("ground_truth", None),
+            "init_rollout_args": example.get("init_rollout_args", {})
+        }
 
     @abstractmethod
     def list_tools(self) -> List[ToolDefinition]:

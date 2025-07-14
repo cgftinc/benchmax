@@ -2,6 +2,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Protocol, TypedDict
 
+class StandardizedExample(TypedDict):
+    prompt: str
+    ground_truth: Any
+    init_rollout_args: Optional[Dict[str, Any]]
+
 
 @dataclass
 class ToolDefinition:

@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from envs.local_mcp_sandbox import LocalMCPSandbox
-from envs.types import DatasetProcResult, RewardFunction, DatasetProcFunction
+from envs.types import RewardFunction, StandardizedExample
 
 SYSTEM_PROMPT = """You are a spreadsheet expert who can manipulate spreadsheets through Python code.
 
@@ -26,19 +26,6 @@ MCP_CONFIG = """
 }
 """
 
-# Here is the example structure of a single data point:
-# {
-#     "instruction": "What is the sum of all values in column B?",
-#     - instruction holds the question, local path, content, type, position, and output path
-#     "init_rollout_args": {
-#         "spreadsheet_path": "path/to/spreadsheet.xlsx",
-#         -  used to copy spreadsheet to the workspace which is the cwd of the MCP server
-#     }
-# }
-
-
-# TODO: Include script to process dataset from the tar
-
 def reward_func(
     prompt: str, completion: str, ground_truth: str, workspace: Path, **kwargs
 ) -> float:
@@ -47,14 +34,27 @@ def reward_func(
     """
     return 1.0
 
-class MathSandbox(LocalMCPSandbox):
-    """Sandbox for math problems, using local MCP tools."""
+class ExcelSandbox(LocalMCPSandbox):
+    """Sandbox for spreadsheet manipulation tasks using MCP with Excel support"""
 
     system_prompt: str = SYSTEM_PROMPT
     reward_funcs: List[RewardFunction] = [reward_func]
 
     def __init__(self):
         super().__init__(MCP_CONFIG)
+
+    def dataset_preprocess(self, example: Any) -> StandardizedExample:
+        # convert dataset json into standardized example
+        # Here is the example structure of a single data point:
+        # {
+        #     "instruction": "What is the sum of all values in column B?",
+        #     - instruction holds the question, local path, content, type, position, and output path
+        #     "init_rollout_args": {
+        #         "spreadsheet_path": "path/to/spreadsheet.xlsx",
+        #         -  used to copy spreadsheet to the workspace which is the cwd of the MCP server
+        #     }
+        # }
+
 
     def init_rollout(self, rollout_id: str, **rollout_args):
         if "spreadsheet_path" not in rollout_args:
