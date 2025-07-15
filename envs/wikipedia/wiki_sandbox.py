@@ -213,3 +213,13 @@ class WikipediaSandbox(BaseSandbox):
     
     def get_rollout_workspace(self, rollout_id: str) -> Path:
         return super().get_rollout_workspace(rollout_id)
+
+if __name__ == "__main__":
+    # Example usage
+    sandbox = WikipediaSandbox()
+    print("MathSandbox initialized with MCP configuration.")
+    print("System prompt:", sandbox.system_prompt)
+    print("Available Tools: ", sandbox.list_tools())
+    print("Run Wikipedia Search Tool:")
+    results = sandbox.run_tool("demo", "search_wikipedia", q="Python programming language", limit=5)
+    print(results)
