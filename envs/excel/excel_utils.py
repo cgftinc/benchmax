@@ -1,3 +1,9 @@
+import os
+import shutil
+import subprocess
+import platform
+import tempfile
+from urllib.parse import quote
 import xlwings
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -8,11 +14,47 @@ def evaluate_excel(excel_path: str):
     """
     Evaluate Python code that manipulates an Excel file using xlwings.
     """
+    # Use LibreOffice for Linux
+    if platform.system() == "Linux":
+        evaluate_excel_libre(excel_path)
+        return
     excel_app = xlwings.App(visible=False)
     excel_book = excel_app.books.open(excel_path)
     excel_book.save()
     excel_book.close()
     excel_app.quit()
+
+def evaluate_excel_libre(excel_path: str) -> None:
+    """
+    Force‑recalculate in place under Linux using LibreOffice.
+    Raises subprocess.CalledProcessError if soffice exits abnormally.
+    """
+    tmp_outdir = tempfile.mkdtemp(prefix="lo_convert_")
+    cmd = [
+        "soffice",
+        "--headless",
+        "--nologo", "--nofirststartwizard", "--norestore",
+        "--calc",
+        "--convert-to", "xlsx",
+        "--outdir", tmp_outdir,
+        os.path.abspath(excel_path),
+    ]
+    try:
+        subprocess.run(
+            cmd, check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+         # Determine the converted file name (same base name, .xlsx extension)
+        base_name = os.path.splitext(os.path.basename(excel_path))[0] + ".xlsx"
+        converted_path = os.path.join(tmp_outdir, base_name)
+        # Overwrite the original file with the converted one
+        shutil.move(converted_path, excel_path)
+    finally:
+        # Clean up the temp folder
+        shutil.rmtree(tmp_outdir, ignore_errors=True)
+        pass
 
 def excel_to_str_repr(excel_path: str, evaluate_formulas = False) -> str:
     # Load workbook twice: data_only=True to get the evaluated values,
