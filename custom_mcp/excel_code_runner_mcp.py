@@ -4,15 +4,29 @@ import subprocess
 import os
 import sys
 from openpyxl import load_workbook
+import xlwings
 
 mcp = FastMCP(
     name="ExcelCodeRunner",
     instructions="This server provides a tool for running Python code to manipulate Excel files."
 )
 
-def excel_to_str_repr(excel_path: str) -> str:
+def evaluate_excel(excel_path: str):
+    """
+    Evaluate Python code that manipulates an Excel file using xlwings.
+    """
+    excel_app = xlwings.App(visible=False)
+    excel_book = excel_app.books.open(excel_path)
+    excel_book.save()
+    excel_book.close()
+    excel_app.quit()
+
+def excel_to_str_repr(excel_path: str, evaluate_formulas = False) -> str:
     # Load workbook twice: data_only=True to get the evaluated values,
     # and data_only=False to get the formulas and styles.
+    if evaluate_formulas:
+        evaluate_excel(excel_path)
+
     wb_evaluated = load_workbook(excel_path, data_only=True)
     wb_raw = load_workbook(excel_path, data_only=False)
 
@@ -35,7 +49,7 @@ def excel_to_str_repr(excel_path: str) -> str:
                 if cell_raw.fill.start_color.index != "00000000":
                     is_default_background = False
                     style.append(f"bg:{cell_raw.fill.start_color.rgb}")
-                if cell_raw.font.color and cell_raw.font.color.rgb:
+                if cell_raw.font.color.index != 1:
                     style.append(f"color:{cell_raw.font.color.rgb}")
                 if cell_raw.font.bold:
                     style.append("bold")
@@ -75,25 +89,24 @@ def run_excel_code_impl(
     If code executes with no errors, return the string representation of the Excel file with styles.
     If there are errors, return an error message.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        code_path = os.path.join(tmpdir, "user_code.py")
-        # Write the user code to a file
-        with open(code_path, "w") as f:
-            f.write(python_code)
-        try:
-            subprocess.run(
-                [sys.executable, code_path],
-                check=True,
-                capture_output=True,
-                timeout=60
-            )
-        except subprocess.CalledProcessError as e:
-            return f"ERROR: User code failed: {e.stderr.decode()}"
-        except Exception as e:
-            return f"ERROR: Error running user code: {str(e)}"
-        # Convert the manipulated Excel file to JSON with styles
-        excel_str = excel_to_str_repr(output_excel_path)
-        return excel_str
+    code_path = "script.py"
+    # Write the user code to a file
+    with open(code_path, "w") as f:
+        f.write(python_code)
+    try:
+        subprocess.run(
+            [sys.executable, code_path],
+            check=True,
+            capture_output=True,
+            timeout=60
+        )
+    except subprocess.CalledProcessError as e:
+        return f"ERROR: User code failed: {e.stderr.decode()}"
+    except Exception as e:
+        return f"ERROR: Error running user code: {str(e)}"
+    # Convert the manipulated Excel file to JSON with styles
+    excel_str = excel_to_str_repr(output_excel_path)
+    return excel_str
 
 @mcp.tool
 def run_excel_code(
@@ -103,4 +116,6 @@ def run_excel_code(
     return run_excel_code_impl(python_code, output_excel_path)
 
 if __name__ == "__main__":
-    mcp.run()
+    # mcp.run()
+    s = excel_to_str_repr(str("/Users/seahyinghang8/repo/sandbox/tests/test_inputs/test1.xlsx"))
+    print(s)
