@@ -3,12 +3,17 @@ import shutil
 import subprocess
 import platform
 import tempfile
-from urllib.parse import quote
 import xlwings
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 import datetime
 from typing import Tuple
+
+WHITE_LIKE_COLORS = [
+    "00000000",
+    "FFFFFFFF",
+    "FFFFFF00",
+]
 
 def evaluate_excel(excel_path: str):
     """
@@ -81,10 +86,14 @@ def excel_to_str_repr(excel_path: str, evaluate_formulas = False) -> str:
                 is_default_background = True
                 style = []
 
-                if cell_raw.fill.start_color.index != "00000000":
+                if (
+                    cell_raw.fill.start_color.index != "00000000"
+                    and type(cell_raw.fill.start_color.rgb) is str
+                    and cell_raw.fill.start_color.rgb not in WHITE_LIKE_COLORS
+                ):
                     is_default_background = False
                     style.append(f"bg:{cell_raw.fill.start_color.rgb}")
-                if cell_raw.font.color.index != 1:
+                if cell_raw.font.color and cell_raw.font.color.index != 1 and type(cell_raw.font.color.rgb) is str:
                     style.append(f"color:{cell_raw.font.color.rgb}")
                 if cell_raw.font.bold:
                     style.append("bold")
@@ -95,7 +104,10 @@ def excel_to_str_repr(excel_path: str, evaluate_formulas = False) -> str:
 
                 display_value = cell_evaluated.value
                 if cell_raw.data_type == "f":
-                    display_value = f"{cell_raw.value} -> {cell_evaluated.value}"
+                    cell_raw_val = cell_raw.value
+                    if type(cell_raw_val) is not str:
+                        cell_raw_val = cell_raw.value.text # type: ignore
+                    display_value = f"{cell_raw_val} -> {cell_evaluated.value}"
 
                 coords = cell_evaluated.coordinate
                 

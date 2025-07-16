@@ -13,6 +13,12 @@ mcp = FastMCP(
     instructions="This server provides a tool for running Python code to manipulate Excel files."
 )
 
+WHITE_LIKE_COLORS = [
+    "00000000",
+    "FFFFFFFF",
+    "FFFFFF00",
+]
+
 def evaluate_excel(excel_path: str):
     """
     Evaluate Python code that manipulates an Excel file using xlwings.
@@ -84,10 +90,14 @@ def excel_to_str_repr(excel_path: str, evaluate_formulas = False) -> str:
                 is_default_background = True
                 style = []
 
-                if cell_raw.fill.start_color.index != "00000000":
+                if (
+                    cell_raw.fill.start_color.index != "00000000"
+                    and type(cell_raw.fill.start_color.rgb) is str
+                    and cell_raw.fill.start_color.rgb not in WHITE_LIKE_COLORS
+                ):
                     is_default_background = False
                     style.append(f"bg:{cell_raw.fill.start_color.rgb}")
-                if cell_raw.font.color.index != 1:
+                if cell_raw.font.color and cell_raw.font.color.index != 1 and type(cell_raw.font.color.rgb) is str:
                     style.append(f"color:{cell_raw.font.color.rgb}")
                 if cell_raw.font.bold:
                     style.append("bold")
@@ -98,7 +108,10 @@ def excel_to_str_repr(excel_path: str, evaluate_formulas = False) -> str:
 
                 display_value = cell_evaluated.value
                 if cell_raw.data_type == "f":
-                    display_value = f"{cell_raw.value} -> {cell_evaluated.value}"
+                    cell_raw_val = cell_raw.value
+                    if type(cell_raw_val) is not str:
+                        cell_raw_val = cell_raw.value.text # type: ignore
+                    display_value = f"{cell_raw_val} -> {cell_evaluated.value}"
 
                 coords = cell_evaluated.coordinate
                 
@@ -151,9 +164,14 @@ def run_excel_code(
     python_code: str,
     output_excel_path: str
 ) -> str:
+    """
+    Run Python code which should use openpyxl to manipulate an Excel file.
+    If code executes with no errors, returns the string representation of the Excel file with styles.
+    If there are errors, return an error message.
+    """
     return run_excel_code_impl(python_code, output_excel_path)
 
 if __name__ == "__main__":
-    # mcp.run()
-    s = excel_to_str_repr(str("/Users/seahyinghang8/repo/sandbox/tests/test_inputs/test1.xlsx"))
-    print(s)
+    mcp.run()
+    # s = excel_to_str_repr(str("/data/sample_data_200/spreadsheet/110-6/1_110-6_answer.xlsx"), evaluate_formulas=True)
+    # print(s)
