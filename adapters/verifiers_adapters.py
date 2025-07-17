@@ -1,11 +1,13 @@
 from __future__ import annotations
 from functools import wraps
 
+from openai import OpenAI
+
 from envs.base_sandbox import BaseSandbox
 
 from contextvars import ContextVar
 import uuid
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple, Union
 
 from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers import Parser, RewardFunc
@@ -19,11 +21,24 @@ _CURRENT_ROLLOUT_ID: ContextVar[str | None] = ContextVar("current_rollout_id", d
 def wrapped_reward_func(reward_func: RewardFunction) -> Callable:
     @wraps(reward_func)
     def wrapped_func(completion, answer, **kwargs):
-        prompt = ""
-        if kwargs.get("prompt"):
-            prompt = kwargs.pop("prompt")
-        return reward_func(prompt, completion[-1]["content"], answer, **kwargs)
+        prompt = kwargs.pop("prompt", "")
+        info = kwargs.pop("info", {})
+        workspace = kwargs.pop("state", {}).get("workspace", None)
+        kwargs = {**kwargs, **info}
+        return reward_func(prompt, completion[-1]["content"], answer, workspace, **kwargs)
     return wrapped_func
+
+def verifiers_dataset_mapper(dataset: Dataset) -> Dataset:
+    """Map a dataset to the expected format for the Verifiers environment."""
+    def map_example(example: Dict[str, Any]) -> Dict[str, Any]:
+        prompt = example.pop("prompt", "")
+        ground_truth = example.pop("ground_truth", "")
+        return {
+            "question": prompt,
+            "answer": ground_truth,
+            **example,  # Include any other fields as is
+        }
+    return dataset.map(map_example)
 
 class SandboxRubric(Rubric):
     """Wrap all reward functions registered in a ``BaseSandbox`` so they are
@@ -43,7 +58,7 @@ class SandboxRubric(Rubric):
         super().__init__(funcs=[], weights=[], parser=parser)
 
         # Add sandbox‑native rewards
-        for sandbox_reward_fn in sandbox.get_reward_funcs():
+        for sandbox_reward_fn in sandbox.reward_funcs:
             self.add_reward_func(wrapped_reward_func(sandbox_reward_fn), weight=1.0)
 
         # Add any caller‑supplied extra rewards
@@ -88,6 +103,7 @@ def get_verifiers_environment(
 
                 # Retrieve rollout id from context
                 rid = _CURRENT_ROLLOUT_ID.get() or "[DEFAULT_ROLLOUT_ID]"
+                print(f"Running tool {tool_name} with args: {args} in rollout {rid}")
                 result = sandbox.run_tool(rid, tool_name, **args)
 
                 result_str = str(result)
@@ -97,13 +113,29 @@ def get_verifiers_environment(
             except Exception as exc:
                 return f"Error: {exc}"
 
-        def rollout(self, *args: Any, **kwargs: Any):
+        def rollout(
+            self,
+            client: OpenAI,
+            model: str,
+            prompt: Union[str, List[Dict[str, Any]]],
+            answer: str,
+            task: str = "default",
+            info: Dict[str, Any] = {},
+            sampling_args: Dict[str, Any] = {},
+            **kwargs: Any
+        ):
             rid = kwargs.pop("rollout_id", None) or str(uuid.uuid4())
             token = _CURRENT_ROLLOUT_ID.set(rid)
+            init_rollout_args = info.pop("init_rollout_args", {})
+            print(f"Starting rollout {rid} with args: {init_rollout_args} {kwargs}")
+            self.sandbox.init_rollout(rid, **init_rollout_args)
+            workspace = self.sandbox.get_rollout_workspace(rid) or None
             try:
-                return super().rollout(*args, **kwargs)
+                completion, state = super().rollout(client, model, prompt, answer, task, info, sampling_args, **kwargs)
+                state["workspace"] = workspace
             finally:
                 _CURRENT_ROLLOUT_ID.reset(token)
+            return completion, state
         
         def is_completed(
             self,
@@ -131,4 +163,40 @@ def get_verifiers_environment(
                 pass
             return {'role': 'user', 'content': "Error: Tool command not found or invalid XML format. Please ensure correct formatting."}, {}
 
+        def format_dataset(
+            self,
+            dataset: Dataset,
+            system_prompt: str | None = None,
+            few_shot: List[ChatMessage] | None = None,
+            question_key: str = "question",
+            answer_key: str = "answer"
+        ) -> Dataset:
+            """Format a dataset for the benchmax environment."""
+
+            # Capture the original examples as a list of dicts
+            original_examples = list(dataset)
+
+            # Apply the transformation
+            new_dataset = super().format_dataset(
+                dataset,
+                system_prompt=system_prompt,
+                few_shot=few_shot,
+                question_key=question_key,
+                answer_key=answer_key
+            )
+            # Inject the missing keys into "info"
+            def merge_info(new_item, idx):
+                original = original_examples[idx]
+                info = {
+                    k: v for k, v in original.items()
+                    if k not in ["prompt", "answer"]
+                }
+                return {
+                    **new_item,
+                    "info": info
+                }
+
+            new_dataset = new_dataset.map(merge_info, with_indices=True)
+            return new_dataset
+    
     return SandboxVerifierEnv()

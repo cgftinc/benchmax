@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import platform
@@ -44,12 +45,15 @@ def evaluate_excel_libre(excel_path: str) -> None:
         "--outdir", tmp_outdir,
         os.path.abspath(excel_path),
     ]
+    lo_home = Path(tempfile.mkdtemp(prefix="lo_profile_"))
+    env = dict(os.environ, HOME=str(lo_home))
     try:
         subprocess.run(
             cmd, check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True
+            text=True,
+            env=env,
         )
          # Determine the converted file name (same base name, .xlsx extension)
         base_name = os.path.splitext(os.path.basename(excel_path))[0] + ".xlsx"

@@ -1,5 +1,6 @@
+import os
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Optional
 
 from envs.local_mcp_sandbox import LocalMCPSandbox
 from envs.types import RewardFunction, StandardizedExample
@@ -46,9 +47,10 @@ def reward_func(
 
     # Return 1.0 score if the output completely matches the ground truth
     try:
-        match, message = compare_excel_cells(str(ground_truth_path), str(output_path), answer_position, )
+        match, _ = compare_excel_cells(str(ground_truth_path), str(output_path), answer_position, )
         return 1.0 if match else 0.0
-    except Exception:
+    except Exception as e:
+        print(f"Error comparing spreadsheets for example {example_id}: {e}")
         return 0.0
 
 class ExcelSandbox(LocalMCPSandbox):
@@ -57,8 +59,13 @@ class ExcelSandbox(LocalMCPSandbox):
     system_prompt: str = SYSTEM_PROMPT
     reward_funcs: List[RewardFunction] = [reward_func]
 
-    def __init__(self):
-        super().__init__(MCP_CONFIG)
+    def __init__(self, dataset_path: Optional[str] = None, **kwargs):
+        """ Initialize the ExcelSandbox with an optional dataset path.
+        Args:
+            dataset_path (Optional[str]): Path to the dataset directory containing spreadsheets.
+"""
+        super().__init__(MCP_CONFIG, **kwargs)
+        self.dataset_path = dataset_path
 
     def dataset_preprocess(self, example: Any) -> StandardizedExample:
         # convert dataset json into standardized example
@@ -68,12 +75,13 @@ class ExcelSandbox(LocalMCPSandbox):
         spreadsheet_path = example.get("spreadsheet_path")
         if not spreadsheet_path:
             raise ValueError("spreadsheet_path must be provided in the example")
-        
+        spreadsheet_path = os.path.join(self.dataset_path, spreadsheet_path) if self.dataset_path else spreadsheet_path
         target_input_path = f"1_{example_id}_input.xlsx"
         target_output_path = f"1_{example_id}_output.xlsx"
-
-        spreadsheet_content = excel_to_str_repr(spreadsheet_path, True)
+        target_answer_path = f"1_{example_id}_answer.xlsx"
         source_input_path = Path(spreadsheet_path) / target_input_path
+
+        spreadsheet_content = excel_to_str_repr(str(source_input_path), True)
 
         prompt = f"""
         Instruction: {example['instruction']}
@@ -83,26 +91,33 @@ class ExcelSandbox(LocalMCPSandbox):
         Answer Position: {example['answer_position']}
         Output Path: {target_output_path}
         """
-        
+
         return {
             "prompt": prompt.strip(),
             "ground_truth": "",
             "init_rollout_args": {
-                "spreadsheet_path": source_input_path
+                "spreadsheet_path": str(source_input_path),
+                "answer_spreadsheet_path": str(Path(spreadsheet_path) / target_answer_path),
             }
         }
-
 
     def init_rollout(self, rollout_id: str, **rollout_args):
         if "spreadsheet_path" not in rollout_args:
             raise ValueError("spreadsheet_path must be provided in rollout_args")
         spreadsheet_path = rollout_args["spreadsheet_path"]
+        answer_spreadsheet_path = rollout_args["answer_spreadsheet_path"]
         
         super().init_rollout(rollout_id, **rollout_args)
         workspace = self.get_rollout_workspace(rollout_id)
 
+        def _copy_to_workspace(src_path: Path):
+            """
+            Copy the spreadsheet file to the workspace if it doesn't already exist.
+            """
+            dest_path = workspace / src_path.name
+            if not dest_path.exists():
+                dest_path.write_bytes(src_path.read_bytes())
+
         # Copy the spreadsheet to the workspace
-        src_path = Path(spreadsheet_path)
-        dest_path = workspace / src_path.name
-        if not dest_path.exists():
-            dest_path.write_bytes(src_path.read_bytes())
+        _copy_to_workspace(Path(spreadsheet_path))
+        _copy_to_workspace(Path(answer_spreadsheet_path))
