@@ -49,7 +49,7 @@ def reward_func(
 
     # Return 1.0 score if the output completely matches the ground truth
     try:
-        match, _ = compare_excel_cells(str(ground_truth_path), str(output_path), answer_position, )
+        match, _ = compare_excel_cells(str(ground_truth_path), str(output_path), answer_position)
         return 1.0 if match else 0.0
     except Exception as e:
         print(f"Error comparing spreadsheets for example {example_id}: {e}")

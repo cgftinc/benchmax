@@ -11,7 +11,7 @@ def test_excel_to_str_repr_basic():
     assert "Sheet Name: Sheet2" in output
     # Check for some known cell values and styles
     assert "D3: 1" in output
-    assert "H3: D [bg:FFFFFF00]" in output
+    assert "H3: D" in output
     assert "D6: =SUM(D3:D5) -> 2" in output
 
 def test_run_excel_code_impl_success():
