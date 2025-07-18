@@ -17,15 +17,17 @@ You need to solve the given spreadsheet manipulation question, which contains si
 - output_path: You need to generate the modified spreadsheet file in this new path.
 """
 
-MCP_CONFIG = """
-{
-    "mcpServers": {
-      "server-name": {
+from pathlib import Path
+
+MCP_CONFIG = f"""
+{{
+    "mcpServers": {{
+      "server-name": {{
         "command": "python",
-        "args": ["custom_mcp/excel_code_runner_mcp.py"]
-      }
-    }
-}
+        "args": ["{Path(__file__).resolve().parents[2]}/custom_mcp/excel_code_runner_mcp.py"]
+      }}
+    }}
+}}
 """
 
 def reward_func(

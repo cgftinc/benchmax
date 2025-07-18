@@ -243,7 +243,6 @@ class LocalMCPEnv(BaseEnv):
         workspace = Path(self._workspace_dir) / f"{self._counter}"
         self._counter += 1
         workspace.mkdir(parents=True, exist_ok=True)
-        # shutil.copytree("custom_mcp", workspace / "custom_mcp", dirs_exist_ok=True)
         config = self._prepare_config(workspace)
 
         client = FastMCPClient(config)
