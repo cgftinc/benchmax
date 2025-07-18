@@ -1,7 +1,7 @@
 import json
 from typing import Dict, Any, List
 import pytest
-from envs.base_sandbox import ToolDefinition
+from envs.base_env import ToolDefinition
 from prompts.tools import mcp2openai, parse_hermes_tool_call, render_tools_prompt
 
 def test_mcp2openai():
@@ -48,10 +48,6 @@ def test_parse_hermes_tool_call():
 
     # Test empty string
     assert parse_hermes_tool_call("") == []
-
-    # Test invalid JSON
-    with pytest.raises(ValueError):
-        parse_hermes_tool_call("<tool_call>invalid json</tool_call>")
 
 def test_render_tools_prompt():
     # Test with empty tool list

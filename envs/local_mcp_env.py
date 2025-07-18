@@ -1,3 +1,4 @@
+import shutil
 from typing import Dict, List, Any, Optional, NamedTuple, Union, Callable
 from pathlib import Path
 import asyncio
@@ -10,7 +11,7 @@ from mcp.types import (
     CallToolRequestParams,TextContent, ImageContent, AudioContent, EmbeddedResource
 )
 
-from envs.base_sandbox import BaseSandbox, ToolDefinition
+from envs.base_env import BaseEnv, ToolDefinition
 
 class ClientWorkspacePair(NamedTuple):
     """A pair of FastMCP client and its associated workspace.
@@ -22,8 +23,8 @@ class ClientWorkspacePair(NamedTuple):
     client: FastMCPClient
     workspace: Path
 
-class LocalMCPSandbox(BaseSandbox):
-    """Local MCP sandbox implementation supporting workspace-independent client pooling.
+class LocalMCPEnv(BaseEnv):
+    """Local MCP environment implementation supporting workspace-independent client pooling.
     
     This implementation maintains a pool of pre-warmed clients, each with their own
     workspace. When a rollout needs a client, it will retrieve from the pool and
@@ -39,7 +40,7 @@ class LocalMCPSandbox(BaseSandbox):
         pool_size: int = 3,
         workspace_dir: Optional[Path] = None
     ) -> None:
-        """Initialize the sandbox with configuration and pool settings."""
+        """Initialize the environment with configuration and pool settings."""
         # Load config from file if path provided
         if isinstance(mcp_config, (str, Path)):
             mcp_config_path = Path(mcp_config)
@@ -231,6 +232,7 @@ class LocalMCPSandbox(BaseSandbox):
     def _prepare_config(self, workspace: Path) -> Dict[str, Any]:
         """Create config with workspace for given rollout"""
         config = self._config.copy()
+        print(f"Preparing config for workspace: {workspace} {config}")
         if "mcpServers" in config:
             for server in config["mcpServers"].values():
                 server["cwd"] = str(workspace)
@@ -241,6 +243,7 @@ class LocalMCPSandbox(BaseSandbox):
         workspace = Path(self._workspace_dir) / f"{self._counter}"
         self._counter += 1
         workspace.mkdir(parents=True, exist_ok=True)
+        # shutil.copytree("custom_mcp", workspace / "custom_mcp", dirs_exist_ok=True)
         config = self._prepare_config(workspace)
 
         client = FastMCPClient(config)

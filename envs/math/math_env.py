@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 from typing import List
 
-from envs.local_mcp_sandbox import LocalMCPSandbox
+from envs.local_mcp_env import LocalMCPEnv
 from envs.types import RewardFunction
 
 SYSTEM_PROMPT = """Please use the tools provided to do any computation.
@@ -37,8 +37,8 @@ def reward_func(prompt: str, completion: str, ground_truth: str, workspace: Path
     answer_text = unescape(m.group(1)).strip().lower()
     return float(ground_truth.lower() == answer_text)
 
-class MathSandbox(LocalMCPSandbox):
-    """Sandbox for math problems, using local MCP tools."""
+class MathEnv(LocalMCPEnv):
+    """Environment for math problems, using local MCP tools."""
 
     system_prompt: str = SYSTEM_PROMPT
     reward_funcs: List[RewardFunction] = [reward_func]

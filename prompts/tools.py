@@ -1,7 +1,7 @@
 import json
 from typing import Dict, List
 
-from envs.base_sandbox import ToolDefinition
+from envs.base_env import ToolDefinition
 
 def mcp2openai(mcp_tool: ToolDefinition) -> dict:
     """Convert a ToolDefinition to an OpenAI Function Call format."""
@@ -40,7 +40,7 @@ def parse_hermes_tool_call(text: str) -> List[Dict[str, str]]:
         try:
             tool_calls.append(json.loads(tool_call_json))
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in tool call: {e}")
+            return []
     
     return tool_calls if tool_calls else []
 

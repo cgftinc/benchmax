@@ -3,7 +3,7 @@ from functools import wraps
 
 from openai import OpenAI
 
-from envs.base_sandbox import BaseSandbox
+from envs.base_env import BaseEnv
 
 from contextvars import ContextVar
 import uuid
@@ -40,16 +40,16 @@ def verifiers_dataset_mapper(dataset: Dataset) -> Dataset:
         }
     return dataset.map(map_example)
 
-class SandboxRubric(Rubric):
-    """Wrap all reward functions registered in a ``BaseSandbox`` so they are
+class BenchmaxEnvRubric(Rubric):
+    """Wrap all reward functions registered in a ``BaseEnv`` so they are
     compatible with the Verifiers evaluation pipeline.
 
-    By default each sandbox reward gets weight **1.0**
+    By default each benchmax env reward gets weight **1.0**
     """
 
     def __init__(
         self,
-        sandbox: BaseSandbox,
+        benchmax_env: BaseEnv,
         *,
         parser: Parser = Parser(),
         extra_funcs: List[RewardFunc] | None = None,
@@ -57,9 +57,9 @@ class SandboxRubric(Rubric):
     ) -> None:
         super().__init__(funcs=[], weights=[], parser=parser)
 
-        # Add sandbox‑native rewards
-        for sandbox_reward_fn in sandbox.reward_funcs:
-            self.add_reward_func(wrapped_reward_func(sandbox_reward_fn), weight=1.0)
+        # Add benchmax_env‑native rewards
+        for benchmax_reward_fn in benchmax_env.reward_funcs:
+            self.add_reward_func(wrapped_reward_func(benchmax_reward_fn), weight=1.0)
 
         # Add any caller‑supplied extra rewards
         extra_funcs = extra_funcs or []
@@ -68,20 +68,20 @@ class SandboxRubric(Rubric):
             self.add_reward_func(fn, weight=w)
 
 def get_verifiers_environment(
-    sandbox: BaseSandbox,
+    benchmax_env: BaseEnv,
     parser: Parser = Parser(),
     max_turns: int = 10,
     **kwargs
 ) -> MultiTurnEnv:
-    class SandboxVerifierEnv(MultiTurnEnv):
-        """MultiTurnEnv-Compatible adapter around *sandbox*."""
+    class BenchmaxVerifiersEnv(MultiTurnEnv):
+        """MultiTurnEnv-Compatible adapter around *benchmax_env*."""
 
         def __init__(self):
-            rubric = SandboxRubric(sandbox=sandbox, parser=parser)
-            self.sandbox = sandbox
+            rubric = BenchmaxEnvRubric(benchmax_env=benchmax_env, parser=parser)
+            self.benchmax_env = benchmax_env
 
             super().__init__(
-                system_prompt=sandbox.get_system_prompt(add_tool_defs=True),
+                system_prompt=benchmax_env.get_system_prompt(add_tool_defs=True),
                 parser=parser,
                 rubric=rubric,
                 max_turns=max_turns,
@@ -104,7 +104,7 @@ def get_verifiers_environment(
                 # Retrieve rollout id from context
                 rid = _CURRENT_ROLLOUT_ID.get() or "[DEFAULT_ROLLOUT_ID]"
                 print(f"Running tool {tool_name} with args: {args} in rollout {rid}")
-                result = sandbox.run_tool(rid, tool_name, **args)
+                result = benchmax_env.run_tool(rid, tool_name, **args)
 
                 result_str = str(result)
                 if 0 < max_chars < len(result_str):
@@ -127,9 +127,8 @@ def get_verifiers_environment(
             rid = kwargs.pop("rollout_id", None) or str(uuid.uuid4())
             token = _CURRENT_ROLLOUT_ID.set(rid)
             init_rollout_args = info.pop("init_rollout_args", {})
-            print(f"Starting rollout {rid} with args: {init_rollout_args} {kwargs}")
-            self.sandbox.init_rollout(rid, **init_rollout_args)
-            workspace = self.sandbox.get_rollout_workspace(rid) or None
+            self.benchmax_env.init_rollout(rid, **init_rollout_args)
+            workspace = self.benchmax_env.get_rollout_workspace(rid) or None
             try:
                 completion, state = super().rollout(client, model, prompt, answer, task, info, sampling_args, **kwargs)
                 state["workspace"] = workspace
@@ -199,4 +198,4 @@ def get_verifiers_environment(
             new_dataset = new_dataset.map(merge_info, with_indices=True)
             return new_dataset
     
-    return SandboxVerifierEnv()
+    return BenchmaxVerifiersEnv()

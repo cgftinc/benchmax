@@ -1,9 +1,9 @@
 import verifiers as vf
 
-from adapters.verifiers import get_verifiers_environment
+from adapters.verifiers_adapters import get_verifiers_environment, verifiers_dataset_mapper
 from datasets import load_dataset
 
-from envs.wikipedia.wiki_sandbox import WikipediaSandbox
+from envs.wikipedia.wiki_env import WikipediaEnv
 
 
 """
@@ -14,20 +14,20 @@ CUDA_VISIBLE_DEVICES=0 poetry run vf-vllm --model willcb/Qwen3-4B
 CUDA_VISIBLE_DEVICES=1,2,3 accelerate launch verifiers/examples/wiki_search.py
 """
 
+mcp_benchmax_env = WikipediaEnv()
 dataset = load_dataset("chiayewken/bamboogle", split="test")
 dataset = dataset.map(
-    lambda example: {"question": example["Question"], "answer": example["Answer"]}
+    lambda example: mcp_benchmax_env.dataset_preprocess(example),
 )
+dataset = verifiers_dataset_mapper(dataset)
 splits = dataset.train_test_split(test_size=0.1, seed=42)
 
 train_ds = splits["train"]
 
-mcp_sandbox = WikipediaSandbox()
-
 vf_env = get_verifiers_environment(
-    mcp_sandbox,
+    mcp_benchmax_env,
     max_concurrent=3,
-    max_turns=10,
+    max_turns=4,
     dataset=train_ds,
 )
 

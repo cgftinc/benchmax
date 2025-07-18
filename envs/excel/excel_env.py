@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import Any, List, Optional
 
-from envs.local_mcp_sandbox import LocalMCPSandbox
+from envs.local_mcp_env import LocalMCPEnv
 from envs.types import RewardFunction, StandardizedExample
 from envs.excel.excel_utils import compare_excel_cells, excel_to_str_repr
 
@@ -53,14 +53,14 @@ def reward_func(
         print(f"Error comparing spreadsheets for example {example_id}: {e}")
         return 0.0
 
-class ExcelSandbox(LocalMCPSandbox):
-    """Sandbox for spreadsheet manipulation tasks using MCP with Excel support"""
+class ExcelEnv(LocalMCPEnv):
+    """Environment for spreadsheet manipulation tasks using MCP with Excel support"""
 
     system_prompt: str = SYSTEM_PROMPT
     reward_funcs: List[RewardFunction] = [reward_func]
 
     def __init__(self, dataset_path: Optional[str] = None, **kwargs):
-        """ Initialize the ExcelSandbox with an optional dataset path.
+        """ Initialize the ExcelEnv with an optional dataset path.
         Args:
             dataset_path (Optional[str]): Path to the dataset directory containing spreadsheets.
 """

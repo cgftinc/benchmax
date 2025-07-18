@@ -5,8 +5,8 @@ from pathlib import Path
 from envs.types import RewardFunction, ToolDefinition, StandardizedExample
 from prompts.tools import render_tools_prompt
 
-class BaseSandbox(ABC):
-    """Base sandbox for tool execution and reward computation"""
+class BaseEnv(ABC):
+    """Base benchmax environment for tool execution and reward computation"""
     
     system_prompt: str = ""
     reward_funcs: List[RewardFunction] = []

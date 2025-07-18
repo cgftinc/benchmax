@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from envs.base_sandbox import BaseSandbox, ToolDefinition
+from envs.base_env import BaseEnv, ToolDefinition
 from envs.types import RewardFunction
 from envs.wikipedia.utils import APIKeyRotator, clean_html, safe_request
 
@@ -21,7 +21,7 @@ def reward_func(prompt: str, completion: str, ground_truth: str, workspace: Path
         completion:  The model’s generated text.
         ground_truth:  Expected answer to match (case-insensitive).
         workspace:  Path to the current workspace (unused).
-        **kwargs:  Catch-all for BaseSandbox signature compatibility.
+        **kwargs:  Catch-all for BaseEnv signature compatibility.
     Returns:
         1.0 if `ground_truth` (lowercased) exactly matches the unescaped
         text inside the first `<answer>` block, else 0.0.
@@ -133,8 +133,8 @@ def _make_wikipedia_tools(key_rotator: APIKeyRotator):
     return wikipedia_search_tool, wikipedia_get_article_tool
 
 
-class WikipediaSandbox(BaseSandbox):
-    """Wikipedia Sandbox environment with Wikipedia search & fetch tools."""
+class WikipediaEnv(BaseEnv):
+    """Wikipedia Benchmax environment with Wikipedia search & fetch tools."""
 
     system_prompt: str = SYSTEM_PROMPT
     reward_funcs: List[RewardFunction] = [reward_func]
@@ -216,10 +216,10 @@ class WikipediaSandbox(BaseSandbox):
 
 if __name__ == "__main__":
     # Example usage
-    sandbox = WikipediaSandbox()
-    print("MathSandbox initialized with MCP configuration.")
-    print("System prompt:", sandbox.system_prompt)
-    print("Available Tools: ", sandbox.list_tools())
+    wiki_env = WikipediaEnv()
+    print("Wiki Env initialized with MCP configuration.")
+    print("System prompt:", wiki_env.system_prompt)
+    print("Available Tools: ", wiki_env.list_tools())
     print("Run Wikipedia Search Tool:")
-    results = sandbox.run_tool("demo", "search_wikipedia", q="Python programming language", limit=5)
+    results = wiki_env.run_tool("demo", "search_wikipedia", q="Python programming language", limit=5)
     print(results)
