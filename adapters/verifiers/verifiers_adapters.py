@@ -9,14 +9,17 @@ from contextvars import ContextVar
 import uuid
 from typing import Any, Callable, Dict, List, Tuple, Union
 
-from verifiers.envs.multiturn_env import MultiTurnEnv
+from datasets import Dataset
+
 from verifiers import Parser, RewardFunc
+from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.rubrics import Rubric
 
 from envs.types import RewardFunction
 from prompts.tools import parse_hermes_tool_call
 
 _CURRENT_ROLLOUT_ID: ContextVar[str | None] = ContextVar("current_rollout_id", default=None)
+DEFAULT_ROLLOUT_ID = "[DEFAULT_ROLLOUT_ID]"
 
 def wrapped_reward_func(reward_func: RewardFunction) -> Callable:
     @wraps(reward_func)
@@ -102,7 +105,7 @@ def get_verifiers_environment(
                     return f"Error: 'arguments' for {tool_name} must be a JSON object."
 
                 # Retrieve rollout id from context
-                rid = _CURRENT_ROLLOUT_ID.get() or "[DEFAULT_ROLLOUT_ID]"
+                rid = _CURRENT_ROLLOUT_ID.get() or DEFAULT_ROLLOUT_ID
                 print(f"Running tool {tool_name} with args: {args} in rollout {rid}")
                 result = benchmax_env.run_tool(rid, tool_name, **args)
 
@@ -158,7 +161,8 @@ def get_verifiers_environment(
                     "role": "user",
                     "content": self.call_tool(tool_call),
                 }, {}
-            except Exception:
+            except Exception as e:
+                print(e)
                 pass
             return {'role': 'user', 'content': "Error: Tool command not found or invalid XML format. Please ensure correct formatting."}, {}
 
@@ -166,7 +170,7 @@ def get_verifiers_environment(
             self,
             dataset: Dataset,
             system_prompt: str | None = None,
-            few_shot: List[ChatMessage] | None = None,
+            few_shot: List[Dict[str, str]] | None = None,
             question_key: str = "question",
             answer_key: str = "answer"
         ) -> Dataset:
