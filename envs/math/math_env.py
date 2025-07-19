@@ -1,10 +1,10 @@
 from html import unescape
 from pathlib import Path
 import re
-from typing import List
+from typing import List, Any
 
 from envs.local_mcp_env import LocalMCPEnv
-from envs.types import RewardFunction
+from envs.types import RewardFunction, StandardizedExample
 
 SYSTEM_PROMPT = """Please use the tools provided to do any computation.
 Write your complete answer on the final line only, within the xml tags <answer></answer>.\n
@@ -15,7 +15,7 @@ MCP_CONFIG = """
     "mcpServers": {
       "server-name": {
         "command": "uvx",
-        "args": ["mcp_server_calculator"]
+        "args": ["mcp-server-calculator"]
       }
     }
 }
@@ -45,3 +45,10 @@ class MathEnv(LocalMCPEnv):
 
     def __init__(self):
         super().__init__(MCP_CONFIG)
+    
+    def dataset_preprocess(self, example: Any) -> StandardizedExample:
+        return StandardizedExample(
+            prompt=example.get("task", ""),
+            ground_truth=example.get("answer", ""),
+            init_rollout_args={}
+        )
