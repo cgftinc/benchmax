@@ -65,7 +65,7 @@ class ExcelEnv(LocalMCPEnv):
         """ Initialize the ExcelEnv with an optional dataset path.
         Args:
             dataset_path (Optional[str]): Path to the dataset directory containing spreadsheets.
-"""
+        """
         super().__init__(MCP_CONFIG, **kwargs)
         self.dataset_path = dataset_path
 
