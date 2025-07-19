@@ -12,6 +12,7 @@ from mcp.types import (
 )
 
 from envs.base_env import BaseEnv, ToolDefinition
+from envs.bounded_dict import BoundedDict
 
 class ClientWorkspacePair(NamedTuple):
     """A pair of FastMCP client and its associated workspace.
@@ -59,7 +60,7 @@ class LocalMCPEnv(BaseEnv):
         
         self._counter = 0  # Counter for workspace naming
         self._pre_warmed_pool: List[ClientWorkspacePair] = []  # Available pre-initialized pairs
-        self._active_clients: Dict[str, ClientWorkspacePair] = {}  # rollout_id -> pair mapping
+        self._active_clients: BoundedDict[str, ClientWorkspacePair] = BoundedDict(10000)  # rollout_id -> pair mapping
         self._tool_definitions: Optional[List[ToolDefinition]] = None
         
         # Set up event loop in a separate thread
@@ -188,8 +189,11 @@ class LocalMCPEnv(BaseEnv):
     def cleanup_rollout(self, rollout_id: str) -> None:
         """Clean up resources for a rollout"""
         if rollout_id in self._active_clients:
-            pair = self._active_clients.pop(rollout_id)
-            self._run_async(pair.client.close())
+            pair = self._active_clients.get(rollout_id)
+            if pair and pair.client:
+                self._run_async(pair.client.close())
+                # We keep the workspace for potential reuse
+                # to allow reward computation or other post-rollout tasks
 
     def get_rollout_workspace(self, rollout_id: str) -> Path:
         """Get dedicated workspace path for a rollout"""
