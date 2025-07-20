@@ -1,5 +1,5 @@
-import shutil
-from typing import Dict, List, Any, Optional, NamedTuple, Union, Callable
+from dataclasses import dataclass
+from typing import Dict, List, Any, Optional, Union, Callable
 from pathlib import Path
 import asyncio
 import json
@@ -11,17 +11,18 @@ from mcp.types import (
     CallToolRequestParams,TextContent, ImageContent, AudioContent, EmbeddedResource
 )
 
-from envs.base_env import BaseEnv, ToolDefinition
-from envs.bounded_dict import BoundedDict
+from benchmax.envs.base_env import BaseEnv, ToolDefinition
+from benchmax.envs.bounded_dict import BoundedDict
 
-class ClientWorkspacePair(NamedTuple):
+@dataclass
+class ClientWorkspacePair:
     """A pair of FastMCP client and its associated workspace.
     
     The client and workspace are kept together to ensure proper lifecycle management
     and to support workspace independence from rollout IDs. This allows pre-warming
     with arbitrary workspaces and matching them to rollouts later.
     """
-    client: FastMCPClient
+    client: FastMCPClient | None
     workspace: Path
 
 class LocalMCPEnv(BaseEnv):
@@ -79,11 +80,12 @@ class LocalMCPEnv(BaseEnv):
         """Clean up resources and stop the event loop."""
         # Close all active clients
         for rollout_id in list(self._active_clients.keys()):
-            self.cleanup_rollout(rollout_id)
+            self.cleanup_rollout(rollout_id, keep_workspace=False)
         
         # Close pre-warmed pool
         for pair in self._pre_warmed_pool:
-            self._run_async(pair.client.close())
+            if pair.client:
+                self._run_async(pair.client.close())
         self._pre_warmed_pool.clear()
         
         # Stop the event loop
@@ -101,6 +103,7 @@ class LocalMCPEnv(BaseEnv):
             # Use the first client in the pool to get tool definitions
             pair = self._pre_warmed_pool[0]
             try:
+                assert pair.client
                 tools = self._run_async(pair.client.list_tools())
                 self._tool_definitions = self._convert_and_filter_tools(tools)
                 return self._tool_definitions
@@ -111,6 +114,7 @@ class LocalMCPEnv(BaseEnv):
         # Else, create a new client to fetch tools and then add them to the pool
         try:
             pair = self._run_async(self._create_client_workspace())
+            assert pair.client
             tools = self._run_async(pair.client.list_tools())
             self._tool_definitions = self._convert_and_filter_tools(tools)
             # Add the client to the pre-warmed pool
@@ -126,6 +130,7 @@ class LocalMCPEnv(BaseEnv):
             self.init_rollout(rollout_id)
 
         pair = self._active_clients[rollout_id]
+        assert pair.client
         
         # Create tool request params
         params = CallToolRequestParams(
@@ -186,14 +191,33 @@ class LocalMCPEnv(BaseEnv):
         pair = self._run_async(self._get_client_workspace_pair())
         self._active_clients[rollout_id] = pair
 
-    def cleanup_rollout(self, rollout_id: str) -> None:
-        """Clean up resources for a rollout"""
+    def cleanup_rollout(self, rollout_id: str, keep_workspace=True) -> None:
+        """
+        Clean up resources associated with a specific rollout.
+
+        This method closes and releases the client associated with the given rollout ID.
+        If `keep_workspace` is True, the client's workspace is preserved for potential
+        post-rollout tasks such as reward computation. Otherwise, the entire client entry
+        is removed from the internal registry.
+
+        Args:
+            rollout_id (str): Unique identifier for the rollout whose resources are to be cleaned up.
+            keep_workspace (bool, optional): Whether to retain the workspace after closing the client.
+                Defaults to True.
+
+        Returns:
+            None
+        """
         if rollout_id in self._active_clients:
             pair = self._active_clients.get(rollout_id)
             if pair and pair.client:
                 self._run_async(pair.client.close())
+            if keep_workspace:
                 # We keep the workspace for potential reuse
                 # to allow reward computation or other post-rollout tasks
+                self._active_clients[rollout_id].client = None
+            else:
+                self._active_clients.pop(rollout_id)
 
     def get_rollout_workspace(self, rollout_id: str) -> Path:
         """Get dedicated workspace path for a rollout"""

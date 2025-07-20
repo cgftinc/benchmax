@@ -47,7 +47,7 @@ def safe_request(
     json: Any | None = None,
     max_retries: int = 3,
     retry_delay_seconds: float = 20,
-    rate_limit_seconds: float = 1,
+    rate_limit_seconds: float = 2.5,
 ) -> requests.Response:
     """HTTP request helper that retries on 429 using exponential back‑off."""
     time.sleep(rate_limit_seconds)  # Short delay to avoid hammering the server immediately

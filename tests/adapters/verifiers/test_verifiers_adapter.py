@@ -1,8 +1,8 @@
 import threading
 from datasets import Dataset
 
-from adapters.verifiers.verifiers_adapters import DEFAULT_ROLLOUT_ID, get_verifiers_environment, _CURRENT_ROLLOUT_ID, verifiers_dataset_mapper
-from envs.base_env import BaseEnv
+from benchmax.adapters.verifiers.verifiers_adapters import DEFAULT_ROLLOUT_ID, get_verifiers_environment, _CURRENT_ROLLOUT_ID, verifiers_dataset_mapper
+from benchmax.envs.base_env import BaseEnv
 
 class DummyEnv(BaseEnv):
     def __init__(self):

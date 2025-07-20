@@ -1,8 +1,6 @@
-import json
 from typing import Dict, Any, List
-import pytest
-from envs.base_env import ToolDefinition
-from prompts.tools import mcp2openai, parse_hermes_tool_call, render_tools_prompt
+from benchmax.envs.base_env import ToolDefinition
+from benchmax.prompts.tools import mcp2openai, parse_hermes_tool_call, render_tools_prompt
 
 def test_mcp2openai():
     # Test basic conversion

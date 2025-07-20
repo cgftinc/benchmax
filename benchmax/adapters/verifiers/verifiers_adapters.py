@@ -3,7 +3,6 @@ from functools import wraps
 
 from openai import OpenAI
 
-from envs.base_env import BaseEnv
 
 from contextvars import ContextVar
 import uuid
@@ -15,8 +14,9 @@ from verifiers import Parser, RewardFunc
 from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.rubrics import Rubric
 
-from envs.types import RewardFunction
-from prompts.tools import parse_hermes_tool_call
+from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.types import RewardFunction
+from benchmax.prompts.tools import parse_hermes_tool_call
 
 _CURRENT_ROLLOUT_ID: ContextVar[str | None] = ContextVar("current_rollout_id", default=None)
 DEFAULT_ROLLOUT_ID = "[DEFAULT_ROLLOUT_ID]"

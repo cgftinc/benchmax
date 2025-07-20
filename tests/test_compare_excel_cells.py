@@ -2,7 +2,7 @@ import pytest
 from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font
-from envs.excel.excel_utils import compare_excel_cells, evaluate_excel, excel_to_str_repr
+from benchmax.envs.excel.excel_utils import compare_excel_cells, evaluate_excel, excel_to_str_repr
 
 @pytest.fixture(scope="session")
 def setup_files():

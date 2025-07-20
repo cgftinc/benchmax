@@ -1,7 +1,7 @@
 import os
 import tempfile
 import shutil
-from custom_mcp.excel_code_runner_mcp import excel_to_str_repr, run_excel_code_impl
+from benchmax.custom_mcp.excel_code_runner_mcp import excel_to_str_repr, run_excel_code_impl
 
 TEST_XLSX = "tests/test_inputs/test1.xlsx"
 

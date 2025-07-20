@@ -4,14 +4,22 @@ version = "0.1.0"
 description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
 authors = ["cgft.io"]
 readme = "README.md"
+packages = [
+   { include = "benchmax" },
+]
 
 [tool.poetry.dependencies]
-python = ">=3.12,<3.13"
+python = ">=3.10,<3.13"
 fastmcp = "~2.10.0"
-verifiers = "^0.1.1"
+verl      = { git = "https://github.com/yourorg/verl.git", branch = "benchmax-integration", optional = true }
+verifiers = { version = "^0.1.1", optional = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.1"
+
+[tool.poetry.extras]
+verifiers = ["verifiers"]
+verl = ["verl"]
 
 [build-system]
 requires = ["poetry-core"]

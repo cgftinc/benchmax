@@ -3,9 +3,9 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from envs.base_env import BaseEnv, ToolDefinition
-from envs.types import RewardFunction
-from envs.wikipedia.utils import APIKeyRotator, clean_html, safe_request
+from benchmax.envs.base_env import BaseEnv, ToolDefinition
+from benchmax.envs.types import RewardFunction
+from benchmax.envs.wikipedia.utils import APIKeyRotator, clean_html, safe_request
 
 SYSTEM_PROMPT = """Please use the tools provided to get accurate, up-to-date information.
 Formulate each search query as a concise 1–2 word entity.

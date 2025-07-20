@@ -1,7 +1,7 @@
 import json
 from typing import Dict, List
 
-from envs.base_env import ToolDefinition
+from benchmax.envs.base_env import ToolDefinition
 
 def mcp2openai(mcp_tool: ToolDefinition) -> dict:
     """Convert a ToolDefinition to an OpenAI Function Call format."""

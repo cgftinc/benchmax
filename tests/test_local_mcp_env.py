@@ -3,8 +3,8 @@ import shutil
 from pathlib import Path
 import json
 from typing import Dict, List, Any, Optional, Generator
-from envs.local_mcp_env import LocalMCPEnv, ClientWorkspacePair
-from envs.base_env import ToolDefinition
+from benchmax.envs.local_mcp_env import LocalMCPEnv, ClientWorkspacePair
+from benchmax.envs.base_env import ToolDefinition
 
 @pytest.fixture
 def mcp_config(tmp_path: Path) -> Generator[Dict[str, Any], None, None]:
@@ -63,8 +63,8 @@ class TestLocalMCPEnv:
         
         # Test cleanup_rollout
         benchmax_env.cleanup_rollout(rollout_id)
-        assert rollout_id not in benchmax_env._active_clients
-        
+        assert benchmax_env._active_clients[rollout_id].client is None
+
         # Test error on invalid rollout
         with pytest.raises(ValueError):
             benchmax_env.get_rollout_workspace("invalid_rollout")
@@ -154,7 +154,7 @@ class TestLocalMCPEnv:
         assert result is not None
         
         benchmax_env.cleanup_rollout(rollout_id)
-        assert rollout_id not in benchmax_env._active_clients
+        assert benchmax_env._active_clients[rollout_id].client is None
 
     def test_shutdown(self, mcp_config: Dict[str, Any], tmp_path: Path) -> None:
         """Test proper cleanup during shutdown using real filesystem operations"""

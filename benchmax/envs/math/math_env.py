@@ -3,8 +3,8 @@ from pathlib import Path
 import re
 from typing import List, Any
 
-from envs.local_mcp_env import LocalMCPEnv
-from envs.types import RewardFunction, StandardizedExample
+from benchmax.envs.local_mcp_env import LocalMCPEnv
+from benchmax.envs.types import RewardFunction, StandardizedExample
 
 SYSTEM_PROMPT = """Please use the tools provided to do any computation.
 Write your complete answer on the final line only, within the xml tags <answer></answer>.\n

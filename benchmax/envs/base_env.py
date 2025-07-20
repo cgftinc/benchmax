@@ -1,9 +1,9 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 from pathlib import Path
 
-from envs.types import RewardFunction, ToolDefinition, StandardizedExample
-from prompts.tools import render_tools_prompt
+from benchmax.envs.types import RewardFunction, ToolDefinition, StandardizedExample
+from benchmax.prompts.tools import render_tools_prompt
 
 class BaseEnv(ABC):
     """Base benchmax environment for tool execution and reward computation"""
