@@ -2,7 +2,7 @@
   <img alt="Benchmax" src="./static/benchmax.png"  width="full">
 </picture>
 
-### Benchmax: Framework-Agnostic Reinforcement Learning Environments for LLM Fine-Tuning
+## Benchmax: Framework-Agnostic Reinforcement Learning Environments for LLM Fine-Tuning
 
 <div align="center">
 </div>
