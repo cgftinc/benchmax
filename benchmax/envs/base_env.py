@@ -1,6 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 from pathlib import Path
+
+from datasets import (
+    DatasetDict, Dataset, IterableDatasetDict,
+    IterableDataset,load_dataset
+)
 
 from benchmax.envs.types import RewardFunction, ToolDefinition, StandardizedExample
 from benchmax.prompts.tools import render_tools_prompt
@@ -24,6 +29,29 @@ class BaseEnv(ABC):
             "ground_truth": example.get("ground_truth", None),
             "init_rollout_args": example.get("init_rollout_args", {})
         }
+    @classmethod
+    def load_dataset(
+        cls, dataset_name: str, **kwargs
+    ) -> (
+        Tuple[DatasetDict | Dataset | IterableDatasetDict | IterableDataset, str | None]
+    ):
+        """
+        Download and prepare a dataset for use with this environment.
+
+        This method should handle retrieving the specified dataset (e.g., from HuggingFace, local files,
+        or a custom source), preprocessing or converting it into a compatible structure, and storing it
+        locally in a reusable format. The processed dataset should be suitable for downstream use with
+        `dataset_preprocess`, which standardizes individual examples into the expected format.
+
+        Args:
+            dataset_name (str): Identifier of the dataset to be loaded.
+            **kwargs: Additional dataset-specific arguments (e.g., split, filtering options, cache directory).
+
+        Returns:
+            Dataset: A dataset object (e.g., HuggingFace Dataset or similar) ready for processing.
+            str: Optional string pointing to where the dataset is stored locally
+        """
+        return load_dataset(dataset_name), None
 
     @abstractmethod
     def list_tools(self) -> List[ToolDefinition]:

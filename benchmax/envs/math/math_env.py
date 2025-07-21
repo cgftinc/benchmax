@@ -43,7 +43,7 @@ class MathEnv(LocalMCPEnv):
     system_prompt: str = SYSTEM_PROMPT
     reward_funcs: List[RewardFunction] = [reward_func]
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         super().__init__(MCP_CONFIG)
     
     def dataset_preprocess(self, example: Any) -> StandardizedExample:

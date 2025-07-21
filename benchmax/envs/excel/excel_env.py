@@ -1,7 +1,13 @@
+import json
 import os
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
+import tarfile
+import requests
 
+from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
+
+from benchmax.envs.excel.data_utils import download_and_extract
 from benchmax.envs.local_mcp_env import LocalMCPEnv
 from benchmax.envs.types import RewardFunction, StandardizedExample
 from benchmax.envs.excel.excel_utils import compare_excel_cells, excel_to_str_repr
@@ -27,6 +33,7 @@ MCP_CONFIG = f"""
     }}
 }}
 """
+DEFAULT_DATA_PATH = os.path.expanduser("~/.cache/excel_data")
 
 def reward_func(
     prompt: str, completion: str, ground_truth: str, workspace: Path, **kwargs
@@ -66,6 +73,29 @@ class ExcelEnv(LocalMCPEnv):
         """
         super().__init__(MCP_CONFIG, **kwargs)
         self.dataset_path = dataset_path
+
+    @classmethod
+    def load_dataset(
+        cls, dataset_name: str = "spreadsheetbench",
+        data_output_path: str = DEFAULT_DATA_PATH,
+        **kwargs
+    ) -> (
+        Tuple[DatasetDict | Dataset | IterableDatasetDict | IterableDataset, str | None]
+    ):
+        if dataset_name == "spreadsheetbench":
+            json_path = os.path.join(data_output_path, "dataset.json")
+            if not os.path.exists(json_path):
+                download_and_extract(
+                    "https://github.com/RUCKBReasoning/SpreadsheetBench/raw/refs/heads/main/data/all_data_912.tar.gz",
+                    data_output_path
+                )
+            with open(json_path, "r") as f:
+                data = json.load(f)
+                for example in data:
+                    example["id"] = str(example["id"])  # Ensure IDs are strings
+            dataset = Dataset.from_list(data)
+            return dataset, data_output_path
+        return super().load_dataset(dataset_name, **kwargs)
 
     def dataset_preprocess(self, example: Any) -> StandardizedExample:
         # convert dataset json into standardized example
