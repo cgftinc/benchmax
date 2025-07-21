@@ -761,7 +761,7 @@ def get_agents_with_min_cases(
     except Exception as e:
         return f"Error: An unexpected error occurred - {str(e)}"
 
-# TODO: Needs further testing and validation
+# TODO: Only used in CRMArena, not CRMArenaPro
 # @mcp.tool
 # def get_email_messages_by_case_id(
 #     case_id: Annotated[str, Field(description="The ID of the case to retrieve email messages for")]
