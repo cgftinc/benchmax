@@ -17,8 +17,6 @@ You need to solve the given spreadsheet manipulation question, which contains si
 - output_path: You need to generate the modified spreadsheet file in this new path.
 """
 
-from pathlib import Path
-
 MCP_CONFIG = f"""
 {{
     "mcpServers": {{
