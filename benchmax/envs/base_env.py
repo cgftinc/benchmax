@@ -51,7 +51,7 @@ class BaseEnv(ABC):
             Dataset: A dataset object (e.g., HuggingFace Dataset or similar) ready for processing.
             str: Optional string pointing to where the dataset is stored locally
         """
-        return load_dataset(dataset_name), None
+        return load_dataset(dataset_name, **kwargs), None
 
     @abstractmethod
     def list_tools(self) -> List[ToolDefinition]:
