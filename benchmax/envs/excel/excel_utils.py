@@ -4,7 +4,6 @@ import shutil
 import subprocess
 import platform
 import tempfile
-import xlwings
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 import datetime
@@ -17,6 +16,7 @@ WHITE_LIKE_COLORS = [
 ]
 
 def evaluate_excel(excel_path: str):
+    import xlwings
     """
     Evaluate Python code that manipulates an Excel file using xlwings.
     """

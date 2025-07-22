@@ -7,7 +7,6 @@ import subprocess
 import os
 import sys
 from openpyxl import load_workbook
-import xlwings
 
 mcp = FastMCP(
     name="ExcelCodeRunner",
@@ -24,6 +23,7 @@ def evaluate_excel(excel_path: str):
     """
     Evaluate Python code that manipulates an Excel file using xlwings.
     """
+    import xlwings
     # Use LibreOffice for Linux
     if platform.system() == "Linux":
         evaluate_excel_libre(excel_path)
