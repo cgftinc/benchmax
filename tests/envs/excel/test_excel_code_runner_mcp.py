@@ -1,9 +1,9 @@
 import os
 import tempfile
 import shutil
-from benchmax.custom_mcp.excel_code_runner_mcp import excel_to_str_repr, run_excel_code_impl
+from benchmax.envs.excel.excel_code_runner_mcp import excel_to_str_repr, run_excel_code_impl
 
-TEST_XLSX = "tests/test_inputs/test1.xlsx"
+TEST_XLSX = "tests/envs/excel/test_inputs/test1.xlsx"
 
 def test_excel_to_str_repr_basic():
     output = excel_to_str_repr(TEST_XLSX)

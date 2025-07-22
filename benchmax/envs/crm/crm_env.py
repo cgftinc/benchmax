@@ -211,7 +211,7 @@ def get_mcp_config(config_type: str = "b2b") -> str:
     "mcpServers": {{
       "server-name": {{
         "command": "python",
-        "args": ["{Path(__file__).resolve().parents[2]}/custom_mcp/salesforce_mcp.py"],
+        "args": ["{Path(__file__).resolve().parents[0]}/salesforce_mcp.py"],
         "env": {{
             "SALESFORCE_USERNAME": "{config['username']}",
             "SALESFORCE_PASSWORD": "{config['password']}",

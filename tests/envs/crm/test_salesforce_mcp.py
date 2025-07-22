@@ -5,7 +5,7 @@ from pytest import mark
 import pytest_asyncio
 from datetime import datetime
 
-from benchmax.custom_mcp.salesforce_mcp import (
+from benchmax.envs.crm.salesforce_mcp import (
     mcp,
     set_salesforce_connector,
 )

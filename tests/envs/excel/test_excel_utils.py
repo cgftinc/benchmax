@@ -2,13 +2,13 @@ import pytest
 from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font
-from benchmax.envs.excel.excel_utils import compare_excel_cells, evaluate_excel, excel_to_str_repr
+from benchmax.envs.excel.excel_utils import compare_excel_cells, evaluate_excel
 
 @pytest.fixture(scope="session")
 def setup_files():
-    base_excel_path = Path("tests/test_inputs/test1.xlsx")
-    gt_path = Path("tests/test_inputs/test1_gt.xlsx")
-    output_path = Path("tests/test_inputs/test1_output.xlsx")
+    base_excel_path = Path("tests/envs/excel/test_inputs/test1.xlsx")
+    gt_path = Path("tests/envs/excel/test_inputs/test1_gt.xlsx")
+    output_path = Path("tests/envs/excel/test_inputs/test1_output.xlsx")
 
     # Create ground truth file
     wb_gt = load_workbook(base_excel_path)

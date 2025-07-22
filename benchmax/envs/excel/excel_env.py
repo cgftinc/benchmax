@@ -28,7 +28,7 @@ MCP_CONFIG = f"""
     "mcpServers": {{
       "server-name": {{
         "command": "python",
-        "args": ["{Path(__file__).resolve().parents[2]}/custom_mcp/excel_code_runner_mcp.py"]
+        "args": ["{Path(__file__).resolve().parents[0]}/excel_code_runner_mcp.py"]
       }}
     }}
 }}
