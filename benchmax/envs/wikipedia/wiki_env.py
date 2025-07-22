@@ -33,7 +33,6 @@ def reward_func(prompt: str, completion: str, ground_truth: str, workspace: Path
 
     # Unescape any XML entities (&amp; → &, etc.) and normalise whitespace.
     answer_text = unescape(m.group(1)).strip().lower()
-    print(answer_text, ground_truth)
     return float(ground_truth.lower() == answer_text)
 
 def _make_wikipedia_tools(key_rotator: APIKeyRotator):
