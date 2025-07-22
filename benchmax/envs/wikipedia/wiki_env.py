@@ -4,12 +4,12 @@ import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from benchmax.envs.base_env import BaseEnv, ToolDefinition
-from benchmax.envs.types import RewardFunction
+from benchmax.envs.types import RewardFunction, StandardizedExample
 from benchmax.envs.wikipedia.utils import APIKeyRotator, clean_html, safe_request
 
 SYSTEM_PROMPT = """Please use the tools provided to get accurate, up-to-date information.
 Formulate each search query as a concise 1–2 word entity.
-Write your complete answer on the final line only, within the xml tags <answer></answer>.\n
+Write your complete answer on the final line only as a concise entity, within the xml tags <answer></answer>.\n
 """
 
 def reward_func(prompt: str, completion: str, ground_truth: str, workspace: Path, **kwargs) -> float:
@@ -26,6 +26,7 @@ def reward_func(prompt: str, completion: str, ground_truth: str, workspace: Path
         1.0 if `ground_truth` (lowercased) exactly matches the unescaped
         text inside the first `<answer>` block, else 0.0.
     """
+    assert ground_truth is not None
     # Grab only the text inside the first <answer> … </answer> pair (case-insensitive).
     m = re.search(r'<answer>(.*?)</answer>', completion, flags=re.IGNORECASE | re.DOTALL)
     if not m:
@@ -203,6 +204,13 @@ class WikipediaEnv(BaseEnv):
         """
         _, tool_function = self.tools[tool_name]
         return tool_function(**tool_args)
+
+    def dataset_preprocess(self, example: Any) -> StandardizedExample:
+        return {
+            "prompt": example.get("Question", ""),
+            "ground_truth": example.get("Answer", None),
+            "init_rollout_args": {}
+        }
 
     def init_rollout(self, rollout_id: str, **rollout_args) -> None:
         return super().init_rollout(rollout_id, **rollout_args)
