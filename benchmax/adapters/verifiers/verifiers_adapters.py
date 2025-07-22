@@ -177,11 +177,12 @@ def get_verifiers_environment(
             """Format a dataset for the benchmax environment."""
 
             # Capture the original examples as a list of dicts
-            original_examples = list(dataset)
+            mapped_dataset = verifiers_dataset_mapper(dataset)
+            original_examples = list(mapped_dataset)
 
             # Apply the transformation
             new_dataset = super().format_dataset(
-                dataset,
+                mapped_dataset,
                 system_prompt=system_prompt,
                 few_shot=few_shot,
                 question_key=question_key,
