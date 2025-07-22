@@ -2,8 +2,6 @@ import json
 import os
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
-import tarfile
-import requests
 
 from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 
