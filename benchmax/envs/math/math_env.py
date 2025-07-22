@@ -35,7 +35,7 @@ def reward_func(prompt: str, completion: str, ground_truth: str, workspace: Path
 
     # Unescape any XML entities (&amp; → &, etc.) and normalise whitespace.
     answer_text = unescape(m.group(1)).strip().lower()
-    return float(ground_truth.lower() == answer_text)
+    return float(float(ground_truth.lower()) == float(answer_text))
 
 class MathEnv(LocalMCPEnv):
     """Environment for math problems, using local MCP tools."""
