@@ -1,3 +1,4 @@
+from html import unescape
 from pathlib import Path
 import re
 from typing import Any, List, Optional
@@ -14,29 +15,26 @@ You are an expert in Salesforce and you have access to a Salesforce instance.
 - You should ALWAYS make ONLY ONE tool call at a time. If you want to submit your final answer, just respond with the answer without tool call. If not, you should call some other tool.
 - Always end by respond with ONLY the answer, NO full sentence or any explanation.
 - If your answer is empty that is there are no records found matching the requirements mentioned, just return 'None' as the response.
+
+Write your complete answer on the final line, within the xml tags <answer></answer>. If there are multiple answers, use comma as a delimiter.
+e.g.
+For Case IDs, final answer should look like <answer>0XA124XDF</answer>. If there are multiple, it could look like <answer>0XA124XDF, 001XX000003GXXX</answer>
+For Months, it could look like <answer>May,July</answer>
+If nothing matches, output <answer>None</answer>
 """
 
 
-def parse_answers(proposed_answer: str, task_name: str) -> List[str]:
+def parse_answers(proposed_answer: str) -> str:
     """
-    Parse the proposed answer based on the task type.
-    This is a placeholder - implement according to your specific parsing logic.
+    Parse the proposed answer.
     """
-    # Basic implementation - you may need to customize this based on your task requirements
-    if not proposed_answer or proposed_answer.strip().lower() == "none":
-        return ["None"]
-    
-    # Split by common delimiters and clean up
-    answers = []
-    for delimiter in [',', ';', '\n']:
-        if delimiter in proposed_answer:
-            answers = [ans.strip().strip('"').strip("'") for ans in proposed_answer.split(delimiter)]
-            break
-    
-    if not answers:
-        answers = [proposed_answer.strip().strip('"').strip("'")]
-    
-    return [ans for ans in answers if ans]  # Remove empty strings
+    m = re.search(r'<answer>(.*?)</answer>', proposed_answer, flags=re.IGNORECASE | re.DOTALL)
+    if not m:
+        proposed_answer = ""
+    else:
+        # Unescape any XML entities (&amp; → &, etc.) and normalise whitespace.
+        proposed_answer = unescape(m.group(1)).strip().lower()
+    return proposed_answer
 
 
 def get_all_metrics(proposed_answer: str, ground_truth: str) -> float:
@@ -110,7 +108,7 @@ def reward_func(
         ground_truth = ["None"]
 
     proposed_answer = completion.strip() if completion else ""
-    
+    proposed_answer = parse_answers(proposed_answer)
     if reward_metric == "exact_match":
         # Parse and normalize the completion text
         completion_tokens = parse_text_to_tokens(proposed_answer)
@@ -230,12 +228,8 @@ class CRMEnv(LocalMCPEnv):
     reward_funcs: List[RewardFunction] = [reward_func]
 
     def __init__(self, dataset_path: Optional[str] = None, **kwargs):
-        """ Initialize the CRMEnv with an optional dataset path.
-        Args:
-            dataset_path (Optional[str]): Path to the dataset directory containing spreadsheets.
-        """
+        """ Initialize CRMEnv."""
         super().__init__(get_mcp_config("b2b"), **kwargs)
-        self.dataset_path = dataset_path
 
     def dataset_preprocess(self, example: Any) -> StandardizedExample:
         # convert dataset example into standardized example
@@ -249,7 +243,6 @@ class CRMEnv(LocalMCPEnv):
         if metadata and "required" in metadata:
             required_metadata = metadata["required"]
             prompt = f"{persona}\n{task}\n{required_metadata}\n{query}"
-
         return {
             "prompt": prompt,
             "ground_truth": answer,
