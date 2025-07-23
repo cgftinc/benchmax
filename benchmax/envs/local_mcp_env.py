@@ -260,7 +260,6 @@ class LocalMCPEnv(BaseEnv):
     def _prepare_config(self, workspace: Path) -> Dict[str, Any]:
         """Create config with workspace for given rollout"""
         config = self._config.copy()
-        print(f"Preparing config for workspace: {workspace} {config}")
         if "mcpServers" in config:
             for server in config["mcpServers"].values():
                 server["cwd"] = str(workspace)
