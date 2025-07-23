@@ -81,7 +81,8 @@ class ExcelEnv(LocalMCPEnv):
         Tuple[DatasetDict | Dataset | IterableDatasetDict | IterableDataset, str | None]
     ):
         if dataset_name == "spreadsheetbench":
-            json_path = os.path.join(data_output_path, "dataset.json")
+            folder_path = os.path.join(data_output_path, "all_data_912")
+            json_path = os.path.join(folder_path, "dataset.json")
             if not os.path.exists(json_path):
                 download_and_extract(
                     "https://github.com/RUCKBReasoning/SpreadsheetBench/raw/refs/heads/main/data/all_data_912.tar.gz",
@@ -92,7 +93,7 @@ class ExcelEnv(LocalMCPEnv):
                 for example in data:
                     example["id"] = str(example["id"])  # Ensure IDs are strings
             dataset = Dataset.from_list(data)
-            return dataset, data_output_path
+            return dataset, folder_path
         return super().load_dataset(dataset_name, **kwargs)
 
     def dataset_preprocess(self, example: Any) -> StandardizedExample:
