@@ -15,6 +15,7 @@ You are an expert in Salesforce and you have access to a Salesforce instance.
 - You should ALWAYS make ONLY ONE tool call at a time. If you want to submit your final answer, just respond with the answer without tool call. If not, you should call some other tool.
 - Always end by respond with ONLY the answer, NO full sentence or any explanation.
 - If your answer is empty that is there are no records found matching the requirements mentioned, just return 'None' as the response.
+- You should be able to get to an answer within 2-3 tool calls, so don't overthink.
 
 Write your complete answer on the final line, within the xml tags <answer></answer>. If there are multiple answers, use comma as a delimiter.
 e.g.
@@ -109,6 +110,7 @@ def reward_func(
 
     proposed_answer = completion.strip() if completion else ""
     proposed_answer = parse_answers(proposed_answer)
+    print(proposed_answer, ground_truth)
     if reward_metric == "exact_match":
         # Parse and normalize the completion text
         completion_tokens = parse_text_to_tokens(proposed_answer)
