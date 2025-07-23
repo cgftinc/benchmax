@@ -925,4 +925,4 @@ if __name__ == "__main__":
         logger.error(f"Failed to connect to Salesforce: {str(e)}")
         raise
 
-    mcp.run()
+    mcp.run(show_banner=False)

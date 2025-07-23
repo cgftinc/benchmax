@@ -176,6 +176,4 @@ def run_excel_code(
     return run_excel_code_impl(python_code, output_excel_path)
 
 if __name__ == "__main__":
-    mcp.run()
-    # s = excel_to_str_repr(str("/data/sample_data_200/spreadsheet/110-6/1_110-6_answer.xlsx"), evaluate_formulas=True)
-    # print(s)
+    mcp.run(show_banner=False)
