@@ -129,7 +129,7 @@ def get_verifiers_environment(
         ):
             rid = kwargs.pop("rollout_id", None) or str(uuid.uuid4())
             token = _CURRENT_ROLLOUT_ID.set(rid)
-            init_rollout_args = info.pop("init_rollout_args", {})
+            init_rollout_args = info.pop("init_rollout_args", {}) or {}
             self.benchmax_env.init_rollout(rid, **init_rollout_args)
             workspace = self.benchmax_env.get_rollout_workspace(rid) or None
             try:
