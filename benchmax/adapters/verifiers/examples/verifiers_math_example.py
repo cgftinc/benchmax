@@ -34,7 +34,7 @@ model, tokenizer = vf.get_model_and_tokenizer(model_name)
 run_name = "math-grpo" + model_name.split("/")[-1].lower()
 
 training_args=vf.grpo_defaults(run_name=run_name)
-training_args.per_device_train_batch_size=2
+training_args.per_device_train_batch_size=6
 training_args.num_generations=12
 training_args.gradient_accumulation_steps=2
 training_args.num_iterations=1
