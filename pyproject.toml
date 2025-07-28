@@ -13,7 +13,7 @@ python = ">=3.11,<3.13"
 fastmcp = "~2.10.0"
 
 verl-cgft-fork = { version = "0.4.1.dev1", optional = true }
-sglang = { version = "0.4.9", optional = true }
+sglang = { version = "0.4.9", optional = true, extras = ["all"] }
 verifiers = { version = "^0.1.1", optional = true, extras = ["train"]  }
 
 openpyxl = { version = "3.1.5", optional = true }
