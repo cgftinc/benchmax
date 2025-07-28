@@ -2,7 +2,7 @@
   <img alt="Benchmax" src="./static/benchmax.png"  width="full">
 </picture>
 
-## benchmax: Framework-Agnostic Reinforcement Learning Environments for LLM Fine-Tuning
+## benchmax: Framework-Agnostic RL Environments for LLM Fine-Tuning
 *A lightweight, training-framework agnostic library for defining, running, and parallelizing environments, to fine-tune OSS LLMs with reinforcement learning.*
 <div align="center">
 </div>
