@@ -1,7 +1,8 @@
 
 import requests
 from typing import Any, Dict, List
-from envs.types import ToolDefinition
+from dataclasses import asdict
+from benchmax.envs.types import ToolDefinition
 
 def get_functions(braintrust_api_key, braintrust_project_id) -> Dict:
     ''' Returns a function dictionary that contains tools, prompts, and scorers from function API call
@@ -20,7 +21,7 @@ def get_functions(braintrust_api_key, braintrust_project_id) -> Dict:
         tools, prompts, scorers = {}, {}, {}
         for object in data["objects"]:
             if object["function_type"] == "tool": 
-                tool_definition = ToolDefinition(
+                tool_definition = asdict(ToolDefinition(
                     name=object["name"],
                     description=object["description"],
                     input_schema={
@@ -28,7 +29,7 @@ def get_functions(braintrust_api_key, braintrust_project_id) -> Dict:
                         "properties": object["function_schema"]["parameters"]["properties"],
                         "required": object["function_schema"]["parameters"]["required"]
                     }
-                ).to_dict() # Converted to dict to allow JSON serializing. 
+                )) # Converted to dict to allow JSON serializing. 
                 tool_callable = object["function_data"]["data"]["preview"]
                 tools[object["id"]] = (tool_definition, tool_callable)
             elif object["function_type"] == "scorer":

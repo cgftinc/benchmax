@@ -2,13 +2,13 @@ import json
 from dotenv import load_dotenv
 import os
 from typing import Any, List, Optional, Tuple
-from envs.base_env import BaseEnv
-from envs.types import ToolDefinition, RewardFunction, StandardizedExample
+from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.types import ToolDefinition, RewardFunction, StandardizedExample
 from datasets import (
     DatasetDict, Dataset, IterableDatasetDict,
     IterableDataset,load_dataset
 )
-import envs.braintrust.braintrust_utils as braintrust_utils
+import benchmax.envs.braintrust.braintrust_utils as braintrust_utils
 from pathlib import Path
 import pprint
 
