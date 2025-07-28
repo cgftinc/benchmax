@@ -8,16 +8,18 @@ set -x
 ulimit -n 65535
 
 PROJECT_DIR="$(pwd)"
-CONFIG_PATH="$PROJECT_DIR/benchmax/adapters/verl/examples/config"
+CONFIG_PATH="$PROJECT_DIR/examples/verl/config"
 CONFIG_NAME="benchmax_multiturn_grpo"
 
 
-TRAIN_DATA="~/data/math/train.parquet"
-VAL_DATA="~/data/math/test.parquet"
+TRAIN_DATA=$(realpath ~/data/math/train.parquet)
+VAL_DATA=$(realpath ~/data/math/test.parquet)
 
 TOOL_CONFIG="$CONFIG_PATH/tool_config/benchmax_math_tool_config.yaml"
 BENCHMAX_CLASS_NAME="benchmax.envs.math.math_env.MathEnv"
 
+echo "$TRAIN_DATA"
+echo "$VAL_DATA"
 PYTHONPATH="$PYTHONPATH:$(pwd)" python -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
     --config-name="$CONFIG_NAME" \
@@ -55,9 +57,9 @@ PYTHONPATH="$PYTHONPATH:$(pwd)" python -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.val_before_train=False \
     trainer.logger=['console','wandb'] \
-    trainer.project_name='wiki_search' \
-    trainer.experiment_name='qwen2.5-3b-instruct_wiki_search' \
-    trainer.n_gpus_per_node=4 \
+    trainer.project_name='math_benchmax' \
+    trainer.experiment_name='qwen2.5-3b-instruct_math_benchmax' \
+    trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
     trainer.test_freq=50 \

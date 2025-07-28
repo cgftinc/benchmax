@@ -8,6 +8,9 @@ This is based off the [SpreadsheetBench Benchmark](https://spreadsheetbench.gith
 
 **Important**: Before using this environment, ensure you have the appropriate spreadsheet application installed:
 - **Linux**: LibreOffice must be installed
+```bash
+sudo apt install libreoffice
+```
 - **Windows/macOS**: Microsoft Excel must be installed
 
 ## Installation
