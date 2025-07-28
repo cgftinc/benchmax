@@ -2,19 +2,53 @@ import json
 from dotenv import load_dotenv
 import os
 from typing import Any, List, Optional, Tuple
+from pathlib import Path
+
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.types import ToolDefinition, RewardFunction, StandardizedExample
+import benchmax.envs.braintrust.braintrust_utils as braintrust_utils
+
 from datasets import (
     DatasetDict, Dataset, IterableDatasetDict,
-    IterableDataset,load_dataset
+    IterableDataset, load_dataset
 )
-import benchmax.envs.braintrust.braintrust_utils as braintrust_utils
-from pathlib import Path
-import pprint
 
 load_dotenv()  # load variables from .env
 
 API_KEY = os.environ.get("API_KEY")
+
+def replace_template_variables(prompt_template: str, **variables) -> str:
+    """
+    Replace template variables in a prompt string with provided values.
+    
+    Args:
+        prompt_template: String containing template variables like {{input}}, {{metadata}}, etc.
+        **variables: Keyword arguments where keys match template variable names
+        
+    Returns:
+        String with template variables replaced with actual values
+        
+    Examples:
+        # Single variable
+        replace_template_variables("Hello {{input}}!", input="world") 
+        # Returns: "Hello world!"
+        
+        # Multiple variables
+        replace_template_variables(
+            "What is the recommend action in this scenario {{input}} on this street {{metadata}}?", 
+            input="Hand: AhQs, Position: CO", 
+            metadata="flop"
+        )
+        # Returns: "What is the recommend action in this scenario Hand: AhQs, Position: CO on this street flop?"
+    """
+    result = prompt_template
+    
+    for var_name, var_value in variables.items():
+        placeholder = f"{{{{{var_name}}}}}"
+        if placeholder in result:
+            result = result.replace(placeholder, str(var_value))
+    
+    return result
 
 # Given an API key and project id, pull the project data(tools, scorers, datasets, etc).
 class BraintrustSandbox(BaseEnv):
@@ -27,12 +61,8 @@ class BraintrustSandbox(BaseEnv):
         self.project_data = braintrust_utils.get_project_data(self.braintrust_api_key, self.braintrust_project_id)
         self.project_name = self.project_data["objects"][0]["name"]
 
-        # Collect Dataset IDs and Dataset Data
+        # Collect Dataset IDs 
         self.dataset_ids = braintrust_utils.get_dataset_ids(self.braintrust_api_key, self.braintrust_project_id)
-        self.datasets = {}
-        for id in self.dataset_ids.keys():
-            dataset = braintrust_utils.get_dataset_with_id(self.braintrust_api_key, id)
-            self.datasets[id] = dataset
 
         # Collect Functions(tools, prompts, and scorers)
         self.functions = braintrust_utils.get_functions(self.braintrust_api_key, self.braintrust_project_id)
@@ -47,18 +77,25 @@ class BraintrustSandbox(BaseEnv):
         self.reward_funcs: List[RewardFunction] = [self.reward_func]
 
     # Override this method if your example does not match the default structure
-    def dataset_preprocess(self, example: Any) -> StandardizedExample:
+    def dataset_preprocess(self, example: Any, prompt: str) -> StandardizedExample:
         """
         Preprocess a single dataset example into a dict with keys:
         - "prompt": str
         - "ground_truth": Any
         - "init_rollout_args": Optional[Dict[str, Any]]
         """
-        prompt = example.pop("prompt", "")
+        if "prompt" in example and "input" in example:
+            input = example["prompt"]["input"]
+        else:
+            raise Exception("Error with data preprocessing.")
+        
+        # Replace template variables in the prompt -- can support multiple template variables to fit dataset
+        processed_prompt = replace_template_variables(prompt, input=input)
+        
         ground_truth = example.pop("ground_truth", "")
         init_rollout_args = example.pop("init_rollout_args", "")
         return StandardizedExample(
-            prompt=prompt,
+            prompt=processed_prompt,
             ground_truth=ground_truth,
             init_rollout_args=init_rollout_args,
             **example,
@@ -66,7 +103,7 @@ class BraintrustSandbox(BaseEnv):
 
     @classmethod
     def load_dataset(
-        cls, dataset_name: str, **kwargs
+        cls, dataset_name: str, braintrust_api_key: str, braintrust_dataset_id: str, **kwargs
     ) -> (
         Tuple[DatasetDict | Dataset | IterableDatasetDict | IterableDataset, str | None]
     ):
@@ -86,7 +123,9 @@ class BraintrustSandbox(BaseEnv):
             Dataset: A dataset object (e.g., HuggingFace Dataset or similar) ready for processing.
             str: Optional string pointing to where the dataset is stored locally
         """
-        return super().load_dataset(dataset_name, **kwargs), None
+        dataset = braintrust_utils.get_dataset_with_id(braintrust_api_key, braintrust_dataset_id)
+        dataset = Dataset.from_list(dataset)
+        return dataset, None
 
     def reward_func(self, prompt: str, completion: str, ground_truth: str, **kwargs) -> float:
         """ If given scorer id, run scorer. Otherwise, use ExactMatch to score.
@@ -126,6 +165,12 @@ class BraintrustSandbox(BaseEnv):
         func = namespace["handler"]
         result = func(**scorer_args)
         return result
+
+    def list_dataset_ids(self) -> List[str]:
+        """List of dataset names and corresponding id"""
+        return [
+            (self.dataset_ids[id], id) for id in self.dataset_ids 
+        ]
 
     def list_tools(self) -> List[ToolDefinition]:
         """List of available tools with id."""
