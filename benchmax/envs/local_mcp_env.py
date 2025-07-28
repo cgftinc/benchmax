@@ -4,6 +4,8 @@ from pathlib import Path
 import asyncio
 import json
 from threading import Thread
+import uuid
+
 from fastmcp import Client as FastMCPClient
 from fastmcp.exceptions import ToolError
 from mcp import Tool
@@ -58,8 +60,7 @@ class LocalMCPEnv(BaseEnv):
         self._output_parsers: Dict[str, Callable[[str], Any]] = {}
         self._workspace_dir = workspace_dir or Path("workspaces")
         self._workspace_dir.mkdir(parents=True, exist_ok=True)
-        
-        self._counter = 0  # Counter for workspace naming
+
         self._pre_warmed_pool: List[ClientWorkspacePair] = []  # Available pre-initialized pairs
         self._active_clients: BoundedDict[str, ClientWorkspacePair] = BoundedDict(10000)  # rollout_id -> pair mapping
         self._tool_definitions: Optional[List[ToolDefinition]] = None
@@ -219,12 +220,14 @@ class LocalMCPEnv(BaseEnv):
             else:
                 self._active_clients.pop(rollout_id)
 
-    def get_rollout_workspace(self, rollout_id: str) -> Path:
+    def get_rollout_workspace(self, rollout_id: str, strict_check: bool = False) -> Path:
         """Get dedicated workspace path for a rollout"""
         if rollout_id in self._active_clients:
             return self._active_clients[rollout_id].workspace
-        else:
+        if strict_check:
             raise ValueError(f"No active client found for rollout {rollout_id}")
+        else:
+            return Path()
 
     # ---- Private Helper Methods ----
 
@@ -267,8 +270,7 @@ class LocalMCPEnv(BaseEnv):
 
     async def _create_client_workspace(self) -> ClientWorkspacePair:
         """Create a new FastMCP client with a unique workspace"""
-        workspace = Path(self._workspace_dir) / f"{self._counter}"
-        self._counter += 1
+        workspace = self._workspace_dir / uuid.uuid4().hex
         workspace.mkdir(parents=True, exist_ok=True)
         config = self._prepare_config(workspace)
 
