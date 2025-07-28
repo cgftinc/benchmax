@@ -88,9 +88,14 @@ class BraintrustSandbox(BaseEnv):
             input = example["prompt"]["input"]
         else:
             raise Exception("Error with data preprocessing.")
+
+        if "prompt" in example and "street" in example:
+            street = example["prompt"]["street"]
+        else:
+            raise Exception("Error with data preprocessing.")
         
         # Replace template variables in the prompt -- can support multiple template variables to fit dataset
-        processed_prompt = replace_template_variables(prompt, input=input)
+        processed_prompt = replace_template_variables(prompt, input=input, metadata=street)
         
         ground_truth = example.pop("ground_truth", "")
         init_rollout_args = example.pop("init_rollout_args", "")
