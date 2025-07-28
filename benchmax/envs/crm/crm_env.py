@@ -245,8 +245,9 @@ class CRMEnv(LocalMCPEnv):
         if metadata and "required" in metadata:
             required_metadata = metadata["required"]
             prompt = f"{persona}\n{task}\n{required_metadata}\n{query}"
-        return {
-            "prompt": prompt,
-            "ground_truth": answer,
-            "init_rollout_args": None
-        }
+
+        return StandardizedExample(
+            prompt=prompt,
+            ground_truth=answer,
+            init_rollout_args={}
+        )

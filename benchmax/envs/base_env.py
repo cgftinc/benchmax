@@ -24,11 +24,16 @@ class BaseEnv(ABC):
         - "ground_truth": Any
         - "init_rollout_args": Optional[Dict[str, Any]]
         """
-        return {
-            "prompt": example.get("prompt", ""),
-            "ground_truth": example.get("ground_truth", None),
-            "init_rollout_args": example.get("init_rollout_args", {})
-        }
+        prompt = example.pop("prompt", "")
+        ground_truth = example.pop("ground_truth", "")
+        init_rollout_args = example.pop("init_rollout_args", "")
+        return StandardizedExample(
+            prompt=prompt,
+            ground_truth=ground_truth,
+            init_rollout_args=init_rollout_args,
+            **example,
+        )
+
     @classmethod
     def load_dataset(
         cls, dataset_name: str, **kwargs

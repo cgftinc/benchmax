@@ -121,14 +121,15 @@ class ExcelEnv(LocalMCPEnv):
         Output Path: {target_output_path}
         """
 
-        return {
-            "prompt": prompt.strip(),
-            "ground_truth": "",
-            "init_rollout_args": {
+        return StandardizedExample(
+            prompt=prompt.strip(),
+            ground_truth="",
+            init_rollout_args={
                 "spreadsheet_path": str(source_input_path),
                 "answer_spreadsheet_path": str(Path(spreadsheet_path) / target_answer_path),
-            }
-        }
+            },
+            **example
+        )
 
     def init_rollout(self, rollout_id: str, **rollout_args):
         if "spreadsheet_path" not in rollout_args:

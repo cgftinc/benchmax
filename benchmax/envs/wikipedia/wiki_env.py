@@ -206,11 +206,11 @@ class WikipediaEnv(BaseEnv):
         return tool_function(**tool_args)
 
     def dataset_preprocess(self, example: Any) -> StandardizedExample:
-        return {
-            "prompt": example.get("Question", ""),
-            "ground_truth": example.get("Answer", None),
-            "init_rollout_args": {}
-        }
+        return StandardizedExample(
+            prompt=example.get("Question", ""),
+            ground_truth=example.get("Answer", None),
+            init_rollout_args={}
+        )
 
     def init_rollout(self, rollout_id: str, **rollout_args) -> None:
         return super().init_rollout(rollout_id, **rollout_args)
