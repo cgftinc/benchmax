@@ -51,7 +51,7 @@ def replace_template_variables(prompt_template: str, **variables) -> str:
     return result
 
 # Given an API key and project id, pull the project data(tools, scorers, datasets, etc).
-class BraintrustSandbox(BaseEnv):
+class BraintrustEnv(BaseEnv):
     def __init__(self, braintrust_api_key: str, braintrust_project_id: str, scorer_ids=[]):
         # Set API Key and Project ID
         self.braintrust_api_key = braintrust_api_key
@@ -108,7 +108,7 @@ class BraintrustSandbox(BaseEnv):
 
     @classmethod
     def load_dataset(
-        cls, dataset_name: str, braintrust_api_key: str, braintrust_dataset_id: str, **kwargs
+        cls, braintrust_api_key: str, braintrust_dataset_id: str, **kwargs
     ) -> (
         Tuple[DatasetDict | Dataset | IterableDatasetDict | IterableDataset, str | None]
     ):
@@ -210,7 +210,7 @@ class BraintrustSandbox(BaseEnv):
 # calls braintrust api to pull tools and scorers and then populates the sandbox with them
 if __name__ == "__main__":
     #braintrust_sandbox1 = BraintrustSandbox(API_KEY, "afc6fc6e-ef12-41f1-ad2b-b3ab3e760db5")
-    braintrust_sandbox2 = BraintrustSandbox(API_KEY, "89d983a3-7012-4932-a816-67f025318096")
+    braintrust_sandbox2 = BraintrustEnv(API_KEY, "89d983a3-7012-4932-a816-67f025318096")
     print("Project Name:", braintrust_sandbox2.project_name)
     print("Project Data", braintrust_sandbox2.project_data)
     print("Datasets ids:", braintrust_sandbox2.dataset_ids)
