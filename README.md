@@ -44,7 +44,7 @@ Get started with ready to use recipes, from Wikipedia search to spreadsheet mani
 
 **Trainer Integrations**
 
-Use your own trainer or training framework - no lock-in.`benchmax` is already Integrated into verl and verifiers, with more integrations (SkyRL, etc.) coming soon!
+Use your own trainer or training framework - no lock-in. `benchmax` is already Integrated into verl and verifiers, with more integrations (SkyRL, etc.) coming soon!
 
 **MCP Support**
 Tap into the growing MCP ecosystem and integrate them as tools within your environments.
@@ -80,9 +80,9 @@ Tap into the growing MCP ecosystem and integrate them as tools within your envir
     sh examples/verl/run_qwen2.5-3b_benchmax_math.sh
     ```
 
-This math environment is just a quick example. Explore some of the more complex environments like `spreadsheet`, `crm` in `benchmax/envs`.
+This math environment is just a quick example. Explore some of the more complex environments like `excel`, `crm` in `benchmax/envs`.
 
-## 📘 Creating & Training with Environments
+## 🌐 Creating & Training with Environments
 
 ### What is an environment?
 
@@ -93,7 +93,16 @@ An environment consists of:
 
 We also support MCP servers natively, allowing you to easily leverage the many servers built by the community.
 
-### How do I create an environment?
+### Pre-built environments
+
+Ready-to-use environments with pre-configured tools and reward functions.
+
+- [CRM](benchmax/envs/crm/README.md)
+- [Excel](benchmax/envs/excel/README.md) 
+- [Math](benchmax/envs/math/README.md)
+- [Wikipedia](benchmax/envs/wikipedia/README.md)
+
+### How do I create a custom environment?
 
 <details>
 <summary>With existing MCP Servers</summary>
