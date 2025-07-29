@@ -8,7 +8,7 @@ The full script can be found here:
 
 To run it:
 
-- Clone and install `benchmax` with our verl fork (temporary until PR gets merged)
+- Clone and install `benchmax` with our verl fork (temporary until [PR gets merged](https://github.com/volcengine/verl/pull/2792))
     
     ```bash
     pip install benchmax[verl]

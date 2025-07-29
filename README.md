@@ -44,7 +44,7 @@ Get started with ready to use recipes, from Wikipedia search to spreadsheet mani
 
 **Trainer Integrations**
 
-Use your own trainer or training framework - no lock-in. `benchmax` is already Integrated into verl and verifiers, with more integrations (SkyRL, etc.) coming soon!
+Use your own trainer or training framework - no lock-in. `benchmax` is already integrated into verl and verifiers, with more integrations (SkyRL, etc.) coming soon!
 
 **MCP Support**
 Tap into the growing MCP ecosystem and integrate them as tools within your environments.
@@ -64,6 +64,8 @@ Tap into the growing MCP ecosystem and integrate them as tools within your envir
 1. **Installation**
 
     `pip install benchmax[verl]`
+
+    \* Note that benchmax installs our verl fork (temporary until [PR gets merged](https://github.com/volcengine/verl/pull/2792))
 
 1. **Prepare the dataset**
     
