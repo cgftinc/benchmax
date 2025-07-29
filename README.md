@@ -365,7 +365,7 @@ Open an issue and tag us & we will look into building you one!
     - Facilitate easy deployment and scalability in cloud environments.
 - **MCP as a first class citizen**:
     
-    There has been an explosion of MCP servers/tools built out for usecases ranging from browser use to excel to game creation.`benchmax` allow folks to leverage and composes these existing MCP servers to build environment integrated with real world systems e.g. excel
+    There has been an explosion of MCP servers/tools built out for usecases ranging from browser use to excel to game creation.`benchmax` allows folks to leverage and compose these existing MCP servers to build environments integrated with real world systems e.g. excel
     
 
 ## 🤝 Contributing
