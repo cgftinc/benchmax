@@ -214,7 +214,6 @@ if __name__ == "__main__":
     print("Project Name:", braintrust_sandbox2.project_name)
     print("Project Data", braintrust_sandbox2.project_data)
     print("Datasets ids:", braintrust_sandbox2.dataset_ids)
-    print("Datasets:", json.dumps(braintrust_sandbox2.datasets, indent=2))
     print("Tools List:", braintrust_sandbox2.list_tools())
     print("Tools:", json.dumps(braintrust_sandbox2.tools, indent=2))
     print("Prompts:", json.dumps(braintrust_sandbox2.prompts, indent=2))

@@ -2,6 +2,11 @@ import verifiers as vf
 
 from benchmax.adapters.verifiers.verifiers_adapters import get_verifiers_environment
 from benchmax.envs.braintrust.braintrust_env import BraintrustEnv
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+API_KEY = os.environ.get("API_KEY")
 
 """
 Multi-GPU training (single node, 3 training + 1 inference)
@@ -11,8 +16,8 @@ CUDA_VISIBLE_DEVICES=0 poetry run vf-vllm --model willcb/Qwen3-4B
 CUDA_VISIBLE_DEVICES=1,2,3 accelerate launch benchmax/adapters/verifiers/examples/verifiers_math_example.py
 """
 
-dataset, _ = BraintrustEnv.load_dataset(braintrust_api_key="API key here", braintrust_dataset_id="dataset id here")
-braintrust_env = BraintrustEnv(braintrust_api_key='API key here', braintrust_project_id="project id here")
+dataset, _ = BraintrustEnv.load_dataset(braintrust_api_key=API_KEY, braintrust_dataset_id="0e07f061-1b7c-4a8f-aedb-6f2ca787ccc4")
+braintrust_env = BraintrustEnv(braintrust_api_key=API_KEY, braintrust_project_id="89d983a3-7012-4932-a816-67f025318096")
 
 dataset = dataset.map(
     lambda example: braintrust_env.dataset_preprocess(example)
