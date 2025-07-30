@@ -76,3 +76,6 @@ coverage.xml
 poetry.lock
 
 workspaces/
+
+# Verifiers 
+verifiers.yaml
