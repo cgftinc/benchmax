@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 from dataclasses import asdict
 from benchmax.envs.types import ToolDefinition
 
-def get_functions(braintrust_api_key, braintrust_project_id) -> Dict:
+def get_functions(braintrust_api_key: str, braintrust_project_id: str) -> Dict:
     ''' Returns a function dictionary that contains tools, prompts, and scorers from function API call
             self.functions["tools"]: Dict[str, Tuple[ToolDefinition(now a dict), Callable]]
             self.functions["prompts"]: Dict[str, Dict]
@@ -42,7 +42,7 @@ def get_functions(braintrust_api_key, braintrust_project_id) -> Dict:
         print(response.text)
         raise Exception("Failed to get functions(tools, scorers, and prompts)")
 
-def get_dataset_with_id(braintrust_api_key, dataset_id: str) -> List[Dict[str, str]]:
+def get_dataset_with_id(braintrust_api_key: str, dataset_id: str) -> List[Dict[str, str]]:
     # returns dataset given a dataset_id
     url = f"https://api.braintrust.dev/v1/dataset/{dataset_id}/fetch"
     json = {
@@ -55,6 +55,7 @@ def get_dataset_with_id(braintrust_api_key, dataset_id: str) -> List[Dict[str, s
     try:
         data = response.json()
         processed_data = []
+        print("DEBUG: data =", data)
         for event in data["events"]:
             processed_data.append({"prompt": event["input"], "ground_truth": event["expected"]})
         return processed_data
@@ -63,7 +64,7 @@ def get_dataset_with_id(braintrust_api_key, dataset_id: str) -> List[Dict[str, s
         print(response.text)
         raise Exception(f"Failed to get dataset with id:{dataset_id}")
 
-def get_dataset_ids(braintrust_api_key, braintrust_project_id) -> Dict[str, str]:
+def get_dataset_ids(braintrust_api_key: str, braintrust_project_id: str) -> Dict[str, str]:
     # returns dataset ids of project
     url = f"https://api.braintrust.dev/v1/dataset?project_id={braintrust_project_id}"
     headers = {
@@ -80,7 +81,7 @@ def get_dataset_ids(braintrust_api_key, braintrust_project_id) -> Dict[str, str]
         print(response.text)
         raise Exception("Failed to get datasets")
 
-def get_project_data(braintrust_api_key, braintrust_project_id) -> Dict:
+def get_project_data(braintrust_api_key: str, braintrust_project_id: str) -> Dict:
     # returns project data
     url = f"https://api.braintrust.dev/v1/project?limit=1&ids={braintrust_project_id}"
     headers = {

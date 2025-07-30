@@ -210,10 +210,12 @@ class BraintrustEnv(BaseEnv):
 # calls braintrust api to pull tools and scorers and then populates the sandbox with them
 if __name__ == "__main__":
     #braintrust_sandbox1 = BraintrustSandbox(API_KEY, "afc6fc6e-ef12-41f1-ad2b-b3ab3e760db5")
-    braintrust_sandbox2 = BraintrustEnv(API_KEY, "89d983a3-7012-4932-a816-67f025318096")
+    braintrust_sandbox2 = BraintrustEnv(braintrust_api_key=API_KEY, braintrust_project_id="89d983a3-7012-4932-a816-67f025318096")
     print("Project Name:", braintrust_sandbox2.project_name)
     print("Project Data", braintrust_sandbox2.project_data)
     print("Datasets ids:", braintrust_sandbox2.dataset_ids)
+    dataset = braintrust_utils.get_dataset_with_id(braintrust_api_key=API_KEY, dataset_id='0e07f061-1b7c-4a8f-aedb-6f2ca787ccc4')
+    print("Dataset:", json.dumps(dataset, indent=2))
     print("Tools List:", braintrust_sandbox2.list_tools())
     print("Tools:", json.dumps(braintrust_sandbox2.tools, indent=2))
     print("Prompts:", json.dumps(braintrust_sandbox2.prompts, indent=2))
