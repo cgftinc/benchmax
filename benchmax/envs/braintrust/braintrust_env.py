@@ -84,21 +84,30 @@ class BraintrustEnv(BaseEnv):
         - "ground_truth": Any
         - "init_rollout_args": Optional[Dict[str, Any]]
         """
-        if "prompt" in example and "input" in example:
-            input = example["prompt"]["input"]
+        if "prompt" in example:
+            if example["prompt"] is not None and "input" in example["prompt"]:
+                input = example["prompt"]["input"]
+            else:
+                input = ""
         else:
             raise Exception("Error with data preprocessing.")
 
-        if "prompt" in example and "street" in example:
-            street = example["prompt"]["street"]
+        if "prompt" in example:
+            if example["prompt"] is not None and "street" in example["prompt"]:
+                street = example["prompt"]["street"]
+            else:
+                street = ""
         else:
             raise Exception("Error with data preprocessing.")
         
         # Replace template variables in the prompt -- can support multiple template variables to fit dataset
         processed_prompt = replace_template_variables(prompt, input=input, metadata=street)
         
+        # Remove 'prompt', 'ground_truth', and 'init_rollout_args' from example as they are conflicting keys
+        prompt = example.pop("prompt", "")
         ground_truth = example.pop("ground_truth", "")
         init_rollout_args = example.pop("init_rollout_args", "")
+        
         return StandardizedExample(
             prompt=processed_prompt,
             ground_truth=ground_truth,
@@ -214,8 +223,14 @@ if __name__ == "__main__":
     print("Project Name:", braintrust_sandbox2.project_name)
     print("Project Data", braintrust_sandbox2.project_data)
     print("Datasets ids:", braintrust_sandbox2.dataset_ids)
-    dataset = braintrust_utils.get_dataset_with_id(braintrust_api_key=API_KEY, dataset_id='0e07f061-1b7c-4a8f-aedb-6f2ca787ccc4')
-    print("Dataset:", json.dumps(dataset, indent=2))
+    dataset_util = braintrust_utils.get_dataset_with_id(braintrust_api_key=API_KEY, dataset_id='0e07f061-1b7c-4a8f-aedb-6f2ca787ccc4')
+    dataset, _ = BraintrustEnv.load_dataset(braintrust_api_key=API_KEY, braintrust_dataset_id='0e07f061-1b7c-4a8f-aedb-6f2ca787ccc4')
+    
+    print("Dataset from util call:", json.dumps(dataset_util, indent=2))
+    dataset = dataset.map(
+        lambda example: braintrust_sandbox2.dataset_preprocess(example=example, prompt="[prompt here]")
+    )   
+    print("Dataset from load_dataset call:", dataset)
     print("Tools List:", braintrust_sandbox2.list_tools())
     print("Tools:", json.dumps(braintrust_sandbox2.tools, indent=2))
     print("Prompts:", json.dumps(braintrust_sandbox2.prompts, indent=2))

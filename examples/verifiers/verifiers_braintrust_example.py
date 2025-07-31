@@ -18,9 +18,10 @@ CUDA_VISIBLE_DEVICES=1,2,3 accelerate launch benchmax/adapters/verifiers/example
 
 dataset, _ = BraintrustEnv.load_dataset(braintrust_api_key=API_KEY, braintrust_dataset_id="0e07f061-1b7c-4a8f-aedb-6f2ca787ccc4")
 braintrust_env = BraintrustEnv(braintrust_api_key=API_KEY, braintrust_project_id="89d983a3-7012-4932-a816-67f025318096")
+prompt = braintrust_env.prompts["247e1e74-8c32-41f6-97bc-4b998be34e3b"][1]["content"]
 
 dataset = dataset.map(
-    lambda example: braintrust_env.dataset_preprocess(example)
+    lambda example: braintrust_env.dataset_preprocess(example=example, prompt=prompt)
 )
 splits = dataset.train_test_split(test_size=0.1, seed=42)
 
