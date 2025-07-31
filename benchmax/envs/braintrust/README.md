@@ -47,7 +47,7 @@ Import the BraintrustEnv class and create an instance with your Braintrust API_K
 ```
 from benchmax.envs.braintrust.braintrust_env import BraintrustEnv
 
-braintrust_sandbox2 = BraintrustEnv(braintrust_api_key=API_KEY, braintrust_project_id="89d983a3-7012-4932-a816-67f025318096")
+braintrust_sandbox2 = BraintrustEnv(braintrust_api_key="YOUR_API_KEY", braintrust_project_id="YOUR_PROJECT_ID")
 ```
 
 Try viewing some of the project details!
@@ -61,8 +61,8 @@ To view your dataset on Braintrust, you will need to some utils. Supply your APY
 ```
 import benchmax.envs.braintrust.braintrust_utils as braintrust_utils
 
-dataset_util = braintrust_utils.get_dataset_with_id(braintrust_api_key=API_KEY, dataset_id='0e07f061-1b7c-4a8f-aedb-6f2ca787ccc4')
-    dataset, _ = BraintrustEnv.load_dataset(braintrust_api_key=API_KEY, braintrust_dataset_id='0e07f061-1b7c-4a8f-aedb-6f2ca787ccc4')
+dataset_util = braintrust_utils.get_dataset_with_id(braintrust_api_key=API_KEY, dataset_id='YOUR_DATASET_ID')
+    dataset, _ = BraintrustEnv.load_dataset(braintrust_api_key=API_KEY, braintrust_dataset_id='YOUR_DATASET_ID')
     
     print("Dataset from util call:", json.dumps(dataset_util, indent=2))
     dataset = dataset.map(
@@ -81,8 +81,8 @@ print("Scorers:", json.dumps(braintrust_sandbox2.scorers, indent=2))
 
 You can run custom tools and scorers from Braintrust. Tools can be used by LLMs and Scorers are used to score the completions by the LLM against a defined `ground_truth`.
 ```
-tool_output = braintrust_sandbox2.run_tool(tool_id='229ad51a-88b4-48f8-95ed-aa4d67c68c80', op="add", a=5, b=6)
-score = braintrust_sandbox2.run_scorer(scorer_id='138d1ecb-5eb0-424c-a568-8fb5ba1e4e9b', input="bruh", output="bruh", expected="bro", metadata={})
+tool_output = braintrust_sandbox2.run_tool(tool_id='YOUR_TOOL_ID', op="add", a=5, b=6)
+score = braintrust_sandbox2.run_scorer(scorer_id='YOUR_SCORER_ID', input="bruh", output="bruh", expected="bro", metadata={})
 print("Tool Output:", tool_output)
 print("Score:", score)
 ```
@@ -90,12 +90,12 @@ print("Score:", score)
 The reward function can be used by an RL trainer to fine tune your model. But you can still test it out your scorers with some self made completions and ground truths
 ```
 result1 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hell0o", scorer_id=None, workspace=None)
-result2 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hel0lo", scorer_id='138d1ecb-5eb0-424c-a568-8fb5ba1e4e9b', workspace=None)
+result2 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hel0lo", scorer_id='YOUR_SCORER_ID', workspace=None)
 print("Result 1 - Default Scorer, Expected Fail:", result1)
 print("Result 2 - Custom Scorer, Expected Fail:", result2)
 
 result3 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hello", scorer_id=None, workspace=None)
-result4 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hello", scorer_id='138d1ecb-5eb0-424c-a568-8fb5ba1e4e9b', workspace=None)
+result4 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hello", scorer_id='YOUR_SCORER_ID', workspace=None)
 print("Result 3 - Default Scorer, Expected Pass:", result3)
 print("Result 4 - Custom Scorer, Expected Pass:", result4)
 ```
