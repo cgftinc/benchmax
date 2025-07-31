@@ -1,7 +1,4 @@
-import json
 import re
-from dotenv import load_dotenv
-import os
 from typing import Any, List, Optional, Tuple
 from pathlib import Path
 
@@ -13,10 +10,6 @@ from datasets import (
     DatasetDict, Dataset, IterableDatasetDict,
     IterableDataset, load_dataset
 )
-
-load_dotenv()  # load variables from .env
-
-API_KEY = os.environ.get("API_KEY")
 
 def replace_template_variables(prompt_template: str, **variables) -> str:
     """
@@ -158,7 +151,7 @@ class BraintrustEnv(BaseEnv):
         if not ground_truth: ground_truth = "Null ground_truth provided."
         if not completion: completion = "Null completion provided."
         completion = re.sub(r'<think>.*?</think>\n\n', '', completion, flags=re.DOTALL)
-        print(f"Reward Function Printout \nPrompt: {prompt}\nCompletion: {completion}\nground_truth: {ground_truth}")
+        print(f"reward_func inputs ->\nPrompt: {prompt}\nCompletion: {completion}\nground_truth: {ground_truth}")
         if len(self.activated_scorers) > 0:
             score = 0.0
             for scorer_id in self.activated_scorers.keys():
@@ -221,37 +214,3 @@ class BraintrustEnv(BaseEnv):
     def get_rollout_workspace(self, rollout_id: str) -> Path:
         return super().get_rollout_workspace(rollout_id)     
 
-# calls braintrust api to pull tools and scorers and then populates the sandbox with them
-if __name__ == "__main__":
-    #braintrust_sandbox1 = BraintrustSandbox(API_KEY, "afc6fc6e-ef12-41f1-ad2b-b3ab3e760db5")
-    braintrust_sandbox2 = BraintrustEnv(braintrust_api_key=API_KEY, braintrust_project_id="89d983a3-7012-4932-a816-67f025318096")
-    print("Project Name:", braintrust_sandbox2.project_name)
-    print("Project Data", braintrust_sandbox2.project_data)
-    print("Datasets ids:", braintrust_sandbox2.dataset_ids)
-    dataset_util = braintrust_utils.get_dataset_with_id(braintrust_api_key=API_KEY, dataset_id='0e07f061-1b7c-4a8f-aedb-6f2ca787ccc4')
-    dataset, _ = BraintrustEnv.load_dataset(braintrust_api_key=API_KEY, braintrust_dataset_id='0e07f061-1b7c-4a8f-aedb-6f2ca787ccc4')
-    
-    print("Dataset from util call:", json.dumps(dataset_util, indent=2))
-    dataset = dataset.map(
-        lambda example: braintrust_sandbox2.dataset_preprocess(example=example, prompt="[prompt here]")
-    )   
-    print("Dataset from load_dataset call:", dataset)
-    print("Tools List:", braintrust_sandbox2.list_tools())
-    print("Tools:", json.dumps(braintrust_sandbox2.tools, indent=2))
-    print("Prompts:", json.dumps(braintrust_sandbox2.prompts, indent=2))
-    print("Scorers:", json.dumps(braintrust_sandbox2.scorers, indent=2))
-
-    tool_output = braintrust_sandbox2.run_tool(tool_id='229ad51a-88b4-48f8-95ed-aa4d67c68c80', op="add", a=5, b=6)
-    score = braintrust_sandbox2.run_scorer(scorer_id='138d1ecb-5eb0-424c-a568-8fb5ba1e4e9b', input="bruh", output="bruh", expected="bro", metadata={})
-    print("Tool Output:", tool_output)
-    print("Score:", score)
-
-    result1 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hell0o", scorer_id=None)
-    result2 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hel0lo", scorer_id='138d1ecb-5eb0-424c-a568-8fb5ba1e4e9b')
-    print("Result 1 - Default Scorer, Expected Fail:", result1)
-    print("Result 2 - Custom Scorer, Expected Fail:", result2)
-
-    result3 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hello", scorer_id=None)
-    result4 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hello", scorer_id='138d1ecb-5eb0-424c-a568-8fb5ba1e4e9b')
-    print("Result 3 - Default Scorer, Expected Pass:", result3)
-    print("Result 4 - Custom Scorer, Expected Pass:", result4)
