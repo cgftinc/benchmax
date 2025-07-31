@@ -1,4 +1,5 @@
 import json
+import re
 from dotenv import load_dotenv
 import os
 from typing import Any, List, Optional, Tuple
@@ -141,7 +142,7 @@ class BraintrustEnv(BaseEnv):
         dataset = Dataset.from_list(dataset)
         return dataset, None
 
-    def reward_func(self, prompt: str, completion: str, ground_truth: str, **kwargs) -> float:
+    def reward_func(self, prompt: str, completion: str, ground_truth: str, workspace: Path, **kwargs) -> float:
         """ If given scorer id, run scorer. Otherwise, use ExactMatch to score.
         Score 1.0 if the ground-truth answer exactly matches completion; otherwise 0.0.
 
@@ -154,7 +155,10 @@ class BraintrustEnv(BaseEnv):
         Returns:
             1.0 if `ground_truth` (lowercased) exactly matches else 0.0.
         """
-        
+        if not ground_truth: ground_truth = "Null ground_truth provided."
+        if not completion: completion = "Null completion provided."
+        completion = re.sub(r'<think>.*?</think>\n\n', '', completion, flags=re.DOTALL)
+        print(f"Reward Function Printout \nPrompt: {prompt}\nCompletion: {completion}\nground_truth: {ground_truth}")
         if len(self.activated_scorers) > 0:
             score = 0.0
             for scorer_id in self.activated_scorers.keys():
@@ -188,8 +192,9 @@ class BraintrustEnv(BaseEnv):
 
     def list_tools(self) -> List[ToolDefinition]:
         """List of available tools with id."""
+        # currently, a bug is caused because the returned list is not of type ToolDefinition
         return [
-            (self.tools[k][0]["name"], k) for k in sorted(self.tools)
+            self.tools[k][0] for k in sorted(self.tools)
         ]
         
     def run_tool(self, tool_id: str, **tool_args) -> Any:

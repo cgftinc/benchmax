@@ -1,6 +1,5 @@
 import requests
 from typing import Any, Dict, List
-from dataclasses import asdict
 from benchmax.envs.types import ToolDefinition
 
 def get_functions(braintrust_api_key: str, braintrust_project_id: str) -> Dict:
@@ -20,7 +19,7 @@ def get_functions(braintrust_api_key: str, braintrust_project_id: str) -> Dict:
         tools, prompts, scorers = {}, {}, {}
         for object in data["objects"]:
             if object["function_type"] == "tool": 
-                tool_definition = asdict(ToolDefinition(
+                tool_definition = ToolDefinition(
                     name=object["name"],
                     description=object["description"],
                     input_schema={
@@ -28,7 +27,7 @@ def get_functions(braintrust_api_key: str, braintrust_project_id: str) -> Dict:
                         "properties": object["function_schema"]["parameters"]["properties"],
                         "required": object["function_schema"]["parameters"]["required"]
                     }
-                )) # Converted to dict to allow JSON serializing. 
+                )
                 tool_callable = object["function_data"]["data"]["preview"]
                 tools[object["id"]] = (tool_definition, tool_callable)
             elif object["function_type"] == "scorer":
@@ -55,7 +54,6 @@ def get_dataset_with_id(braintrust_api_key: str, dataset_id: str) -> List[Dict[s
     try:
         data = response.json()
         processed_data = []
-        print("DEBUG: data =", data)
         for event in data["events"]:
             processed_data.append({"prompt": event["input"], "ground_truth": event["expected"]})
         return processed_data
