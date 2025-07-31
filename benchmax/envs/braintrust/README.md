@@ -26,7 +26,7 @@ By default, the reward function will score output against the ground truth using
 
 Because Braintrust allows you to upload a variety of datasets and use variables in your prompts to call on your datasets, you will want to modify the `dataset_preprocess` function to align each template variable in your prompt to its corresponding label in the dataset. 
 
-```
+```python
 Examples:
         # Single variable
         replace_template_variables("Hello {{input}}!", input="world") 
@@ -44,21 +44,21 @@ Examples:
 ## Starting up a Braintrust Environment
 
 Import the BraintrustEnv class and create an instance with your Braintrust API_KEY and Project ID.
-```
+```python
 from benchmax.envs.braintrust.braintrust_env import BraintrustEnv
 
 braintrust_sandbox2 = BraintrustEnv(braintrust_api_key="YOUR_API_KEY", braintrust_project_id="YOUR_PROJECT_ID")
 ```
 
 Try viewing some of the project details!
-```
+```python
 print("Project Name:", braintrust_sandbox2.project_name)
 print("Project Data", braintrust_sandbox2.project_data)
 print("Datasets ids:", braintrust_sandbox2.dataset_ids)
 ```
 
 To view your dataset on Braintrust, you will need to some utils. Supply your APY_KEY and dataset_id. The dataset_id can be found in dataset_ids or copied directly from the Braintrust site.
-```
+```python
 import benchmax.envs.braintrust.braintrust_utils as braintrust_utils
 
 dataset_util = braintrust_utils.get_dataset_with_id(braintrust_api_key=API_KEY, dataset_id='YOUR_DATASET_ID')
@@ -72,7 +72,7 @@ dataset_util = braintrust_utils.get_dataset_with_id(braintrust_api_key=API_KEY, 
 ```
 
 Braintrust has things called functions, which include tools, scorers, and prompts. Try printing out the functions in your Braintrust project to view what's available.
-```
+```python
 print("Tools List:", braintrust_sandbox2.list_tools())
 print("Tools:", braintrust_sandbox2.tools)
 print("Prompts:", json.dumps(braintrust_sandbox2.prompts, indent=2))
@@ -80,7 +80,7 @@ print("Scorers:", json.dumps(braintrust_sandbox2.scorers, indent=2))
 ```
 
 You can run custom tools and scorers from Braintrust. Tools can be used by LLMs and Scorers are used to score the completions by the LLM against a defined `ground_truth`.
-```
+```python
 tool_output = braintrust_sandbox2.run_tool(tool_id='YOUR_TOOL_ID', op="add", a=5, b=6)
 score = braintrust_sandbox2.run_scorer(scorer_id='YOUR_SCORER_ID', input="bruh", output="bruh", expected="bro", metadata={})
 print("Tool Output:", tool_output)
@@ -88,7 +88,7 @@ print("Score:", score)
 ```
 
 The reward function can be used by an RL trainer to fine tune your model. But you can still test it out your scorers with some self made completions and ground truths
-```
+```python
 result1 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hell0o", scorer_id=None, workspace=None)
 result2 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_truth="hel0lo", scorer_id='YOUR_SCORER_ID', workspace=None)
 print("Result 1 - Default Scorer, Expected Fail:", result1)
