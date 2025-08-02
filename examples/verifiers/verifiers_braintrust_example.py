@@ -13,7 +13,7 @@ Multi-GPU training (single node, 3 training + 1 inference)
 
 CUDA_VISIBLE_DEVICES=0 poetry run vf-vllm --model willcb/Qwen3-4B
 
-CUDA_VISIBLE_DEVICES=1,2,3 accelerate launch benchmax/adapters/verifiers/examples/verifiers_math_example.py
+CUDA_VISIBLE_DEVICES=1,2,3 accelerate launch examples/verifiers/verifiers_braintrust_example.py
 """
 
 dataset, _ = BraintrustEnv.load_dataset(braintrust_api_key=API_KEY, braintrust_dataset_id="0e07f061-1b7c-4a8f-aedb-6f2ca787ccc4")
