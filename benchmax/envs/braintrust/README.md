@@ -6,14 +6,6 @@ This environment provides capabilities for interacting with Braintrust through i
 
 No additional software installation is required. You will just need your Braintrust project ID and API key to get started.
 
-## Installation
-
-```bash
-pip install "benchmax[braintrust]"
-```
-Includes:
-- fastmcp: For MCP server functionality
-
 ## Available Tools
 
 When you create an instance of the Braintrust environment for a project, all of the tools associated with that project will be downloaded and available to use. Use the `run_tool` function and provide a `tool_id` along with relevant `**tool_args` to execute the tool.
