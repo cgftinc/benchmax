@@ -1,6 +1,6 @@
 # Braintrust Environment
 
-This environment provides capabilities for interacting with Braintrust through its API, enabling you to utilize tools, scorers, prompts, and datasets from your Braintrust projects.
+This environment provides capabilities for interacting with Braintrust through its API, enabling you to utilize tools, scorers, prompts, and datasets from your Braintrust projects to set up a RL training environment in Verifiers/Verl. 
 
 ## Prerequisites
 
@@ -33,7 +33,9 @@ Examples:
         # Returns: "What is the recommend action in this scenario Hand: AhQs, Position: CO on this street flop?"
 ```
 
-## Starting up a Braintrust Environment
+## Starting up a Braintrust Environment Instance
+
+Before integrating the Braintrust environment with Verifiers, you may want to create an instance of the Braintrust environmen to test that your project and its respective tools are as expected. This short tutorial will demonstrate how to create an instance and print out all of the data from your Braintrust project. Later in the README.md, we will go over how to integrate this Braintrust environment into an RL trainer like Verifiers to fine tune our models.
 
 Import the BraintrustEnv class and create an instance with your Braintrust API_KEY and Project ID.
 ```python
@@ -65,6 +67,8 @@ dataset_util = braintrust_utils.get_dataset_with_id(braintrust_api_key=API_KEY, 
 
 Braintrust has things called functions, which include tools, scorers, and prompts. Try printing out the functions in your Braintrust project to view what's available.
 ```python
+import json
+
 print("Tools List:", braintrust_sandbox2.list_tools())
 print("Tools:", braintrust_sandbox2.tools)
 print("Prompts:", json.dumps(braintrust_sandbox2.prompts, indent=2))
@@ -91,3 +95,9 @@ result4 = braintrust_sandbox2.reward_func(prompt="", completion="hello", ground_
 print("Result 3 - Default Scorer, Expected Pass:", result3)
 print("Result 4 - Custom Scorer, Expected Pass:", result4)
 ```
+
+## Example of Verifiers Integration
+
+Check the example at examples/verifiers/verifiers_braintrust_example.py to see how a Braintrust environment and dataset would be instantiated to use with Verifiers specifically.
+
+https://github.com/cgftinc/benchmax/blob/braintrust_WIP/examples/verifiers/verifiers_braintrust_example.py
