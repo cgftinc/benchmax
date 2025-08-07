@@ -151,7 +151,7 @@ class BraintrustEnv(BaseEnv):
         if not ground_truth: ground_truth = "Null ground_truth provided."
         if not completion: completion = "Null completion provided."
         completion = re.sub(r'<think>.*?</think>\n\n', '', completion, flags=re.DOTALL)
-        print(f"reward_func inputs ->\nPrompt: {prompt}\nCompletion: {completion}\nground_truth: {ground_truth}")
+        #print(f"reward_func inputs ->\nPrompt: {prompt}\nCompletion: {completion}\nground_truth: {ground_truth}")
         if len(self.activated_scorers) > 0:
             score = 0.0
             for scorer_id in self.activated_scorers.keys():
