@@ -7,7 +7,7 @@ from benchmax.envs.local_mcp_env import LocalMCPEnv
 from benchmax.envs.types import RewardFunction, StandardizedExample
 
 SYSTEM_PROMPT = """Please use the tools provided to do any computation.
-Write your complete answer on the final line only, within the xml tags <answer></answer>.\n
+Write your complete answer on the final line only, within the xml tags <answer></answer>. e.g. <answer>5.0</answer>\n
 """
 
 MCP_CONFIG = """
@@ -35,7 +35,10 @@ def reward_func(prompt: str, completion: str, ground_truth: str, workspace: Path
 
     # Unescape any XML entities (&amp; → &, etc.) and normalise whitespace.
     answer_text = unescape(m.group(1)).strip().lower()
-    return float(float(ground_truth.lower()) == float(answer_text))
+    try:
+        return float(float(ground_truth.lower()) == float(answer_text))
+    except:
+        return 0.0
 
 class MathEnv(LocalMCPEnv):
     """Environment for math problems, using local MCP tools."""

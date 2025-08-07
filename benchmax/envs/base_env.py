@@ -74,13 +74,16 @@ class BaseEnv(ABC):
         pass
     
     @abstractmethod
-    def cleanup_rollout(self, rollout_id: str) -> None:
+    def cleanup_rollout(self, rollout_id: str, **kwargs) -> None:
         """Clean up resources for a rollout"""
         pass
 
     @abstractmethod
-    def get_rollout_workspace(self, rollout_id: str) -> Path:
+    def get_rollout_workspace(self, rollout_id: str, **kwargs) -> Path:
         """Get the workspace path for a specific rollout"""
+        pass
+
+    def shutdown(self) -> None:
         pass
     
     def compute_reward(
