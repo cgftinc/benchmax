@@ -9,7 +9,7 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.11,<3.13"
+python = ">=3.10,<3.13"
 fastmcp = "~2.10.0"
 
 verl-cgft-fork = { version = "0.5.0.dev2", optional = true }
