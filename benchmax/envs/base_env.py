@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 
 from datasets import (
@@ -59,31 +59,45 @@ class BaseEnv(ABC):
         return load_dataset(dataset_name, **kwargs), None
 
     @abstractmethod
-    def list_tools(self) -> List[ToolDefinition]:
+    async def list_tools(self) -> List[ToolDefinition]:
         """Return list of available tools"""
         pass
     
     @abstractmethod
-    def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
+    async def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
         """Execute named tool in rollout context with given arguments"""
         pass
 
     @abstractmethod
-    def init_rollout(self, rollout_id: str, **rollout_args) -> None:
+    async def init_rollout(self, rollout_id: str, **rollout_args) -> None:
         """Initialize resources for a new rollout"""
         pass
     
     @abstractmethod
-    def cleanup_rollout(self, rollout_id: str) -> None:
+    async def cleanup_rollout(self, rollout_id: str) -> None:
         """Clean up resources for a rollout"""
         pass
 
     @abstractmethod
-    def get_rollout_workspace(self, rollout_id: str) -> Path:
+    async def get_rollout_workspace(self, rollout_id: str) -> Path:
         """Get the workspace path for a specific rollout"""
         pass
-    
-    def compute_reward(
+
+    @abstractmethod
+    async def copy_to_workspace(
+        self, rollout_id: str, src_path: Path, dst_filename: Optional[str] = None
+    ) -> None:
+        """Copy a file to the workspace for a specific rollout. If dst_filename is None, use the original filename."""
+        pass
+
+    @abstractmethod
+    async def copy_from_workspace(
+        self, rollout_id: str, src_filename: str, dst_path: Path
+    ) -> None:
+        """Copy a file from the workspace for a specific rollout"""
+        pass
+
+    async def compute_reward(
         self,
         rollout_id: str,
         prompt: str,
@@ -118,7 +132,7 @@ class BaseEnv(ABC):
                 print(f"[WARN] reward {func_name} failed: {e}")
         return results
     
-    def get_system_prompt(self, add_tool_defs: bool = False) -> str:
+    async def get_system_prompt(self, add_tool_defs: bool = False) -> str:
         """Get system prompt. To add tool definitions, set add_tool_defs to True."""
         if add_tool_defs:
             return render_tools_prompt(self.list_tools(), self.system_prompt or "")

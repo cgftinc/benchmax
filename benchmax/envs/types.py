@@ -7,7 +7,6 @@ class StandardizedExample(TypedDict):
     ground_truth: Any
     init_rollout_args: Optional[Dict[str, Any]]
 
-
 @dataclass
 class ToolDefinition:
     """Definition of a tool's interface"""

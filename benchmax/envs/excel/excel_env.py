@@ -138,16 +138,7 @@ class ExcelEnv(LocalMCPEnv):
         answer_spreadsheet_path = rollout_args["answer_spreadsheet_path"]
         
         super().init_rollout(rollout_id, **rollout_args)
-        workspace = self.get_rollout_workspace(rollout_id)
 
-        def _copy_to_workspace(src_path: Path):
-            """
-            Copy the spreadsheet file to the workspace if it doesn't already exist.
-            """
-            dest_path = workspace / src_path.name
-            if not dest_path.exists():
-                dest_path.write_bytes(src_path.read_bytes())
+        self.copy_to_workspace(rollout_id, Path(spreadsheet_path))
+        self.copy_to_workspace(rollout_id, Path(answer_spreadsheet_path))
 
-        # Copy the spreadsheet to the workspace
-        _copy_to_workspace(Path(spreadsheet_path))
-        _copy_to_workspace(Path(answer_spreadsheet_path))

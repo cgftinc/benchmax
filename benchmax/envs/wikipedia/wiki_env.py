@@ -220,6 +220,18 @@ class WikipediaEnv(BaseEnv):
     
     def get_rollout_workspace(self, rollout_id: str) -> Path:
         return super().get_rollout_workspace(rollout_id)
+    
+    def copy_to_workspace(
+        self, rollout_id: str, src_path: Path, dst_filename: Optional[str] = None
+    ) -> None:
+        """Copy a file to the workspace for a specific rollout."""
+        pass
+
+    def copy_from_workspace(
+        self, rollout_id: str, src_filename: str, dst_path: Path
+    ) -> None:
+        """Copy a file from the workspace for a specific rollout."""
+        pass
 
 if __name__ == "__main__":
     # Example usage

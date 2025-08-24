@@ -228,6 +228,34 @@ class LocalMCPEnv(BaseEnv):
             raise ValueError(f"No active client found for rollout {rollout_id}")
         else:
             return Path()
+        
+    def copy_to_workspace(
+        self, rollout_id: str, src_path: Path, dst_filename: Optional[str] = None
+    ) -> None:
+        """Copy a file to the workspace for a specific rollout. If dst_filename is None, use the original filename."""
+        if rollout_id not in self._active_clients:
+            raise ValueError(f"No active client found for rollout {rollout_id}")
+        
+        if not src_path.exists():
+            raise FileNotFoundError(f"Source file {src_path} does not exist")
+        
+        pair = self._active_clients[rollout_id]
+        dst_path = pair.workspace / (dst_filename or src_path.name)
+        dst_path.write_bytes(src_path.read_bytes())
+
+    def copy_from_workspace(
+        self, rollout_id: str, src_filename: str, dst_path: Path
+    ) -> None:
+        """Copy a file from the workspace for a specific rollout"""
+        if rollout_id not in self._active_clients:
+            raise ValueError(f"No active client found for rollout {rollout_id}")
+        
+        pair = self._active_clients[rollout_id]
+        src_path = pair.workspace / src_filename
+        if not src_path.exists():
+            raise FileNotFoundError(f"File {src_filename} not found in workspace {pair.workspace}")
+        
+        dst_path.write_bytes(src_path.read_bytes())
 
     # ---- Private Helper Methods ----
 
