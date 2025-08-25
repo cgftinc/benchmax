@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "benchmax"
-version = "0.1.1.dev4"
+version = "0.1.1.dev5"
 description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
 authors = ["cgft.io"]
 readme = "README.md"
