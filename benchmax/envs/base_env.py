@@ -79,11 +79,6 @@ class BaseEnv(ABC):
         pass
 
     @abstractmethod
-    async def get_rollout_workspace(self, rollout_id: str) -> Path:
-        """Get the workspace path for a specific rollout"""
-        pass
-
-    @abstractmethod
     async def copy_to_workspace(
         self, rollout_id: str, src_path: Path, dst_filename: Optional[str] = None
     ) -> None:
@@ -109,10 +104,6 @@ class BaseEnv(ABC):
         
         Returns dict mapping reward function names to their computed scores.
         """
-        workspace = self.get_rollout_workspace(rollout_id)
-        if workspace is None:
-            raise ValueError(f"No workspace found for rollout {rollout_id}")
-            
         results: Dict[str, float] = {}
         for func in self.reward_funcs:
             try:
@@ -122,7 +113,6 @@ class BaseEnv(ABC):
                     prompt=prompt,
                     completion=completion,
                     ground_truth=ground_truth,
-                    workspace=workspace,
                     **kwargs
                 )
             except Exception as e:
@@ -130,11 +120,14 @@ class BaseEnv(ABC):
                 func_name = getattr(func, "__name__", str(func))
                 results[func_name] = float('nan')
                 print(f"[WARN] reward {func_name} failed: {e}")
+
+        await self.cleanup_rollout(rollout_id)
+
         return results
     
     async def get_system_prompt(self, add_tool_defs: bool = False) -> str:
         """Get system prompt. To add tool definitions, set add_tool_defs to True."""
         if add_tool_defs:
-            return render_tools_prompt(self.list_tools(), self.system_prompt or "")
+            return render_tools_prompt(await self.list_tools(), self.system_prompt or "")
         else:
             return self.system_prompt

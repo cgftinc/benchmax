@@ -21,7 +21,7 @@ class RewardFunction(Protocol):
         prompt: str,         # Input prompt given to the model
         completion: str,     # Model's generated completion/response
         ground_truth: Any,   # Expected/correct output to compare against
-        workspace: Path,     # Path to rollout's workspace with tool outputs
+        rollout_id: str,     # Unique identifier for the rollout
         **kwargs: Any        # Additional context for reward computation
     ) -> float:             # Reward score (typically in range [0, 1])
         ...

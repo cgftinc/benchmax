@@ -1,0 +1,24 @@
+name: fastmcp
+
+resources:
+  # Optional; if left out, automatically pick the cheapest cloud.
+  cloud: azure
+  cpus: 2+
+  ports:
+    - 8080
+
+# Working directory (optional) containing the project codebase.
+# Its contents are synced to ~/sky_workdir/ on the cluster.
+workdir: benchmax/envs/skypilot/workdir
+
+num_nodes: 1
+
+#
+setup: |
+  pip install fastmcp~=2.10.0
+  pip install pyyaml
+  sh setup.sh
+
+# Starts the fastMCP server in the workdir
+run: |
+  python proxy_server.py

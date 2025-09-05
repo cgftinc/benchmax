@@ -1,0 +1,5 @@
+mcpServers:
+  server-name:
+    command: uvx
+    args:
+      - mcp-server-calculator
