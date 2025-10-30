@@ -1,0 +1,9 @@
+# Test MCP configuration
+# This configuration is used for testing the MCP infrastructure
+# Use ${{ sync_workdir }} to refer to the location of the synchronized workdir in the remote machine
+
+mcpServers:
+  test_server:
+    command: python
+    args:
+      - ${{ sync_workdir }}/demo_mcp_server.py

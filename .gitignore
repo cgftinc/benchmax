@@ -23,6 +23,7 @@ wheels/
 # Virtual Environments
 .env
 .venv
+.python-version
 env/
 venv/
 ENV/
@@ -75,4 +76,6 @@ coverage.xml
 # Poetry
 poetry.lock
 
+# Generated workspaces
 workspaces/
+outputs/
