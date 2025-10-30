@@ -1,0 +1,13 @@
+mcpServers:
+  test_server:
+    command: python
+    args:
+      - ${{ sync_workdir }}/salesforce_mcp.py
+    env:
+      SALESFORCE_USERNAME: crmarena_b2b@gmaill.com
+      SALESFORCE_PASSWORD: crmarenatest
+      SALESFORCE_SECURITY_TOKEN: zdaqqSYBEQTjjLuq0zLUHkC3
+      # Uncomment the following lines to use B2C credentials
+      # SALESFORCE_USERNAME: crmarena_b2c@gmaill.com
+      # SALESFORCE_PASSWORD: crmarenatest
+      # SALESFORCE_SECURITY_TOKEN: 2AQCtK8MnnV4lJdRNF0DGCs1

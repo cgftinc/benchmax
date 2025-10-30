@@ -1,0 +1,5 @@
+mcpServers:
+  test_server:
+    command: python
+    args:
+      - ${{ sync_workdir }}/excel_code_runner_mcp.py

@@ -1,0 +1,1 @@
+uv pip install simple-salesforce>=1.12.3 python-dateutil==2.9.0.post0

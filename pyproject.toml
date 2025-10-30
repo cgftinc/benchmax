@@ -1,40 +1,63 @@
-[tool.poetry]
+[project]
 name = "benchmax"
-version = "0.1.1.dev5"
+version = "0.1.2"
 description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
-authors = ["cgft.io"]
 readme = "README.md"
-packages = [
-   { include = "benchmax" },
+authors = [{ name = "cgft.io" }]
+requires-python = "==3.12.*"
+dependencies = [
+    "aiohttp>=3.13.1",
+    "asyncio>=4.0.0",
+    "datasets>=4.0.0",
+    "fastmcp~=2.12.0",
+    "pyjwt>=2.10.1",
+    "skypilot~=0.8.1",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache License",
+    "Operating System :: OS Independent",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<3.13"
-fastmcp = "~2.10.0"
-
-verl-cgft-fork = { version = "0.5.0.dev2", optional = true }
-sglang = { version = "0.4.9", optional = true, extras = ["all"] }
-verifiers = { version = "^0.1.1", optional = true, extras = ["train"]  }
-
-openpyxl = { version = "3.1.5", optional = true }
-xlwings = { version = "0.33.15", optional = true }
-
-simple-salesforce = { version = ">=1.12.3", optional = true }
-python-dateutil = { version = "~2.9.0", optional = true }
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.4.1"
-
-[tool.poetry.extras]
-# Independent feature extras
-verifiers = ["verifiers"]
-verl = ["verl-cgft-fork", "sglang"]
-
-# Environment-specific
-excel-linux = ["openpyxl"]
-excel = ["openpyxl", "xlwings"]
-crm = ["simple-salesforce", "python-dateutil"]
-
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "python-dotenv>=1.2.1",
+    "ruff>=0.14.2",
+]
+skypilot = [
+    "skypilot[aws,gcp,azure]~=0.8.1", # Change this to your cloud provider
+    "pip>=25.3",                      # Added as needed for skypilot launch
+    "msrestazure>=0.6.4.post1",
+]
+skyrl = [
+    "grpcio>=1.60.0",
+    "hydra-core>=1.3.2",
+    "omegaconf>=2.3.0",
+    "ray>=2.48.0",
+    "skyrl-gym>=0.1.1",
+    "skyrl-train[vllm]>=0.2.0",
+]
+excel = ["openpyxl>=3.1.5"]
+excel-mac-windows = ["openpyxl>=3.1.5", "xlwings>=0.33.16"]
+crm = ["python-dateutil>=2.9.0.post0", "simple-salesforce>=1.12.9"]
+
+[tool.uv]
+conflicts = [[{ group = "skypilot" }, { group = "skyrl" }]]
+
+[tool.uv.pip]
+extra = ["dev", "skypilot", "skyrl", "excel", "excel-mac-windows", "crm"]
+
+[tool.uv.extra-build-dependencies]
+flash-attn = [{ requirement = "torch", match-runtime = true }]
+
+[tool.uv.extra-build-variables]
+flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
