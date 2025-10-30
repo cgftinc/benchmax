@@ -28,7 +28,7 @@
 
 **Example: Multi-node parallelization of Excel Env with SkyRL and SkyPilot**
 
-RL environments can be computationally expensive to run (e.g. codegen). To handle this workload efficiently, we distribute rollouts across multiple nodes using **SkyPilot**, horizontally scaling `benchmax` across cloud providers like GCP, AWS, Azure, etc.
+RL environments can be computationally expensive to run (e.g. running tests). To handle these workloads efficiently, we distribute rollouts across multiple nodes using **SkyPilot**, horizontally scaling `benchmax` across cloud providers like GCP, AWS, Azure, etc.
 
 **SkyRL** is a training framework `benchmax` is currently integrated with. Use our ***SkyRL*** integration to RL finetune Qwen-2.5 to do spreadsheet manipulation using a excel MCP parallelized across multiple nodes. The environment is defined in [`benchmax.envs.excel.excel_env.ExcelEnvSkypilot`](/benchmax.envs.excel.excel_env)
 
