@@ -3,6 +3,7 @@ Local provisioner for spawning proxy servers on localhost.
 """
 
 import os
+import tempfile
 import signal
 import asyncio
 import logging
@@ -124,11 +125,16 @@ class LocalProvisioner(BaseProvisioner):
         addresses: List[str] = []
 
         try:
+            # Create a timestamped log directory
+            log_dir = tempfile.mkdtemp(prefix="proxy_server_logs_")
+            logger.info(f"Server logs will be written to: {log_dir}")
+            
             for i in range(self._num_servers):
                 port = self._base_port + i
                 address = f"localhost:{port}"
+                log_file = os.path.join(log_dir, f"server_{port}.log")
                 # Pass API token via environment variable to each server
-                cmd = f"source ~/venv/bin/activate && uv run proxy_server.py --port {port} --base-dir workspace"
+                cmd = f"source ~/venv/bin/activate && uv run proxy_server.py --port {port} --base-dir workspace >> {log_file} 2>&1"
                 env = {"API_SECRET": api_secret}
 
                 proc = await self._spawn_process(
@@ -142,7 +148,7 @@ class LocalProvisioner(BaseProvisioner):
                     raise RuntimeError("Failed to start a subprocess for the server.")
                 self._processes.append(proc)
                 addresses.append(address)
-                logger.debug(f"Started server on {address} (PID: {proc.pid})")
+                logger.debug(f"Started server on {address} (PID: {proc.pid}, log: {log_file})")
 
         except Exception as e:
             logger.error("Failed to start one or more servers")
