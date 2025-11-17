@@ -117,6 +117,23 @@ class LocalProvisioner(BaseProvisioner):
             self._sync_dir = None
             raise RuntimeError("Failed to run setup for local provisioner") from e
 
+        # Kill any existing processes using the required ports
+        port_range_start = self._base_port
+        port_range_end = self._base_port + self._num_servers - 1
+        logger.info(f"Cleaning up ports {port_range_start}-{port_range_end}")
+        cleanup_cmd = f"lsof -t -i tcp:{port_range_start}-{port_range_end} 2>/dev/null | xargs kill -9 2>/dev/null || true"
+        try:
+            await self._spawn_process(
+                cmd=cleanup_cmd,
+                cwd=self._sync_dir,
+                desc="port cleanup",
+                wait=True,
+            )
+            logger.debug(f"Port cleanup completed for range {port_range_start}-{port_range_end}")
+        except Exception as e:
+            # Log but don't fail if cleanup fails (ports might already be free)
+            logger.warning(f"Port cleanup encountered an issue (may be non-critical): {e}")
+
         # Launch servers (non-blocking)
         logger.info(
             f"Starting {self._num_servers} local servers "
