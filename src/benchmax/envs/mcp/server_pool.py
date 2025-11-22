@@ -159,7 +159,7 @@ class ServerPool:
                 server.status = "assigned"
                 self._rollout_to_server[rollout_id] = server
 
-                logger.info(
+                logger.debug(
                     f"Server {server.address} assigned to [{rollout_id}] "
                     f"(pool: {len(self._unassigned_servers)} available, {len(self._rollout_to_server)} assigned)"
                 )
