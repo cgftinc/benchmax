@@ -116,7 +116,7 @@ class ServerPool:
             async with self._server_available:
                 # Wait until a server is available
                 while not self._unassigned_servers:
-                    logger.info(
+                    logger.debug(
                         f"[{rollout_id}] Waiting for available server "
                         f"(pool: 0 available, {len(self._rollout_to_server)} assigned)"
                     )
