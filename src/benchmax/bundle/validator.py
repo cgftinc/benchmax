@@ -221,7 +221,7 @@ def _run_isolated_validation(
                 f"Isolated smoke test failed:\n"
                 f"stdout: {result.stdout}\n"
                 f"stderr: {result.stderr}\n"
-                "This usually means a dependency is missing from pip_dependencies."
+                "This usually means a dependency is missing from pip_dependencies or local_modules."
             )
 
         print(f"[validator] {result.stdout.strip()}")

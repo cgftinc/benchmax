@@ -9,17 +9,18 @@ import pytest
 
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.types import ToolDefinition
-from benchmax.bundle import (
+from benchmax.bundle.bundler import (
     EnvPayload,
+    bundle_env,
+)
+from benchmax.bundle.validator import validate_structure, validate_payload
+from benchmax.bundle.errors import (
+    IncompatiblePythonError,
     BundlingError,
     ValidationError,
-    load_env,
-    bundle_env,
-    validate_payload,
 )
-from benchmax.bundle.validator import validate_structure
-from benchmax.bundle.errors import IncompatiblePythonError
 from benchmax.bundle.payload import FORMAT_VERSION, MAGIC
+from benchmax.bundle.loader import load_env
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +44,10 @@ class MinimalEnv(BaseEnv):
             ToolDefinition(
                 name="echo",
                 description="Echo a message",
-                input_schema={"type": "object", "properties": {"msg": {"type": "string"}}},
+                input_schema={
+                    "type": "object",
+                    "properties": {"msg": {"type": "string"}},
+                },
             )
         ]
 
@@ -143,7 +147,12 @@ class TestEnvPayload:
 
     def test_truncated_metadata_raises(self):
         # Claim metadata is 1000 bytes but only provide 5
-        data = MAGIC + struct.pack("!H", FORMAT_VERSION) + struct.pack("!I", 1000) + b"short"
+        data = (
+            MAGIC
+            + struct.pack("!H", FORMAT_VERSION)
+            + struct.pack("!I", 1000)
+            + b"short"
+        )
         with pytest.raises(ValueError, match="truncated metadata"):
             EnvPayload.from_bytes(data)
 
@@ -169,7 +178,10 @@ class TestBundleEnv:
         payload = bundle_env(MinimalEnv, pip_dependencies=["aiohttp"])
         assert isinstance(payload, EnvPayload)
         assert payload.pip_dependencies == ["aiohttp"]
-        assert payload.python_version == f"{sys.version_info.major}.{sys.version_info.minor}"
+        assert (
+            payload.python_version
+            == f"{sys.version_info.major}.{sys.version_info.minor}"
+        )
         assert len(payload.pickled_class) > 0
 
     def test_bundle_no_deps(self):
@@ -210,7 +222,9 @@ class TestBundleEnv:
             del sys.modules["fake_helpers"]
 
     def test_bundle_bad_local_module_raises(self):
-        with pytest.raises(BundlingError, match="local_modules must contain module objects"):
+        with pytest.raises(
+            BundlingError, match="local_modules must contain module objects"
+        ):
             bundle_env(MinimalEnv, local_modules=["not_a_module"])  # type: ignore
 
 
@@ -239,14 +253,14 @@ class TestLoadEnv:
         data = payload.to_bytes()
         env_class = load_env(data, install_deps=False)
 
-        env = env_class(greeting="hi") # type: ignore
-        assert env.greeting == "hi" # type: ignore
+        env = env_class(greeting="hi")  # type: ignore
+        assert env.greeting == "hi"  # type: ignore
 
     @pytest.mark.asyncio
     async def test_roundtrip_async_methods(self):
         payload = bundle_env(MinimalEnv)
         env_class = load_env(payload, install_deps=False)
-        env = env_class(greeting="test") # type: ignore
+        env = env_class(greeting="test")  # type: ignore
 
         tools = await env.list_tools()
         assert len(tools) == 1
@@ -397,10 +411,20 @@ class TestValidatePayload:
         with patch("benchmax.bundle.validator.subprocess") as mock_sub:
             # Calls: venv creation, get-pip download, pip bootstrap, pip install deps (fails)
             mock_sub.run.side_effect = [
-                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # venv
-                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # get-pip download
-                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # pip bootstrap
-                type("Result", (), {"returncode": 1, "stdout": "", "stderr": "pip install failed"})(),  # deps
+                type(
+                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
+                )(),  # venv
+                type(
+                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
+                )(),  # get-pip download
+                type(
+                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
+                )(),  # pip bootstrap
+                type(
+                    "Result",
+                    (),
+                    {"returncode": 1, "stdout": "", "stderr": "pip install failed"},
+                )(),  # deps
             ]
 
             with pytest.raises(ValidationError, match="Failed to install dependencies"):
@@ -413,11 +437,27 @@ class TestValidatePayload:
         with patch("benchmax.bundle.validator.subprocess") as mock_sub:
             # Calls: venv creation, get-pip download, pip bootstrap, pip install deps, smoke test (fails)
             mock_sub.run.side_effect = [
-                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # venv
-                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # get-pip download
-                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # pip bootstrap
-                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # deps
-                type("Result", (), {"returncode": 1, "stdout": "", "stderr": "ImportError: missing dep"})(),  # smoke
+                type(
+                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
+                )(),  # venv
+                type(
+                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
+                )(),  # get-pip download
+                type(
+                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
+                )(),  # pip bootstrap
+                type(
+                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
+                )(),  # deps
+                type(
+                    "Result",
+                    (),
+                    {
+                        "returncode": 1,
+                        "stdout": "",
+                        "stderr": "ImportError: missing dep",
+                    },
+                )(),  # smoke
             ]
 
             with pytest.raises(ValidationError, match="Isolated smoke test failed"):
