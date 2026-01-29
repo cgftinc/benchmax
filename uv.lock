@@ -1724,11 +1724,12 @@ wheels = [
 
 [[package]]
 name = "benchmax"
-version = "0.1.2"
+version = "0.1.2.dev7"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "asyncio" },
+    { name = "cloudpickle" },
     { name = "datasets" },
     { name = "fastmcp" },
     { name = "pyjwt" },
@@ -1771,6 +1772,7 @@ skyrl = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.1" },
     { name = "asyncio", specifier = ">=4.0.0" },
+    { name = "cloudpickle", specifier = ">=3.0.0" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "fastmcp", specifier = "~=2.12.0" },
     { name = "pyjwt", specifier = ">=2.10.1" },
