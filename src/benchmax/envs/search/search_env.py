@@ -157,7 +157,7 @@ class SearchEnv(BaseEnv):
         # Build URL
         url = f"{self._base_url}/api/corpora/{self._corpus_id}/search"
         headers = {
-            "x-api-key": self._api_key,
+            "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
 

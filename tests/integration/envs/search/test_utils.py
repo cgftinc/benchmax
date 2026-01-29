@@ -94,7 +94,7 @@ async def create_corpus(base_url: str, api_key: str, name: str) -> str:
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{base_url}/api/corpora",
-            headers={"x-api-key": api_key},
+            headers={"Authorization": f"Bearer {api_key}"},
             json={"name": name},
         ) as resp:
             if resp.status not in (200, 201):
@@ -116,7 +116,7 @@ async def upload_chunks(
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{base_url}/api/corpora/{corpus_id}/chunks",
-            headers={"x-api-key": api_key},
+            headers={"Authorization": f"Bearer {api_key}"},
             json={"filename": filename, "chunks": chunks},
         ) as resp:
             if resp.status not in (200, 201):
@@ -132,7 +132,7 @@ async def delete_corpus(base_url: str, api_key: str, corpus_id: str) -> None:
     async with aiohttp.ClientSession() as session:
         async with session.delete(
             f"{base_url}/api/corpora/{corpus_id}",
-            headers={"x-api-key": api_key},
+            headers={"Authorization": f"Bearer {api_key}"},
         ) as resp:
             if resp.status != 200:
                 error = await resp.json()
