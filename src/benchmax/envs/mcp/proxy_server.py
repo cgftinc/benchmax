@@ -383,7 +383,7 @@ class ProxyServer:
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
         if self.client:
-            await self.client._disconnect()
+            await self.client.close()
 
         self.cleanup_workspace()
         asyncio.create_task(do_reset())
