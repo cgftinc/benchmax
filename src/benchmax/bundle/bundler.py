@@ -3,11 +3,13 @@ import sys
 import types
 from typing import Any, Dict, List, Optional, Type
 
+from pathlib import Path
+
 import cloudpickle
 
 from benchmax.envs.base_env import BaseEnv
 from benchmax.bundle.errors import BundlingError
-from benchmax.bundle.payload import EnvPayload
+from benchmax.bundle.payload import BundleMetadata, BundledEnv
 from benchmax.bundle.validator import validate_structure
 
 logger = logging.getLogger(__name__)
@@ -18,13 +20,13 @@ def bundle_env(
     pip_dependencies: Optional[List[str]] = None,
     local_modules: Optional[List[types.ModuleType]] = None,
     validate: bool = True,
-    extra_metadata: Optional[Dict[str, Any]] = None,
-) -> EnvPayload:
+    constructor_args: Optional[Dict[str, Any]] = None,
+) -> BundledEnv:
     """Bundle a BaseEnv subclass for remote execution.
 
     Serializes the class (not an instance) using cloudpickle and bundles
-    metadata needed to reconstruct it on a remote machine. Constructor
-    args are NOT included — provide them separately at instantiation time.
+    metadata needed to reconstruct it on a remote machine. Optional constructor
+    kwargs can be included in metadata for auto-instantiation.
 
     Args:
         env_class: The class to bundle. Must be a BaseEnv subclass.
@@ -35,18 +37,16 @@ def bundle_env(
             files that are not installed packages. NOT needed for code
             defined in notebook cells.
         validate: Run structural validation before bundling.
-        extra_metadata: Arbitrary JSON-serializable metadata to include.
+        constructor_args: Optional constructor kwargs to store in metadata.
 
     Returns:
-        EnvPayload containing the serialized class and metadata.
+        BundledEnv containing the serialized class and metadata.
 
     Raises:
         BundlingError: If serialization fails.
         ValidationError: If structural validation fails.
     """
     pip_dependencies = pip_dependencies or []
-    extra_metadata = extra_metadata or {}
-
     # --- Structural validation ---
     if validate:
         warnings = validate_structure(env_class, pip_dependencies)
@@ -93,13 +93,13 @@ def bundle_env(
         benchmax_version = "unknown"
 
     # --- Build payload ---
-    payload = EnvPayload(
-        pickled_class=pickled_class,
+    metadata = BundleMetadata(
         pip_dependencies=pip_dependencies,
         python_version=python_version,
         benchmax_version=benchmax_version,
-        extra_metadata=extra_metadata,
+        constructor_args=constructor_args,
     )
+    payload = BundledEnv(pickled_class=pickled_class, metadata=metadata)
 
     size_kb = len(pickled_class) / 1024
     logger.info(
@@ -108,3 +108,20 @@ def bundle_env(
     )
 
     return payload
+
+
+def write_bundle_files(
+    bundle: BundledEnv, pickle_path: Path, metadata_path: Path
+) -> None:
+    pickle_path = Path(pickle_path)
+    metadata_path = Path(metadata_path)
+    pickle_path.write_bytes(bundle.pickled_class)
+    metadata_path.write_bytes(bundle.metadata.to_json_bytes())
+
+
+def read_bundle_files(pickle_path: Path, metadata_path: Path) -> BundledEnv:
+    pickle_path = Path(pickle_path)
+    metadata_path = Path(metadata_path)
+    pickled_class = pickle_path.read_bytes()
+    metadata = BundleMetadata.from_json_bytes(metadata_path.read_bytes())
+    return BundledEnv(pickled_class=pickled_class, metadata=metadata)

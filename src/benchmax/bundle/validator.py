@@ -11,28 +11,32 @@ from typing import Any, Dict, List, Optional, Type
 
 from benchmax.envs.base_env import BaseEnv
 from benchmax.bundle.errors import ValidationError
-from benchmax.bundle.payload import EnvPayload
+from benchmax.bundle.payload import BundleMetadata, BundledEnv
 
 logger = logging.getLogger(__name__)
 
 
-def validate_payload(
-    payload: EnvPayload,
+def validate_bundle(
+    bundle: BundledEnv,
     constructor_args: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
-    """Validate a packaged payload by running it in an isolated environment.
+    """Validate a packaged bundle by running it in an isolated environment.
 
     Creates a temporary venv, installs the declared dependencies, loads the
-    payload using the standard loader, and optionally runs a smoke test.
+    bundle using the standard loader, and optionally runs a smoke test.
 
     Args:
-        payload: The packaged EnvPayload to validate.
+        bundle: The packaged BundledEnv to validate.
         constructor_args: If provided, instantiate the class and call list_tools().
 
     Returns:
         List of warning strings (non-fatal). Fatal issues raise ValidationError.
     """
-    return _run_isolated_validation(payload, constructor_args)
+    if constructor_args is None:
+        constructor_args = bundle.metadata.constructor_args
+    return _run_isolated_validation(
+        bundle.pickled_class, bundle.metadata, constructor_args
+    )
 
 
 def validate_structure(
@@ -103,13 +107,15 @@ def validate_structure(
 
 
 def _run_isolated_validation(
-    payload: EnvPayload,
+    pickled_class: bytes,
+    metadata: BundleMetadata,
     constructor_args: Optional[Dict[str, Any]],
 ) -> List[str]:
-    """Create a temp venv, install deps, unpickle the payload, and smoke test.
+    """Create a temp venv, install deps, unpickle the bundle, and smoke test.
 
     Args:
-        payload: The packaged EnvPayload containing the pickled class and dependencies.
+        pickled_class: The pickled class bytes.
+        metadata: The bundle metadata containing dependencies.
         constructor_args: If provided, instantiate the class and call list_tools().
 
     Returns:
@@ -166,10 +172,10 @@ def _run_isolated_validation(
             )
             return warnings_list
 
-        # 3. Install benchmax + declared deps from payload
+        # 3. Install benchmax + declared deps from metadata
         # benchmax is needed because the pickled class inherits from BaseEnv
         # (cloudpickle is a dependency of benchmax, so it's installed automatically)
-        deps_to_install = ["benchmax"] + list(payload.pip_dependencies)
+        deps_to_install = ["benchmax"] + list(metadata.pip_dependencies)
         print(f"[validator] Installing dependencies: {deps_to_install}")
         install_cmd = [venv_python, "-m", "pip", "install", "--quiet"] + deps_to_install
         result = subprocess.run(
@@ -184,7 +190,7 @@ def _run_isolated_validation(
         # 4. Write the pickled class bytes to temp file
         pickle_path = os.path.join(venv_dir, "env_class.pkl")
         with open(pickle_path, "wb") as f:
-            f.write(payload.pickled_class)
+            f.write(pickled_class)
 
         # 5. Write and run smoke test script using cloudpickle directly
         constructor_args_json = json.dumps(constructor_args) if constructor_args else "null"

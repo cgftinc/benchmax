@@ -20,3 +20,9 @@ class IncompatiblePythonError(BundlingError):
     """Raised when Python version constraints are not met."""
 
     pass
+
+
+class IncompatibleBenchmaxError(BundlingError):
+    """Raised when benchmax version constraints are not met."""
+
+    pass

@@ -1,4 +1,3 @@
-import struct
 import sys
 import types
 from pathlib import Path
@@ -9,18 +8,16 @@ import pytest
 
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.types import ToolDefinition
-from benchmax.bundle.bundler import (
-    EnvPayload,
-    bundle_env,
-)
-from benchmax.bundle.validator import validate_structure, validate_payload
+from benchmax.bundle.bundler import bundle_env, read_bundle_files, write_bundle_files
 from benchmax.bundle.errors import (
+    IncompatibleBenchmaxError,
     IncompatiblePythonError,
     BundlingError,
     ValidationError,
 )
-from benchmax.bundle.payload import FORMAT_VERSION, MAGIC
-from benchmax.bundle.loader import load_env
+from benchmax.bundle.loader import load_env, load_env_from_files
+from benchmax.bundle.payload import BundleMetadata, BundledEnv
+from benchmax.bundle.validator import validate_bundle, validate_structure
 
 
 # ---------------------------------------------------------------------------
@@ -89,111 +86,54 @@ class BadInitEnv(MinimalEnv):
 
 
 # ---------------------------------------------------------------------------
-# Tests: payload.py
+# Tests: payload.py (BundleMetadata)
 # ---------------------------------------------------------------------------
 
 
-class TestEnvPayload:
-    def test_to_bytes_and_from_bytes_roundtrip(self):
-        payload = EnvPayload(
-            pickled_class=b"fake-pickle-data",
+class TestBundleMetadata:
+    def test_to_json_bytes_roundtrip(self):
+        metadata = BundleMetadata(
             pip_dependencies=["aiohttp>=3.9", "numpy"],
             python_version="3.12",
             benchmax_version="0.1.0",
-            extra_metadata={"custom": "value"},
+            constructor_args={"greeting": "hi"},
         )
-        data = payload.to_bytes()
-        restored = EnvPayload.from_bytes(data)
+        data = metadata.to_json_bytes()
+        restored = BundleMetadata.from_json_bytes(data)
 
-        assert restored.pickled_class == b"fake-pickle-data"
         assert restored.pip_dependencies == ["aiohttp>=3.9", "numpy"]
         assert restored.python_version == "3.12"
         assert restored.benchmax_version == "0.1.0"
-        assert restored.extra_metadata == {"custom": "value"}
-
-    def test_magic_bytes(self):
-        payload = EnvPayload(
-            pickled_class=b"data",
-            pip_dependencies=[],
-            python_version="3.12",
-            benchmax_version="0.1.0",
-        )
-        data = payload.to_bytes()
-        assert data[:4] == MAGIC
-
-    def test_format_version(self):
-        payload = EnvPayload(
-            pickled_class=b"data",
-            pip_dependencies=[],
-            python_version="3.12",
-            benchmax_version="0.1.0",
-        )
-        data = payload.to_bytes()
-        version = struct.unpack("!H", data[4:6])[0]
-        assert version == FORMAT_VERSION
-
-    def test_bad_magic_raises(self):
-        with pytest.raises(ValueError, match="bad magic bytes"):
-            EnvPayload.from_bytes(b"BADXsomething_else_here")
-
-    def test_too_short_raises(self):
-        with pytest.raises(ValueError, match="too short"):
-            EnvPayload.from_bytes(b"BM")
-
-    def test_unsupported_version_raises(self):
-        data = MAGIC + struct.pack("!H", 999) + struct.pack("!I", 0)
-        with pytest.raises(ValueError, match="Unsupported payload format version"):
-            EnvPayload.from_bytes(data)
-
-    def test_truncated_metadata_raises(self):
-        # Claim metadata is 1000 bytes but only provide 5
-        data = (
-            MAGIC
-            + struct.pack("!H", FORMAT_VERSION)
-            + struct.pack("!I", 1000)
-            + b"short"
-        )
-        with pytest.raises(ValueError, match="truncated metadata"):
-            EnvPayload.from_bytes(data)
-
-    def test_empty_extra_metadata_default(self):
-        payload = EnvPayload(
-            pickled_class=b"data",
-            pip_dependencies=[],
-            python_version="3.12",
-            benchmax_version="0.1.0",
-        )
-        data = payload.to_bytes()
-        restored = EnvPayload.from_bytes(data)
-        assert restored.extra_metadata == {}
+        assert restored.constructor_args == {"greeting": "hi"}
+        assert restored.format_version == metadata.format_version
 
 
 # ---------------------------------------------------------------------------
-# Tests: bundler.py (bundle_env)
+# Tests: bundler.py (bundle_env + file helpers)
 # ---------------------------------------------------------------------------
 
 
 class TestBundleEnv:
     def test_bundle_minimal_env(self):
-        payload = bundle_env(MinimalEnv, pip_dependencies=["aiohttp"])
-        assert isinstance(payload, EnvPayload)
-        assert payload.pip_dependencies == ["aiohttp"]
+        bundle = bundle_env(MinimalEnv, pip_dependencies=["aiohttp"])
+        assert isinstance(bundle, BundledEnv)
+        assert bundle.metadata.pip_dependencies == ["aiohttp"]
         assert (
-            payload.python_version
+            bundle.metadata.python_version
             == f"{sys.version_info.major}.{sys.version_info.minor}"
         )
-        assert len(payload.pickled_class) > 0
+        assert len(bundle.pickled_class) > 0
 
     def test_bundle_no_deps(self):
-        payload = bundle_env(MinimalEnv)
-        assert payload.pip_dependencies == []
+        bundle = bundle_env(MinimalEnv)
+        assert bundle.metadata.pip_dependencies == []
 
-    def test_bundle_with_extra_metadata(self):
-        payload = bundle_env(
+    def test_bundle_with_constructor_args(self):
+        bundle = bundle_env(
             MinimalEnv,
-            extra_metadata={"experiment": "test-run-1"},
+            constructor_args={"greeting": "yo"},
         )
-        assert payload.extra_metadata == {"experiment": "test-run-1"}
+        assert bundle.metadata.constructor_args == {"greeting": "yo"}
 
     def test_bundle_not_a_class_raises(self):
         with pytest.raises(ValidationError):
@@ -204,20 +144,17 @@ class TestBundleEnv:
             bundle_env(BaseEnv)
 
     def test_bundle_skip_validation(self):
-        # Even BaseEnv should serialize if we skip validation
-        # (it will fail to instantiate on remote, but that's the user's problem)
-        payload = bundle_env(BaseEnv, validate=False)
-        assert len(payload.pickled_class) > 0
+        bundle = bundle_env(BaseEnv, validate=False)
+        assert len(bundle.pickled_class) > 0
 
     def test_bundle_local_modules(self):
-        # Create a fake module
         mod = types.ModuleType("fake_helpers")
         mod.CONSTANT = 42  # type: ignore
         sys.modules["fake_helpers"] = mod
 
         try:
-            payload = bundle_env(MinimalEnv, local_modules=[mod])
-            assert len(payload.pickled_class) > 0
+            bundle = bundle_env(MinimalEnv, local_modules=[mod])
+            assert len(bundle.pickled_class) > 0
         finally:
             del sys.modules["fake_helpers"]
 
@@ -227,6 +164,17 @@ class TestBundleEnv:
         ):
             bundle_env(MinimalEnv, local_modules=["not_a_module"])  # type: ignore
 
+    def test_write_read_bundle_files(self, tmp_path: Path):
+        bundle = bundle_env(MinimalEnv, constructor_args={"greeting": "hi"})
+        pickle_path = tmp_path / "env_class.pkl"
+        metadata_path = tmp_path / "env_meta.json"
+
+        write_bundle_files(bundle, pickle_path, metadata_path)
+        restored = read_bundle_files(pickle_path, metadata_path)
+
+        assert restored.pickled_class == bundle.pickled_class
+        assert restored.metadata == bundle.metadata
+
 
 # ---------------------------------------------------------------------------
 # Tests: loader.py (load_env)
@@ -234,32 +182,34 @@ class TestBundleEnv:
 
 
 class TestLoadEnv:
-    def test_load_from_payload(self):
-        payload = bundle_env(MinimalEnv)
-        env_class = load_env(payload, install_deps=False)
+    def test_load_from_pickle_and_metadata(self):
+        bundle = bundle_env(MinimalEnv)
+        env_class = load_env(bundle.pickled_class, bundle.metadata, install_pip_deps=False)
         assert env_class is not None
         assert issubclass(env_class, BaseEnv)
         assert env_class.__name__ == "MinimalEnv"
 
-    def test_load_from_bytes(self):
-        payload = bundle_env(MinimalEnv)
-        data = payload.to_bytes()
-        env_class = load_env(data, install_deps=False)
+    def test_load_from_files(self, tmp_path: Path):
+        bundle = bundle_env(MinimalEnv)
+        pickle_path = tmp_path / "env_class.pkl"
+        metadata_path = tmp_path / "env_meta.json"
+        write_bundle_files(bundle, pickle_path, metadata_path)
+
+        env_class = load_env_from_files(
+            pickle_path, metadata_path, install_pip_deps=False
+        )
         assert issubclass(env_class, BaseEnv)
 
-    def test_full_roundtrip(self):
-        """Bundle → to_bytes → from_bytes → load → instantiate → use."""
-        payload = bundle_env(MinimalEnv, pip_dependencies=["aiohttp"])
-        data = payload.to_bytes()
-        env_class = load_env(data, install_deps=False)
-
-        env = env_class(greeting="hi")  # type: ignore
+    def test_full_roundtrip_instance(self):
+        bundle = bundle_env(MinimalEnv, constructor_args={"greeting": "hi"})
+        env = load_env(bundle.pickled_class, bundle.metadata)
+        assert isinstance(env, BaseEnv)
         assert env.greeting == "hi"  # type: ignore
 
     @pytest.mark.asyncio
     async def test_roundtrip_async_methods(self):
-        payload = bundle_env(MinimalEnv)
-        env_class = load_env(payload, install_deps=False)
+        bundle = bundle_env(MinimalEnv)
+        env_class = load_env(bundle.pickled_class, bundle.metadata, install_pip_deps=False)
         env = env_class(greeting="test")  # type: ignore
 
         tools = await env.list_tools()
@@ -275,180 +225,144 @@ class TestLoadEnv:
         await env.shutdown()
 
     def test_python_version_mismatch_raises(self):
-        payload = EnvPayload(
-            pickled_class=b"data",
-            pip_dependencies=[],
-            python_version="3.11",  # wrong version
-            benchmax_version="0.1.0",
-        )
-        with pytest.raises(IncompatiblePythonError, match="Python 3.11"):
-            load_env(payload, install_deps=False)
-
-    def test_python_version_mismatch_allowed(self):
-        """allow_python_mismatch=True skips the version check."""
-        payload = bundle_env(MinimalEnv)
-        # Manually override version to simulate mismatch
-        mismatched = EnvPayload(
-            pickled_class=payload.pickled_class,
+        bundle = bundle_env(MinimalEnv)
+        metadata = BundleMetadata(
             pip_dependencies=[],
             python_version="3.11",
             benchmax_version="0.1.0",
         )
-        # Should not raise — the pickle is valid for current Python
-        env_class = load_env(mismatched, install_deps=False, allow_python_mismatch=True)
+        with pytest.raises(IncompatiblePythonError, match="Python 3.11"):
+            load_env(bundle.pickled_class, metadata, install_pip_deps=False)
+
+    def test_python_version_mismatch_allowed(self):
+        bundle = bundle_env(MinimalEnv)
+        metadata = BundleMetadata(
+            pip_dependencies=[],
+            python_version="3.11",
+            benchmax_version="0.1.0",
+        )
+        env_class = load_env(
+            bundle.pickled_class,
+            metadata,
+            install_pip_deps=False,
+            check_python_version=False,
+        )
         assert issubclass(env_class, BaseEnv)
 
+    def test_benchmax_version_mismatch_raises(self):
+        bundle = bundle_env(MinimalEnv)
+        metadata = BundleMetadata(
+            pip_dependencies=[],
+            python_version="3.12",
+            benchmax_version="0.1.0",
+        )
+        with patch("importlib.metadata.version") as get_version:
+            get_version.return_value = "9.9.9"
+            with pytest.raises(IncompatibleBenchmaxError):
+                load_env(
+                    bundle.pickled_class,
+                    metadata,
+                    install_pip_deps=False,
+                    check_benchmax_version=True,
+                )
+
     def test_load_no_install(self):
-        """install_deps=False should not call subprocess."""
-        payload = bundle_env(MinimalEnv, pip_dependencies=["some-package"])
+        bundle = bundle_env(MinimalEnv, pip_dependencies=["some-package"])
         with patch("benchmax.bundle.loader.subprocess") as mock_sub:
-            env_class = load_env(payload, install_deps=False)
+            env_class = load_env(
+                bundle.pickled_class,
+                bundle.metadata,
+                install_pip_deps=False,
+            )
             mock_sub.run.assert_not_called()
         assert issubclass(env_class, BaseEnv)
 
     def test_load_with_install(self):
-        """install_deps=True should call pip install."""
-        payload = bundle_env(MinimalEnv, pip_dependencies=["some-package"])
+        bundle = bundle_env(MinimalEnv, pip_dependencies=["some-package"])
         with patch("benchmax.bundle.loader.subprocess") as mock_sub:
             mock_sub.run.return_value.returncode = 0
-            load_env(payload, install_deps=True)
+            load_env(bundle.pickled_class, bundle.metadata, install_pip_deps=True)
             mock_sub.run.assert_called_once()
             cmd = mock_sub.run.call_args[0][0]
             assert "pip" in cmd
             assert "some-package" in cmd
 
+    def test_instantiate_false_returns_class(self):
+        bundle = bundle_env(MinimalEnv, constructor_args={"greeting": "hi"})
+        env_class = load_env(
+            bundle.pickled_class, bundle.metadata, instantiate=False
+        )
+        assert isinstance(env_class, type)
 
-# ---------------------------------------------------------------------------
-# Tests: validator.py (_validate_structure - used by bundle_env)
-# ---------------------------------------------------------------------------
-
-
-class TestValidateStructure:
-    """Tests for _validate_structure which runs structural checks before bundling."""
-
-    def test_validate_minimal_env(self):
-        warnings = validate_structure(MinimalEnv, [])
-        # Should pass with no fatal errors
-        assert isinstance(warnings, list)
-
-    def test_validate_not_subclass(self):
-        with pytest.raises(ValidationError, match="not a subclass"):
-            validate_structure(str, [])  # type: ignore
-
-    def test_validate_base_env_directly(self):
-        with pytest.raises(ValidationError, match="Cannot bundle BaseEnv directly"):
-            validate_structure(BaseEnv, [])
-
-    def test_validate_incomplete_subclass(self):
-        class IncompleteEnv(BaseEnv):
-            pass  # missing all abstract methods
-
-        with pytest.raises(ValidationError, match="unimplemented abstract methods"):
-            validate_structure(IncompleteEnv, [])
-
-    def test_validate_bad_dependency_string(self):
-        with pytest.raises(ValidationError, match="Invalid pip dependency"):
-            validate_structure(MinimalEnv, [""])
-
-    def test_validate_stdlib_warning(self):
-        warnings = validate_structure(MinimalEnv, ["os"])
-        assert any("stdlib" in w for w in warnings)
-
-    def test_validate_non_importable_dep_warning(self):
-        warnings = validate_structure(MinimalEnv, ["totally-fake-package-xyz123"])
-        assert any("not importable" in w for w in warnings)
-
-    def test_validate_obscure_but_real_package_warning(self):
-        """Test that a real but obscure package (not installed) triggers 'not importable' warning."""
-        # 'bidict' is a real PyPI package (bidirectional dict) but unlikely to be installed
-        warnings = validate_structure(MinimalEnv, ["bidict"])
-        # Should warn that it's not currently importable (since it's not installed)
-        assert any("not importable" in w for w in warnings)
+    def test_explicit_constructor_overrides_metadata(self):
+        bundle = bundle_env(MinimalEnv, constructor_args={"greeting": "meta"})
+        env = load_env(
+            bundle.pickled_class,
+            bundle.metadata,
+            constructor_args={"greeting": "explicit"},
+        )
+        assert env.greeting == "explicit"  # type: ignore
 
 
 # ---------------------------------------------------------------------------
-# Tests: validator.py (validate_payload - isolated validation)
+# Tests: validator.py (validate_bundle - isolated validation)
 # ---------------------------------------------------------------------------
 
 
-class TestValidatePayload:
-    """Tests for validate_payload which runs isolated venv validation."""
+class TestValidateBundle:
+    """Tests for validate_bundle which runs isolated venv validation."""
 
-    def test_validate_payload_mocked_subprocess(self):
-        """Test that validate_payload calls subprocess to create venv and run tests."""
-        payload = bundle_env(MinimalEnv, pip_dependencies=["aiohttp"])
+    def test_validate_bundle_mocked_subprocess(self):
+        bundle = bundle_env(MinimalEnv, pip_dependencies=["aiohttp"])
 
         with patch("benchmax.bundle.validator.subprocess") as mock_sub:
-            # Mock successful venv creation
             mock_sub.run.return_value.returncode = 0
             mock_sub.run.return_value.stdout = "OK: MinimalEnv loaded"
             mock_sub.run.return_value.stderr = ""
 
-            warnings = validate_payload(payload)
+            warnings = validate_bundle(bundle)
 
-            # Should have called subprocess at least twice (venv create + pip install + smoke test)
             assert mock_sub.run.call_count >= 2
             assert isinstance(warnings, list)
 
-    def test_validate_payload_venv_creation_failure(self):
-        """Test handling of venv creation failure."""
-        payload = bundle_env(MinimalEnv)
+    def test_validate_bundle_venv_creation_failure(self):
+        bundle = bundle_env(MinimalEnv)
 
         with patch("benchmax.bundle.validator.subprocess") as mock_sub:
-            # Mock venv creation failure
             mock_sub.run.return_value.returncode = 1
             mock_sub.run.return_value.stderr = "venv creation failed"
 
-            warnings = validate_payload(payload)
+            warnings = validate_bundle(bundle)
 
-            # Should return a warning about venv creation failure
             assert any("Failed to create venv" in w for w in warnings)
 
-    def test_validate_payload_pip_install_failure(self):
-        """Test handling of pip install failure."""
-        payload = bundle_env(MinimalEnv, pip_dependencies=["nonexistent-pkg-xyz"])
+    def test_validate_bundle_pip_install_failure(self):
+        bundle = bundle_env(MinimalEnv, pip_dependencies=["nonexistent-pkg-xyz"])
 
         with patch("benchmax.bundle.validator.subprocess") as mock_sub:
-            # Calls: venv creation, get-pip download, pip bootstrap, pip install deps (fails)
             mock_sub.run.side_effect = [
-                type(
-                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
-                )(),  # venv
-                type(
-                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
-                )(),  # get-pip download
-                type(
-                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
-                )(),  # pip bootstrap
+                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
                 type(
                     "Result",
                     (),
                     {"returncode": 1, "stdout": "", "stderr": "pip install failed"},
-                )(),  # deps
+                )(),
             ]
 
             with pytest.raises(ValidationError, match="Failed to install dependencies"):
-                validate_payload(payload)
+                validate_bundle(bundle)
 
-    def test_validate_payload_smoke_test_failure(self):
-        """Test handling of smoke test failure in isolated env."""
-        payload = bundle_env(MinimalEnv)
+    def test_validate_bundle_smoke_test_failure(self):
+        bundle = bundle_env(MinimalEnv)
 
         with patch("benchmax.bundle.validator.subprocess") as mock_sub:
-            # Calls: venv creation, get-pip download, pip bootstrap, pip install deps, smoke test (fails)
             mock_sub.run.side_effect = [
-                type(
-                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
-                )(),  # venv
-                type(
-                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
-                )(),  # get-pip download
-                type(
-                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
-                )(),  # pip bootstrap
-                type(
-                    "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
-                )(),  # deps
+                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
                 type(
                     "Result",
                     (),
@@ -457,49 +371,43 @@ class TestValidatePayload:
                         "stdout": "",
                         "stderr": "ImportError: missing dep",
                     },
-                )(),  # smoke
+                )(),
             ]
 
             with pytest.raises(ValidationError, match="Isolated smoke test failed"):
-                validate_payload(payload)
+                validate_bundle(bundle)
 
-    def test_validate_payload_with_constructor_args(self):
-        """Test that constructor_args are passed to the smoke test."""
-        payload = bundle_env(MinimalEnv)
+    def test_validate_bundle_with_constructor_args(self):
+        bundle = bundle_env(MinimalEnv, constructor_args={"greeting": "test"})
 
         with patch("benchmax.bundle.validator.subprocess") as mock_sub:
             mock_sub.run.return_value.returncode = 0
             mock_sub.run.return_value.stdout = "OK: MinimalEnv loaded, 1 tools"
             mock_sub.run.return_value.stderr = ""
 
-            warnings = validate_payload(payload, constructor_args={"greeting": "test"})
+            warnings = validate_bundle(bundle)
 
             assert isinstance(warnings, list)
-            # Verify the script was written with constructor_args
             calls = mock_sub.run.call_args_list
-            # The last call should be running the smoke test script
             assert len(calls) >= 3
 
-    def test_validate_payload_timeout_warning(self):
-        """Test that timeout during validation returns a warning."""
+    def test_validate_bundle_timeout_warning(self):
         import subprocess as real_subprocess
 
-        payload = bundle_env(MinimalEnv)
+        bundle = bundle_env(MinimalEnv)
 
         with patch("benchmax.bundle.validator.subprocess") as mock_sub:
-            # Simulate timeout on one of the calls
             mock_sub.run.side_effect = real_subprocess.TimeoutExpired("cmd", 120)
             mock_sub.TimeoutExpired = real_subprocess.TimeoutExpired
 
-            warnings = validate_payload(payload)
+            warnings = validate_bundle(bundle)
 
             assert any("timed out" in w for w in warnings)
 
-    def test_validate_payload_cleanup_on_success(self):
-        """Test that temp directory is cleaned up after successful validation."""
+    def test_validate_bundle_cleanup_on_success(self):
         import tempfile as real_tempfile
 
-        payload = bundle_env(MinimalEnv)
+        bundle = bundle_env(MinimalEnv)
         created_dirs = []
 
         original_mkdtemp = real_tempfile.mkdtemp
@@ -515,8 +423,7 @@ class TestValidatePayload:
             mock_sub.run.return_value.stderr = ""
 
             with patch("benchmax.bundle.validator.tempfile.mkdtemp", tracking_mkdtemp):
-                validate_payload(payload)
+                validate_bundle(bundle)
 
-            # Verify temp dir was created and then cleaned up
             assert len(created_dirs) == 1
             assert not Path(created_dirs[0]).exists()
