@@ -18,10 +18,6 @@ class BaseEnv(ABC):
 
     system_prompt: str = ""
 
-    @abstractmethod
-    async def shutdown(self):
-        pass
-
     # Override this method if your example does not match the default structure
     @classmethod
     def dataset_preprocess(cls, example: Any, **kwargs) -> StandardizedExample:
@@ -97,6 +93,9 @@ class BaseEnv(ABC):
             return self.system_prompt
 
     # Optional rollout lifecycle management methods
+
+    async def shutdown(self):
+        pass
 
     async def init_rollout(self, rollout_id: str, **rollout_args) -> None:
         """Initialize resources for a new rollout"""
