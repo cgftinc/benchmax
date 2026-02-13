@@ -65,6 +65,8 @@ class BaseEnv(ABC):
         """
         return load_dataset(dataset_name, **kwargs), None
 
+    # Methods all environment subclasses must implement
+
     @abstractmethod
     async def list_tools(self) -> List[ToolDefinition]:
         """Return list of available tools"""
@@ -73,37 +75,6 @@ class BaseEnv(ABC):
     @abstractmethod
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
         """Execute named tool in rollout context with given arguments"""
-        pass
-
-    @abstractmethod
-    async def init_rollout(self, rollout_id: str, **rollout_args) -> None:
-        """Initialize resources for a new rollout"""
-        pass
-
-    @abstractmethod
-    async def release_rollout(self, rollout_id: str) -> None:
-        """Free up resources for a new rollout. Called by compute_reward internally but also available for cleanup."""
-        pass
-
-    @abstractmethod
-    async def copy_to_workspace(
-        self, rollout_id: str, src_path: Path, dst_filename: Optional[str] = None
-    ) -> None:
-        """Copy a file to the workspace for a specific rollout. If dst_filename is None, use the original filename."""
-        pass
-
-    @abstractmethod
-    async def copy_content_to_workspace(
-        self, rollout_id: str, src_content: str | bytes, dst_filename: str
-    ) -> None:
-        """Create a file with given content in the workspace for a specific rollout"""
-        pass
-
-    @abstractmethod
-    async def copy_from_workspace(
-        self, rollout_id: str, src_filename: str, dst_path: Path
-    ) -> None:
-        """Copy a file from the workspace for a specific rollout"""
         pass
 
     @abstractmethod
@@ -124,3 +95,37 @@ class BaseEnv(ABC):
             )
         else:
             return self.system_prompt
+
+    # Optional rollout lifecycle management methods
+
+    async def init_rollout(self, rollout_id: str, **rollout_args) -> None:
+        """Initialize resources for a new rollout"""
+        return None
+
+    async def release_rollout(self, rollout_id: str) -> None:
+        """Free up resources for a new rollout. Called by compute_reward internally but also available for cleanup."""
+        return None
+
+    async def copy_to_workspace(
+        self, rollout_id: str, src_path: Path, dst_filename: Optional[str] = None
+    ) -> None:
+        """Copy a file to the workspace for a specific rollout. If dst_filename is None, use the original filename."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support workspace file copy operations"
+        )
+
+    async def copy_content_to_workspace(
+        self, rollout_id: str, src_content: str | bytes, dst_filename: str
+    ) -> None:
+        """Create a file with given content in the workspace for a specific rollout"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support workspace content copy operations"
+        )
+
+    async def copy_from_workspace(
+        self, rollout_id: str, src_filename: str, dst_path: Path
+    ) -> None:
+        """Copy a file from the workspace for a specific rollout"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support workspace file retrieval operations"
+        )
