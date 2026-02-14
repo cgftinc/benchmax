@@ -1,26 +1,25 @@
 import logging
-import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Type, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Type, Union
 
-import cloudpickle
-
-from benchmax.envs.base_env import BaseEnv
 from benchmax.bundle.errors import (
     DependencyError,
     IncompatiblePythonError,
     IncompatibleBenchmaxError,
     BundlingError,
 )
-from benchmax.bundle.payload import BundleMetadata, BundledEnv
+
+if TYPE_CHECKING:
+    from benchmax.envs.base_env import BaseEnv
+    from benchmax.bundle.payload import BundleMetadata, BundledEnv
 
 logger = logging.getLogger(__name__)
 
 
 def load_env(
     pickled_class: bytes,
-    metadata: BundleMetadata | None = None,
+    metadata: "BundleMetadata | None" = None,
     *,
     pip_dependencies: Optional[list[str]] = None,
     python_version: Optional[str] = None,
@@ -30,7 +29,7 @@ def load_env(
     check_benchmax_version: bool = False,
     install_pip_deps: bool = False,
     instantiate: Optional[bool] = None,
-) -> BaseEnv | Type[BaseEnv]:
+) -> "BaseEnv | Type[BaseEnv]":
     """Load a packaged environment class (and optionally instantiate it).
 
     Args:
@@ -52,6 +51,8 @@ def load_env(
         The unpickled BaseEnv subclass (class object), or an instance if
         instantiation is requested.
     """
+    from benchmax.envs.base_env import BaseEnv
+
     resolved_pip_deps = (
         pip_dependencies
         if pip_dependencies is not None
@@ -101,6 +102,8 @@ def load_env(
         _install_dependencies(resolved_pip_deps)
 
     try:
+        import cloudpickle
+
         env_class = cloudpickle.loads(pickled_class)
     except Exception as e:
         raise BundlingError(
@@ -140,7 +143,9 @@ def load_env_from_files(
     check_benchmax_version: bool = False,
     install_pip_deps: bool = False,
     instantiate: Optional[bool] = None,
-) -> BaseEnv | Type[BaseEnv]:
+) -> "BaseEnv | Type[BaseEnv]":
+    from benchmax.bundle.payload import BundleMetadata
+
     pickle_path = Path(pickle_path)
     metadata_path = Path(metadata_path)
     pickled_class = pickle_path.read_bytes()
@@ -160,7 +165,7 @@ def load_env_from_files(
 
 
 def load_env_from_bundle(
-    bundle: BundledEnv,
+    bundle: "BundledEnv",
     *,
     pip_dependencies: Optional[list[str]] = None,
     python_version: Optional[str] = None,
@@ -170,7 +175,7 @@ def load_env_from_bundle(
     check_benchmax_version: bool = False,
     install_pip_deps: bool = False,
     instantiate: Optional[bool] = None,
-) -> BaseEnv | Type[BaseEnv]:
+) -> "BaseEnv | Type[BaseEnv]":
     return load_env(
         bundle.pickled_class,
         bundle.metadata,
@@ -187,6 +192,8 @@ def load_env_from_bundle(
 
 def _install_dependencies(deps: list[str]) -> None:
     """Install pip dependencies in the current environment."""
+    import subprocess
+
     logger.info(f"[bundling] Installing {len(deps)} dependencies: {deps}")
     cmd = [sys.executable, "-m", "pip", "install", "--quiet", *deps]
     result = subprocess.run(cmd, capture_output=True, text=True)

@@ -1,6 +1,6 @@
 [project]
 name = "benchmax"
-version = "0.1.2.dev12"
+version = "0.1.2.dev13"
 description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
 readme = "README.md"
 authors = [{ name = "cgft.io" }]
@@ -10,9 +10,6 @@ dependencies = [
     "asyncio>=4.0.0",
     "cloudpickle>=3.0.0",
     "datasets>=4.0.0",
-    "fastmcp~=2.12.0",
-    "pyjwt>=2.10.1",
-    "skypilot~=0.8.1",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -26,6 +23,17 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[project.optional-dependencies]
+mcp = [
+    "fastmcp~=2.12.0",
+    "pyjwt>=2.10.1",
+]
+skypilot = [
+    "skypilot[aws,gcp]~=0.8.1",
+    "pip>=25.3",
+    "msrestazure>=0.6.4.post1",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.4.2",
@@ -33,8 +41,12 @@ dev = [
     "python-dotenv>=1.2.1",
     "ruff>=0.14.2",
 ]
+mcp = [
+    "fastmcp~=2.12.0",
+    "pyjwt>=2.10.1",
+]
 skypilot = [
-    "skypilot[aws,gcp,azure]~=0.8.1", # Change this to your cloud provider
+    "skypilot[aws,gcp]~=0.8.1",       # Add azure only in an Azure-specific env/group
     "pip>=25.3",                      # Added as needed for skypilot launch
     "msrestazure>=0.6.4.post1",
 ]
@@ -52,9 +64,6 @@ crm = ["python-dateutil>=2.9.0.post0", "simple-salesforce>=1.12.9"]
 
 [tool.uv]
 conflicts = [[{ group = "skypilot" }, { group = "skyrl" }]]
-
-[tool.uv.pip]
-extra = ["dev", "skypilot", "skyrl", "excel", "excel-mac-windows", "crm"]
 
 # [tool.uv.extra-build-dependencies]
 # flash-attn = [{ requirement = "torch", match-runtime = true }]

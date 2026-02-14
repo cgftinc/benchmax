@@ -8,7 +8,12 @@ from dataclasses import dataclass
 import random
 from typing import Coroutine, Dict, List, Optional, Set
 import aiohttp
-from fastmcp import Client as FastMCPClient
+try:
+    from fastmcp import Client as FastMCPClient
+except ModuleNotFoundError as e:
+    raise ModuleNotFoundError(
+        "fastmcp is required for MCP environments. Install with: pip install 'benchmax[mcp]'"
+    ) from e
 
 from benchmax.envs.mcp.utils import generate_jwt_token, get_auth_headers
 

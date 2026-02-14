@@ -9,7 +9,12 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 import aiohttp
-from fastmcp import Client
+try:
+    from fastmcp import Client
+except ModuleNotFoundError as e:
+    raise ModuleNotFoundError(
+        "fastmcp is required for MCP environments. Install with: pip install 'benchmax[mcp]'"
+    ) from e
 from mcp import Tool
 
 from benchmax.envs.types import ToolDefinition

@@ -7,13 +7,14 @@ import logging
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
-from typing import Type
-from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
-import datasets
+from typing import TYPE_CHECKING, Type
 import asyncio
 import inspect
 
 from benchmax.envs.base_env import BaseEnv
+
+if TYPE_CHECKING:
+    from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 
 # Set logging level to WARNING and above
 logging.basicConfig(level=logging.WARNING)
@@ -124,6 +125,8 @@ if __name__ == "__main__":
     benchmax_cls: Type[BaseEnv] = load_class(args.env_path)
     raw_dataset, dataset_path = benchmax_cls.load_dataset(args.dataset_name)
 
+    from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
+
     if isinstance(raw_dataset, (IterableDataset, IterableDatasetDict)):
         raise TypeError(
             f"Iterable datasets are currently not supported. Got {type(raw_dataset).__name__}. "
@@ -178,7 +181,9 @@ if __name__ == "__main__":
         test_dataset = processed_dataset["test"]
     else:
         if isinstance(processed_dataset, DatasetDict):
-            processed_dataset = datasets.concatenate_datasets(
+            from datasets import concatenate_datasets
+
+            processed_dataset = concatenate_datasets(
                 [ds for ds in processed_dataset.values()]
             ).shuffle(seed=42)
 

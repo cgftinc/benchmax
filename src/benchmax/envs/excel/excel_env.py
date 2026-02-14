@@ -1,10 +1,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Tuple, Optional
-
-from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
-import sky
+from typing import TYPE_CHECKING, Any, Dict, Tuple, Optional
 
 from benchmax.envs.mcp.parallel_mcp_env import ParallelMcpEnv
 from benchmax.envs.mcp.provisioners.base_provisioner import BaseProvisioner
@@ -15,6 +12,10 @@ from .data_utils import download_and_extract
 
 # Using library shared with mcp workdir
 from .workdir.excel_utils import excel_to_str_repr
+
+if TYPE_CHECKING:
+    import sky
+    from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 
 SYSTEM_PROMPT = """You are a spreadsheet expert who can manipulate spreadsheets through Python code.
 
@@ -64,8 +65,10 @@ class ExcelEnv(ParallelMcpEnv):
         data_output_path: str = DEFAULT_DATA_OUTPUT_PATH,
         **kwargs,
     ) -> Tuple[
-        DatasetDict | Dataset | IterableDatasetDict | IterableDataset, str | None
+        "DatasetDict | Dataset | IterableDatasetDict | IterableDataset", str | None
     ]:
+        from datasets import Dataset
+
         # Currently only support spreadsheetbench dataset but can be extended to other datasets in the future
         if dataset_name == "spreadsheetbench":
             folder_path = Path(data_output_path) / SPREADSHEET_BENCH_TRAIN_DATA
@@ -206,11 +209,15 @@ class ExcelEnvSkypilot(ExcelEnv):
 
     def __init__(
         self,
-        cloud: sky.clouds.Cloud = sky.Azure(),
+        cloud: "sky.clouds.Cloud | None" = None,
         num_nodes: int = 2,
         servers_per_node: int = 5,
         **kwargs,
     ):
+        if cloud is None:
+            import sky
+
+            cloud = sky.Azure()
         workdir_path = Path(__file__).parent / "workdir"
         provisioner = SkypilotProvisioner(
             workdir_path=workdir_path,

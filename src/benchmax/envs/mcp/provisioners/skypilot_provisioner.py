@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 SkyPilot provisioner for launching cloud-based server clusters.
 """
@@ -5,13 +7,15 @@ SkyPilot provisioner for launching cloud-based server clusters.
 import logging
 import uuid
 from pathlib import Path
-from typing import List, Optional
-import sky
+from typing import TYPE_CHECKING, List, Optional
 
 from .base_provisioner import BaseProvisioner
 from .utils import get_run_command, setup_sync_dir, cleanup_dir, get_setup_command
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    import sky
 
 
 class SkypilotProvisioner(BaseProvisioner):
@@ -39,7 +43,7 @@ class SkypilotProvisioner(BaseProvisioner):
     def __init__(
         self,
         workdir_path: Path | str,
-        cloud: sky.clouds.Cloud,
+        cloud: "sky.clouds.Cloud",
         num_nodes: int = 1,
         servers_per_node: int = 5,
         cpus: Optional[str | int] = "2+",
@@ -62,8 +66,15 @@ class SkypilotProvisioner(BaseProvisioner):
             raise ValueError("num_nodes must be at least 1")
         if servers_per_node < 1 or servers_per_node > 100:
             raise ValueError("servers_per_node must be between 1 and 100")
+        try:
+            import sky
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                "skypilot is required for SkypilotProvisioner. Install with: pip install 'benchmax[skypilot]'"
+            ) from e
 
         self._workdir_path = Path(workdir_path).absolute()
+        self._sky = sky
         self._cloud = cloud
         self._num_nodes = num_nodes
         self._servers_per_node = servers_per_node
@@ -123,7 +134,7 @@ class SkypilotProvisioner(BaseProvisioner):
         env = None if api_secret is None else {"API_SECRET": api_secret}
 
         # Configure SkyPilot task
-        sky_task = sky.Task(
+        sky_task = self._sky.Task(
             name="mcp-server",
             run=get_run_command(ports=all_ports),
             setup=get_setup_command(),
@@ -133,7 +144,7 @@ class SkypilotProvisioner(BaseProvisioner):
         )
 
         sky_task.set_resources(
-            sky.Resources(
+            self._sky.Resources(
                 cloud=self._cloud,
                 cpus=self._cpus,
                 memory=self._memory,
@@ -148,7 +159,7 @@ class SkypilotProvisioner(BaseProvisioner):
         )
         cluster_handle = None
         try:
-            _, handle = sky.launch(
+            _, handle = self._sky.launch(
                 task=sky_task,
                 cluster_name=self._cluster_name,
                 detach_run=True,
@@ -192,7 +203,7 @@ class SkypilotProvisioner(BaseProvisioner):
 
         logger.info(f"Tearing down SkyPilot cluster '{self._cluster_name}'...")
         try:
-            sky.down(cluster_name=self._cluster_name)
+            self._sky.down(cluster_name=self._cluster_name)
             logger.info(f"Cluster '{self._cluster_name}' torn down successfully")
         except Exception as e:
             logger.error(f"Error tearing down cluster '{self._cluster_name}': {e}")

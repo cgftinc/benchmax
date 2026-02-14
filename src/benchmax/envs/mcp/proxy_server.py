@@ -2,7 +2,6 @@ import os
 import sys
 import shutil
 import uuid
-import yaml
 import asyncio
 import argparse
 import psutil
@@ -12,10 +11,15 @@ from typing import Any, Awaitable, Callable, Dict, Union, Optional, Tuple, List
 from pathlib import Path
 from functools import wraps
 
-from fastmcp.server.middleware import Middleware, MiddlewareContext
-from fastmcp.server.auth.providers.jwt import JWTVerifier
-from fastmcp.server.auth import AccessToken
-from fastmcp import FastMCP, Client
+try:
+    from fastmcp.server.middleware import Middleware, MiddlewareContext
+    from fastmcp.server.auth.providers.jwt import JWTVerifier
+    from fastmcp.server.auth import AccessToken
+    from fastmcp import FastMCP, Client
+except ModuleNotFoundError as e:
+    raise ModuleNotFoundError(
+        "fastmcp is required for MCP environments. Install with: pip install 'benchmax[mcp]'"
+    ) from e
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, FileResponse, JSONResponse, Response
 from starlette.datastructures import UploadFile
@@ -36,6 +40,8 @@ def setup_workspace(base_dir: Path) -> Path:
 
 def load_config(config_path: Path, workspace: Path) -> Dict[str, Any]:
     """Load YAML config and inject workspace paths."""
+    import yaml
+
     with open(config_path, "r") as f:
         content = f.read().replace(
             "${{ sync_workdir }}", str(Path(__file__).resolve().parent)

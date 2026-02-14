@@ -1,16 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Any, Optional, Tuple
 from pathlib import Path
-from datasets import (
-    DatasetDict,
-    Dataset,
-    IterableDatasetDict,
-    IterableDataset,
-    load_dataset,
-)
 
 from benchmax.envs.types import ToolDefinition, StandardizedExample
 from benchmax.prompts.tools import render_tools_prompt
+
+if TYPE_CHECKING:
+    from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 
 
 class BaseEnv(ABC):
@@ -41,7 +37,7 @@ class BaseEnv(ABC):
     def load_dataset(
         cls, dataset_name: str, **kwargs
     ) -> Tuple[
-        DatasetDict | Dataset | IterableDatasetDict | IterableDataset, str | None
+        "DatasetDict | Dataset | IterableDatasetDict | IterableDataset", str | None
     ]:
         """
         Download and prepare a dataset for use with this environment.
@@ -59,6 +55,8 @@ class BaseEnv(ABC):
             Dataset: A dataset object (e.g., HuggingFace Dataset or similar) ready for processing.
             str: Optional string pointing to where the dataset is stored locally
         """
+        from datasets import load_dataset
+
         return load_dataset(dataset_name, **kwargs), None
 
     # Methods all environment subclasses must implement

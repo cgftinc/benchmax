@@ -11,7 +11,12 @@ from typing import Any, Callable, Dict, List, Optional
 import warnings
 import aiohttp
 from mcp.types import TextContent
-from fastmcp.exceptions import ToolError
+try:
+    from fastmcp.exceptions import ToolError
+except ModuleNotFoundError as e:
+    raise ModuleNotFoundError(
+        "fastmcp is required for MCP environments. Install with: pip install 'benchmax[mcp]'"
+    ) from e
 
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.types import ToolDefinition

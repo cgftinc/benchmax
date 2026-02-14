@@ -1,12 +1,14 @@
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-import sky
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from benchmax.envs.mcp.parallel_mcp_env import ParallelMcpEnv
 from benchmax.envs.mcp.provisioners.base_provisioner import BaseProvisioner
 from benchmax.envs.mcp.provisioners.local_provisioner import LocalProvisioner
 from benchmax.envs.mcp.provisioners.skypilot_provisioner import SkypilotProvisioner
 from benchmax.envs.types import StandardizedExample
+
+if TYPE_CHECKING:
+    import sky
 
 
 SYSTEM_PROMPT = """\
@@ -85,11 +87,19 @@ class CRMEnvSkypilot(CRMEnv):
 
     def __init__(
         self,
-        cloud: sky.clouds.Cloud = sky.Azure(),
+        cloud: "sky.clouds.Cloud | None" = None,
         num_nodes: int = 2,
         servers_per_node: int = 5,
         **kwargs,
     ):
+        if cloud is None:
+            try:
+                import sky
+            except ModuleNotFoundError as e:
+                raise ModuleNotFoundError(
+                    "skypilot is required for CRMEnvSkypilot. Install with: pip install 'benchmax[skypilot]'"
+                ) from e
+            cloud = sky.Azure()
         workdir_path = Path(__file__).parent / "workdir"
         provisioner = SkypilotProvisioner(
             workdir_path=workdir_path,

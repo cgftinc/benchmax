@@ -268,24 +268,20 @@ class TestLoadEnv:
 
     def test_load_no_install(self):
         bundle = bundle_env(MinimalEnv, pip_dependencies=["some-package"])
-        with patch("benchmax.bundle.loader.subprocess") as mock_sub:
+        with patch("benchmax.bundle.loader._install_dependencies") as mock_install:
             env_class = load_env(
                 bundle.pickled_class,
                 bundle.metadata,
                 install_pip_deps=False,
             )
-            mock_sub.run.assert_not_called()
+            mock_install.assert_not_called()
         assert issubclass(env_class, BaseEnv)
 
     def test_load_with_install(self):
         bundle = bundle_env(MinimalEnv, pip_dependencies=["some-package"])
-        with patch("benchmax.bundle.loader.subprocess") as mock_sub:
-            mock_sub.run.return_value.returncode = 0
+        with patch("benchmax.bundle.loader._install_dependencies") as mock_install:
             load_env(bundle.pickled_class, bundle.metadata, install_pip_deps=True)
-            mock_sub.run.assert_called_once()
-            cmd = mock_sub.run.call_args[0][0]
-            assert "pip" in cmd
-            assert "some-package" in cmd
+            mock_install.assert_called_once_with(["some-package"])
 
     def test_instantiate_false_returns_class(self):
         bundle = bundle_env(MinimalEnv, constructor_args={"greeting": "hi"})

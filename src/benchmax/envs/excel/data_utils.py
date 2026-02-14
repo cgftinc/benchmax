@@ -1,5 +1,4 @@
 import os
-import requests
 import tarfile
 
 
@@ -7,6 +6,8 @@ def download_and_extract(url, output_path):
     """
     Downloads a tar.gz file from the given URL and extracts it into output_path.
     """
+    import requests
+
     # Ensure the output directory exists
     os.makedirs(output_path, exist_ok=True)
 
