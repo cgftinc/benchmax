@@ -46,6 +46,7 @@ def bundle_env(
         BundlingError: If serialization fails.
         ValidationError: If structural validation fails.
     """
+    ensure_safe_python_version()
     pip_dependencies = pip_dependencies or []
     # --- Structural validation ---
     if validate:
@@ -108,6 +109,23 @@ def bundle_env(
     )
 
     return payload
+
+
+def ensure_safe_python_version() -> None:
+    v = sys.version_info
+
+    if (v.major, v.minor) == (3, 13):
+        full_version = f"{v.major}.{v.minor}.{v.micro}"
+        raise RuntimeError(
+            "\n"
+            "❌ Unsupported Python version detected.\n\n"
+            f"Current interpreter: Python {full_version}\n\n"
+            "Python 3.13.x has a pathlib.Path pickle incompatibility "
+            "that breaks cross-version unpickling.\n\n"
+            "Please use:\n"
+            "  • Python <= 3.12\n"
+            "  • OR Python >= 3.14\n"
+        )
 
 
 def write_bundle_files(
