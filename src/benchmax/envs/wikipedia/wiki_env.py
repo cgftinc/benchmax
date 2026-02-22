@@ -157,9 +157,12 @@ class WikipediaEnv(BaseEnv):
 
     def __init__(
         self,
+        train_dataset_path: str | Path,
+        eval_dataset_path: Optional[str | Path] = None,
         wikipedia_api_keys: Optional[List[str]] | None = None,
         **kwargs,
     ):
+        super().__init__(train_dataset_path=train_dataset_path, eval_dataset_path=eval_dataset_path, **kwargs)
         self._key_rotator = APIKeyRotator(wikipedia_api_keys)
 
         search_tool, article_tool = _make_wikipedia_tools(self._key_rotator)

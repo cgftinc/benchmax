@@ -1,21 +1,18 @@
-import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Tuple, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from benchmax.envs.mcp.parallel_mcp_env import ParallelMcpEnv
 from benchmax.envs.mcp.provisioners.base_provisioner import BaseProvisioner
 from benchmax.envs.mcp.provisioners.local_provisioner import LocalProvisioner
 from benchmax.envs.mcp.provisioners.skypilot_provisioner import SkypilotProvisioner
 from benchmax.envs.types import StandardizedExample
-from .data_utils import download_and_extract
 
 # Using library shared with mcp workdir
 from .workdir.excel_utils import excel_to_str_repr
 
 if TYPE_CHECKING:
     import sky
-    from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 
 SYSTEM_PROMPT = """You are a spreadsheet expert who can manipulate spreadsheets through Python code.
 
@@ -27,13 +24,6 @@ You need to solve the given spreadsheet manipulation question, which contains si
 - answer_position: The position need to be modified or filled. For Cell-Level Manipulation questions, this field is filled with the cell position; for Sheet-Level Manipulation, it is the maximum range of cells you need to modify. You only need to modify or fill in values within the cell range specified by answer_position.
 - output_path: You need to generate the modified spreadsheet file in this new path.
 """
-
-DEFAULT_DATA_OUTPUT_PATH = os.path.expanduser("~/.cache/excel_data")
-SPREADSHEET_FULL = "all_data_912_v0.1"
-SPREADSHEET_SAMPLE = "sample_data_200"
-
-# Set train data to full for proper training
-SPREADSHEET_BENCH_TRAIN_DATA = SPREADSHEET_SAMPLE
 
 
 class ExcelExample(StandardizedExample):
@@ -53,38 +43,16 @@ class ExcelEnv(ParallelMcpEnv):
         self,
         workdir_path: Path,
         provisioner: BaseProvisioner,
+        spreadsheet_base_dir: Optional[str | Path] = None,
         **kwargs,
     ):
-        """Initialize the ExcelEnv with an optional dataset path."""
+        self._spreadsheet_base_dir = spreadsheet_base_dir
         super().__init__(workdir_path=workdir_path, provisioner=provisioner, **kwargs)
 
-    @classmethod
-    def load_dataset(
-        cls,
-        dataset_name: str = "spreadsheetbench",
-        data_output_path: str = DEFAULT_DATA_OUTPUT_PATH,
-        **kwargs,
-    ) -> Tuple[
-        "DatasetDict | Dataset | IterableDatasetDict | IterableDataset", str | None
-    ]:
-        from datasets import Dataset
-
-        # Currently only support spreadsheetbench dataset but can be extended to other datasets in the future
-        if dataset_name == "spreadsheetbench":
-            folder_path = Path(data_output_path) / SPREADSHEET_BENCH_TRAIN_DATA
-            json_path = folder_path / "dataset.json"
-            if not os.path.exists(json_path):
-                download_and_extract(
-                    f"https://github.com/RUCKBReasoning/SpreadsheetBench/raw/refs/heads/main/data/{SPREADSHEET_BENCH_TRAIN_DATA}.tar.gz",
-                    data_output_path,
-                )
-            with open(json_path, "r") as f:
-                data = json.load(f)
-                for example in data:
-                    example["id"] = str(example["id"])  # Ensure IDs are strings
-            dataset = Dataset.from_list(data)
-            return dataset, str(folder_path)
-        return super().load_dataset(dataset_name, **kwargs)
+    def load_and_process(self, path: Optional[str | Path]) -> List[ExcelExample]:
+        if path is None:
+            return []
+        return [self.dataset_preprocess(ex, dataset_path=self._spreadsheet_base_dir) for ex in self._load_raw(path)]
 
     @classmethod
     def dataset_preprocess(
@@ -111,7 +79,7 @@ class ExcelEnv(ParallelMcpEnv):
             raise TypeError("spreadsheet_path must be a string")
 
         if dataset_path is None:
-            dataset_path = Path(DEFAULT_DATA_OUTPUT_PATH) / SPREADSHEET_BENCH_TRAIN_DATA
+            raise ValueError("dataset_path must be provided")
         elif not isinstance(dataset_path, (str, Path)):
             raise TypeError("dataset_path must be a str or Path")
 

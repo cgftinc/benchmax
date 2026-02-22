@@ -96,7 +96,7 @@ class ParallelMcpEnv(BaseEnv):
             provision_at_init: Whether to launch a server at the point of initialization
             **kwargs: Additional keyword arguments (currently unused).
         """
-        super().__init__()
+        super().__init__(**kwargs)
 
         self._workdir_path = Path(workdir_path).absolute()
         self._provisioner = provisioner

@@ -1,18 +1,59 @@
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from pathlib import Path
 
 from benchmax.envs.types import ToolDefinition, StandardizedExample
 from benchmax.prompts.tools import render_tools_prompt
-
-if TYPE_CHECKING:
-    from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 
 
 class BaseEnv(ABC):
     """Base benchmax environment for tool execution and reward computation"""
 
     system_prompt: str = ""
+
+    def __init__(
+        self,
+        train_dataset_path: str | Path,
+        eval_dataset_path: Optional[str | Path] = None,
+        **kwargs,
+    ):
+        self.train_dataset = self._load_and_process(train_dataset_path)
+        self.eval_dataset = self._load_and_process(eval_dataset_path)
+
+    @staticmethod
+    def load_raw(path: str | Path) -> List[Any]:
+        """Load examples from a local/cloud JSONL file or a HuggingFace hub dataset.
+
+        - Local or cloud files: path must end with .jsonl or .json, or start with
+          a cloud prefix (s3://, gs://, https://, etc.).
+        - HuggingFace hub: pass the dataset name, optionally with a split suffix,
+          e.g. "squad:train".
+        """
+        from datasets import Dataset
+        from datasets import load_dataset as hf_load_dataset
+
+        path_str = str(path)
+        _CLOUD_PREFIXES = ("s3://", "gs://", "gcs://", "https://", "http://")
+
+        if path_str.endswith((".jsonl", ".json")) or path_str.startswith(_CLOUD_PREFIXES):
+            dataset = hf_load_dataset("json", data_files=path_str, split="train")
+        elif ":" in path_str:
+            dataset_name, split = path_str.rsplit(":", 1)
+            dataset = hf_load_dataset(dataset_name, split=split)
+        else:
+            dataset = hf_load_dataset(path_str)
+
+        if not isinstance(dataset, Dataset):
+            raise ValueError(
+                f"'{path_str}' returned a DatasetDict. Specify a split using the "
+                f"format '<dataset>:<split>', e.g. '{path_str}:train'."
+            )
+        return list(dataset)
+
+    def load_and_process(self, path: Optional[str | Path]) -> List[StandardizedExample]:
+        if path is None:
+            return []
+        return [self.dataset_preprocess(ex) for ex in self.load_raw(path)]
 
     # Override this method if your example does not match the default structure
     @classmethod
@@ -32,32 +73,6 @@ class BaseEnv(ABC):
             init_rollout_args=init_rollout_args,
             **example,
         )
-
-    @classmethod
-    def load_dataset(
-        cls, dataset_name: str, **kwargs
-    ) -> Tuple[
-        "DatasetDict | Dataset | IterableDatasetDict | IterableDataset", str | None
-    ]:
-        """
-        Download and prepare a dataset for use with this environment.
-
-        This method should handle retrieving the specified dataset (e.g., from HuggingFace, local files,
-        or a custom source), preprocessing or converting it into a compatible structure, and storing it
-        locally in a reusable format. The processed dataset should be suitable for downstream use with
-        `dataset_preprocess`, which standardizes individual examples into the expected format.
-
-        Args:
-            dataset_name (str): Identifier of the dataset to be loaded.
-            **kwargs: Additional dataset-specific arguments (e.g., split, filtering options, cache directory).
-
-        Returns:
-            Dataset: A dataset object (e.g., HuggingFace Dataset or similar) ready for processing.
-            str: Optional string pointing to where the dataset is stored locally
-        """
-        from datasets import load_dataset
-
-        return load_dataset(dataset_name, **kwargs), None
 
     # Methods all environment subclasses must implement
 
@@ -80,6 +95,23 @@ class BaseEnv(ABC):
         Returns dict mapping reward function names to their computed scores.
         """
         pass
+
+    async def compute_group_reward(
+        self,
+        rollout_ids: List[str],
+        completions: List[str],
+        ground_truths: List[Any],
+        **kwargs: Any,
+    ) -> List[Dict[str, float]]:
+        """Compute rewards over a group of completions, returning one reward dict per completion.
+
+        Override this to implement group-level scoring (e.g. relative scoring, diversity rewards)
+        where a completion's score depends on the other completions in the group.
+
+        Returns a list of dicts (one per completion) mapping reward names to scores.
+        These are merged with the results of compute_reward by the caller.
+        """
+        return [{} for _ in completions]
 
     async def get_system_prompt(self, add_tool_defs: bool = False) -> str:
         """Get system prompt. To add tool definitions, set add_tool_defs to True."""
