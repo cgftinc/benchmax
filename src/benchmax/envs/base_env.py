@@ -17,8 +17,8 @@ class BaseEnv(ABC):
         eval_dataset_path: Optional[str | Path] = None,
         **kwargs,
     ):
-        self.train_dataset = self._load_and_process(train_dataset_path)
-        self.eval_dataset = self._load_and_process(eval_dataset_path)
+        self.train_dataset = self.load_and_process(train_dataset_path)
+        self.eval_dataset = self.load_and_process(eval_dataset_path)
 
     @staticmethod
     def load_raw(path: str | Path) -> List[Any]:
