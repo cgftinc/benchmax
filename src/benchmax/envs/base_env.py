@@ -4,6 +4,7 @@ from pathlib import Path
 
 from benchmax.envs.types import ToolDefinition, StandardizedExample
 from benchmax.prompts.tools import render_tools_prompt
+from benchmax.envs.tracking import TrackingConfig, log_env, with_tracking
 
 if TYPE_CHECKING:
     from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
@@ -13,6 +14,37 @@ class BaseEnv(ABC):
     """Base benchmax environment for tool execution and reward computation"""
 
     system_prompt: str = ""
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+
+        compute_reward = cls.__dict__.get("compute_reward")
+        if compute_reward is None:
+            return
+        if getattr(compute_reward, "__benchmax_tracking_wrapped__", False):
+            return
+
+        wrapped = with_tracking(lambda self, *a, **kw: self.get_tracking_config())(
+            compute_reward
+        )
+        setattr(wrapped, "__benchmax_tracking_wrapped__", True)
+        setattr(cls, "compute_reward", wrapped)
+
+    def __init__(
+        self,
+        experiment_id: Optional[str] = None,
+        api_key: Optional[str] = None,
+        **kwargs,
+    ):
+        self._tracking_config = TrackingConfig(
+            experiment_id=experiment_id, api_key=api_key
+        )
+
+    def get_tracking_config(self) -> TrackingConfig:
+        return self._tracking_config
+
+    def log_env(self, rollout_id: str, message: str) -> None:
+        log_env(rollout_id, message)
 
     # Override this method if your example does not match the default structure
     @classmethod

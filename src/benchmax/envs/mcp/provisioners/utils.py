@@ -15,7 +15,8 @@ def setup_sync_dir(workdir_path: Path) -> Path:
 
     This creates a temp directory and copies:
     1. proxy_server.py from the mcp/ directory
-    2. All contents of the provided workdir_path
+    2. env tracking helper for reward logging
+    3. All contents of the provided workdir_path
 
     Args:
         workdir_path: Path to workdir containing mcp_config.yaml, setup.sh, etc.
@@ -37,6 +38,14 @@ def setup_sync_dir(workdir_path: Path) -> Path:
                 f"Expected proxy_server.py at {src_server_path}, but not found."
             )
         shutil.copy(src_server_path, sync_dir / "proxy_server.py")
+
+        # Copy shared env tracking helper for reward_fn logging.
+        src_tracking_path = Path(__file__).parents[2] / "tracking.py"
+        if not src_tracking_path.exists():
+            raise FileNotFoundError(
+                f"Expected tracking helper at {src_tracking_path}, but not found."
+            )
+        shutil.copy(src_tracking_path, sync_dir / "env_tracking.py")
 
         # Validate workdir exists and is a directory
         if not workdir_path.exists():
@@ -91,7 +100,7 @@ def get_setup_command() -> str:
 # Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 UV_VENV_CLEAR=1 uv venv ~/venv && source ~/venv/bin/activate
-uv pip install fastmcp~=2.12.0 pyyaml psutil
+uv pip install fastmcp~=2.12.0 pyyaml psutil expt-logger
 bash setup.sh
 """
 

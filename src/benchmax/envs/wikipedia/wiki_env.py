@@ -4,6 +4,7 @@ import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.tracking import log_env
 from benchmax.envs.types import ToolDefinition, StandardizedExample
 from benchmax.envs.wikipedia.utils import APIKeyRotator, clean_html, safe_request
 
@@ -13,7 +14,7 @@ Write your complete answer on the final line only as a concise entity, within th
 """
 
 
-def text_match_reward_function(completion: str, ground_truth: str, **kwargs) -> float:
+def text_match_reward_function(completion: str, ground_truth: str, rollout_id: str, **kwargs) -> float:
     """
     Score 1.0 if ground truth appears in <answer> tags, else 0.0.
 
@@ -31,10 +32,13 @@ def text_match_reward_function(completion: str, ground_truth: str, **kwargs) -> 
         r"<answer>(.*?)</answer>", completion, flags=re.IGNORECASE | re.DOTALL
     )
     if not m:
+        log_env(rollout_id, "wikipedia_reward:no_answer_tag")
         return 0.0
 
     answer_text = unescape(m.group(1)).strip().lower()
-    return float(ground_truth.lower() == answer_text)
+    score = float(ground_truth.lower() == answer_text)
+    log_env(rollout_id, f"wikipedia_reward:text_match={score}")
+    return score
 
 
 def _make_wikipedia_tools(key_rotator: APIKeyRotator):
@@ -264,5 +268,5 @@ class WikipediaEnv(BaseEnv):
     ) -> Dict[str, float]:
         """Compute rewards using the text match reward function."""
         return {
-            "text_match": text_match_reward_function(completion, ground_truth, **kwargs)
+            "text_match": text_match_reward_function(completion, ground_truth, rollout_id, **kwargs)
         }
