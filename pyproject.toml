@@ -10,6 +10,7 @@ dependencies = [
     "asyncio>=4.0.0",
     "cloudpickle>=3.0.0",
     "datasets>=4.0.0",
+    "expt-logger>=0.1.0.dev19"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
