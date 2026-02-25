@@ -34,17 +34,23 @@ def spreadsheet_comparison_reward(
 
     output_path = workspace / output_filename
     ground_truth_path = workspace / ground_truth_filename
+    rollout_id = kwargs.get("rollout_id", "unknown_rollout")
+    log_env(
+        rollout_id, f"excel_reward:compare_files={ground_truth_filename}:{output_filename}:{answer_position}"
+    )
 
     # Return 1.0 score if the output completely matches the ground truth
     try:
         match, _ = compare_excel_cells(
             str(ground_truth_path), str(output_path), answer_position
         )
+        log_env(rollout_id, f"excel_reward:spreadsheet_match={float(match)}")
         return 1.0 if match else 0.0
     except Exception as e:
         print(
             f"Error comparing spreadsheets {ground_truth_path} and {output_path}: {e}"
         )
+        log_env(rollout_id, f"excel_reward:error={str(e)}")
         return 0.0
 
 

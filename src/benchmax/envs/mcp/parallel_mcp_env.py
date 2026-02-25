@@ -19,6 +19,7 @@ except ModuleNotFoundError as e:
     ) from e
 
 from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.tracking import to_tracking_payload
 from benchmax.envs.types import ToolDefinition
 from .server_pool import ServerPool
 from .provisioners.base_provisioner import BaseProvisioner
@@ -96,7 +97,7 @@ class ParallelMcpEnv(BaseEnv):
             provision_at_init: Whether to launch a server at the point of initialization
             **kwargs: Additional keyword arguments (currently unused).
         """
-        super().__init__()
+        super().__init__(**kwargs)
 
         self._workdir_path = Path(workdir_path).absolute()
         self._provisioner = provisioner
@@ -373,6 +374,8 @@ class ParallelMcpEnv(BaseEnv):
         payload = {
             "completion": completion or "",
             "ground_truth": ground_truth or "",
+            **to_tracking_payload(self.get_tracking_config()),
+            "rollout_id": rollout_id,
             **kwargs,
         }
 

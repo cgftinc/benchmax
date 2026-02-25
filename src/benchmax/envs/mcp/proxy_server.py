@@ -24,10 +24,28 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse, FileResponse, JSONResponse, Response
 from starlette.datastructures import UploadFile
 
-from reward_fn import reward_functions  # type: ignore
+try:
+    from benchmax.envs.tracking import log_env, pop_tracking_config, tracking_context
+except Exception:
+    # In provisioned MCP servers, this helper is copied as env_tracking.py.
+    from env_tracking import log_env, pop_tracking_config, tracking_context  # type: ignore
+
+from reward_fn import reward_functions as imported_reward_functions  # type: ignore
 
 RewardFunction = Callable[..., Union[float, Awaitable[float]]]
 DEFAULT_API_SECRET = "dev_default_api_secret_please_change_me_32chars!"
+
+
+def _with_log_env(func: RewardFunction) -> RewardFunction:
+    """Decorator that binds the shared log_env callable into reward_fn globals."""
+    func.__globals__["log_env"] = log_env
+    return func
+
+
+reward_functions: Dict[str, RewardFunction] = {
+    name: _with_log_env(func)
+    for name, func in (imported_reward_functions or {}).items()
+}
 
 
 # ---------------- Utility Functions ---------------- #
@@ -329,14 +347,17 @@ class ProxyServer:
                 status_code=400,
             )
 
+        payload_kwargs: Dict[str, Any] = {
+            k: v for k, v in data.items() if k not in ("completion", "ground_truth")
+        }
+        tracking_config = pop_tracking_config(payload_kwargs)
+
         kwargs: Dict[str, Any] = {
             "completion": completion,
             "ground_truth": ground_truth,
             "workspace": self.workspace,
             "mcp_client": self.client,
-            **{
-                k: v for k, v in data.items() if k not in ("completion", "ground_truth")
-            },
+            **payload_kwargs,
         }
 
         async def _call_reward(name: str, func: RewardFunction) -> Tuple[str, float]:
@@ -357,8 +378,9 @@ class ProxyServer:
         rf: Dict[str, RewardFunction] = reward_functions or {}
 
         try:
-            tasks = [_call_reward(name, func) for name, func in rf.items()]
-            results_list: List[Tuple[str, float]] = await asyncio.gather(*tasks)
+            with tracking_context(tracking_config):
+                tasks = [_call_reward(name, func) for name, func in rf.items()]
+                results_list: List[Tuple[str, float]] = await asyncio.gather(*tasks)
             results: Dict[str, float] = dict(results_list)
             return JSONResponse(results)
         except Exception as e:
