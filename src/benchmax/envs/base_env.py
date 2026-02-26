@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Dict, List, Any, Optional, Tuple
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from benchmax.envs.types import ToolDefinition, StandardizedExample
-from benchmax.prompts.tools import render_tools_prompt
 from benchmax.envs.tracking import TrackingConfig, log_env, with_tracking
+from benchmax.envs.types import StandardizedExample, ToolDefinition
+from benchmax.prompts.tools import render_tools_prompt
 
 if TYPE_CHECKING:
     from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
@@ -14,6 +14,7 @@ class BaseEnv(ABC):
     """Base benchmax environment for tool execution and reward computation"""
 
     system_prompt: str = ""
+    _tracking_config: TrackingConfig | None = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -40,7 +41,7 @@ class BaseEnv(ABC):
             experiment_id=experiment_id, api_key=api_key
         )
 
-    def get_tracking_config(self) -> TrackingConfig:
+    def get_tracking_config(self) -> TrackingConfig | None:
         return self._tracking_config
 
     def log_env(self, rollout_id: str, message: str) -> None:
