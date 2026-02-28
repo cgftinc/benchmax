@@ -1,6 +1,6 @@
 [project]
 name = "benchmax"
-version = "0.1.2.dev14"
+version = "0.1.2.dev16"
 description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
 readme = "README.md"
 authors = [{ name = "cgft.io" }]
@@ -10,7 +10,7 @@ dependencies = [
     "asyncio>=4.0.0",
     "cloudpickle>=3.0.0",
     "datasets>=4.0.0",
-    "expt-logger>=0.1.0.dev19"
+    "expt-logger>=0.1.0.dev20",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
