@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
+from functools import wraps
 from typing import TYPE_CHECKING, Dict, List, Any, Optional, Tuple
 from pathlib import Path
 
 from benchmax.envs.types import ToolDefinition, StandardizedExample
 from benchmax.prompts.tools import render_tools_prompt
-from benchmax.envs.tracking import TrackingConfig, log_env, with_tracking
+from benchmax.envs.tracking import TrackingConfig, log_env, tracking_context
 
 if TYPE_CHECKING:
     from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
@@ -15,32 +16,28 @@ class BaseEnv(ABC):
 
     system_prompt: str = ""
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
+    def __init__(self, **kwargs):
+        self._tracking_config: Optional[TrackingConfig] = None
 
-        compute_reward = cls.__dict__.get("compute_reward")
-        if compute_reward is None:
-            return
-        if getattr(compute_reward, "__benchmax_tracking_wrapped__", False):
-            return
-
-        wrapped = with_tracking(lambda self, *a, **kw: self.get_tracking_config())(
-            compute_reward
-        )
-        setattr(wrapped, "__benchmax_tracking_wrapped__", True)
-        setattr(cls, "compute_reward", wrapped)
-
-    def __init__(
+    def enable_tracking(
         self,
         experiment_id: Optional[str] = None,
         api_key: Optional[str] = None,
-        **kwargs,
-    ):
+    ) -> None:
+        """Enable experiment tracking. Wraps compute_reward on this instance with a tracking context."""
         self._tracking_config = TrackingConfig(
             experiment_id=experiment_id, api_key=api_key
         )
+        cls_compute_reward = type(self).compute_reward
 
-    def get_tracking_config(self) -> TrackingConfig:
+        @wraps(cls_compute_reward)
+        async def _tracked(*args, **kwargs):
+            with tracking_context(self._tracking_config):
+                return await cls_compute_reward(self, *args, **kwargs)
+
+        self.compute_reward = _tracked
+
+    def get_tracking_config(self) -> Optional[TrackingConfig]:
         return self._tracking_config
 
     def log_env(self, rollout_id: str, message: str) -> None:
