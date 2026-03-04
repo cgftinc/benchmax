@@ -110,6 +110,7 @@ class TestRunTool:
     """Tests for tool execution with mocked HTTP calls."""
 
     @pytest.mark.asyncio
+    @patch("benchmax.envs.wikipedia.wiki_env.safe_request")
     async def test_run_tool_search_wikipedia_success(
         self, mock_safe_request: AsyncMock, wiki_env: WikipediaEnv
     ) -> None:
@@ -134,10 +135,9 @@ class TestRunTool:
         )
         mock_safe_request.return_value = mock_response
 
-        with patch("benchmax.envs.wikipedia.wiki_env.safe_request"):
-            result = await wiki_env.run_tool(
-                rollout_id="test", tool_name="search_wikipedia", q="Python", limit=5
-            )
+        result = await wiki_env.run_tool(
+            rollout_id="test", tool_name="search_wikipedia", q="Python", limit=5
+        )
 
         assert isinstance(result, str)
         assert "Python (programming language)" in result

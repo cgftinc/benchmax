@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.tracking import log_env
-from benchmax.envs.types import ToolDefinition, StandardizedExample
+from benchmax.envs.types import Completion, ToolDefinition, StandardizedExample
 from benchmax.envs.wikipedia.utils import APIKeyRotator, clean_html, safe_request
 
 SYSTEM_PROMPT = """Please use the tools provided to get accurate, up-to-date information.
@@ -14,12 +14,12 @@ Write your complete answer on the final line only as a concise entity, within th
 """
 
 
-def text_match_reward_function(completion: str, ground_truth: str, rollout_id: str, **kwargs) -> float:
+def text_match_reward_function(completion: Completion, ground_truth: str, rollout_id: str, **kwargs) -> float:
     """
     Score 1.0 if ground truth appears in <answer> tags, else 0.0.
 
     Args:
-        completion: The model's generated text
+        completion: The model's generated text (str or list of message dicts)
         ground_truth: Expected answer (case-insensitive)
         **kwargs: Catch-all for BaseEnv compatibility
 
@@ -27,17 +27,22 @@ def text_match_reward_function(completion: str, ground_truth: str, rollout_id: s
         1.0 if ground_truth matches the answer text, else 0.0
     """
     assert ground_truth is not None
+    completion_str = ""
+    if isinstance(completion, list):
+        completion_str = completion[-1].get("content", "") if completion else ""
+    elif isinstance(completion, str):
+        completion_str = completion
+    else:
+        completion_str = ""
 
     m = re.search(
-        r"<answer>(.*?)</answer>", completion, flags=re.IGNORECASE | re.DOTALL
+        r"<answer>(.*?)</answer>", completion_str, flags=re.IGNORECASE | re.DOTALL
     )
     if not m:
-        log_env(rollout_id, "wikipedia_reward:no_answer_tag")
         return 0.0
 
     answer_text = unescape(m.group(1)).strip().lower()
     score = float(ground_truth.lower() == answer_text)
-    log_env(rollout_id, f"wikipedia_reward:text_match={score}")
     return score
 
 
@@ -264,7 +269,7 @@ class WikipediaEnv(BaseEnv):
         pass
 
     async def compute_reward(
-        self, rollout_id: str, completion: str, ground_truth: Any, **kwargs: Any
+        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
     ) -> Dict[str, float]:
         """Compute rewards using the text match reward function."""
         return {

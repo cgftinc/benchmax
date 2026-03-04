@@ -5,6 +5,7 @@ from ray.actor import ActorClass, ActorProxy
 from typing import Dict, List, Any, Optional, Type, Union
 
 from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.types import Completion
 
 # 5 minutes timeout in seconds
 RAY_GET_TIMEOUT = 300
@@ -67,7 +68,7 @@ class BenchmaxEnv:
 
     @ray.method
     async def compute_reward(
-        self, rollout_id: str, completion: str, ground_truth: Any, **kwargs: Any
+        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
     ) -> Dict[str, float]:
         return await self._env.compute_reward(
             rollout_id=rollout_id,
@@ -258,7 +259,7 @@ class BenchmaxEnvWrapper:
     async def compute_reward(
         self,
         rollout_id: str,
-        completion: str,
+        completion: Completion,
         ground_truth: Any,
         **kwargs: Any,
     ) -> Dict[str, float]:
@@ -271,7 +272,7 @@ class BenchmaxEnvWrapper:
     def compute_reward_sync(
         self,
         rollout_id: str,
-        completion: str,
+        completion: Completion,
         ground_truth: Any,
         **kwargs: Any,
     ) -> Dict[str, float]:

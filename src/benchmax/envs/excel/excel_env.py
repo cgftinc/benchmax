@@ -7,7 +7,7 @@ from benchmax.envs.mcp.parallel_mcp_env import ParallelMcpEnv
 from benchmax.envs.mcp.provisioners.base_provisioner import BaseProvisioner
 from benchmax.envs.mcp.provisioners.local_provisioner import LocalProvisioner
 from benchmax.envs.mcp.provisioners.skypilot_provisioner import SkypilotProvisioner
-from benchmax.envs.types import StandardizedExample
+from benchmax.envs.types import Completion, StandardizedExample
 from .data_utils import download_and_extract
 
 # Using library shared with mcp workdir
@@ -162,7 +162,7 @@ Output Path: {output_filename}"""
         await self.copy_to_workspace(rollout_id, Path(input_src_path))
 
     async def compute_reward(
-        self, rollout_id: str, completion: str, ground_truth: Any, **kwargs: Any
+        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
     ) -> Dict[str, float]:
         answer_position: Optional[str] = kwargs.get("answer_position")
         output_filename: Optional[str] = kwargs.get("output_filename")

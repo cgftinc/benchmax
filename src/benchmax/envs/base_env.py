@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from benchmax.envs.tracking import TrackingConfig, log_env, tracking_context
-from benchmax.envs.types import StandardizedExample, ToolDefinition
+from benchmax.envs.types import Completion, StandardizedExample, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
 
 if TYPE_CHECKING:
@@ -103,7 +103,7 @@ class BaseEnv(ABC):
 
     @abstractmethod
     async def compute_reward(
-        self, rollout_id: str, completion: str, ground_truth: Any, **kwargs: Any
+        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
     ) -> Dict[str, float]:
         """Compute rewards using registered functions
 

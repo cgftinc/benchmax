@@ -23,7 +23,7 @@ and reaading from the workspace that the MCP is operating in.
 """
 
 from pathlib import Path
-from typing import Any, Callable, Dict, Union, Awaitable
+from typing import Any, Callable, Dict, List, Union, Awaitable
 from mcp.types import TextContent
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
@@ -35,7 +35,7 @@ RewardFunction = Callable[..., Union[float, Awaitable[float]]]
 # Reward 0: Stateless completion check
 # -------------------------------
 async def completion_match_reward(
-    completion: str,
+    completion: str | List[Dict[str, Any]],
     ground_truth: dict,
     mcp_client: Client,
     workspace: Path,
@@ -47,6 +47,9 @@ async def completion_match_reward(
     Uses: ground_truth['completion'] (str)
     """
     expected = ground_truth.get("completion", "")
+    if isinstance(completion, list):
+        completion = completion[-1].get("content", "") if completion else ""
+    completion = str(completion)
     return 1.0 if completion.strip() == expected.strip() else 0.0
 
 
@@ -54,7 +57,7 @@ async def completion_match_reward(
 # Reward 1: Tool call variable in memory check
 # -------------------------------
 async def variable_in_memory_reward(
-    completion: str, ground_truth: dict, mcp_client: Client, workspace: Path, **kwargs
+    completion: str | list[dict], ground_truth: dict, mcp_client: Client, workspace: Path, **kwargs
 ) -> float:
     """
     Reward uses tool call to match in-memory variable value.
@@ -96,7 +99,7 @@ async def variable_in_memory_reward(
 # Reward 2: Workspace log check
 # -------------------------------
 async def log_in_workspace_reward(
-    completion: str,
+    completion: str | list[dict],
     ground_truth: dict,
     mcp_client: Client,
     workspace: Path,
