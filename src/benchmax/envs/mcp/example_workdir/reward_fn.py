@@ -35,7 +35,7 @@ RewardFunction = Callable[..., Union[float, Awaitable[float]]]
 # Reward 0: Stateless completion check
 # -------------------------------
 async def completion_match_reward(
-    completion: str | List[Dict[str, Any]],
+    completion: List[Dict[str, Any]],
     ground_truth: dict,
     mcp_client: Client,
     workspace: Path,

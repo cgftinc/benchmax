@@ -13,7 +13,7 @@ RewardFunction = Callable[..., Union[float, Awaitable[float]]]
 
 
 def spreadsheet_comparison_reward(
-    completion: str | List[Dict[str, Any]],
+    completion: List[Dict[str, Any]],
     ground_truth: dict,
     mcp_client: Client,
     workspace: Path,

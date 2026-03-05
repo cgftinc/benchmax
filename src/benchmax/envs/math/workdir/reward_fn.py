@@ -8,7 +8,7 @@ RewardFunction = Callable[..., Union[float, Awaitable[float]]]
 
 
 async def text_match_reward(
-    completion: str | List[Dict[str, Any]],
+    completion: List[Dict[str, Any]],
     ground_truth: str,
     mcp_client: Client,
     workspace: Path,
@@ -21,16 +21,11 @@ async def text_match_reward(
     Falls back to 0 if the tag is missing or empty.
     """
 
-    if isinstance(completion, list):
-        completion = "\n".join(
-            msg.get("content", "") if isinstance(msg.get("content"), str)
-            else "\n".join(b.get("text", "") for b in msg.get("content", []) if isinstance(b, dict) and b.get("type") == "text")
-            for msg in completion
-        )
+    completion_text = completion[-1].get("content", "") if completion else ""
 
     # Grab only the text inside the first <answer> … </answer> pair (case-insensitive).
     m = re.search(
-        r"<answer>(.*?)</answer>", completion, flags=re.IGNORECASE | re.DOTALL
+        r"<answer>(.*?)</answer>", completion_text, flags=re.IGNORECASE | re.DOTALL
     )
     if m is None:
         return 0.0

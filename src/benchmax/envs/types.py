@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TypedDict
 
-Completion = str | List[Dict[str, Any]]
+Completion = List[Dict[str, Any]]
 
 
 class StandardizedExample(TypedDict):

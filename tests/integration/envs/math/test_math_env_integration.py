@@ -232,7 +232,7 @@ class TestMathEndToEnd:
         env: MathEnv,
         task: str,
         ground_truth: str,
-        completion: str | List[Dict[str, Any]]
+        completion: List[Dict[str, Any]]
     ) -> Dict[str, float]:
         """
         Execute full rollout workflow:
