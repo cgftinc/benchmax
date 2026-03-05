@@ -111,6 +111,34 @@ class BaseEnv(ABC):
         """
         pass
 
+    async def compute_group_reward(
+        self,
+        rollout_ids: List[str],
+        completions: List[str | List[Dict[str, str]]],
+        ground_truths: List[Any],
+        **kwargs: Any,
+    ) -> List[Dict[str, float]]:
+        """Compute rewards across a group of rollouts jointly.
+
+        Override this when reward computation requires cross-rollout context (e.g.,
+        relative scoring, group normalization, or deduplication). Can be used alongside
+        ``compute_reward`` — the two are not mutually exclusive. The default implementation
+        returns empty reward dicts, deferring entirely to per-rollout ``compute_reward`` calls.
+
+        Args:
+            rollout_ids: Identifiers for each rollout in the group.
+            completions: Model outputs, one per rollout. Each entry is either a
+                plain string or a list of message dicts.
+            ground_truths: Reference answers, one per rollout.
+            **kwargs: Additional environment-specific arguments.
+
+        Returns:
+            A list of reward dicts (one per rollout), each mapping reward function
+            names to their computed scores. An empty dict signals that no group
+            reward was computed for that rollout.
+        """
+        return [{} for _ in rollout_ids]
+
     async def get_system_prompt(self, add_tool_defs: bool = False) -> str:
         """Get system prompt. To add tool definitions, set add_tool_defs to True."""
         if add_tool_defs:
