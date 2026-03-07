@@ -1,6 +1,6 @@
 from pathlib import Path
 import re
-from typing import Any, Callable, Dict, Union, Awaitable
+from typing import Any, Callable, Dict, List, Union, Awaitable
 from fastmcp import Client
 from html import unescape
 
@@ -8,7 +8,7 @@ RewardFunction = Callable[..., Union[float, Awaitable[float]]]
 
 
 async def text_match_reward(
-    completion: str,
+    completion: List[Dict[str, Any]],
     ground_truth: str,
     mcp_client: Client,
     workspace: Path,
@@ -21,9 +21,11 @@ async def text_match_reward(
     Falls back to 0 if the tag is missing or empty.
     """
 
+    completion_text = completion[-1].get("content", "") if completion else ""
+
     # Grab only the text inside the first <answer> … </answer> pair (case-insensitive).
     m = re.search(
-        r"<answer>(.*?)</answer>", completion, flags=re.IGNORECASE | re.DOTALL
+        r"<answer>(.*?)</answer>", completion_text, flags=re.IGNORECASE | re.DOTALL
     )
     if m is None:
         return 0.0

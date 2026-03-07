@@ -95,7 +95,7 @@ def get_all_metrics(proposed_answer: str, ground_truth: str) -> float:
 
 
 def crm_matching_reward_function(
-    completion: str,
+    completion: List[Dict[str, Any]],
     ground_truth: List[str],
     mcp_client: Client,
     workspace: Path,
@@ -119,7 +119,8 @@ def crm_matching_reward_function(
     if not reward_metric:
         raise ValueError("kwargs must contain reward metric")
 
-    proposed_answer = completion.strip() if completion else ""
+    completion_text = completion[-1].get("content", "") if completion else ""
+    proposed_answer = completion_text.strip() if completion_text else ""
     proposed_answer = parse_answers(proposed_answer)
 
     if reward_metric == "exact_match":

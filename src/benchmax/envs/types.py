@@ -1,9 +1,11 @@
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
+
+Completion = List[Dict[str, Any]]
 
 
 class StandardizedExample(TypedDict):
-    prompt: str
+    prompt: str | List[Dict[str, Any]]
     ground_truth: Any
     init_rollout_args: Optional[Dict[str, Any]]
 

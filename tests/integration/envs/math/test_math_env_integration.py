@@ -11,7 +11,7 @@ import pytest
 import uuid
 from pathlib import Path
 from datasets import DatasetDict
-from typing import AsyncGenerator, Dict, List, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Tuple
 
 from benchmax.envs.math.math_env import MathEnv
 from benchmax.envs.mcp.provisioners.local_provisioner import LocalProvisioner
@@ -232,7 +232,7 @@ class TestMathEndToEnd:
         env: MathEnv,
         task: str,
         ground_truth: str,
-        completion: str,
+        completion: List[Dict[str, Any]]
     ) -> Dict[str, float]:
         """
         Execute full rollout workflow:

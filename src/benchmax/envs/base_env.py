@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
+from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from benchmax.envs.tracking import TrackingConfig, log_env, with_tracking
-from benchmax.envs.types import StandardizedExample, ToolDefinition
+from benchmax.envs.tracking import TrackingConfig, log_env, tracking_context
+from benchmax.envs.types import Completion, StandardizedExample, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
 
 if TYPE_CHECKING:
@@ -16,32 +17,28 @@ class BaseEnv(ABC):
     system_prompt: str = ""
     _tracking_config: TrackingConfig | None = None
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
+    def __init__(self, **kwargs):
+        self._tracking_config: Optional[TrackingConfig] = None
 
-        compute_reward = cls.__dict__.get("compute_reward")
-        if compute_reward is None:
-            return
-        if getattr(compute_reward, "__benchmax_tracking_wrapped__", False):
-            return
-
-        wrapped = with_tracking(lambda self, *a, **kw: self.get_tracking_config())(
-            compute_reward
-        )
-        setattr(wrapped, "__benchmax_tracking_wrapped__", True)
-        setattr(cls, "compute_reward", wrapped)
-
-    def __init__(
+    def enable_tracking(
         self,
         experiment_id: Optional[str] = None,
         api_key: Optional[str] = None,
-        **kwargs,
-    ):
+    ) -> None:
+        """Enable experiment tracking. Wraps compute_reward on this instance with a tracking context."""
         self._tracking_config = TrackingConfig(
             experiment_id=experiment_id, api_key=api_key
         )
+        cls_compute_reward = type(self).compute_reward
 
-    def get_tracking_config(self) -> TrackingConfig | None:
+        @wraps(cls_compute_reward)
+        async def _tracked(*args, **kwargs):
+            with tracking_context(self._tracking_config):
+                return await cls_compute_reward(self, *args, **kwargs)
+
+        self.compute_reward = _tracked
+
+    def get_tracking_config(self) -> Optional[TrackingConfig]:
         return self._tracking_config
 
     def log_env(self, rollout_id: str, message: str) -> None:
@@ -106,13 +103,41 @@ class BaseEnv(ABC):
 
     @abstractmethod
     async def compute_reward(
-        self, rollout_id: str, completion: str, ground_truth: Any, **kwargs: Any
+        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
     ) -> Dict[str, float]:
         """Compute rewards using registered functions
 
         Returns dict mapping reward function names to their computed scores.
         """
         pass
+
+    async def compute_group_reward(
+        self,
+        rollout_ids: List[str],
+        completions: List[str | List[Dict[str, str]]],
+        ground_truths: List[Any],
+        **kwargs: Any,
+    ) -> List[Dict[str, float]]:
+        """Compute rewards across a group of rollouts jointly.
+
+        Override this when reward computation requires cross-rollout context (e.g.,
+        relative scoring, group normalization, or deduplication). Can be used alongside
+        ``compute_reward`` — the two are not mutually exclusive. The default implementation
+        returns empty reward dicts, deferring entirely to per-rollout ``compute_reward`` calls.
+
+        Args:
+            rollout_ids: Identifiers for each rollout in the group.
+            completions: Model outputs, one per rollout. Each entry is either a
+                plain string or a list of message dicts.
+            ground_truths: Reference answers, one per rollout.
+            **kwargs: Additional environment-specific arguments.
+
+        Returns:
+            A list of reward dicts (one per rollout), each mapping reward function
+            names to their computed scores. An empty dict signals that no group
+            reward was computed for that rollout.
+        """
+        return [{} for _ in rollout_ids]
 
     async def get_system_prompt(self, add_tool_defs: bool = False) -> str:
         """Get system prompt. To add tool definitions, set add_tool_defs to True."""

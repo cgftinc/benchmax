@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.types import ToolDefinition
+from benchmax.envs.types import Completion, ToolDefinition
 from benchmax.bundle.bundler import bundle_env, read_bundle_files, write_bundle_files
 from benchmax.bundle.errors import (
     IncompatibleBenchmaxError,
@@ -73,7 +73,7 @@ class MinimalEnv(BaseEnv):
         pass
 
     async def compute_reward(
-        self, rollout_id: str, completion: str, ground_truth: Any, **kwargs: Any
+        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
     ) -> Dict[str, float]:
         return {"score": 1.0 if completion == ground_truth else 0.0}
 

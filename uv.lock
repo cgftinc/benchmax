@@ -319,7 +319,7 @@ wheels = [
 
 [[package]]
 name = "benchmax"
-version = "0.1.2.dev15"
+version = "0.1.2.dev16"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

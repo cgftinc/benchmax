@@ -20,7 +20,7 @@ except ModuleNotFoundError as e:
 
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.tracking import to_tracking_payload
-from benchmax.envs.types import ToolDefinition
+from benchmax.envs.types import Completion, ToolDefinition
 from .server_pool import ServerPool
 from .provisioners.base_provisioner import BaseProvisioner
 from .utils import (
@@ -344,7 +344,7 @@ class ParallelMcpEnv(BaseEnv):
             return str(e)
 
     async def compute_reward(
-        self, rollout_id: str, completion: str, ground_truth: Any, **kwargs: Any
+        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
     ) -> Dict[str, float]:
         """
         Compute reward and cleanup rollout.
