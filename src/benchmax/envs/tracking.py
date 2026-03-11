@@ -79,13 +79,13 @@ def tracking_context(config: TrackingConfig | None) -> Iterator[None]:
         _ACTIVE_TRACKER.reset(token)
 
 
-def log_env(rollout_id: str, message: str) -> None:
+def log_env(rollout_id: str, message: str, commit: bool = False, flush_k: int = 30) -> None:
     tracker = _ACTIVE_TRACKER.get()
     if tracker is None:
         return
 
     try:
-        tracker.log_environment(rollout_id, str(message))
+        tracker.log_environment(rollout_id, str(message), commit, flush_k)
     except Exception as e:
         LOGGER.debug("log_environment failed: %s", e)
 
