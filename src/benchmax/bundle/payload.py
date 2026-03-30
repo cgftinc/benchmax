@@ -75,3 +75,4 @@ class BundledEnv:
 
     pickled_class: bytes
     metadata: BundleMetadata
+    pickled_constructor_args: Optional[bytes] = None
