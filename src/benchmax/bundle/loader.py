@@ -150,6 +150,20 @@ def load_env_from_files(
     metadata_path = Path(metadata_path)
     pickled_class = pickle_path.read_bytes()
     metadata = BundleMetadata.from_json_bytes(metadata_path.read_bytes())
+
+    # If constructor_args were pickled separately, load them.
+    if constructor_args is None and metadata.constructor_args_pickled:
+        args_pickle_path = pickle_path.with_suffix(".args.pkl")
+        if args_pickle_path.exists():
+            import cloudpickle
+            constructor_args = cloudpickle.loads(args_pickle_path.read_bytes())
+            logger.info("[bundling] Loaded pickled constructor_args from %s", args_pickle_path)
+        else:
+            logger.warning(
+                "[bundling] Metadata indicates pickled constructor_args but %s not found",
+                args_pickle_path,
+            )
+
     return load_env(
         pickled_class,
         metadata,

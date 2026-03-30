@@ -136,10 +136,38 @@ def write_bundle_files(
     pickle_path.write_bytes(bundle.pickled_class)
     metadata_path.write_bytes(bundle.metadata.to_json_bytes())
 
+    # Write pickled constructor_args alongside the class pickle
+    # when they contain non-JSON-serializable objects (e.g. SearchClient).
+    pickled_args = bundle.metadata.pickled_constructor_args_bytes()
+    if pickled_args is not None:
+        args_path = pickle_path.with_suffix(".args.pkl")
+        args_path.write_bytes(pickled_args)
+        logger.info("[bundling] Wrote pickled constructor_args to %s", args_path)
+
 
 def read_bundle_files(pickle_path: Path, metadata_path: Path) -> BundledEnv:
     pickle_path = Path(pickle_path)
     metadata_path = Path(metadata_path)
     pickled_class = pickle_path.read_bytes()
     metadata = BundleMetadata.from_json_bytes(metadata_path.read_bytes())
+
+    # Load pickled constructor_args if they were serialized separately.
+    if metadata.constructor_args_pickled:
+        args_pickle_path = pickle_path.with_suffix(".args.pkl")
+        if args_pickle_path.exists():
+            constructor_args = cloudpickle.loads(args_pickle_path.read_bytes())
+            metadata = BundleMetadata(
+                pip_dependencies=metadata.pip_dependencies,
+                python_version=metadata.python_version,
+                benchmax_version=metadata.benchmax_version,
+                constructor_args=constructor_args,
+                format_version=metadata.format_version,
+            )
+            logger.info("[bundling] Loaded pickled constructor_args from %s", args_pickle_path)
+        else:
+            logger.warning(
+                "[bundling] Metadata indicates pickled constructor_args but %s not found",
+                args_pickle_path,
+            )
+
     return BundledEnv(pickled_class=pickled_class, metadata=metadata)

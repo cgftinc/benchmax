@@ -319,7 +319,7 @@ wheels = [
 
 [[package]]
 name = "benchmax"
-version = "0.1.2.dev16"
+version = "0.1.2.dev20"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -382,7 +382,7 @@ requires-dist = [
     { name = "asyncio", specifier = ">=4.0.0" },
     { name = "cloudpickle", specifier = ">=3.0.0" },
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "expt-logger", specifier = ">=0.1.0.dev20" },
+    { name = "expt-logger", specifier = ">=0.1.0.dev22" },
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = "~=2.12.0" },
     { name = "msrestazure", marker = "extra == 'skypilot'", specifier = ">=0.6.4.post1" },
     { name = "pip", marker = "extra == 'skypilot'", specifier = ">=25.3" },
@@ -963,15 +963,15 @@ wheels = [
 
 [[package]]
 name = "expt-logger"
-version = "0.1.0.dev20"
+version = "0.1.0.dev22"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fb/48/ac3fea8cd8dcb7b34f73e868282d6409090d2382661df89f4148fdf22cb2/expt_logger-0.1.0.dev20.tar.gz", hash = "sha256:cf9ff5cc16e2393cd8f3a0d4c215ee3d59a554f0eefc3068c9facdafdee31aa9", size = 47378, upload-time = "2026-02-25T21:26:04.097Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/9f/e1b3ee5b6df0e1a9e961a7d099d54b82b1021a494475019f1cc1ea13ce9e/expt_logger-0.1.0.dev22.tar.gz", hash = "sha256:b75fa391907d9010f295a56d6c306f5e417a4e818e6a48498beab09a9534535a", size = 48329, upload-time = "2026-03-11T18:29:57.72Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/26/ec/1c487ca275b1654e4fe0f8a7e87aeec31636c0ac01ec6321c38c6bcdd7aa/expt_logger-0.1.0.dev20-py3-none-any.whl", hash = "sha256:1bcf54613722a4842b67c26278162daf6d29c5d6759343250da8846dc8a909d8", size = 23036, upload-time = "2026-02-25T21:26:04.883Z" },
+    { url = "https://files.pythonhosted.org/packages/76/48/e4e8f7fdd3f7813988060c21635cdc0ba0a7c1b205d1be1c1f4ea9bdabd3/expt_logger-0.1.0.dev22-py3-none-any.whl", hash = "sha256:b363d9828da6295df31378f6e973a3af807b40d5ee08cf0185325714ea07ec1a", size = 23406, upload-time = "2026-03-11T18:29:56.563Z" },
 ]
 
 [[package]]
