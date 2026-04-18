@@ -38,6 +38,15 @@ class BaseEnv(ABC):
 
         self.compute_reward = _tracked
 
+        cls_compute_group_reward = type(self).compute_group_reward
+
+        @wraps(cls_compute_group_reward)
+        async def _tracked_group(*args, **kwargs):
+            with tracking_context(self._tracking_config):
+                return await cls_compute_group_reward(self, *args, **kwargs)
+
+        self.compute_group_reward = _tracked_group
+
     def get_tracking_config(self) -> Optional[TrackingConfig]:
         return self._tracking_config
 
