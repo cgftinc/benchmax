@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -26,7 +25,7 @@ class TrackingConfig:
     api_key: Optional[str] = None
 
     def resolved_experiment_id(self) -> Optional[str]:
-        return self.experiment_id or os.getenv("EXPT_LOGGER_EXPERIMENT_ID")
+        return self.experiment_id
 
     def is_enabled(self) -> bool:
         return bool(self.resolved_experiment_id())
