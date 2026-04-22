@@ -100,7 +100,7 @@ def get_setup_command() -> str:
 # Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 UV_VENV_CLEAR=1 uv venv ~/venv && source ~/venv/bin/activate
-uv pip install fastmcp~=2.12.0 pyyaml psutil expt-logger
+uv pip install fastmcp~=2.12.0 pyyaml psutil cgft-telemetry
 bash setup.sh
 """
 

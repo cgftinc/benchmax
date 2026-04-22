@@ -11,11 +11,11 @@ from typing import Any, Callable, Dict, Iterator, Optional
 
 LOGGER = logging.getLogger(__name__)
 
-TRACKING_EXPERIMENT_ID_KEY = "__benchmax_expt_logger_experiment_id"
-TRACKING_API_KEY_KEY = "__benchmax_expt_logger_api_key"
+TRACKING_EXPERIMENT_ID_KEY = "__benchmax_telemetry_experiment_id"
+TRACKING_API_KEY_KEY = "__benchmax_telemetry_api_key"
 
 _ACTIVE_TRACKER: ContextVar[Any | None] = ContextVar(
-    "benchmax_active_expt_logger_tracker", default=None
+    "benchmax_active_telemetry_tracker", default=None
 )
 _TRACKER_CACHE: Dict[tuple[Optional[str], Optional[str]], Any | None] = {}
 
@@ -37,27 +37,21 @@ def _build_tracker(config: TrackingConfig) -> Any | None:
         return None
 
     try:
-        import expt_logger
+        import cgft_telemetry
     except Exception as e:
-        LOGGER.debug("expt_logger import failed; env tracking disabled: %s", e)
+        LOGGER.debug("cgft_telemetry import failed; env tracking disabled: %s", e)
         return None
 
     try:
-        run = expt_logger.init(
+        cgft_telemetry.init(
             experiment_id=config.resolved_experiment_id(),
             api_key=config.api_key,
         )
     except Exception as e:
-        LOGGER.debug("expt_logger init failed; env tracking disabled: %s", e)
+        LOGGER.debug("cgft_telemetry init failed; env tracking disabled: %s", e)
         return None
 
-    if hasattr(expt_logger, "log_environment"):
-        return expt_logger
-    if hasattr(run, "log_environment"):
-        return run
-
-    LOGGER.debug("expt_logger has no log_environment; env tracking disabled")
-    return None
+    return cgft_telemetry
 
 
 def get_tracker(config: TrackingConfig | None) -> Any | None:
