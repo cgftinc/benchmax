@@ -70,9 +70,18 @@ def bundle_env(
                 f"{mod.__name__}"
             )
 
-    # --- Serialize the class ---
+    # --- Serialize the class AND constructor_args while modules are registered ---
+    pickled_constructor_args: bytes | None = None
     try:
         pickled_class = cloudpickle.dumps(env_class)
+        # Pickle constructor_args now (while local_modules are registered)
+        # so non-JSON-serializable objects get pickled by value.
+        if constructor_args is not None:
+            try:
+                import json
+                json.dumps(constructor_args)
+            except TypeError:
+                pickled_constructor_args = cloudpickle.dumps(constructor_args)
     except Exception as e:
         raise BundlingError(
             f"Failed to serialize {env_class.__name__} with cloudpickle: {e}"
@@ -99,8 +108,13 @@ def bundle_env(
         python_version=python_version,
         benchmax_version=benchmax_version,
         constructor_args=constructor_args,
+        constructor_args_pickled=pickled_constructor_args is not None,
     )
-    payload = BundledEnv(pickled_class=pickled_class, metadata=metadata)
+    payload = BundledEnv(
+        pickled_class=pickled_class,
+        metadata=metadata,
+        pickled_constructor_args=pickled_constructor_args,
+    )
 
     size_kb = len(pickled_class) / 1024
     logger.info(
@@ -136,12 +150,11 @@ def write_bundle_files(
     pickle_path.write_bytes(bundle.pickled_class)
     metadata_path.write_bytes(bundle.metadata.to_json_bytes())
 
-    # Write pickled constructor_args alongside the class pickle
-    # when they contain non-JSON-serializable objects (e.g. SearchClient).
-    pickled_args = bundle.metadata.pickled_constructor_args_bytes()
-    if pickled_args is not None:
+    # Write pre-pickled constructor_args (pickled during bundling while
+    # local_modules were registered, so module code is inline).
+    if bundle.pickled_constructor_args is not None:
         args_path = pickle_path.with_suffix(".args.pkl")
-        args_path.write_bytes(pickled_args)
+        args_path.write_bytes(bundle.pickled_constructor_args)
         logger.info("[bundling] Wrote pickled constructor_args to %s", args_path)
 
 

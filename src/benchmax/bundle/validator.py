@@ -35,7 +35,8 @@ def validate_bundle(
     if constructor_args is None:
         constructor_args = bundle.metadata.constructor_args
     return _run_isolated_validation(
-        bundle.pickled_class, bundle.metadata, constructor_args
+        bundle.pickled_class, bundle.metadata, constructor_args,
+        pickled_constructor_args=bundle.pickled_constructor_args,
     )
 
 
@@ -110,6 +111,7 @@ def _run_isolated_validation(
     pickled_class: bytes,
     metadata: BundleMetadata,
     constructor_args: Optional[Dict[str, Any]],
+    pickled_constructor_args: Optional[bytes] = None,
 ) -> List[str]:
     """Create a temp venv, install deps, unpickle the bundle, and smoke test.
 
@@ -192,18 +194,30 @@ def _run_isolated_validation(
         with open(pickle_path, "wb") as f:
             f.write(pickled_class)
 
-        # 5. Write and run smoke test script using cloudpickle directly
-        constructor_args_json = json.dumps(constructor_args) if constructor_args else "null"
+        # 5. Write constructor args as pickle (handles non-JSON-serializable objects)
+        args_pickle_path = os.path.join(venv_dir, "constructor_args.pkl")
+        if pickled_constructor_args is not None:
+            # Use pre-pickled args (pickled during bundling with modules registered)
+            with open(args_pickle_path, "wb") as f:
+                f.write(pickled_constructor_args)
+        elif constructor_args is not None:
+            import cloudpickle as _cp
+            with open(args_pickle_path, "wb") as f:
+                _cp.dump(constructor_args, f)
+
+        # 6. Write and run smoke test script using cloudpickle directly
         smoke_script = textwrap.dedent(f"""\
-            import json
+            import os
             import asyncio
             import cloudpickle
 
             with open({pickle_path!r}, "rb") as f:
                 env_class = cloudpickle.load(f)
 
-            constructor_args = json.loads({constructor_args_json!r})
-            if constructor_args is not None:
+            args_path = {args_pickle_path!r}
+            if os.path.exists(args_path):
+                with open(args_path, "rb") as f:
+                    constructor_args = cloudpickle.load(f)
                 instance = env_class(**constructor_args)
                 tools = asyncio.run(instance.list_tools())
                 asyncio.run(instance.shutdown())
