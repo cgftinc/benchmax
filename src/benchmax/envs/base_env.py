@@ -12,22 +12,35 @@ if TYPE_CHECKING:
 
 
 class BaseEnv(ABC):
-    """Base benchmax environment for tool execution and reward computation"""
+    """Base benchmax environment for tool execution and reward computation.
+
+    Auth contract (G2):
+        Subclasses that issue HTTP to platform services MUST call
+        ``self.auth_headers(url)`` rather than reading ``os.environ`` directly.
+        The default ``auth_headers`` is a no-op (safe for standalone/test use).
+        Training infrastructure injects a live implementation via
+        ``trainer.data.async_workers.orchestrator._wrap_with_cgft_auth``, which
+        monkeypatches the instance before the env is handed to a Ray actor.
+    """
 
     system_prompt: str = ""
     _tracking_config: TrackingConfig | None = None
+
+    # Env-declared hints for training infra. None = use system defaults.
+    recommended_max_turns: Optional[int] = None
+    recommended_max_tool_calls: Optional[int] = None
 
     def __init__(self, **kwargs):
         self._tracking_config: Optional[TrackingConfig] = None
 
     def enable_tracking(
         self,
-        experiment_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         api_key: Optional[str] = None,
     ) -> None:
-        """Enable experiment tracking. Wraps compute_reward on this instance with a tracking context."""
+        """Enable run tracking. Wraps compute_reward on this instance with a tracking context."""
         self._tracking_config = TrackingConfig(
-            experiment_id=experiment_id, api_key=api_key
+            run_id=run_id, api_key=api_key
         )
         cls_compute_reward = type(self).compute_reward
 
@@ -49,6 +62,14 @@ class BaseEnv(ABC):
 
     def get_tracking_config(self) -> Optional[TrackingConfig]:
         return self._tracking_config
+
+    def auth_headers(self, url: str) -> dict[str, str]:
+        """No-op by default. Override in a host-app mixin/subclass to attach
+        bearer tokens to outbound platform-service calls. Custom envs MUST call
+        self.auth_headers(url) when issuing HTTP to internal services rather
+        than reading os.environ directly.
+        """
+        return {}
 
     def log_env(self, rollout_id: str, message: str) -> None:
         log_env(rollout_id, message)

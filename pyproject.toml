@@ -1,16 +1,16 @@
 [project]
 name = "benchmax"
-version = "0.1.2.dev23"
+version = "0.1.2.dev24"
 description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
 readme = "README.md"
-authors = [{ name = "cgft.io" }]
+authors = [{ name = "castie@castform.com" }]
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.13.1",
     "asyncio>=4.0.0",
     "cloudpickle>=3.0.0",
     "datasets>=4.0.0",
-    "expt-logger>=0.1.0.dev22",
+    "job-telemetry>=0.1.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -62,6 +62,9 @@ skyrl = [
 excel = ["openpyxl>=3.1.5"]
 excel-mac-windows = ["openpyxl>=3.1.5", "xlwings>=0.33.16"]
 crm = ["python-dateutil>=2.9.0.post0", "simple-salesforce>=1.12.9"]
+
+[tool.uv.sources]
+job-telemetry = { path = "../job-telemetry", editable = true }
 
 [tool.uv]
 conflicts = [[{ group = "skypilot" }, { group = "skyrl" }]]

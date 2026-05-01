@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -11,25 +10,25 @@ from typing import Any, Callable, Dict, Iterator, Optional
 
 LOGGER = logging.getLogger(__name__)
 
-TRACKING_EXPERIMENT_ID_KEY = "__benchmax_expt_logger_experiment_id"
-TRACKING_API_KEY_KEY = "__benchmax_expt_logger_api_key"
+TRACKING_RUN_ID_KEY = "__benchmax_telemetry_run_id"
+TRACKING_API_KEY_KEY = "__benchmax_telemetry_api_key"
 
 _ACTIVE_TRACKER: ContextVar[Any | None] = ContextVar(
-    "benchmax_active_expt_logger_tracker", default=None
+    "benchmax_active_telemetry_tracker", default=None
 )
 _TRACKER_CACHE: Dict[tuple[Optional[str], Optional[str]], Any | None] = {}
 
 
 @dataclass(frozen=True)
 class TrackingConfig:
-    experiment_id: Optional[str] = None
+    run_id: Optional[str] = None
     api_key: Optional[str] = None
 
-    def resolved_experiment_id(self) -> Optional[str]:
-        return self.experiment_id or os.getenv("EXPT_LOGGER_EXPERIMENT_ID")
+    def resolved_run_id(self) -> Optional[str]:
+        return self.run_id
 
     def is_enabled(self) -> bool:
-        return bool(self.resolved_experiment_id())
+        return bool(self.resolved_run_id())
 
 
 def _build_tracker(config: TrackingConfig) -> Any | None:
@@ -37,34 +36,28 @@ def _build_tracker(config: TrackingConfig) -> Any | None:
         return None
 
     try:
-        import expt_logger
+        import job_telemetry
     except Exception as e:
-        LOGGER.debug("expt_logger import failed; env tracking disabled: %s", e)
+        LOGGER.debug("job_telemetry import failed; env tracking disabled: %s", e)
         return None
 
     try:
-        run = expt_logger.init(
-            experiment_id=config.resolved_experiment_id(),
+        job_telemetry.init(
+            run_id=config.resolved_run_id(),
             api_key=config.api_key,
         )
     except Exception as e:
-        LOGGER.debug("expt_logger init failed; env tracking disabled: %s", e)
+        LOGGER.debug("job_telemetry init failed; env tracking disabled: %s", e)
         return None
 
-    if hasattr(expt_logger, "log_environment"):
-        return expt_logger
-    if hasattr(run, "log_environment"):
-        return run
-
-    LOGGER.debug("expt_logger has no log_environment; env tracking disabled")
-    return None
+    return job_telemetry
 
 
 def get_tracker(config: TrackingConfig | None) -> Any | None:
     if config is None:
         return None
 
-    key = (config.resolved_experiment_id(), config.api_key)
+    key = (config.resolved_run_id(), config.api_key)
     if key not in _TRACKER_CACHE:
         _TRACKER_CACHE[key] = _build_tracker(config)
     return _TRACKER_CACHE[key]
@@ -120,15 +113,15 @@ def to_tracking_payload(config: TrackingConfig | None) -> Dict[str, str]:
         return {}
 
     payload: Dict[str, str] = {}
-    resolved_experiment_id = config.resolved_experiment_id()
-    if resolved_experiment_id:
-        payload[TRACKING_EXPERIMENT_ID_KEY] = resolved_experiment_id
+    resolved_run_id = config.resolved_run_id()
+    if resolved_run_id:
+        payload[TRACKING_RUN_ID_KEY] = resolved_run_id
     if config.api_key:
         payload[TRACKING_API_KEY_KEY] = config.api_key
     return payload
 
 
 def pop_tracking_config(payload: Dict[str, Any]) -> TrackingConfig:
-    experiment_id = payload.pop(TRACKING_EXPERIMENT_ID_KEY, None)
+    run_id = payload.pop(TRACKING_RUN_ID_KEY, None)
     api_key = payload.pop(TRACKING_API_KEY_KEY, None)
-    return TrackingConfig(experiment_id=experiment_id, api_key=api_key)
+    return TrackingConfig(run_id=run_id, api_key=api_key)
