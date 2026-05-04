@@ -7,15 +7,12 @@
 <div align="center">
 </div>
 <div id="badges" align="center">
-  <a href="https://cgft.io">
-    <img src="https://img.shields.io/badge/cgft.io-blue?style=for-the-badge" alt="Website"/>
-  </a>
-  <a href="https://x.com/cgftlabs">
-    <img src="https://img.shields.io/badge/Follow @cgftlabs-black?style=for-the-badge&logo=X&logoColor=white" alt="@cgftlabs"/>
+  <a href="https://castform.com">
+    <img src="https://img.shields.io/badge/castform.com-blue?style=for-the-badge" alt="Website"/>
   </a>
 </div>
 <div align="center" style="line-height: 1;">
-  <a href="https://github.com/girishbarca/benchmax/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"/></a>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"/></a>
 </div>
 
 ## 📌 News
@@ -29,6 +26,7 @@
 - A collection of ready-to-use reinforcement learning (RL) environments for LLM fine-tuning ranging from multi-hop search to spreadsheet manipulation to CRM agents
 - An easy way to define, compose, and parallelize your own environments, including leveraging the existing ecosystem of MCP servers
 - Trainer-agnostic by design — `BaseEnv` exposes a small async interface (`list_tools`, `run_tool`, `compute_reward`, plus optional rollout lifecycle hooks) that any rollout loop can drive
+- Optional batteries-included add-ons: synthetic RAG dataset generation (`benchmax[rag]`), agent trace import (`benchmax[traces]`), and clients for the Castform training platform (`benchmax.platform`)
 
 Define your environment as:
 
@@ -74,6 +72,7 @@ Ready-to-use environments with pre-configured tools and reward functions.
 - [Excel](/src/benchmax/envs/excel/README.md)
 - [Math](/src/benchmax/envs/math/README.md)
 - [Wikipedia](/src/benchmax/envs/wikipedia/README.md)
+- [PostgreSQL search](/src/benchmax/envs/postgres_search/) (`benchmax[rag]`)
 
 ### How do I create a custom environment?
 
@@ -118,6 +117,22 @@ We welcome new environment recipes and bug reports!
 
 ⭐ Star our repository to show your support!
 
+## 📦 Add-ons
+
+In addition to the core env library, `benchmax` ships several optional
+modules behind extras:
+
+| Extra | Module | Purpose |
+|---|---|---|
+| `benchmax[rag]` | `benchmax.rag.*` | Markdown chunking, corpus indexing (Postgres / Chroma / Pinecone / Turbopuffer), synthetic QA dataset generation, RAG-specific reward rubrics |
+| `benchmax[traces]` | `benchmax.traces` | Agentic trace import (Braintrust today, Langfuse coming) and provider-agnostic processing pipeline |
+| `benchmax[chroma]` / `[pinecone]` / `[turbopuffer]` | `benchmax.rag.corpus.*` | Corpus-backend pins (combine with `[rag]`) |
+| _(core)_ | `benchmax.platform` | HTTP clients for the Castform platform — storage uploads, training-job launch, rollout server. Used both internally by `benchmax.rag` and by the high-level [`castform-sdk`](https://pypi.org/project/castform-sdk/). |
+
+All platform URLs derive from `CASTFORM_BASE_DOMAIN` (default
+`castform.com`) with per-component overrides; see
+[`benchmax.config`](src/benchmax/config.py).
+
 ## 📜 License
 
-Apache 2.0 © 2025 CGFT Inc.
+Apache 2.0 © 2026 Castform

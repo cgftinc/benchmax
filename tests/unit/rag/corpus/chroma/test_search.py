@@ -1,0 +1,128 @@
+"""Tests for ChromaSearch — pickle-safe search client."""
+
+from __future__ import annotations
+
+import pickle
+
+import cloudpickle
+import pytest
+
+from benchmax.rag.corpus.chroma.search import ChromaSearch
+
+
+def _make_search(modes=None, embed_fn=None) -> ChromaSearch:
+    """Build a ChromaSearch with a fake ChromaClient injected."""
+    from benchmax.rag.corpus.chroma.client import ChromaClient
+
+    cs = ChromaSearch(
+        collection_name="test",
+        host="localhost",
+        embed_fn=embed_fn,
+    )
+
+    # Inject fake client
+    client = ChromaClient.__new__(ChromaClient)
+    client.collection_name = "test"
+    client.host = "localhost"
+    client.port = 8000
+    client.path = None
+    client.embed_fn = embed_fn
+    client.content_attr = ["content"]
+    client.distance_metric = "cosine"
+    client.enable_bm25 = False
+    client.rrf_k = 60
+    client.rrf_oversample = 20
+    client.rrf_max_candidates = 200
+    client._raw_client = None
+    client._collection = None
+    client._embed_dim = None
+    client._total_count = None
+    client.search_api = False
+    client.modes = modes or {"vector"}
+    client.ranking = {"cosine"}
+
+    # Mock query_raw to return canned results
+    client.query_raw = lambda **kw: [
+        {"id": "1", "content": "result one", "metadata": {}, "score": 0.9},
+        {"id": "2", "content": "result two", "metadata": {}, "score": 0.8},
+    ]
+    client.extract_content = lambda doc, meta: doc
+
+    cs._client = client
+    return cs
+
+
+class TestSearch:
+    def test_returns_dicts(self):
+        cs = _make_search()
+        results = cs.search("query")
+        assert isinstance(results, list)
+        assert all(isinstance(r, dict) for r in results)
+        assert results[0]["content"] == "result one"
+        assert results[1]["content"] == "result two"
+
+    def test_mode_auto_picks_vector_when_only_vector(self):
+        cs = _make_search(modes={"vector"})
+        results = cs.search("query", mode="auto")
+        assert len(results) == 2
+
+    def test_mode_auto_picks_hybrid_when_available(self):
+        cs = _make_search(modes={"vector", "lexical", "hybrid"})
+        cs._client.search_api = True
+        cs._client.search_api_raw = lambda **kw: [
+            {"id": "1", "content": "hybrid result", "metadata": {}, "score": 0.9},
+        ]
+        results = cs.search("query", mode="auto")
+        assert results[0]["content"] == "hybrid result"
+
+    def test_mode_auto_picks_lexical_over_vector(self):
+        cs = _make_search(modes={"vector", "lexical"})
+        cs._client.search_api = True
+        cs._client.search_api_raw = lambda **kw: [
+            {"id": "1", "content": "lexical result", "metadata": {}, "score": 0.9},
+        ]
+        results = cs.search("query", mode="auto")
+        assert results[0]["content"] == "lexical result"
+
+    def test_invalid_mode_raises(self):
+        cs = _make_search(modes={"vector"})
+        with pytest.raises(ValueError, match="does not support mode 'hybrid'"):
+            cs.search("query", mode="hybrid")
+
+
+class TestEmbed:
+    def test_returns_none_without_embed_fn(self):
+        cs = _make_search(embed_fn=None)
+        cs._client.embed = lambda text: None
+        assert cs.embed("test") is None
+
+    def test_returns_vector_with_embed_fn(self):
+        fn = lambda texts: [[1.0, 2.0]] * len(texts)  # noqa: E731
+        cs = _make_search(embed_fn=fn)
+        cs._client.embed = lambda text: fn([text])[0]
+        assert cs.embed("test") == [1.0, 2.0]
+
+
+class TestAvailableModes:
+    def test_reflects_client_modes(self):
+        cs = _make_search(modes={"vector", "lexical", "hybrid"})
+        assert sorted(cs.available_modes) == ["hybrid", "lexical", "vector"]
+
+    def test_vector_only(self):
+        cs = _make_search(modes={"vector"})
+        assert cs.available_modes == ["vector"]
+
+
+class TestPickle:
+    def test_roundtrip_preserves_config(self):
+        cs = ChromaSearch(collection_name="col", host="h", port=9000)
+        data = cloudpickle.dumps(cs)
+        restored = pickle.loads(data)
+        assert restored._collection_name == "col"
+        assert restored._host == "h"
+        assert restored._port == 9000
+        assert restored._client is None
+
+    def test_roundtrip_size(self):
+        cs = ChromaSearch(collection_name="test", host="localhost")
+        assert len(cloudpickle.dumps(cs)) < 500
