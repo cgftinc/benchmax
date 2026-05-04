@@ -19,7 +19,7 @@ class BaseEnv(ABC):
         ``self.auth_headers(url)`` rather than reading ``os.environ`` directly.
         The default ``auth_headers`` is a no-op (safe for standalone/test use).
         Training infrastructure injects a live implementation via
-        ``trainer.data.async_workers.orchestrator._wrap_with_cgft_auth``, which
+        ``trainer.data.async_workers.orchestrator._wrap_with_castform_auth``, which
         monkeypatches the instance before the env is handed to a Ray actor.
     """
 

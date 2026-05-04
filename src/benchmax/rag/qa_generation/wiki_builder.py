@@ -7,7 +7,7 @@ context into QA generation prompts.
 Typical usage::
 
     from openai import OpenAI
-    from benchmax.rag.qa_generation.cgft_models import WikiPreprocessingConfig
+    from benchmax.rag.qa_generation.pipeline_config import WikiPreprocessingConfig
     from benchmax.rag.qa_generation.wiki_builder import WikiBuilder
 
     config = WikiPreprocessingConfig(
@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from benchmax.rag.qa_generation.batch_processor import batch_process_sync
-from benchmax.rag.qa_generation.cgft_models import WikiPreprocessingConfig
+from benchmax.rag.qa_generation.pipeline_config import WikiPreprocessingConfig
 
 logger = logging.getLogger(__name__)
 

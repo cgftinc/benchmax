@@ -1,4 +1,4 @@
-"""Retrieval + LLM-judge too-easy filter for CgftPipeline."""
+"""Retrieval + LLM-judge too-easy filter for Pipeline."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from openai import OpenAI
 
 from benchmax.rag.chunkers.models import Chunk
 from benchmax.rag.qa_generation.batch_processor import batch_process_sync
-from benchmax.rag.qa_generation.cgft_models import (
+from benchmax.rag.qa_generation.pipeline_config import (
     DEFAULT_RETRIEVAL_JUDGE_SYSTEM_PROMPT,
     DEFAULT_RETRIEVAL_JUDGE_USER_TEMPLATE,
-    CgftContext,
+    PipelineContext,
     RetrievalLLMFilterConfig,
 )
 from benchmax.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
@@ -76,7 +76,7 @@ class RetrievalLLMFilter:
             base_url=cfg.judge_base_url,
         )
 
-    def _resolve_search_mode(self, context: CgftContext) -> str | None:
+    def _resolve_search_mode(self, context: PipelineContext) -> str | None:
         """Use the best search mode available on the corpus backend."""
         profile = getattr(context, "profile", None)
         if profile is None:
@@ -86,7 +86,7 @@ class RetrievalLLMFilter:
             return mode
         return None
 
-    def evaluate(self, items: list[GeneratedQA], context: CgftContext) -> list[GeneratedQA]:
+    def evaluate(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]:
         if not self.cfg.enabled:
             return items
 

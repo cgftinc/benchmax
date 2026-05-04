@@ -1,4 +1,4 @@
-"""Pipeline metrics collection for CgftPipeline."""
+"""Pipeline metrics collection for Pipeline."""
 
 from __future__ import annotations
 

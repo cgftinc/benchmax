@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from benchmax.rag.qa_generation.cgft_models import CgftContext
+from benchmax.rag.qa_generation.pipeline_config import PipelineContext
 from benchmax.rag.qa_generation.generated_qa import GeneratedQA
 from benchmax.rag.qa_generation.style_controls import classify_query_style
 
@@ -17,7 +17,7 @@ class BaseQuestionTransformer:
 
     stats_mode = "base"
 
-    def transform(self, items: list[GeneratedQA], context: CgftContext) -> list[GeneratedQA]:
+    def transform(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]:
         stats = self._stats_bucket(context)
         for item in items:
             stats["processed"] = int(stats.get("processed", 0)) + 1
@@ -59,13 +59,13 @@ class BaseQuestionTransformer:
         self,
         item: GeneratedQA,
         *,
-        context: CgftContext,
+        context: PipelineContext,
         original_question: str,
     ) -> tuple[str, dict[str, Any]]:
         del item, context
         return original_question, {}
 
-    def _stats_bucket(self, context: CgftContext) -> dict[str, Any]:
+    def _stats_bucket(self, context: PipelineContext) -> dict[str, Any]:
         stats = context.setdefault("transformation_stats", {})
         if not isinstance(stats, dict):
             stats = {}

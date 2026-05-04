@@ -1,4 +1,4 @@
-"""Cgft filter implementations."""
+"""Filter implementations."""
 
 from benchmax.rag.qa_generation.filters.deterministic_guards import (
     DeterministicGuardsFilter,

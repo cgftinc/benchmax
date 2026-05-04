@@ -483,7 +483,7 @@ class TpufChunkSource:
             reverse=True,
         )
 
-    def probe_rank_by_payloads(self, query: str = "cgft hybrid probe") -> dict[str, dict[str, Any]]:
+    def probe_rank_by_payloads(self, query: str = "hybrid probe") -> dict[str, dict[str, Any]]:
         """Probe which rank_by payload shapes are accepted by the live namespace.
 
         This is a diagnostic tool — it fires real queries against the namespace.

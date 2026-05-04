@@ -49,7 +49,7 @@ class CorpusClient:
         normalized_api_key = self.api_key.strip()
         if not normalized_api_key:
             raise AuthenticationError(
-                "Missing Corpora API key. Pass a non-empty `api_key` to CorporaChunkSource/CorpusClient."
+                "Missing Corpora API key. Pass a non-empty `api_key` to PostgresChunkSource/CorpusClient."
             )
 
         self.api_key = normalized_api_key

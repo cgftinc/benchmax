@@ -1,4 +1,4 @@
-"""Hop-count validity filter for CgftPipeline.
+"""Hop-count validity filter for Pipeline.
 
 Validates that multi-hop questions genuinely require all their reference
 chunks by testing leave-one-out subsets.  A true N-hop question must be
@@ -18,7 +18,7 @@ from typing import Any
 from openai import OpenAI
 
 from benchmax.rag.qa_generation.batch_processor import batch_process_sync
-from benchmax.rag.qa_generation.cgft_models import CgftContext
+from benchmax.rag.qa_generation.pipeline_config import PipelineContext
 from benchmax.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ class HopCountValidityFilter:
             base_url=cfg.judge_base_url or None,
         )
 
-    def evaluate(self, items: list[GeneratedQA], context: CgftContext) -> list[GeneratedQA]:
+    def evaluate(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]:
         if not self.cfg.enabled:
             return items
 

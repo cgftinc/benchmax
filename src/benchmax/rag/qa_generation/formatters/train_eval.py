@@ -1,4 +1,4 @@
-"""Train/eval formatter for CgftPipeline outputs."""
+"""Train/eval formatter for Pipeline outputs."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from benchmax.rag.qa_generation.cgft_models import CgftContext, OutputConfig, SplitConfig
+from benchmax.rag.qa_generation.pipeline_config import PipelineContext, OutputConfig, SplitConfig
 from benchmax.rag.qa_generation.generated_qa import GeneratedQA
 
 
@@ -19,7 +19,7 @@ class TrainEvalFormatter:
         self.output_cfg = output_cfg
         self.split_cfg = split_cfg
 
-    def format(self, items: list[GeneratedQA], context: CgftContext) -> dict[str, Any]:
+    def format(self, items: list[GeneratedQA], context: PipelineContext) -> dict[str, Any]:
         rows = [self._to_row(item) for item in items]
         train_rows, eval_rows = self._stratified_split(rows)
 

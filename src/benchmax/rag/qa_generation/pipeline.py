@@ -1,4 +1,4 @@
-"""Unified Cgft QA generation pipeline."""
+"""Unified QA generation pipeline."""
 
 from __future__ import annotations
 
@@ -21,19 +21,19 @@ from openai import (
 )
 from tqdm.auto import tqdm as _tqdm
 
-from benchmax.rag.corpus.corpora.source import CorporaChunkSource
+from benchmax.rag.corpus.postgres.source import PostgresChunkSource
 from benchmax.rag.qa_generation.auto_tune import (
     auto_tune,
     compute_batch_heuristics,
     emit_corpus_warnings,
     should_early_stop,
 )
-from benchmax.rag.qa_generation.cgft_models import (
-    CgftContext,
-    CgftPipelineConfig,
-    CgftRunStats,
+from benchmax.rag.qa_generation.pipeline_config import (
+    PipelineContext,
+    PipelineConfig,
+    RunStats,
     GenerationTask,
-    load_cgft_config,
+    load_pipeline_config,
 )
 from benchmax.rag.qa_generation.corpus_profile import (
     CorpusProfile,
@@ -143,8 +143,8 @@ def _chat_completion_with_retry(
     raise RuntimeError("Completion retry loop exited unexpectedly.")
 
 
-def _load_source(cfg: CgftPipelineConfig) -> CorporaChunkSource:
-    source = CorporaChunkSource(
+def _load_source(cfg: PipelineConfig) -> PostgresChunkSource:
+    source = PostgresChunkSource(
         api_key=cfg.platform.api_key,
         corpus_name=cfg.corpus.corpus_name,
         base_url=cfg.platform.base_url,
@@ -164,12 +164,12 @@ def _load_source(cfg: CgftPipelineConfig) -> CorporaChunkSource:
     return source
 
 
-def _build_rollout_client(cfg: CgftPipelineConfig) -> RolloutClient:
+def _build_rollout_client(cfg: PipelineConfig) -> RolloutClient:
     return RolloutClient(api_key=cfg.platform.api_key)
 
 
 def _build_metadata_linker(
-    cfg: CgftPipelineConfig,
+    cfg: PipelineConfig,
     source: Any,
     profile: CorpusProfile,
     wiki_index: Any = None,
@@ -196,7 +196,7 @@ def _build_metadata_linker(
 
 
 def _build_linker(
-    cfg: CgftPipelineConfig,
+    cfg: PipelineConfig,
     source: Any,
     profile: CorpusProfile | None = None,
     wiki_index: Any = None,
@@ -235,11 +235,11 @@ def _build_linker(
         )
 
     if cfg.linker.type == "search_agent":
-        from benchmax.rag.corpus.corpora.search import CorporaSearch
+        from benchmax.rag.corpus.postgres.search import PostgresSearch
         from benchmax.rag.qa_generation.search_agent_linker import SearchAgentLinker
 
         metadata_linker = _build_metadata_linker(cfg, source, profile, wiki_index=wiki_index)
-        search_client = CorporaSearch(
+        search_client = PostgresSearch(
             api_key=cfg.platform.api_key,
             corpus_name=cfg.corpus.corpus_name,
             base_url=cfg.platform.base_url,
@@ -262,7 +262,7 @@ def _build_linker(
 
 
 def _build_generator(
-    cfg: CgftPipelineConfig,
+    cfg: PipelineConfig,
     *,
     linker: ChunkLinker,
 ) -> QuestionGenerator:
@@ -278,17 +278,17 @@ def _build_generator(
     )
 
 
-def _build_transformer(cfg: CgftPipelineConfig) -> QuestionTransformer:
+def _build_transformer(cfg: PipelineConfig) -> QuestionTransformer:
     del cfg
     return BaseQuestionTransformer()
 
 
 def _build_filter_from_stage_name(
     stage_name: str,
-    cfg: CgftPipelineConfig,
+    cfg: PipelineConfig,
     *,
     source: Any,
-    rollout_client_factory: Callable[[CgftPipelineConfig], RolloutClient] | None = None,
+    rollout_client_factory: Callable[[PipelineConfig], RolloutClient] | None = None,
 ) -> EvaluatorFilter:
     stage = str(stage_name or "").strip().lower()
     if stage == _QUALITY_GATE_FILTER_STAGE:
@@ -332,7 +332,7 @@ def _build_filter_from_stage_name(
         if rollout_client_factory is None:
             raise ValueError(
                 "env_rollout filter requires a rollout_client_factory. "
-                "Pass one when constructing CgftPipeline."
+                "Pass one when constructing Pipeline."
             )
         return EnvRolloutFilter(
             rollout_client=rollout_client_factory(cfg),
@@ -345,10 +345,10 @@ def _build_filter_from_stage_name(
 
 
 def _build_filter_chain(
-    cfg: CgftPipelineConfig,
+    cfg: PipelineConfig,
     *,
     source: Any,
-    rollout_client_factory: Callable[[CgftPipelineConfig], RolloutClient] | None = None,
+    rollout_client_factory: Callable[[PipelineConfig], RolloutClient] | None = None,
 ) -> tuple[list[str], list[EvaluatorFilter]]:
     chain_names = [
         str(name).strip().lower() for name in (cfg.filtering.filters or []) if str(name).strip()
@@ -467,8 +467,8 @@ def _resolve_effective_qa_type(item: GeneratedQA) -> tuple[str, bool, str]:
     return effective_type, False, ""
 
 
-def _compute_target_type_counts(cfg: CgftPipelineConfig) -> dict[str, int]:
-    from benchmax.rag.qa_generation.cgft_models import allocate_largest_remainder_generic
+def _compute_target_type_counts(cfg: PipelineConfig) -> dict[str, int]:
+    from benchmax.rag.qa_generation.pipeline_config import allocate_largest_remainder_generic
 
     counts = allocate_largest_remainder_generic(
         cfg.targets.total_samples,
@@ -877,7 +877,7 @@ def _create_generation_task(task_kwargs: dict[str, Any]) -> GenerationTask:
 def _build_regeneration_tasks(
     items: list[GeneratedQA],
     *,
-    context: CgftContext,
+    context: PipelineContext,
 ) -> tuple[list[GenerationTask], dict[str, GeneratedQA]]:
     seed_lookup = context.get("seed_chunk_lookup", {}) or {}
     fallback_seed_ids = [str(seed_id) for seed_id in seed_lookup if str(seed_id)]
@@ -994,7 +994,7 @@ def _regenerate_with_generator(
     items: list[GeneratedQA],
     *,
     generator: QuestionGenerator,
-    context: CgftContext,
+    context: PipelineContext,
 ) -> tuple[list[GeneratedQA], list[GeneratedQA]]:
     tasks, originals_by_task_id = _build_regeneration_tasks(items, context=context)
     if not tasks:
@@ -1081,7 +1081,7 @@ def _regenerate_with_generator(
     return regenerated_for_retry, failed_to_regenerate
 
 
-def _build_corpus_profile(cfg: CgftPipelineConfig, source: Any, context: CgftContext) -> None:
+def _build_corpus_profile(cfg: PipelineConfig, source: Any, context: PipelineContext) -> None:
     """Generate corpus summary/example queries from description and samples."""
     profile_cfg = cfg.corpus_context
     default_summary = profile_cfg.description
@@ -1204,15 +1204,15 @@ def _print_progress(message: str, *, verbose: bool) -> None:
         _tqdm.write(message)
 
 
-class CgftPipeline:
-    """Orchestrates Cgft generation, filtering, refinement, and formatting."""
+class Pipeline:
+    """Orchestrates generation, filtering, refinement, and formatting."""
 
     def __init__(
         self,
-        cfg: CgftPipelineConfig,
+        cfg: PipelineConfig,
         *,
-        source_factory: Callable[[CgftPipelineConfig], Any] | None = None,
-        rollout_client_factory: Callable[[CgftPipelineConfig], RolloutClient] | None = None,
+        source_factory: Callable[[PipelineConfig], Any] | None = None,
+        rollout_client_factory: Callable[[PipelineConfig], RolloutClient] | None = None,
     ) -> None:
         self.cfg = cfg
         self.source_factory = source_factory or _load_source
@@ -1233,10 +1233,10 @@ class CgftPipeline:
         context["prepare_context_seconds"] = time.monotonic() - t_prep
         return self._run_from_context(context)
 
-    def _prepare_context(self) -> CgftContext:
+    def _prepare_context(self) -> PipelineContext:
         """Run stages 1-3: load source, build corpus profile, extract entities.
 
-        Returns a fully populated CgftContext with ``profile`` set, ready for
+        Returns a fully populated PipelineContext with ``profile`` set, ready for
         ``_run_from_context``.  Resolves API keys as a side-effect.
         """
         cfg = self.cfg
@@ -1244,7 +1244,7 @@ class CgftPipeline:
 
         source = self.source_factory(cfg)
         rng = random.Random(cfg.random_seed)
-        context = CgftContext(config=cfg, source=source, rng=rng)
+        context = PipelineContext(config=cfg, source=source, rng=rng)
 
         _print_progress("[1/6] Loading chunks from corpus...", verbose=cfg.verbose)
         try:
@@ -1252,7 +1252,7 @@ class CgftPipeline:
         except AttributeError:
             chunk_count = cfg.targets.total_samples * 10
 
-        # Ensure all chunks are accessible in memory.  CorporaChunkSource
+        # Ensure all chunks are accessible in memory.  PostgresChunkSource
         # already materialises via populate; API-only backends (Turbopuffer)
         # need an explicit fetch so the entity-chunk graph and linker can
         # resolve any chunk by hash.
@@ -1288,7 +1288,7 @@ class CgftPipeline:
             rng=rng,
         )
         if not profile_sample:
-            raise RuntimeError("No eligible chunks were found for CgftPipeline generation.")
+            raise RuntimeError("No eligible chunks were found for Pipeline generation.")
         _print_progress(
             f"[1/6] Loaded {len(profile_sample)} profile chunks from corpus", verbose=cfg.verbose
         )
@@ -1462,7 +1462,7 @@ class CgftPipeline:
 
         return context
 
-    def _run_from_context(self, context: CgftContext) -> dict[str, Any]:
+    def _run_from_context(self, context: PipelineContext) -> dict[str, Any]:
         """Run stages 4-8 given a context already populated by ``_prepare_context``.
 
         This is the compute-heavy phase: task creation, generation, filtering,
@@ -1571,7 +1571,7 @@ class CgftPipeline:
         result["rejected_dataset"] = [
             _serialize_qa_with_filter_details(item) for item in all_rejected
         ]
-        run_stats = CgftRunStats(
+        run_stats = RunStats(
             raw_candidates_total=len(raw_items),
             passed_total=len(all_passed),
             rejected_total=len(all_rejected),
@@ -1647,7 +1647,7 @@ class CgftPipeline:
         filter_stage_names: list[str],
         filter_chain: list[EvaluatorFilter],
         transformer: QuestionTransformer,
-        context: CgftContext,
+        context: PipelineContext,
         incremental_dedup: IncrementalDeduplicator | None = None,
     ) -> tuple[list[GeneratedQA], list[GeneratedQA], list[GeneratedQA], int]:
         """Run stages 5-7 on a single micro-batch.
@@ -1797,7 +1797,7 @@ class CgftPipeline:
         filter_stage_names: list[str],
         filter_chain: list[EvaluatorFilter],
         transformer: QuestionTransformer,
-        context: CgftContext,
+        context: PipelineContext,
     ) -> tuple[list[GeneratedQA], list[GeneratedQA], int, list[GeneratedQA]]:
         """Run stages 5-7 in micro-batches with dynamic distribution.
 
@@ -1807,7 +1807,7 @@ class CgftPipeline:
         from concurrent.futures import ThreadPoolExecutor
         from pathlib import Path
 
-        from benchmax.rag.qa_generation.cgft_models import allocate_largest_remainder_generic
+        from benchmax.rag.qa_generation.pipeline_config import allocate_largest_remainder_generic
         from benchmax.rag.qa_generation.checkpoint import (
             CheckpointManager,
             compute_config_hash,
@@ -2016,7 +2016,7 @@ class CgftPipeline:
 
             def _run_one_batch(
                 batch_tasks: list[GenerationTask],
-                batch_context: CgftContext,
+                batch_context: PipelineContext,
             ) -> tuple[
                 list[GeneratedQA],
                 list[GeneratedQA],
@@ -2038,7 +2038,7 @@ class CgftPipeline:
                 # futures[fut] = (batch_idx, batch_context, in_flight_types)
                 # in_flight_types lets us decrement the shared in-flight counters
                 # on collection without recomputing from the task list.
-                futures: dict[Any, tuple[int, CgftContext, dict[str, int]]] = {}
+                futures: dict[Any, tuple[int, PipelineContext, dict[str, int]]] = {}
                 in_flight_type_counts: dict[str, int] = {t: 0 for t in target_type_counts}
 
                 def _submit_next() -> None:
@@ -2093,7 +2093,7 @@ class CgftPipeline:
                         )
                         done = list(done_set)
 
-                    def _collect_result(fut: Any, b_idx: int, batch_ctx: CgftContext) -> None:
+                    def _collect_result(fut: Any, b_idx: int, batch_ctx: PipelineContext) -> None:
                         nonlocal consecutive_empty, total_regens
                         passed, rejected, raw, regens = fut.result()
 
@@ -2296,12 +2296,12 @@ def compute_next_batch(
     accepted_hop_counts: dict[str, int],
     batch_size: int,
     source: Any,
-    cfg: CgftPipelineConfig,
+    cfg: PipelineConfig,
     iteration_count: int,
     profile: CorpusProfile | None = None,
 ) -> list[GenerationTask]:
     """Compute the next batch of generation tasks based on remaining quotas."""
-    from benchmax.rag.qa_generation.cgft_models import allocate_largest_remainder_generic
+    from benchmax.rag.qa_generation.pipeline_config import allocate_largest_remainder_generic
 
     remaining = {
         t: max(0, target - accepted_type_counts.get(t, 0))
@@ -2470,14 +2470,14 @@ def _update_subdistribution_counts(
         accepted_hop_counts[hop_key] = accepted_hop_counts.get(hop_key, 0) + 1
 
 
-def run_cgft_pipeline(
-    cfg: CgftPipelineConfig,
+def run_pipeline(
+    cfg: PipelineConfig,
     *,
-    source_factory: Callable[[CgftPipelineConfig], Any] | None = None,
-    rollout_client_factory: Callable[[CgftPipelineConfig], RolloutClient] | None = None,
+    source_factory: Callable[[PipelineConfig], Any] | None = None,
+    rollout_client_factory: Callable[[PipelineConfig], RolloutClient] | None = None,
 ) -> dict[str, Any]:
-    """Run CgftPipeline with a fully constructed config."""
-    pipeline = CgftPipeline(
+    """Run Pipeline with a fully constructed config."""
+    pipeline = Pipeline(
         cfg,
         source_factory=source_factory,
         rollout_client_factory=rollout_client_factory,
@@ -2485,15 +2485,15 @@ def run_cgft_pipeline(
     return pipeline.run()
 
 
-def run_cgft_pipeline_from_config(
+def run_pipeline_from_config(
     config_path: str | Path,
     *,
-    source_factory: Callable[[CgftPipelineConfig], Any] | None = None,
-    rollout_client_factory: Callable[[CgftPipelineConfig], RolloutClient] | None = None,
+    source_factory: Callable[[PipelineConfig], Any] | None = None,
+    rollout_client_factory: Callable[[PipelineConfig], RolloutClient] | None = None,
 ) -> dict[str, Any]:
-    """Load config YAML and run CgftPipeline."""
-    cfg = load_cgft_config(config_path)
-    return run_cgft_pipeline(
+    """Load config YAML and run Pipeline."""
+    cfg = load_pipeline_config(config_path)
+    return run_pipeline(
         cfg,
         source_factory=source_factory,
         rollout_client_factory=rollout_client_factory,

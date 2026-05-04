@@ -1,4 +1,4 @@
-"""Cgft generator implementations."""
+"""Generator implementations."""
 
 from benchmax.rag.qa_generation.generators.direct_llm import DirectLLMGenerator
 

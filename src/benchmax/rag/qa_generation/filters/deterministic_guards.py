@@ -1,11 +1,11 @@
-"""Deterministic quality guards for CgftPipeline."""
+"""Deterministic quality guards for Pipeline."""
 
 from __future__ import annotations
 
 import re
 from typing import Any
 
-from benchmax.rag.qa_generation.cgft_models import CgftContext, DeterministicGuardsConfig
+from benchmax.rag.qa_generation.pipeline_config import PipelineContext, DeterministicGuardsConfig
 from benchmax.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 
 _STYLE_LABELS = frozenset({"natural", "keyword", "expert"})
@@ -123,7 +123,7 @@ class DeterministicGuardsFilter:
     def __init__(self, cfg: DeterministicGuardsConfig) -> None:
         self.cfg = cfg
 
-    def evaluate(self, items: list[GeneratedQA], context: CgftContext) -> list[GeneratedQA]:
+    def evaluate(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]:
         if not self.cfg.enabled:
             return items
 

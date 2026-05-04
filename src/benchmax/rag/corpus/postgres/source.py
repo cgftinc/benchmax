@@ -1,4 +1,4 @@
-"""CorporaChunkSource — ChunkSource implementation backed by the Corpora API."""
+"""PostgresChunkSource — ChunkSource implementation backed by the Corpora API."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from .models import Corpus
 
 
-class CorporaChunkSource:
+class PostgresChunkSource:
     """ChunkSource backed by local ChunkCollection + Corpora API BM25 search.
 
     Chunks are stored locally in a ChunkCollection and uploaded to the Corpora
@@ -42,7 +42,7 @@ class CorporaChunkSource:
         base_url: Corpora API base URL
 
     Example:
-        >>> source = CorporaChunkSource(
+        >>> source = PostgresChunkSource(
         ...     api_key="sk_...",
         ...     corpus_name="my-docs",
         ...     base_url=config.platform_url(),
@@ -276,12 +276,12 @@ class CorporaChunkSource:
         """
         if hybrid is not None:
             warnings.warn(
-                "CorporaChunkSource does not support hybrid search; 'hybrid' parameter is ignored.",
+                "PostgresChunkSource does not support hybrid search; 'hybrid' parameter is ignored.",
                 stacklevel=2,
             )
         if mode is not None and mode != "lexical":
             warnings.warn(
-                f"CorporaChunkSource only supports 'lexical' mode; '{mode}' will be ignored.",
+                f"PostgresChunkSource only supports 'lexical' mode; '{mode}' will be ignored.",
                 stacklevel=2,
             )
         self._assert_ready()

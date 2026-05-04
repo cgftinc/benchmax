@@ -21,7 +21,7 @@ import benchmax
 from benchmax.rag.corpus.search_client import SearchClient
 from benchmax.envs.postgres_search.linker_env import LinkerEnv
 from benchmax.rag.qa_generation.anchor_selector import AnchorBundle
-from benchmax.rag.qa_generation.cgft_models import SearchAgentLinkerCfg
+from benchmax.rag.qa_generation.pipeline_config import SearchAgentLinkerCfg
 from benchmax.rag.qa_generation.metadata_linker import MetadataChunkLinker
 from benchmax.platform.client import RolloutClient
 

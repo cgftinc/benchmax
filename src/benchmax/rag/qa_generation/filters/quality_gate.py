@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from benchmax.rag.qa_generation.cgft_models import CgftContext, QualityGateConfig
+from benchmax.rag.qa_generation.pipeline_config import PipelineContext, QualityGateConfig
 from benchmax.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 
 # --------------------------------------------------------------------------- #
@@ -150,7 +150,7 @@ class QualityGateFilter:
     def __init__(self, cfg: QualityGateConfig) -> None:
         self.cfg = cfg
 
-    def evaluate(self, items: list[GeneratedQA], context: CgftContext) -> list[GeneratedQA]:
+    def evaluate(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]:
         if not self.cfg.enabled:
             return items
 

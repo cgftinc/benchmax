@@ -1,4 +1,4 @@
-"""Direct LLM generator for CgftPipeline."""
+"""Direct LLM generator for Pipeline."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from tqdm.auto import tqdm
 
 from benchmax.rag.qa_generation.anchor_selector import AnchorBundle
 from benchmax.rag.qa_generation.batch_processor import BatchResult, batch_process_sync
-from benchmax.rag.qa_generation.cgft_models import (
-    CgftContext,
+from benchmax.rag.qa_generation.pipeline_config import (
+    PipelineContext,
     GenerationTask,
     LLMDirectGenerationConfig,
 )
@@ -387,13 +387,13 @@ class DirectLLMGenerator:
         self.linker = linker
         self.cfg = cfg
 
-    def generate(self, tasks: list[GenerationTask], context: CgftContext) -> list[GeneratedQA]:
+    def generate(self, tasks: list[GenerationTask], context: PipelineContext) -> list[GeneratedQA]:
         if not self.cfg.batch_enabled or len(tasks) <= 1:
             return self._generate_sequential(tasks, context)
         return self._generate_batched(tasks, context)
 
     def _generate_sequential(
-        self, tasks: list[GenerationTask], context: CgftContext
+        self, tasks: list[GenerationTask], context: PipelineContext
     ) -> list[GeneratedQA]:
         """Original sequential generation path."""
         generated: list[GeneratedQA] = []
@@ -418,7 +418,7 @@ class DirectLLMGenerator:
         return generated
 
     def _generate_batched(
-        self, tasks: list[GenerationTask], context: CgftContext
+        self, tasks: list[GenerationTask], context: PipelineContext
     ) -> list[GeneratedQA]:
         """Parallel batch generation path."""
         prepared = self._prepare_tasks(tasks, context)
@@ -440,7 +440,7 @@ class DirectLLMGenerator:
         return self._process_batch_results(prepared, result)
 
     def _prepare_tasks(
-        self, tasks: list[GenerationTask], context: CgftContext
+        self, tasks: list[GenerationTask], context: PipelineContext
     ) -> list[_PreparedTask]:
         """Resolve anchors and build prompts for all tasks."""
         seed_lookup: dict[str, Any] = context.get("seed_chunk_lookup", {})

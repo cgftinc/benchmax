@@ -1,16 +1,16 @@
-"""QA generation package exports (CgftPipeline only)."""
+"""QA generation package exports (Pipeline only)."""
 
 from .anchor_selector import AnchorBundle
 from .batch_processor import BatchResponse, BatchResult, batch_process_sync
-from .cgft_models import (
-    CgftContext,
-    CgftPipelineConfig,
-    CgftRunStats,
+from .pipeline_config import (
+    PipelineContext,
+    PipelineConfig,
+    RunStats,
     CorpusContextConfig,
     GenerationTask,
-    load_cgft_config,
+    load_pipeline_config,
 )
-from .cgft_pipeline import CgftPipeline, run_cgft_pipeline, run_cgft_pipeline_from_config
+from .pipeline import Pipeline, run_pipeline, run_pipeline_from_config
 from .corpus_capabilities import CorpusCapabilities
 from .filters import (
     DeterministicGuardsFilter,
@@ -40,11 +40,11 @@ __all__ = [
     "GeneratedQA",
     "FilterVerdict",
     "GenerationTask",
-    "CgftContext",
-    "CgftRunStats",
+    "PipelineContext",
+    "RunStats",
     "CorpusContextConfig",
-    "CgftPipelineConfig",
-    "load_cgft_config",
+    "PipelineConfig",
+    "load_pipeline_config",
     "ChunkLinker",
     "QuestionGenerator",
     "LLMSupportedGenerator",
@@ -58,7 +58,7 @@ __all__ = [
     "GroundingLLMFilter",
     "EnvRolloutFilter",
     "TrainEvalFormatter",
-    "CgftPipeline",
-    "run_cgft_pipeline",
-    "run_cgft_pipeline_from_config",
+    "Pipeline",
+    "run_pipeline",
+    "run_pipeline_from_config",
 ]

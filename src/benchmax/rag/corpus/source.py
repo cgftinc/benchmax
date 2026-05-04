@@ -25,7 +25,7 @@ class ChunkSource(Protocol):
     hybrid).
 
     Implementations:
-        CorporaChunkSource: chunks stored locally + uploaded to Corpora API (BM25)
+        PostgresChunkSource: chunks stored locally + uploaded to Corpora API (BM25)
         TpufChunkSource: chunks stored and searched in Turbopuffer (BM25/vector/hybrid)
         PineconeChunkSource: chunks stored and searched in Pinecone (vector only)
         ChromaChunkSource: chunks stored and searched in ChromaDB (vector/BM25/hybrid)

@@ -1,4 +1,4 @@
-"""Typed models and config loaders for the Cgft QA pipeline."""
+"""Typed models and config loaders for the QA pipeline."""
 
 from __future__ import annotations
 
@@ -208,7 +208,7 @@ class CorpusConfig:
 
     docs_path: str = ""
     corpus_id: str = ""
-    corpus_name: str = "cgft-corpus"
+    corpus_name: str = "default-corpus"
     show_summary: bool = True
     min_chunk_chars: int = 400
 
@@ -511,7 +511,7 @@ class SplitConfig:
 class OutputConfig:
     """Output artifact settings."""
 
-    dir: str = "outputs/cgft"
+    dir: str = "outputs/pipeline"
     train_jsonl: str = "train.jsonl"
     eval_jsonl: str = "eval.jsonl"
 
@@ -532,8 +532,8 @@ class WikiPreprocessingConfig:
 
 
 @dataclass
-class CgftPipelineConfig:
-    """Unified configuration for the Cgft pipeline."""
+class PipelineConfig:
+    """Unified configuration for the pipeline."""
 
     platform: PlatformConfig
     corpus: CorpusConfig = field(default_factory=CorpusConfig)
@@ -635,8 +635,8 @@ class GenerationTask:
 
 
 @dataclass
-class CgftContext:
-    """Shared runtime context for Cgft components.
+class PipelineContext:
+    """Shared runtime context for pipeline components.
 
     Two storage patterns are intentionally co-located here:
 
@@ -651,7 +651,7 @@ class CgftContext:
     data that is genuinely structured and always present.
     """
 
-    config: CgftPipelineConfig
+    config: PipelineConfig
     source: Any
     rng: random.Random = field(default_factory=random.Random)
     state: dict[str, Any] = field(default_factory=dict)
@@ -672,8 +672,8 @@ class CgftContext:
 
 
 @dataclass
-class CgftRunStats:
-    """Typed run stats emitted by CgftPipeline."""
+class RunStats:
+    """Typed run stats emitted by Pipeline."""
 
     raw_candidates_total: int = 0
     passed_total: int = 0
@@ -800,8 +800,8 @@ def _collect_removed_config_keys(raw: dict[str, Any]) -> list[str]:
     return removed_keys
 
 
-def load_cgft_config(path: str | Path) -> CgftPipelineConfig:
-    """Load `CgftPipelineConfig` from YAML."""
+def load_pipeline_config(path: str | Path) -> PipelineConfig:
+    """Load `PipelineConfig` from YAML."""
     with Path(path).open("r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
 
@@ -809,7 +809,7 @@ def load_cgft_config(path: str | Path) -> CgftPipelineConfig:
     if removed_keys:
         joined = ", ".join(sorted(removed_keys))
         raise ValueError(
-            "Unsupported config keys for the clean-break Cgft filtering/refinement API: "
+            "Unsupported config keys for the clean-break pipeline filtering/refinement API: "
             f"{joined}. "
             "Use filtering.filters with supported stages {'grounding_llm', 'retrieval_too_easy_llm'} "
             "and generator-based refinement without refinement.strategy."
@@ -830,7 +830,7 @@ def load_cgft_config(path: str | Path) -> CgftPipelineConfig:
     corpus = CorpusConfig(
         docs_path=str(corpus_raw.get("docs_path", "")).strip(),
         corpus_id=str(corpus_raw.get("corpus_id", "")).strip(),
-        corpus_name=str(corpus_raw.get("corpus_name", "cgft-corpus")).strip(),
+        corpus_name=str(corpus_raw.get("corpus_name", "default-corpus")).strip(),
         show_summary=bool(corpus_raw.get("show_summary", True)),
         min_chunk_chars=max(0, int(corpus_raw.get("min_chunk_chars", 400))),
     )
@@ -1067,7 +1067,7 @@ def load_cgft_config(path: str | Path) -> CgftPipelineConfig:
 
     output_raw = raw.get("output", {}) or {}
     output = OutputConfig(
-        dir=str(output_raw.get("dir", "outputs/cgft")).strip(),
+        dir=str(output_raw.get("dir", "outputs/pipeline")).strip(),
         train_jsonl=str(output_raw.get("train_jsonl", "train.jsonl")).strip(),
         eval_jsonl=str(output_raw.get("eval_jsonl", "eval.jsonl")).strip(),
     )
@@ -1091,7 +1091,7 @@ def load_cgft_config(path: str | Path) -> CgftPipelineConfig:
         hop_validity_weight=max(0.0, float(scoring_raw.get("hop_validity_weight", 0.3))),
     )
 
-    cfg = CgftPipelineConfig(
+    cfg = PipelineConfig(
         platform=platform,
         corpus=corpus,
         corpus_context=corpus_context,

@@ -1,4 +1,4 @@
-"""CorporaSearch — pickle-safe search client for RL environments.
+"""PostgresSearch — pickle-safe search client for RL environments.
 
 Delegates to the Corpora API HTTP client. Lexical (BM25) only.
 """
@@ -10,7 +10,7 @@ from typing import Any
 from .client import CorpusClient
 
 
-class CorporaSearch:
+class PostgresSearch:
     """Pickle-safe Corpora API search client for RL environments.
 
     Supports lexical (BM25) search only.
@@ -60,7 +60,7 @@ class CorporaSearch:
         """Search and return structured results. Lexical (BM25) only."""
         if mode not in ("auto", "lexical"):
             raise ValueError(
-                f"CorporaSearch only supports 'lexical' mode, got '{mode}'. "
+                f"PostgresSearch only supports 'lexical' mode, got '{mode}'. "
                 f"The Corpora API uses BM25 search only."
             )
         client = self._get_client()

@@ -1,4 +1,4 @@
-"""Corpus-aware parameter auto-tuning and warnings for CgftPipeline."""
+"""Corpus-aware parameter auto-tuning and warnings for Pipeline."""
 
 from __future__ import annotations
 

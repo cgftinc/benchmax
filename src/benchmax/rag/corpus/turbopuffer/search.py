@@ -49,7 +49,7 @@ class TpufSearch:
     def _get_client(self) -> Any:
         """Lazily initialize the Turbopuffer namespace client.
 
-        Uses the ``turbopuffer`` SDK directly (no cgft dependency)
+        Uses the ``turbopuffer`` SDK directly (no benchmax dependency)
         so this class remains pickle-safe for remote training.
         """
         if self._client is None:

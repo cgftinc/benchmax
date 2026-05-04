@@ -1,4 +1,4 @@
-"""Rollout-based evaluator filter for CgftPipeline."""
+"""Rollout-based evaluator filter for Pipeline."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from benchmax.rag.qa_generation.cgft_models import CgftContext, LLMEnvFilterConfig
+from benchmax.rag.qa_generation.pipeline_config import PipelineContext, LLMEnvFilterConfig
 from benchmax.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 from benchmax.platform.client import RolloutClient
 
@@ -107,7 +107,7 @@ class EnvRolloutFilter:
             example_index=idx,
         )
 
-    def evaluate(self, items: list[GeneratedQA], context: CgftContext) -> list[GeneratedQA]:
+    def evaluate(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]:
         if not self.cfg.enabled:
             return items
 

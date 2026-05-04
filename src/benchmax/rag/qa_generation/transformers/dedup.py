@@ -11,7 +11,7 @@ import re
 import threading
 from dataclasses import dataclass
 
-from benchmax.rag.qa_generation.cgft_models import CgftContext
+from benchmax.rag.qa_generation.pipeline_config import PipelineContext
 from benchmax.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ class QuestionDeduplicator:
         self,
         passed: list[GeneratedQA],
         rejected: list[GeneratedQA],
-        context: CgftContext,
+        context: PipelineContext,
     ) -> tuple[list[GeneratedQA], list[GeneratedQA]]:
         """Remove near-duplicates from *passed*, appending them to *rejected*.
 

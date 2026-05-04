@@ -1,4 +1,4 @@
-"""Grounding + LLM-judge filter for CgftPipeline."""
+"""Grounding + LLM-judge filter for Pipeline."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ from typing import Any, cast
 from openai import OpenAI
 
 from benchmax.rag.qa_generation.batch_processor import batch_process_sync
-from benchmax.rag.qa_generation.cgft_models import (
+from benchmax.rag.qa_generation.pipeline_config import (
     DEFAULT_GROUNDING_JUDGE_SYSTEM_PROMPT,
     DEFAULT_GROUNDING_JUDGE_USER_TEMPLATE,
-    CgftContext,
+    PipelineContext,
     GroundingLLMFilterConfig,
 )
 from benchmax.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
@@ -57,7 +57,7 @@ class GroundingLLMFilter:
             base_url=cfg.judge_base_url,
         )
 
-    def evaluate(self, items: list[GeneratedQA], context: CgftContext) -> list[GeneratedQA]:
+    def evaluate(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]:
         if not self.cfg.enabled:
             return items
 
