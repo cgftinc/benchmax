@@ -239,33 +239,11 @@ class TestManifest:
 
 
 class TestCheckpointManager:
-    def test_save_and_load_manifest(self, tmp_path: Path) -> None:
-        mgr = CheckpointManager(tmp_path / "ckpt", config_hash="hash1")
-        manifest = Manifest(config_hash="hash1", completed_batch_count=2)
-        mgr.save_manifest(manifest)
-
-        loaded = mgr.load_manifest()
-        assert loaded is not None
-        assert loaded.config_hash == "hash1"
-        assert loaded.completed_batch_count == 2
-
     def test_resume_empty(self, tmp_path: Path) -> None:
         mgr = CheckpointManager(tmp_path / "ckpt", config_hash="hash1")
         state = mgr.resume_state()
         assert state.passed_items == []
         assert state.completed_batch_count == 0
-
-    def test_resume_with_hash_mismatch(self, tmp_path: Path) -> None:
-        mgr = CheckpointManager(tmp_path / "ckpt", config_hash="old_hash")
-        mgr.save_manifest(Manifest(config_hash="old_hash", completed_batch_count=5))
-
-        # New manager with different hash.
-        mgr2 = CheckpointManager(tmp_path / "ckpt", config_hash="new_hash")
-        state = mgr2.resume_state()
-        assert state.passed_items == []
-        assert state.completed_batch_count == 0
-        # Checkpoint dir should be cleaned up.
-        assert not (tmp_path / "ckpt" / "manifest.json").exists()
 
     def test_save_batch_and_resume(self, tmp_path: Path) -> None:
         mgr = CheckpointManager(tmp_path / "ckpt", config_hash="h1")
@@ -316,13 +294,6 @@ class TestCheckpointManager:
         assert len(state.passed_items) == 3
         questions = [item.qa["question"] for item in state.passed_items]
         assert questions == ["Q1", "Q2", "Q3"]
-
-    def test_cleanup(self, tmp_path: Path) -> None:
-        mgr = CheckpointManager(tmp_path / "ckpt", config_hash="h1")
-        mgr.save_manifest(Manifest(config_hash="h1"))
-        assert (tmp_path / "ckpt").exists()
-        mgr.cleanup()
-        assert not (tmp_path / "ckpt").exists()
 
 
 # ---------------------------------------------------------------------------

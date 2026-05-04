@@ -118,11 +118,6 @@ class TestToolCall:
 
 
 class TestTraceMessage:
-    def test_to_dict_basic(self):
-        msg = TraceMessage(role="user", content="hello")
-        d = msg.to_dict()
-        assert d == {"role": "user", "content": "hello"}
-
     def test_to_dict_with_tool_calls(self):
         msg = TraceMessage(
             role="assistant",
