@@ -51,26 +51,9 @@ skypilot = [
     "pip>=25.3",                      # Added as needed for skypilot launch
     "msrestazure>=0.6.4.post1",
 ]
-skyrl = [
-    "grpcio>=1.60.0",
-    "hydra-core>=1.3.2",
-    "omegaconf>=2.3.0",
-    "ray>=2.48.0",
-    "skyrl-gym>=0.1.1",
-    "skyrl-train[vllm]>=0.2.0",
-]
 excel = ["openpyxl>=3.1.5"]
 excel-mac-windows = ["openpyxl>=3.1.5", "xlwings>=0.33.16"]
 crm = ["python-dateutil>=2.9.0.post0", "simple-salesforce>=1.12.9"]
 
 [tool.uv.sources]
 job-telemetry = { path = "../job-telemetry", editable = true }
-
-[tool.uv]
-conflicts = [[{ group = "skypilot" }, { group = "skyrl" }]]
-
-# [tool.uv.extra-build-dependencies]
-# flash-attn = [{ requirement = "torch", match-runtime = true }]
-
-# [tool.uv.extra-build-variables]
-# flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
