@@ -45,7 +45,7 @@ class CorporaChunkSource:
         >>> source = CorporaChunkSource(
         ...     api_key="sk_...",
         ...     corpus_name="my-docs",
-        ...     base_url="https://app.cgft.io",
+        ...     base_url=config.platform_url(),
         ... )
         >>> source.populate_from_folder("./docs")
         >>> chunks = source.sample_chunks(n=10, min_chars=400)

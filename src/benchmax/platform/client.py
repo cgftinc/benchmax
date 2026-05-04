@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from benchmax import config
+
 from .exceptions import AuthenticationError, JobLaunchError, TrainerError
 
 if TYPE_CHECKING:
@@ -65,7 +67,7 @@ class StorageClient:
     """
 
     api_key: str
-    base_url: str = "http://localhost:3000"
+    base_url: str = field(default_factory=config.platform_url)
     timeout: float = 60.0
     _http_client: httpx.Client = field(init=False, repr=False)
 
@@ -225,7 +227,7 @@ class TrainerClient:
     """
 
     api_key: str
-    base_url: str = "http://localhost:3000"
+    base_url: str = field(default_factory=config.platform_url)
     timeout: float = 30.0
     _http_client: httpx.Client = field(init=False, repr=False)
 
@@ -309,10 +311,10 @@ class TrainerClient:
         return response.json()["experimentId"]
 
 
-ROLLOUT_SERVER_URL = "https://autobots.cgft.io"
+ROLLOUT_SERVER_URL = config.rollout_url()
 
 _VALIDATION_MODEL = "gpt-5.4-nano"
-_VALIDATION_LLM_BASE_URL = "https://llm.cgft.io/v1"
+_VALIDATION_LLM_BASE_URL = config.llm_url()
 
 # ANSI colours
 _GREEN = "\033[32m"

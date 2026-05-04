@@ -122,7 +122,7 @@ class HopCountValidityFilter:
             if not cfg.judge_base_url:
                 raise ValueError(
                     "HopCountValidityFilter: judge_base_url must be set. "
-                    "Set it to your LLM gateway URL (e.g. 'https://llm.cgft.io/v1'). "
+                    "Set it to your LLM gateway URL (e.g. 'https://llm.castform.com/v1'). "
                     "Without it, requests go to the OpenAI default endpoint, which does not "
                     "recognise the default judge_model."
                 )

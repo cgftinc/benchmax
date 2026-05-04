@@ -242,7 +242,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model", required=True, help="LLM model name.")
     p.add_argument(
         "--base-url",
-        default=os.getenv("OPENAI_BASE_URL", "https://llm.cgft.io/v1"),
+        default=os.getenv("OPENAI_BASE_URL", config.llm_url()),
         help="OpenAI-compatible base URL.",
     )
     p.add_argument(
