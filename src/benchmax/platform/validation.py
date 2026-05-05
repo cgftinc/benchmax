@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import pickle
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -364,9 +363,14 @@ def validate_env(
             failed += 1
 
     # ── 6. Pickle round-trip ─────────────────────────────────────
+    # Use cloudpickle on both sides so envs that import from local modules
+    # (registered via local_modules in bundle_env) round-trip the same way as
+    # they will on the trainer. Plain pickle.loads can read simple cloudpickle
+    # output but breaks on by-value module pickling — silently mismatching
+    # local validation vs trainer behavior.
     try:
         data = cloudpickle.dumps(env_class)
-        restored_cls = pickle.loads(data)
+        restored_cls = cloudpickle.loads(data)
         restored_env = restored_cls(**env_args)
         tools = _run_async(restored_env.list_tools())
         print(f"  \u2713 pickle round-trip OK ({len(data)} bytes, {len(tools)} tools)")
@@ -378,7 +382,7 @@ def validate_env(
     # ── 6b. env_args pickle ────────────────────────────────────────
     try:
         args_data = cloudpickle.dumps(env_args)
-        restored_args = pickle.loads(args_data)
+        restored_args = cloudpickle.loads(args_data)
         assert isinstance(restored_args, dict)
         print(f"  \u2713 env_args pickle round-trip OK ({len(args_data)} bytes)")
         passed += 1

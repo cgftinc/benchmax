@@ -20,3 +20,27 @@ class JobLaunchError(TrainerError):
     """Failed to launch a training job."""
 
     pass
+
+
+class RolloutError(TrainerError):
+    """Base for rollout-server errors. Carries HTTP status when available."""
+
+    pass
+
+
+class RolloutNotFound(RolloutError):
+    """Rollout endpoint or referenced resource not found (HTTP 404)."""
+
+    pass
+
+
+class RolloutServerError(RolloutError):
+    """Rollout server returned 5xx — treat as transient/retryable."""
+
+    pass
+
+
+class RolloutStreamError(RolloutError):
+    """Rollout stream ended unexpectedly (no terminal event, timeout, or disconnect)."""
+
+    pass

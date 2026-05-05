@@ -141,7 +141,7 @@ class SearchEnv(BaseEnv):
         self._w_citation_precision = w_citation_precision
         self._w_search_efficiency = w_search_efficiency
         self._max_search_calls = max_search_calls
-        self._experiment_id = kwargs.get("experiment_id")
+        self._run_id = kwargs.get("run_id")
         self._rollout_api_key = kwargs.get("api_key")
 
         # Determine default search mode.

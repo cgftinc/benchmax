@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -16,7 +17,10 @@ TRACKING_API_KEY_KEY = "__benchmax_telemetry_api_key"
 _ACTIVE_TRACKER: ContextVar[Any | None] = ContextVar(
     "benchmax_active_telemetry_tracker", default=None
 )
-_TRACKER_CACHE: Dict[tuple[Optional[str], Optional[str]], Any | None] = {}
+# Bounded LRU. Long-running pooled workers (one process, many run_ids) would
+# otherwise accumulate trackers indefinitely.
+_TRACKER_CACHE_MAX = 128
+_TRACKER_CACHE: "OrderedDict[tuple[Optional[str], Optional[str]], Any | None]" = OrderedDict()
 
 
 @dataclass(frozen=True)
@@ -58,9 +62,16 @@ def get_tracker(config: TrackingConfig | None) -> Any | None:
         return None
 
     key = (config.resolved_run_id(), config.api_key)
-    if key not in _TRACKER_CACHE:
-        _TRACKER_CACHE[key] = _build_tracker(config)
-    return _TRACKER_CACHE[key]
+    if key in _TRACKER_CACHE:
+        # Touch for LRU recency.
+        _TRACKER_CACHE.move_to_end(key)
+        return _TRACKER_CACHE[key]
+
+    tracker = _build_tracker(config)
+    _TRACKER_CACHE[key] = tracker
+    if len(_TRACKER_CACHE) > _TRACKER_CACHE_MAX:
+        _TRACKER_CACHE.popitem(last=False)
+    return tracker
 
 
 @contextmanager

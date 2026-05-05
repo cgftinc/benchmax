@@ -1,3 +1,4 @@
+import logging
 from abc import ABC, abstractmethod
 from functools import wraps
 from pathlib import Path
@@ -6,6 +7,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from benchmax.envs.tracking import TrackingConfig, log_env, tracking_context
 from benchmax.envs.types import Completion, StandardizedExample, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
+
+_LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
@@ -33,12 +36,43 @@ class BaseEnv(ABC):
     def __init__(self, **kwargs):
         self._tracking_config: Optional[TrackingConfig] = None
 
+    def __init_subclass__(cls, **kwargs):
+        """Warn when subclasses override auth_headers — easy to misunderstand.
+
+        The trainer monkeypatches ``auth_headers`` at the *instance* level,
+        which always wins over class-level overrides. A subclass that defines
+        its own ``auth_headers`` is dead code on the trainer (instance attr
+        beats class attr in Python attribute lookup). Surface that explicitly
+        so users don't silently configure auth that never takes effect.
+        """
+        super().__init_subclass__(**kwargs)
+        if "auth_headers" in cls.__dict__ and cls.__dict__["auth_headers"] is not BaseEnv.auth_headers:
+            _LOGGER.warning(
+                "%s overrides auth_headers; the trainer will replace this at "
+                "the instance level, so the override has no effect on training "
+                "rollouts. Issue HTTP via self.auth_headers(url) instead of "
+                "reading os.environ directly.",
+                cls.__name__,
+            )
+
     def enable_tracking(
         self,
         run_id: Optional[str] = None,
         api_key: Optional[str] = None,
     ) -> None:
-        """Enable run tracking. Wraps compute_reward on this instance with a tracking context."""
+        """Enable run tracking. Wraps compute_reward on this instance with a tracking context.
+
+        .. warning::
+            This installs *instance-level* method wrappers. cloudpickle pickles
+            the **class**, not the instance, so an env that has tracking enabled
+            and is then bundled via ``bundle_env`` will lose tracking on the
+            remote side. Tracking on the trainer is set up separately by
+            training infrastructure (which calls ``enable_tracking`` on the
+            unpickled instance after construction).
+
+            For local validation use this is fine. For remote training, do not
+            rely on tracking surviving the bundle boundary.
+        """
         self._tracking_config = TrackingConfig(
             run_id=run_id, api_key=api_key
         )
@@ -82,15 +116,19 @@ class BaseEnv(ABC):
         - "prompt": str
         - "ground_truth": Any
         - "init_rollout_args": Dict[str, Any]
+
+        Treats ``example`` as read-only — the original is never mutated, so
+        the same example can be passed through multiple envs (e.g. multi-env
+        eval) or preprocessed twice without raising KeyError on the second call.
         """
-        prompt = example.pop("prompt", "")
-        ground_truth = example.pop("ground_truth", "")
-        init_rollout_args = example.pop("init_rollout_args")
+        # Copy + read; the original example dict is left untouched.
+        remaining = {k: v for k, v in example.items()
+                     if k not in ("prompt", "ground_truth", "init_rollout_args")}
         return StandardizedExample(
-            prompt=prompt,
-            ground_truth=ground_truth,
-            init_rollout_args=init_rollout_args,
-            **example,
+            prompt=example.get("prompt", ""),
+            ground_truth=example.get("ground_truth", ""),
+            init_rollout_args=example["init_rollout_args"],
+            **remaining,
         )
 
     @classmethod

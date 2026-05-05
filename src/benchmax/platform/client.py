@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import textwrap
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -13,12 +14,50 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 from benchmax import config
 
-from .exceptions import AuthenticationError, JobLaunchError, TrainerError
+from .exceptions import (
+    AuthenticationError,
+    JobLaunchError,
+    RolloutError,
+    RolloutNotFound,
+    RolloutServerError,
+    RolloutStreamError,
+    TrainerError,
+)
 
 if TYPE_CHECKING:
     pass
+
+
+@dataclass(frozen=True)
+class ExampleValidation:
+    """Per-example outcome from RolloutClient.validate_examples."""
+
+    index: int
+    ok: bool
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    """Aggregate result from RolloutClient.validate_examples.
+
+    Bool-castable: ``if not validate_examples(...)`` keeps working for the
+    common "did everything pass" pattern. The ``examples`` field exposes
+    per-example detail for richer reporting.
+    """
+
+    examples: list[ExampleValidation]
+
+    @property
+    def ok(self) -> bool:
+        return all(ex.ok for ex in self.examples)
+
+    def __bool__(self) -> bool:
+        return self.ok
 
 
 # MIME type mappings for common file extensions
@@ -69,6 +108,9 @@ class StorageClient:
     api_key: str
     base_url: str = field(default_factory=config.platform_url)
     timeout: float = 60.0
+    # SAS-URL PUTs are bounded by file size, not API latency. Default to
+    # 30 minutes so multi-GB datasets don't time out at the platform-API timeout.
+    upload_timeout: float = 1800.0
     _http_client: httpx.Client = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -129,13 +171,23 @@ class StorageClient:
         self._handle_response_errors(response)
         return response.json()
 
-    def _put_to_signed_url(self, upload_url: str, content: bytes, mime_type: str) -> None:
-        """PUT file content directly to a pre-signed URL."""
+    def _put_to_signed_url(
+        self,
+        upload_url: str,
+        content: bytes | Any,
+        mime_type: str,
+    ) -> None:
+        """PUT file content directly to a pre-signed URL.
+
+        ``content`` may be raw bytes or any object httpx accepts as a stream
+        (file-like, generator). For large files prefer a file handle so
+        memory usage stays bounded.
+        """
         response = httpx.put(
             upload_url,
             content=content,
             headers={"Content-Type": mime_type, "x-ms-blob-type": "BlockBlob"},
-            timeout=self.timeout,
+            timeout=self.upload_timeout,
         )
         if response.status_code >= 400:
             raise TrainerError(
@@ -204,26 +256,30 @@ class StorageClient:
             raise FileNotFoundError(f"File not found: {file_path}")
 
         mime_type = _get_mime_type(file_path)
-        content = file_path.read_bytes()
-        return self.upload_file(
-            path,
-            content,
-            mime_type,
-            expires_in_minutes=expires_in_minutes,
+        # Stream from disk instead of read_bytes() to keep memory bounded for
+        # multi-GB datasets. httpx infers Content-Length from the file size.
+        url_response = self._get_upload_url(
+            path, mime_type, expires_in_minutes=expires_in_minutes,
         )
+        with file_path.open("rb") as fh:
+            self._put_to_signed_url(url_response["uploadUrl"], fh, mime_type)
+        return url_response
 
 
 @dataclass
 class TrainerClient:
-    """Client for launching and managing training jobs.
+    """Client for launching and managing training runs.
 
     Example:
         client = TrainerClient(api_key="sk_...", base_url="http://localhost:3000")
-        job = client.launch_job(
-            job_type="search",
-            args={"dataset": "datasets/search/abc123/qa-dataset.jsonl"},
+        run_id = client.launch_training_run(
+            training_run_type="simple",
+            env_cls_path="training-runs/abc123/env-cls.bmxp",
+            env_metadata_path="training-runs/abc123/env-metadata.json",
+            train_dataset_path="training-runs/abc123/train.jsonl",
+            eval_dataset_path="training-runs/abc123/eval.jsonl",
         )
-        print(f"Launched job: {job}")
+        print(f"Launched: {run_id}")
     """
 
     api_key: str
@@ -265,9 +321,9 @@ class TrainerClient:
 
         raise JobLaunchError(message, response.status_code)
 
-    def launch_experiment(
+    def launch_training_run(
         self,
-        experiment_type: str,
+        training_run_type: str,
         env_cls_path: str,
         env_metadata_path: str,
         train_dataset_path: str,
@@ -275,22 +331,26 @@ class TrainerClient:
         name: str | None = None,
         launcher_args: dict[str, Any] | None = None,
     ) -> str:
-        """Launch a new experiment from a job template.
+        """Launch a new training run from a job template.
+
         Args:
-            experiment_type: Type of experiment to launch (e.g. "search")
+            training_run_type: Job template selector. Currently ``"simple"``
+                (gpu4 pool) or ``"simple-r5"`` (gpu4-r5 smoke-test pool).
             env_cls_path: Path to the environment class bundle (.bmxp file)
             env_metadata_path: Path to the environment kwargs JSON file
             train_dataset_path: Path to the training dataset
             eval_dataset_path: Path to the evaluation dataset
-            name: Optional name for the experiment
+            name: Optional name for the training run
             launcher_args: Extra launcher args forwarded to the server
                 (e.g. {"max_response_len": 4000}). The 4 required paths
                 above always take precedence.
+
         Returns:
-            The experiment ID.
+            The training run ID.
+
         Raises:
             AuthenticationError: If API key is invalid
-            JobLaunchError: If experiment launch fails
+            JobLaunchError: If training run launch fails
         """
         args: dict[str, Any] = {
             **(launcher_args or {}),
@@ -300,21 +360,23 @@ class TrainerClient:
             "eval_dataset_path": eval_dataset_path,
         }
         response = self._http_client.post(
-            "/api/experiments/launch",
+            "/train/runs/launch",
             json={
-                "type": experiment_type,
+                "type": training_run_type,
                 "name": name,
                 "args": args,
             },
         )
         self._handle_response_errors(response)
-        return response.json()["experimentId"]
+        return response.json()["runId"]
 
 
-ROLLOUT_SERVER_URL = config.rollout_url()
-
+# Server URLs are resolved lazily via callables so env-var changes after
+# import (e.g. test fixtures setting CASTFORM_BASE_DOMAIN) take effect.
+# Resolving once at import froze RolloutClient on the first-seen URL while
+# StorageClient/TrainerClient picked up env changes at construction time —
+# tests for one client could pass while the other silently hit prod.
 _VALIDATION_MODEL = "gpt-5.4-nano"
-_VALIDATION_LLM_BASE_URL = config.llm_url()
 
 # ANSI colours
 _GREEN = "\033[32m"
@@ -565,11 +627,13 @@ class RolloutClient:
     def __init__(
         self,
         api_key: str,
-        server_url: str = ROLLOUT_SERVER_URL,
+        server_url: str | None = None,
         timeout: float = 300.0,
     ) -> None:
         self._api_key = api_key
-        self._server_url = server_url.rstrip("/")
+        # Resolve at construction time, not import time, so env-var changes
+        # take effect (mirrors StorageClient/TrainerClient default_factory pattern).
+        self._server_url = (server_url or config.rollout_url()).rstrip("/")
         self._timeout = timeout
 
     @staticmethod
@@ -619,7 +683,7 @@ class RolloutClient:
         env_metadata_bytes: bytes | None = None,
         env_args_bytes: bytes | None = None,
         example_index: int = 0,
-        llm_base_url: str = _VALIDATION_LLM_BASE_URL,
+        llm_base_url: str | None = None,
         llm_model: str = _VALIDATION_MODEL,
         llm_api_key: str = "",
         llm_api_version: str = "",
@@ -670,13 +734,29 @@ class RolloutClient:
             env_args_bytes=env_args_bytes,
         )
 
+        # Resolve LLM URL lazily. The platform key is only auto-forwarded when
+        # the LLM endpoint is the platform's own LLM service — pointing at a
+        # third-party host (Azure OpenAI, Anthropic) requires an explicit
+        # llm_api_key so we don't silently leak the platform credential.
+        platform_llm_url = config.llm_url()
+        resolved_llm_url = llm_base_url or platform_llm_url
+        if not llm_api_key:
+            if resolved_llm_url == platform_llm_url:
+                llm_api_key = self._api_key
+            else:
+                raise ValueError(
+                    "llm_api_key is required when llm_base_url points outside the "
+                    f"platform LLM endpoint ({platform_llm_url}). Refusing to "
+                    "forward the platform API key to a third-party host."
+                )
+
         payload = {
             "standardized_example": None,
             "raw_example": raw_example,
             "env": env,
             "llm": {
-                "base_url": llm_base_url,
-                "api_key": llm_api_key or self._api_key,
+                "base_url": resolved_llm_url,
+                "api_key": llm_api_key,
                 "model": llm_model,
                 "api-version": llm_api_version,
             },
@@ -699,26 +779,48 @@ class RolloutClient:
         ) as response:
             if response.status_code != 200:
                 body = response.read().decode()
-                raise RuntimeError(
-                    f"Rollout server returned HTTP {response.status_code}: {body[:300]}"
-                )
+                # Typed errors so callers can distinguish retryable from
+                # caller-fix from auth-fix without parsing exception messages.
+                if response.status_code == 401:
+                    raise AuthenticationError(body[:300], response.status_code)
+                if response.status_code == 404:
+                    raise RolloutNotFound(body[:300], response.status_code)
+                if 500 <= response.status_code < 600:
+                    raise RolloutServerError(body[:300], response.status_code)
+                raise RolloutError(body[:300], response.status_code)
 
             final: dict[str, Any] = {}
             messages: list[dict[str, Any]] = []
-            for event in _iter_sse(response):
-                _print_event(
-                    event,
-                    example_index,
-                    full_messages=full_messages,
-                    include_event_meta=include_event_meta,
-                )
-                if capture_messages and event.get("event") == "message":
-                    message = event.get("message")
-                    if isinstance(message, dict):
-                        messages.append(message)
-                if event.get("event") in self._TERMINAL:
-                    final = event
-                    break
+            try:
+                for event in _iter_sse(response):
+                    _print_event(
+                        event,
+                        example_index,
+                        full_messages=full_messages,
+                        include_event_meta=include_event_meta,
+                    )
+                    if capture_messages and event.get("event") == "message":
+                        message = event.get("message")
+                        if isinstance(message, dict):
+                            messages.append(message)
+                    if event.get("event") in self._TERMINAL:
+                        final = event
+                        break
+                else:
+                    # Stream closed without a terminal event — server crashed
+                    # mid-rollout, network reset, or proxy timeout. Raise a
+                    # specific error so callers don't see "missing 'success'
+                    # key" downstream confusion.
+                    raise RolloutStreamError(
+                        "Rollout stream ended without a terminal event "
+                        f"(expected one of {sorted(self._TERMINAL)}). "
+                        "The server may have crashed or the connection dropped."
+                    )
+            except (httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+                raise RolloutStreamError(
+                    f"Rollout stream timed out or disconnected after "
+                    f"{self._timeout}s of inactivity: {exc}"
+                ) from exc
 
         if capture_messages:
             assistant_messages = [
@@ -747,7 +849,8 @@ class RolloutClient:
         env_metadata_bytes: bytes | None = None,
         llm_model: str = _VALIDATION_MODEL,
         max_turns: int = 4,
-    ) -> bool:
+        verbose: bool = True,
+    ) -> ValidationResult:
         """Run rollouts on the first *n* examples and report pass/fail.
 
         The environment can be specified via **blob paths** or **raw bytes**
@@ -760,19 +863,26 @@ class RolloutClient:
             n:                  Number of examples to validate (default 2).
             env_cls_bytes:      Raw bytes of the pickled env class (will be base64-encoded).
             env_metadata_bytes: Raw bytes of the env metadata JSON (will be base64-encoded).
+            verbose:            Print colored progress to stdout (default True for
+                                interactive/notebook UX). Set False for programmatic
+                                callers that consume the returned ValidationResult.
 
         Returns:
-            True if all sampled rollouts completed successfully, False otherwise.
+            ValidationResult — bool-castable (``if not result``) for the common
+            "did everything pass" check, with per-example detail in
+            ``result.examples`` for richer reporting.
         """
         # Validate env args early so we fail before running any rollouts.
         self._build_env(env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes)
 
         sample = examples[:n]
-        print(_hdr(f"── Remote validation: {len(sample)} example(s) on {llm_model} ──"))
+        if verbose:
+            print(_hdr(f"── Remote validation: {len(sample)} example(s) on {llm_model} ──"))
 
-        all_ok = True
+        per_example: list[ExampleValidation] = []
         for i, example in enumerate(sample):
-            print(_info(f"\n  Example {i} — {json.dumps(example)[:120]}"))
+            if verbose:
+                print(_info(f"\n  Example {i} — {json.dumps(example)[:120]}"))
             try:
                 final = self.stream_rollout(
                     raw_example=example,
@@ -784,16 +894,22 @@ class RolloutClient:
                     llm_model=llm_model,
                     max_turns=max_turns,
                 )
-                if not final.get("success"):
-                    all_ok = False
-            except RuntimeError as exc:
-                print(_err(f"  Example {i} failed: {exc}"))
-                all_ok = False
+                ok = bool(final.get("success"))
+                per_example.append(ExampleValidation(
+                    index=i, ok=ok,
+                    error=None if ok else (final.get("error") or "rollout reported success=False"),
+                ))
+            except (RolloutError, RuntimeError) as exc:
+                if verbose:
+                    print(_err(f"  Example {i} failed: {exc}"))
+                per_example.append(ExampleValidation(index=i, ok=False, error=str(exc)))
 
-        print()
-        if all_ok:
-            print(_ok("Remote validation passed"))
-        else:
-            print(_err("Remote validation failed — check output above before launching a full job"))
+        result = ValidationResult(examples=per_example)
+        if verbose:
+            print()
+            if result.ok:
+                print(_ok("Remote validation passed"))
+            else:
+                print(_err("Remote validation failed — check output above before launching a full job"))
 
-        return all_ok
+        return result
