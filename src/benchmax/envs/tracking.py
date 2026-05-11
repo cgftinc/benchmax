@@ -46,9 +46,11 @@ def _build_tracker(config: TrackingConfig) -> Any | None:
         return None
 
     try:
+        # api_key removed post-act-as-rotation: job_telemetry is tokenless;
+        # the localhost otelcol sidecar's bearertokenauth attaches the
+        # rotated act-as bearer on the outbound hop.
         job_telemetry.init(
             run_id=config.resolved_run_id(),
-            api_key=config.api_key,
         )
     except Exception as e:
         LOGGER.debug("job_telemetry init failed; env tracking disabled: %s", e)
