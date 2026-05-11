@@ -1,7 +1,7 @@
 """Castform platform clients (storage, training runs, rollout)."""
 
 from .client import RolloutClient, StorageClient, TrainerClient
-from .experiment import UploadedTrainingRun, upload_training_run
+from .training_run import UploadedTrainingRun, upload_training_run
 
 __all__ = [
     "RolloutClient",
