@@ -173,19 +173,21 @@ class TestScaleByDiversity:
             {"engagement": 0.1, "jailbreak": 1.0},
         ]
         texts = ["same approach here", "same approach here", "totally different tactic"]
-        result = asyncio.get_event_loop().run_until_complete(
+        scaled, cluster_result = asyncio.get_event_loop().run_until_complete(
             scale_by_diversity(rewards, texts, config)
         )
         # First two share a cluster (size 2) -> halved
-        assert result[0]["engagement"] == pytest.approx(0.05)
-        assert result[0]["jailbreak"] == pytest.approx(0.25)
-        assert result[1]["engagement"] == pytest.approx(0.05)
+        assert scaled[0]["engagement"] == pytest.approx(0.05)
+        assert scaled[0]["jailbreak"] == pytest.approx(0.25)
+        assert scaled[1]["engagement"] == pytest.approx(0.05)
         # Third is unique (size 1) -> unchanged
-        assert result[2]["engagement"] == pytest.approx(0.1)
-        assert result[2]["jailbreak"] == pytest.approx(1.0)
-        # diversity_cluster_size added
-        assert result[0]["diversity_cluster_size"] == 2.0
-        assert result[2]["diversity_cluster_size"] == 1.0
+        assert scaled[2]["engagement"] == pytest.approx(0.1)
+        assert scaled[2]["jailbreak"] == pytest.approx(1.0)
+        # No metadata injected into reward dicts
+        assert "diversity_cluster_size" not in scaled[0]
+        # Cluster info available via ClusterResult
+        assert cluster_result.divisors[0] == 2.0
+        assert cluster_result.divisors[2] == 1.0
 
     def test_mismatched_lengths_raises(self):
         config = DiversityConfig(method="ngram")
@@ -200,7 +202,7 @@ class TestScaleByDiversity:
 
     def test_fallback_on_bad_method(self):
         config = DiversityConfig(method="bogus")  # type: ignore[arg-type]
-        result = asyncio.get_event_loop().run_until_complete(
+        scaled, _ = asyncio.get_event_loop().run_until_complete(
             scale_by_diversity(
                 [{"a": 1.0}, {"a": 1.0}],
                 ["x", "y"],
@@ -208,12 +210,12 @@ class TestScaleByDiversity:
             )
         )
         # Should fallback to unique (divisor=1), rewards unchanged
-        assert result[0]["a"] == pytest.approx(1.0)
-        assert result[1]["a"] == pytest.approx(1.0)
+        assert scaled[0]["a"] == pytest.approx(1.0)
+        assert scaled[1]["a"] == pytest.approx(1.0)
 
     def test_fallback_uniform(self):
         config = DiversityConfig(method="bogus", fallback_on_error="uniform")  # type: ignore[arg-type]
-        result = asyncio.get_event_loop().run_until_complete(
+        scaled, _ = asyncio.get_event_loop().run_until_complete(
             scale_by_diversity(
                 [{"a": 1.0}, {"a": 1.0}],
                 ["x", "y"],
@@ -221,4 +223,4 @@ class TestScaleByDiversity:
             )
         )
         # Uniform fallback: all share one cluster (size 2)
-        assert result[0]["a"] == pytest.approx(0.5)
+        assert scaled[0]["a"] == pytest.approx(0.5)
