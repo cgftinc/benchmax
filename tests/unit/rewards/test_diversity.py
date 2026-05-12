@@ -126,6 +126,7 @@ class TestClusterTextsNgram:
             cluster_texts(["only one"], config)
         )
         assert result.divisors == [1.0]
+        assert result.cluster_ids == ["0"]
 
     def test_empty_list(self):
         config = DiversityConfig(method="ngram")
@@ -182,6 +183,9 @@ class TestScaleByDiversity:
         # Third is unique (size 1) -> unchanged
         assert result[2]["engagement"] == pytest.approx(0.1)
         assert result[2]["jailbreak"] == pytest.approx(1.0)
+        # diversity_cluster_size added
+        assert result[0]["diversity_cluster_size"] == 2.0
+        assert result[2]["diversity_cluster_size"] == 1.0
 
     def test_mismatched_lengths_raises(self):
         config = DiversityConfig(method="ngram")

@@ -80,6 +80,9 @@ class DiversityConfig:
     ngram_n: int = 3
     similarity_threshold: float = 0.5
 
+    # LLM retry count
+    max_retries: int = 2
+
     # On clustering error, "unique" means every rollout is its own cluster
     # (no penalty). "uniform" means all rollouts share one cluster.
     fallback_on_error: Literal["unique", "uniform"] = "unique"
@@ -136,7 +139,11 @@ def _jaccard(a: set, b: set) -> float:
 
 
 def _cluster_by_ngram(texts: List[str], n: int, threshold: float) -> ClusterResult:
-    """Greedy single-linkage clustering using n-gram Jaccard similarity."""
+    """Greedy single-linkage clustering using n-gram Jaccard similarity.
+
+    Note: single-linkage can chain clusters — if A~B and B~C but not A~C,
+    all three end up in the same cluster. This is fast but aggressive.
+    """
     ngrams = [_ngram_set(t, n) for t in texts]
     cluster_ids: list[int] = [-1] * len(texts)
     next_cluster = 0
@@ -172,7 +179,7 @@ async def _cluster_by_llm(
         items=items,
     )
 
-    client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key, max_retries=2)
+    client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key, max_retries=config.max_retries)
     resp = await client.chat.completions.create(
         model=config.model,
         messages=[{"role": "user", "content": prompt}],
@@ -234,11 +241,10 @@ async def cluster_texts(
     Returns:
         A ``ClusterResult`` with cluster assignments and per-item divisors.
     """
-    if len(texts) <= 1:
-        return ClusterResult(
-            cluster_ids=["single"] * len(texts),
-            divisors=[1.0] * len(texts),
-        )
+    if not texts:
+        return ClusterResult(cluster_ids=[], divisors=[])
+    if len(texts) == 1:
+        return ClusterResult(cluster_ids=["0"], divisors=[1.0])
 
     try:
         if config.method == "ngram":
@@ -273,7 +279,7 @@ async def scale_by_diversity(
 
     Returns:
         A new list of reward dicts with every value divided by the cluster divisor.
-        A ``diversity_cluster`` key is added with the cluster ID for observability.
+        A ``diversity_cluster_size`` key is added (float) for observability.
     """
     if len(rewards) != len(texts):
         raise ValueError(f"rewards ({len(rewards)}) and texts ({len(texts)}) must have same length")
@@ -284,6 +290,7 @@ async def scale_by_diversity(
     for reward, divisor, cid in zip(rewards, result.divisors, result.cluster_ids):
         d = max(divisor, 1.0)
         scaled_reward = {k: v / d for k, v in reward.items()}
+        scaled_reward["diversity_cluster_size"] = d
         scaled.append(scaled_reward)
 
     return scaled
