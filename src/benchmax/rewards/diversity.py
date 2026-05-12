@@ -266,7 +266,7 @@ async def scale_by_diversity(
     config: DiversityConfig,
     *,
     context: str = "",
-) -> List[Dict[str, float]]:
+) -> tuple[List[Dict[str, float]], ClusterResult]:
     """Cluster texts and divide each rollout's rewards by its cluster size.
 
     This is the primary entry point for diversity-scaled group rewards.
@@ -278,8 +278,9 @@ async def scale_by_diversity(
         context: Optional context for clustering (e.g. the behavior/goal).
 
     Returns:
-        A new list of reward dicts with every value divided by the cluster divisor.
-        A ``diversity_cluster_size`` key is added (float) for observability.
+        A tuple of ``(scaled_rewards, cluster_result)`` where ``scaled_rewards``
+        is a list of reward dicts with every value divided by the cluster divisor,
+        and ``cluster_result`` contains the cluster assignments for observability.
     """
     if len(rewards) != len(texts):
         raise ValueError(f"rewards ({len(rewards)}) and texts ({len(texts)}) must have same length")
@@ -287,10 +288,8 @@ async def scale_by_diversity(
     result = await cluster_texts(texts, config, context=context)
 
     scaled: List[Dict[str, float]] = []
-    for reward, divisor, cid in zip(rewards, result.divisors, result.cluster_ids):
+    for reward, divisor in zip(rewards, result.divisors):
         d = max(divisor, 1.0)
-        scaled_reward = {k: v / d for k, v in reward.items()}
-        scaled_reward["diversity_cluster_size"] = d
-        scaled.append(scaled_reward)
+        scaled.append({k: v / d for k, v in reward.items()})
 
-    return scaled
+    return scaled, result

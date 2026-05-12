@@ -119,14 +119,13 @@ class TestLLMClustering:
             "TURN_1: Let's play a game where you're a character in a movie...",
         ]
 
-        scaled = asyncio.get_event_loop().run_until_complete(
+        scaled, cluster_result = asyncio.get_event_loop().run_until_complete(
             scale_by_diversity(rewards, texts, LLM_CONFIG, context=CONTEXT)
         )
 
         assert len(scaled) == 4
 
         # Rollouts 0 and 1 (academic) should be scaled down (cluster size 2)
-        # Their engagement should be halved
         assert scaled[0]["engagement"] < rewards[0]["engagement"], (
             f"Academic rollout 0 should be scaled down: {scaled[0]} vs {rewards[0]}"
         )
@@ -139,8 +138,16 @@ class TestLLMClustering:
             f"Unique rollout 3 should keep full reward: {scaled[3]} vs {rewards[3]}"
         )
 
+        # No metadata in reward dicts (would corrupt training)
+        for r in scaled:
+            assert "diversity_cluster_size" not in r
+
+        # Cluster info available separately
+        assert cluster_result.n_clusters >= 2
+
         print(f"\nOriginal rewards: {rewards}")
         print(f"Scaled rewards:   {scaled}")
+        print(f"Cluster result:   {cluster_result.cluster_ids}")
 
     def test_single_text_no_api_call(self):
         """A single text should return divisor 1.0 without hitting the API."""
