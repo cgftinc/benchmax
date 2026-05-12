@@ -290,9 +290,9 @@ async def scale_by_diversity(
 
     result = await cluster_texts(texts, config, context=context)
 
-    scaled: List[Dict[str, float]] = []
+    scaled_rewards: List[Dict[str, float]] = []
     for reward, divisor in zip(rewards, result.divisors):
         d = max(divisor, 1.0)
-        scaled.append({k: v / d for k, v in reward.items()})
+        scaled_rewards.append({k: v / d for k, v in reward.items()})
 
-    return scaled, result
+    return scaled_rewards, result
