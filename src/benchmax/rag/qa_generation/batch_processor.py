@@ -284,11 +284,21 @@ async def batch_process_async(
     if failed_count > 0:
         # Surfacing the first exception's class + message keeps a single bug
         # (e.g., wrong model name, auth header missing, base_url misrouted)
-        # from looking like "the pipeline just rejected everything." Before
-        # this, every config error inside the LLM call collapsed into the
-        # same opaque "N prompt(s) failed to process" warning.
-        sample = f": {type(first_exc).__name__}: {first_exc}" if first_exc else ""
-        tqdm.write(f"Warning: {failed_count} prompt(s) failed to process{sample}")
+        # from looking like "the pipeline just rejected everything." Include
+        # OpenAI SDK metadata (request URL + response body) when present so
+        # 403/401 root causes don't get clipped to "Your request was blocked."
+        detail = ""
+        if first_exc is not None:
+            detail = f": {type(first_exc).__name__}: {first_exc}"
+            req = getattr(first_exc, "request", None)
+            if req is not None:
+                detail += f" | url={getattr(req, 'url', '?')}"
+            body = getattr(first_exc, "body", None) or getattr(
+                getattr(first_exc, "response", None), "text", None
+            )
+            if body:
+                detail += f" | body={str(body)[:400]}"
+        tqdm.write(f"Warning: {failed_count} prompt(s) failed to process{detail}")
 
     total_latency_ms = (time.time() - start_time) * 1000
 

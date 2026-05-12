@@ -154,7 +154,7 @@ class ModelConfig:
 
     model: str = "gpt-5.4"
     api_key: str = ""
-    base_url: str = config.llm_url()
+    base_url: str = field(default_factory=config.llm_url)
 
 
 @dataclass
@@ -199,7 +199,7 @@ class PlatformConfig:
     api_key: str
     base_url: str = config.platform_url()
     llm_api_key: str = ""
-    llm_base_url: str = config.llm_url()
+    llm_base_url: str = field(default_factory=config.llm_url)
 
 
 @dataclass
@@ -371,7 +371,7 @@ class RetrievalLLMFilterConfig:
     enabled: bool = True
     judge_model: str = "gpt-5.4-mini"
     judge_api_key: str = ""
-    judge_base_url: str = config.llm_url()
+    judge_base_url: str = field(default_factory=config.llm_url)
     judge_system_prompt: str = DEFAULT_RETRIEVAL_JUDGE_SYSTEM_PROMPT
     judge_user_template: str = DEFAULT_RETRIEVAL_JUDGE_USER_TEMPLATE
     top_k: int = 5
@@ -391,7 +391,7 @@ class GroundingLLMFilterConfig:
     enabled: bool = True
     judge_model: str = "gpt-5.4-mini"
     judge_api_key: str = ""
-    judge_base_url: str = config.llm_url()
+    judge_base_url: str = field(default_factory=config.llm_url)
     judge_system_prompt: str = DEFAULT_GROUNDING_JUDGE_SYSTEM_PROMPT
     judge_user_template: str = DEFAULT_GROUNDING_JUDGE_USER_TEMPLATE
     top_k: int = 5
@@ -408,10 +408,10 @@ class LLMEnvFilterConfig:
     enabled: bool = True
     model: str = "gpt-5.4"
     api_key: str = ""
-    base_url: str = config.llm_url()
+    base_url: str = field(default_factory=config.llm_url)
     judge_model: str = "gpt-5.4-mini"
     judge_api_key: str = ""
-    judge_base_url: str = config.llm_url()
+    judge_base_url: str = field(default_factory=config.llm_url)
     env_bundle: EnvBundleConfig = field(default_factory=EnvBundleConfig)
     rollout_limits: RolloutLimits = field(default_factory=RolloutLimits)
 
@@ -425,7 +425,7 @@ class HopCountValidityCfg:
     max_judge_calls: int = 3
     judge_model: str = "gpt-5.4-mini"
     judge_api_key: str = ""
-    judge_base_url: str = config.llm_url()
+    judge_base_url: str = field(default_factory=config.llm_url)
     max_concurrent: int = 8
     batch_enabled: bool = True
     show_batch_progress: bool = True
