@@ -81,7 +81,7 @@ class HopCountValidityConfig:
     enabled: bool = True
     mode: str = "leave_one_out"  # "primary_only" | "leave_one_out" | "budget"
     max_judge_calls: int = 3  # for "budget" mode
-    judge_model: str = "gpt-5.4"
+    judge_model: str = "gpt-5.4-mini"
     judge_api_key: str = ""
     judge_base_url: str = ""
     judge_system_prompt: str = _HOP_COUNT_JUDGE_SYSTEM_PROMPT

@@ -1233,6 +1233,18 @@ class Pipeline:
         context["prepare_context_seconds"] = time.monotonic() - t_prep
         return self._run_from_context(context)
 
+    # Public aliases — let external callers (e.g. platform-service codegen
+    # running on a Modal worker) compose stages out-of-process: prepare
+    # context here, do GPU entity extraction in a sidecar, inject results
+    # into context, then call run_from_context. The leading-underscore
+    # names stay so internal call sites and existing benchmax tests don't
+    # have to flip.
+    def prepare_context(self) -> PipelineContext:
+        return self._prepare_context()
+
+    def run_from_context(self, context: PipelineContext) -> dict[str, Any]:
+        return self._run_from_context(context)
+
     def _prepare_context(self) -> PipelineContext:
         """Run stages 1-3: load source, build corpus profile, extract entities.
 

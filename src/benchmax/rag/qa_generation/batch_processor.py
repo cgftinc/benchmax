@@ -271,15 +271,24 @@ async def batch_process_async(
     # Preserve prompt alignment: failed prompts map to None at the same index
     aligned_responses: list[BatchResponse | None] = []
     failed_count = 0
+    first_exc: Exception | None = None
     for response in responses:
         if isinstance(response, Exception):
             failed_count += 1
+            if first_exc is None:
+                first_exc = response
             aligned_responses.append(None)
         else:
             aligned_responses.append(response)
 
     if failed_count > 0:
-        tqdm.write(f"Warning: {failed_count} prompt(s) failed to process")
+        # Surfacing the first exception's class + message keeps a single bug
+        # (e.g., wrong model name, auth header missing, base_url misrouted)
+        # from looking like "the pipeline just rejected everything." Before
+        # this, every config error inside the LLM call collapsed into the
+        # same opaque "N prompt(s) failed to process" warning.
+        sample = f": {type(first_exc).__name__}: {first_exc}" if first_exc else ""
+        tqdm.write(f"Warning: {failed_count} prompt(s) failed to process{sample}")
 
     total_latency_ms = (time.time() - start_time) * 1000
 

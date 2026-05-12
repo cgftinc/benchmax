@@ -12,7 +12,7 @@ Typical usage::
 
     config = WikiPreprocessingConfig(
         enabled=True,
-        model="gpt-4o-mini",
+        model="gpt-5.4-mini",
         api_key="...",
     )
     client = OpenAI(api_key=config.api_key)

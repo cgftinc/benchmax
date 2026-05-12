@@ -6,7 +6,7 @@ gradient during RL training.  Filtering to pivots yields +5.37 over SFT
 with 4x fewer rollout turns.
 
 Call strategy: 1 LLM call per turn (independent per-turn estimation), with
-the full trace as context.  Uses gpt-4o-mini by default — this is a filtering
+the full trace as context.  Uses gpt-5.4-mini by default — this is a filtering
 step, not a reward signal.
 """
 

@@ -165,7 +165,7 @@ class StorageClient:
             params["expiresInMinutes"] = expires_in_minutes
 
         response = self._http_client.get(
-            "/api/storage/upload-url",
+            "/v1/storage/upload-url",
             params=params,
         )
         self._handle_response_errors(response)

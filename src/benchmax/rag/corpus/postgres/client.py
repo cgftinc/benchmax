@@ -152,7 +152,7 @@ class CorpusClient:
             CorpusLimitError: If max 5 corpora limit reached
             AuthenticationError: If API key is invalid
         """
-        response = self._request("POST", "/api/corpora", json={"name": name})
+        response = self._request("POST", "/v1/corpora", json={"name": name})
         self._handle_response_errors(response)
         return Corpus.from_api_response(response.json())
 
@@ -162,7 +162,7 @@ class CorpusClient:
         Returns:
             List of Corpus objects
         """
-        response = self._request("GET", "/api/corpora")
+        response = self._request("GET", "/v1/corpora")
         self._handle_response_errors(response)
         return [Corpus.from_api_response(c) for c in response.json()]
 
@@ -192,7 +192,7 @@ class CorpusClient:
         Returns:
             True if deletion was successful
         """
-        response = self._request("DELETE", f"/api/corpora/{corpus_id}")
+        response = self._request("DELETE", f"/v1/corpora/{corpus_id}")
         self._handle_response_errors(response)
         return response.json().get("success", False)
 
@@ -328,7 +328,7 @@ class CorpusClient:
                 ]
             }
 
-            response = self._request("POST", f"/api/corpora/{corpus_id}/chunks", json=payload)
+            response = self._request("POST", f"/v1/corpora/{corpus_id}/chunks", json=payload)
             self._handle_response_errors(response)
 
             data = response.json()
@@ -393,7 +393,7 @@ class CorpusClient:
 
         response = self._request(
             "GET",
-            f"/api/corpora/{corpus_id}/chunks",
+            f"/v1/corpora/{corpus_id}/chunks",
             params=params,
         )
         self._handle_response_errors(response)
@@ -448,7 +448,7 @@ class CorpusClient:
         if filters:
             payload["filters"] = filters
 
-        response = self._request("POST", f"/api/corpora/{corpus_id}/search", json=payload)
+        response = self._request("POST", f"/v1/corpora/{corpus_id}/search", json=payload)
         self._handle_response_errors(response)
 
         data = response.json()

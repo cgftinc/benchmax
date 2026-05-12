@@ -369,7 +369,7 @@ class RetrievalLLMFilterConfig:
     """Retrieval + judge filter settings."""
 
     enabled: bool = True
-    judge_model: str = "gpt-5.4"
+    judge_model: str = "gpt-5.4-mini"
     judge_api_key: str = ""
     judge_base_url: str = config.llm_url()
     judge_system_prompt: str = DEFAULT_RETRIEVAL_JUDGE_SYSTEM_PROMPT
@@ -389,7 +389,7 @@ class GroundingLLMFilterConfig:
     """Grounding/answerability judge filter settings."""
 
     enabled: bool = True
-    judge_model: str = "gpt-5.4"
+    judge_model: str = "gpt-5.4-mini"
     judge_api_key: str = ""
     judge_base_url: str = config.llm_url()
     judge_system_prompt: str = DEFAULT_GROUNDING_JUDGE_SYSTEM_PROMPT
@@ -409,7 +409,7 @@ class LLMEnvFilterConfig:
     model: str = "gpt-5.4"
     api_key: str = ""
     base_url: str = config.llm_url()
-    judge_model: str = "gpt-5.4"
+    judge_model: str = "gpt-5.4-mini"
     judge_api_key: str = ""
     judge_base_url: str = config.llm_url()
     env_bundle: EnvBundleConfig = field(default_factory=EnvBundleConfig)
@@ -423,7 +423,7 @@ class HopCountValidityCfg:
     enabled: bool = True
     mode: str = "leave_one_out"
     max_judge_calls: int = 3
-    judge_model: str = "gpt-5.4"
+    judge_model: str = "gpt-5.4-mini"
     judge_api_key: str = ""
     judge_base_url: str = config.llm_url()
     max_concurrent: int = 8
@@ -959,7 +959,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         ),
         retrieval_llm=RetrievalLLMFilterConfig(
             enabled=bool(retrieval_raw.get("enabled", True)),
-            judge_model=str(retrieval_raw.get("judge_model", "gpt-5.4")),
+            judge_model=str(retrieval_raw.get("judge_model", "gpt-5.4-mini")),
             judge_api_key=str(retrieval_raw.get("judge_api_key", "")),
             judge_base_url=str(retrieval_raw.get("judge_base_url", "")).strip(),
             judge_system_prompt=(
@@ -1002,7 +1002,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         ),
         grounding_llm=GroundingLLMFilterConfig(
             enabled=bool(grounding_raw.get("enabled", True)),
-            judge_model=str(grounding_raw.get("judge_model", "gpt-5.4")),
+            judge_model=str(grounding_raw.get("judge_model", "gpt-5.4-mini")),
             judge_api_key=str(grounding_raw.get("judge_api_key", "")),
             judge_base_url=str(grounding_raw.get("judge_base_url", "")).strip(),
             judge_system_prompt=(
