@@ -32,7 +32,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
-from openai import AsyncOpenAI
+# AsyncOpenAI imported lazily inside _cluster_by_llm to avoid pulling in
+# unpicklable context vars at module level (breaks cloudpickle bundling).
 
 
 DEFAULT_CLUSTER_PROMPT = """\
@@ -72,7 +73,7 @@ class DiversityConfig:
     base_url: str = ""
     api_key: str = ""
     prompt_template: str = DEFAULT_CLUSTER_PROMPT
-    max_tokens: int = 768
+    max_tokens: int = 512
     temperature: float = 0.0
     timeout: float = 60.0
 
@@ -178,6 +179,8 @@ async def _cluster_by_llm(
         max_idx=len(texts) - 1,
         items=items,
     )
+
+    from openai import AsyncOpenAI
 
     client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key, max_retries=config.max_retries)
     resp = await client.chat.completions.create(
