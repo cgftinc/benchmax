@@ -61,7 +61,7 @@ Every platform URL routes through `benchmax.config`:
 
 ```python
 from benchmax import config
-config.platform_url()    # https://app.castform.com
+config.platform_url()    # https://api.castform.com  (clients add /v1/...)
 config.llm_url()         # https://llm.castform.com/v1
 config.rollout_url()     # https://autobots.castform.com
 ```

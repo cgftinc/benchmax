@@ -46,7 +46,7 @@ from wordfreq import top_n_list, word_frequency
 #
 # Defaults route through ``benchmax.config``: the prod LLM endpoint is
 # ``https://llm.castform.com/v1`` and the platform control plane is
-# ``https://app.castform.com``. Point at staging or a different env by setting
+# ``https://api.castform.com``. Point at staging or a different env by setting
 # ``CASTFORM_BASE_DOMAIN`` (or override URLs individually via
 # ``CASTFORM_PLATFORM_URL`` / ``CASTFORM_LLM_URL``).
 from benchmax import config

@@ -20,8 +20,13 @@ def base_domain() -> str:
 
 
 def platform_url() -> str:
-    """Control-plane API (run management, dataset upload, env bundles)."""
-    return os.environ.get("CASTFORM_PLATFORM_URL") or f"https://app.{base_domain()}"
+    """Control-plane API (run management, dataset upload, env bundles).
+
+    Returns the API host without the ``/v1`` suffix — clients prepend
+    versioned paths (e.g. ``/v1/storage/upload-url``) themselves. The
+    user-facing web app lives at ``app.{domain}`` and is not the API.
+    """
+    return os.environ.get("CASTFORM_PLATFORM_URL") or f"https://api.{base_domain()}"
 
 
 def llm_url() -> str:

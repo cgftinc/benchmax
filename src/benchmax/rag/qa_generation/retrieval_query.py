@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, MutableMapping
 
-from benchmax.envs.postgres_search.query_rewriter import heuristic_query_rewrite
+from benchmax.rag.qa_generation.query_rewriter import heuristic_query_rewrite
 from benchmax.rag.qa_generation.style_controls import (
     QUERY_STYLE_EXPERT,
     QUERY_STYLE_KEYS,
