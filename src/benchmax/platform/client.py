@@ -33,6 +33,27 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class LaunchArgSpec:
+    """One tunable arg exposed by the platform's GET /train/launch-args endpoint.
+
+    Mirrors the API response shape — see core/platform-service/src/lib/trainer-args.ts.
+    """
+
+    name: str
+    label: str
+    type: str  # "string" | "number" | "integer" | "boolean"
+    required: bool
+    description: str
+    default: Any = None
+    min: float | None = None
+    max: float | None = None
+    warn_above: float | None = None
+    # tuple (not list) so the frozen dataclass actually stays immutable —
+    # list would still be mutable in place.
+    enum: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
 class ExampleValidation:
     """Per-example outcome from RolloutClient.validate_examples."""
 
@@ -360,7 +381,7 @@ class TrainerClient:
             "eval_dataset_path": eval_dataset_path,
         }
         response = self._http_client.post(
-            "/train/runs/launch",
+            "/v1/train/runs/launch",
             json={
                 "type": training_run_type,
                 "name": name,
@@ -368,7 +389,70 @@ class TrainerClient:
             },
         )
         self._handle_response_errors(response)
-        return response.json()["runId"]
+        body = response.json()
+        for warning in body.get("warnings", []) or []:
+            logger.warning("launch warning: %s", warning)
+        return body["runId"]
+
+    def list_launch_args(self) -> list[LaunchArgSpec]:
+        """Fetch the schema of launch args this platform accepts.
+
+        Each entry describes a single tunable on POST /train/runs/launch:
+        wire name, type, default, validation range. Use this to introspect
+        what can be set in ``launcher_args`` when calling
+        ``launch_training_run``.
+
+        Returns:
+            List of LaunchArgSpec, in the platform's preferred display order.
+
+        Raises:
+            AuthenticationError: If the API key is invalid.
+            TrainerError: If the request fails.
+        """
+        response = self._http_client.get("/v1/train/launch-args")
+        self._handle_response_errors(response)
+        raw = response.json()["args"]
+        return [
+            LaunchArgSpec(
+                name=spec["name"],
+                label=spec["label"],
+                type=spec["type"],
+                required=spec["required"],
+                description=spec["description"],
+                default=spec.get("default"),
+                min=spec.get("min"),
+                max=spec.get("max"),
+                warn_above=spec.get("warnAbove"),
+                enum=tuple(spec["enum"]) if spec.get("enum") is not None else None,
+            )
+            for spec in raw
+        ]
+
+    def print_launch_args(self) -> None:
+        """Pretty-print the launch-arg schema as a table.
+
+        Convenience helper for REPL / notebook discoverability. Prints to
+        stdout — does not return anything. For programmatic use, call
+        :meth:`list_launch_args` instead.
+        """
+        specs = self.list_launch_args()
+        print(_hdr("Launch args accepted by POST /train/runs/launch"))
+        for spec in specs:
+            req = _RED + "required" + _RESET if spec.required else _CYAN + "optional" + _RESET
+            header = f"  {_BOLD}{spec.name}{_RESET} ({spec.type}, {req})"
+            bits: list[str] = []
+            if spec.default is not None:
+                bits.append(f"default={spec.default!r}")
+            if spec.min is not None:
+                bits.append(f"min={spec.min}")
+            if spec.max is not None:
+                bits.append(f"max={spec.max}")
+            if spec.warn_above is not None:
+                bits.append(f"warn_above={spec.warn_above}")
+            if spec.enum:
+                bits.append(f"enum={spec.enum}")
+            print(header + (f"  [{', '.join(bits)}]" if bits else ""))
+            print(f"      {spec.description}")
 
 
 # Server URLs are resolved lazily via callables so env-var changes after

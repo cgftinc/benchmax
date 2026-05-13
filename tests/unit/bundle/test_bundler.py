@@ -175,6 +175,29 @@ class TestBundleEnv:
         assert restored.pickled_class == bundle.pickled_class
         assert restored.metadata == bundle.metadata
 
+    def test_sources_captured_and_viewable_without_unpickling(self, tmp_path: Path):
+        from benchmax.bundle.view import read_sources, render
+
+        bundle = bundle_env(MinimalEnv)
+        # Source for this test module should be captured since MinimalEnv lives here
+        assert bundle.metadata.sources is not None
+        assert any("class MinimalEnv" in src for src in bundle.metadata.sources.values())
+
+        pickle_path = tmp_path / "env_class.pkl"
+        metadata_path = tmp_path / "env_meta.json"
+        write_bundle_files(bundle, pickle_path, metadata_path)
+
+        # Sources are inlined in metadata.json — readable without cloudpickle
+        sources = read_sources(metadata_path)
+        assert sources == bundle.metadata.sources
+
+        rendered = render(sources)
+        assert "class MinimalEnv" in rendered
+
+        # And the file roundtrip preserves it
+        restored = read_bundle_files(pickle_path, metadata_path)
+        assert restored.metadata.sources == bundle.metadata.sources
+
 
 # ---------------------------------------------------------------------------
 # Tests: loader.py (load_env)

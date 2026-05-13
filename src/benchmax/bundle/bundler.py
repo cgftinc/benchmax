@@ -1,3 +1,6 @@
+import dataclasses
+import inspect
+import json
 import logging
 import sys
 import threading
@@ -89,10 +92,10 @@ def bundle_env(
             # so non-JSON-serializable objects get pickled by value.
             if constructor_args is not None:
                 try:
-                    import json
                     json.dumps(constructor_args)
                 except TypeError:
                     pickled_constructor_args = cloudpickle.dumps(constructor_args)
+            sources = _collect_sources(env_class)
         except Exception as e:
             raise BundlingError(
                 f"Failed to serialize {env_class.__name__} with cloudpickle: {e}"
@@ -120,6 +123,7 @@ def bundle_env(
         benchmax_version=benchmax_version,
         constructor_args=constructor_args,
         constructor_args_pickled=pickled_constructor_args is not None,
+        sources=sources or None,
     )
     payload = BundledEnv(
         pickled_class=pickled_class,
@@ -134,6 +138,26 @@ def bundle_env(
     )
 
     return payload
+
+
+def _collect_sources(env_class: Type[BaseEnv]) -> Dict[str, str]:
+    """Capture just the env class definition as Python source.
+
+    Returns ``{class_name: source_text}``. We deliberately do NOT capture the
+    enclosing module, ``local_modules``, or transitive imports — for the "show
+    the user the env code" use case the class block is what matters; helpers
+    and dataset-generation code in the same file are noise.
+
+    A consequence: module-level helpers the class calls (``_extract_answer_block``,
+    etc.) won't appear here. Readers see *what* the class does, not *how* its
+    private helpers work.
+    """
+    out: Dict[str, str] = {}
+    try:
+        out[env_class.__name__] = inspect.getsource(env_class)
+    except (OSError, TypeError) as e:
+        logger.debug("[bundling] no source for class %s: %s", env_class.__name__, e)
+    return out
 
 
 def ensure_safe_python_version() -> None:
@@ -180,13 +204,7 @@ def read_bundle_files(pickle_path: Path, metadata_path: Path) -> BundledEnv:
         args_pickle_path = pickle_path.with_suffix(".args.pkl")
         if args_pickle_path.exists():
             constructor_args = cloudpickle.loads(args_pickle_path.read_bytes())
-            metadata = BundleMetadata(
-                pip_dependencies=metadata.pip_dependencies,
-                python_version=metadata.python_version,
-                benchmax_version=metadata.benchmax_version,
-                constructor_args=constructor_args,
-                format_version=metadata.format_version,
-            )
+            metadata = dataclasses.replace(metadata, constructor_args=constructor_args)
             logger.info("[bundling] Loaded pickled constructor_args from %s", args_pickle_path)
         else:
             logger.warning(

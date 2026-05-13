@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from benchmax.envs.postgres_search.reward_helpers import (
+from benchmax.envs.reward_helpers import (
     extract_answer_block,
     extract_completion_text,
     overlap_reward,

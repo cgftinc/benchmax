@@ -10,6 +10,7 @@ import pytest
 
 from benchmax.platform.client import (
     ExampleValidation,
+    LaunchArgSpec,
     RolloutClient,
     TrainerClient,
     ValidationResult,
@@ -91,6 +92,90 @@ def test_launch_training_run_reads_run_id_not_experiment_id():
         env_cls_path="a", env_metadata_path="b",
         train_dataset_path="c", eval_dataset_path="d",
     ) == "the-id"
+
+
+# ---------------------------------------------------------------------------
+# list_launch_args / print_launch_args
+# ---------------------------------------------------------------------------
+
+
+_SAMPLE_LAUNCH_ARGS = [
+    {
+        "name": "learning_rate",
+        "label": "learning rate",
+        "type": "number",
+        "required": False,
+        "description": "Adam learning rate. Slime flag: --lr.",
+        "default": 1e-5,
+        "min": 0,
+    },
+    {
+        "name": "max_response_len",
+        "label": "max response length",
+        "type": "integer",
+        "required": False,
+        "description": "Cap on generated tokens per rollout.",
+        "warnAbove": 16384,
+    },
+    {
+        "name": "model",
+        "label": "model",
+        "type": "string",
+        "required": False,
+        "description": "HuggingFace model id. Selects the trainer YAML.",
+        "enum": ["Qwen/Qwen3-4B-Instruct-2507"],
+    },
+]
+
+
+def test_list_launch_args_hits_endpoint_and_parses_response():
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"args": _SAMPLE_LAUNCH_ARGS})
+
+    trainer = _make_trainer_with_transport(handler)
+    specs = trainer.list_launch_args()
+
+    assert "/train/launch-args" in captured["url"]
+    assert len(specs) == 3
+    assert all(isinstance(s, LaunchArgSpec) for s in specs)
+
+    lr = specs[0]
+    assert lr.name == "learning_rate"
+    assert lr.default == 1e-5
+    assert lr.min == 0
+
+    # warnAbove (camelCase from the API) maps to warn_above (snake_case in Python).
+    msl = specs[1]
+    assert msl.warn_above == 16384
+
+    model = specs[2]
+    assert model.enum == ("Qwen/Qwen3-4B-Instruct-2507",)
+
+
+def test_list_launch_args_raises_authentication_error_on_401():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "missing api key"})
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(AuthenticationError):
+        trainer.list_launch_args()
+
+
+def test_print_launch_args_prints_each_spec(capsys):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"args": _SAMPLE_LAUNCH_ARGS})
+
+    trainer = _make_trainer_with_transport(handler)
+    trainer.print_launch_args()
+
+    out = capsys.readouterr().out
+    assert "learning_rate" in out
+    assert "max_response_len" in out
+    assert "warn_above=16384" in out
+    assert "Qwen/Qwen3-4B-Instruct-2507" in out
 
 
 # ---------------------------------------------------------------------------

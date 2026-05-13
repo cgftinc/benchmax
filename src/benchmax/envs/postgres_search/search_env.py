@@ -22,7 +22,7 @@ from benchmax.envs.tracking import log_env
 from benchmax.envs.types import StandardizedExample, ToolDefinition
 
 from benchmax.rag.corpus.search_client import SearchClient
-from benchmax.envs.postgres_search.reward_helpers import (
+from benchmax.envs.reward_helpers import (
     clip01,
     count_search_calls,
     extract_answer_block,
