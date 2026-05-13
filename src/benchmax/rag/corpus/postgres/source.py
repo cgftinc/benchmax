@@ -6,8 +6,6 @@ import random
 import warnings
 from typing import TYPE_CHECKING
 
-from benchmax.rag.chunkers.inspector import ChunkInspector
-from benchmax.rag.chunkers.markdown import MarkdownChunker
 from benchmax.rag.chunkers.models import Chunk, ChunkCollection
 from benchmax.rag.corpus.search_schema.search_exceptions import (
     InvalidSearchSpecError,
@@ -92,6 +90,9 @@ class PostgresChunkSource:
             batch_size: Number of chunks per upload batch (default 100)
             show_summary: Print chunking summary and upload progress (default True)
         """
+        from benchmax.rag.chunkers.inspector import ChunkInspector
+        from benchmax.rag.chunkers.markdown import MarkdownChunker
+
         if file_extensions is None:
             file_extensions = [".md", ".mdx"]
 
@@ -156,6 +157,8 @@ class PostgresChunkSource:
             page_size: Number of chunks to fetch per API page (default 500)
             show_summary: Print load summary (default True)
         """
+        from benchmax.rag.chunkers.inspector import ChunkInspector
+
         self._corpus = self._client.get_corpus(corpus_id)
         self._corpus_name = self._corpus.name
 
