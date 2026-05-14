@@ -50,6 +50,9 @@ class ChromaClient:
     def __init__(
         self,
         collection_name: str,
+        api_key: str | None = None,
+        tenant: str | None = None,
+        database: str | None = None,
         host: str | None = None,
         port: int = 8000,
         path: str | None = None,
@@ -62,6 +65,9 @@ class ChromaClient:
         rrf_max_candidates: int = 200,
     ) -> None:
         self.collection_name = collection_name
+        self.api_key = api_key
+        self.tenant = tenant
+        self.database = database
         self.host = host
         self.port = port
         self.path = path
@@ -82,16 +88,25 @@ class ChromaClient:
         # Capabilities — may be downgraded on collection creation
         modes: set[str] = {"vector"}
         ranking: set[str] = {"cosine"}
-        if self.search_api and enable_bm25 and host is not None:
+        if self.search_api and enable_bm25 and self._is_remote():
             modes |= {"lexical", "hybrid"}
             ranking.add("bm25")
 
         self.modes = modes
         self.ranking = ranking
 
+    def _is_cloud(self) -> bool:
+        """True when configured for Chroma Cloud."""
+        return self.api_key is not None and self.tenant is not None and self.database is not None
+
+    def _is_remote(self) -> bool:
+        """True for any client-server backend (Cloud or self-hosted HTTP)."""
+        return self._is_cloud() or self.host is not None
+
     @property
     def is_client_server(self) -> bool:
-        return self.host is not None
+        """Back-compat alias for any non-local backend (Cloud + HTTP)."""
+        return self._is_remote()
 
     # ------------------------------------------------------------------
     # Lazy init
@@ -102,7 +117,13 @@ class ChromaClient:
             return self._raw_client
         import chromadb
 
-        if self.host is not None:
+        if self._is_cloud():
+            self._raw_client = chromadb.CloudClient(
+                api_key=self.api_key,
+                tenant=self.tenant,
+                database=self.database,
+            )
+        elif self.host is not None:
             self._raw_client = chromadb.HttpClient(host=self.host, port=self.port)
         elif self.path is not None:
             self._raw_client = chromadb.PersistentClient(path=self.path)
