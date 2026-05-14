@@ -93,6 +93,9 @@ class ChromaChunkSource:
     def __init__(
         self,
         collection_name: str,
+        api_key: str | None = None,
+        tenant: str | None = None,
+        database: str | None = None,
         host: str | None = None,
         port: int = 8000,
         path: str | None = None,
@@ -106,6 +109,9 @@ class ChromaChunkSource:
     ) -> None:
         self._chroma = ChromaClient(
             collection_name=collection_name,
+            api_key=api_key,
+            tenant=tenant,
+            database=database,
             host=host,
             port=port,
             path=path,
