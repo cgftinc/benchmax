@@ -187,11 +187,13 @@ def current_rollout_id() -> str | None:
 def pop(rollout_ids: list[str]) -> dict[str, list[CapturedRecord]]:
     """Drain and return the captured records for each rollout_id. Missing
     rollout_ids return an empty list. Always pops — caller is the source of
-    truth for which rollouts are "done"."""
+    truth for which rollouts are "done". Coerces rid to str so mixed
+    UUID/str inputs find the same bucket as the binding side."""
     out: dict[str, list[CapturedRecord]] = {}
     with _buffer_lock:
         for rid in rollout_ids:
-            out[rid] = _buffer.pop(rid, [])
+            key = str(rid)
+            out[key] = _buffer.pop(key, [])
     return out
 
 
@@ -200,7 +202,7 @@ def drop(rollout_ids: list[str]) -> None:
     rerolls). No-op if a rid isn't in the buffer."""
     with _buffer_lock:
         for rid in rollout_ids:
-            _buffer.pop(rid, None)
+            _buffer.pop(str(rid), None)
 
 
 def get_counters() -> dict[str, int]:
@@ -234,7 +236,9 @@ class _RolloutContext(AbstractContextManager[None]):
     __slots__ = ("_rid", "_tok")
 
     def __init__(self, rid: str) -> None:
-        self._rid = rid
+        # Coerce to str — callers sometimes pass uuid.UUID instances; the
+        # buffer is dict-keyed on str so mixing types would silently miss.
+        self._rid = str(rid)
 
     def __enter__(self) -> None:
         self._tok = _CURRENT_ROLLOUT_ID.set(self._rid)
