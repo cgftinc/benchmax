@@ -48,6 +48,7 @@ __all__ = [
     "CapturedRecord",
     "install_capture",
     "rollout_context",
+    "current_rollout_id",
     "pop",
     "drop",
     "get_counters",
@@ -173,6 +174,14 @@ def rollout_context(rollout_id: str) -> AbstractContextManager[None]:
     binding for their scope and restore it on exit (standard ContextVar
     token semantics)."""
     return _RolloutContext(rollout_id)
+
+
+def current_rollout_id() -> str | None:
+    """Return the rollout_id bound to the current asyncio task, or ``None``
+    if no rollout context is active. Useful for callers (e.g. error
+    decorators) that want to take different paths depending on whether
+    a record will be captured per-rollout or fall through to stderr."""
+    return _CURRENT_ROLLOUT_ID.get()
 
 
 def pop(rollout_ids: list[str]) -> dict[str, list[CapturedRecord]]:
