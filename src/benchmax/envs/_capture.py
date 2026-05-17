@@ -254,11 +254,7 @@ class _RolloutContext(AbstractContextManager[None]):
             _CURRENT_ROLLOUT_ID.set(None)
 
 
-_append_calls = 0
-
-
 def _append(rid: str, rec: CapturedRecord) -> None:
-    global _append_calls
     with _buffer_lock:
         bucket = _buffer.get(rid)
         if bucket is None:
@@ -277,12 +273,6 @@ def _append(rid: str, rec: CapturedRecord) -> None:
             bucket.append(rec)
         else:
             _counters.dropped_records += 1
-        _append_calls += 1
-        if _append_calls % 500 == 0:
-            print(
-                f"[_capture] _append_calls={_append_calls} distinct_rids={len(_buffer)} sample_rid={rid[:40]}",
-                flush=True,
-            )
 
 
 # --- Test-only helpers ------------------------------------------------------
