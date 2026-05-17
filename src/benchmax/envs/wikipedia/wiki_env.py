@@ -4,7 +4,6 @@ import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.tracking import log_env
 from benchmax.envs.types import Completion, ToolDefinition, StandardizedExample
 from benchmax.envs.wikipedia.utils import APIKeyRotator, clean_html, safe_request
 

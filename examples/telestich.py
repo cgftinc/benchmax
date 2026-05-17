@@ -30,7 +30,12 @@ from pathlib import Path
 from typing import Any, List
 
 from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.tracking import log_env, tracking_context
+import logging
+_LOGGER = logging.getLogger(__name__)
+def log_env(_rid, msg):
+    """Compat shim — example script. Real envs use logging directly."""
+    _LOGGER.info("%s", msg)
+from contextlib import nullcontext as tracking_context  # no-op
 from benchmax.envs.types import StandardizedExample, ToolDefinition
 from benchmax.envs.reward_helpers import clip01, extract_completion_text
 from english_words import get_english_words_set
@@ -1205,9 +1210,10 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         ground_truths: list[Any],
         **kwargs: Any,
     ) -> list[dict[str, float]]:
-        # compute_group_reward isn't wrapped by enable_tracking — set up the
-        # tracking context manually so log_env calls inside reach the backend.
-        with tracking_context(self._tracking_config):
+        # tracking_context is now a no-op shim — per-rollout capture is set
+        # up by env_service in the env-actor process. Kept structure to
+        # minimize churn in this example file.
+        with tracking_context():
             n = len(rollout_ids)
 
             # Per-rollout rewards, computed concurrently.

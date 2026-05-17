@@ -1,10 +1,8 @@
 import logging
 from abc import ABC, abstractmethod
-from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from benchmax.envs.tracking import TrackingConfig, log_env, tracking_context
 from benchmax.envs.types import Completion, StandardizedExample, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
 
@@ -24,17 +22,23 @@ class BaseEnv(ABC):
         Training infrastructure injects a live implementation via
         ``trainer.data.async_workers.orchestrator._wrap_with_castform_auth``, which
         monkeypatches the instance before the env is handed to a Ray actor.
+
+    Logging contract:
+        Use standard ``logging.getLogger(__name__)`` from any env method.
+        Records emitted while the trainer is running will be captured
+        per-rollout and shipped as ``rollout_env_logs`` rows. ``logger.exception``
+        carries the traceback through. No need to import anything benchmax-
+        specific or pass ``rollout_id`` to logging calls.
     """
 
     system_prompt: str = ""
-    _tracking_config: TrackingConfig | None = None
 
     # Env-declared hints for training infra. None = use system defaults.
     recommended_max_turns: Optional[int] = None
     recommended_max_tool_calls: Optional[int] = None
 
     def __init__(self, **kwargs):
-        self._tracking_config: Optional[TrackingConfig] = None
+        pass
 
     def __init_subclass__(cls, **kwargs):
         """Warn when subclasses override auth_headers — easy to misunderstand.
@@ -55,48 +59,6 @@ class BaseEnv(ABC):
                 cls.__name__,
             )
 
-    def enable_tracking(
-        self,
-        run_id: Optional[str] = None,
-        api_key: Optional[str] = None,
-    ) -> None:
-        """Enable run tracking. Wraps compute_reward on this instance with a tracking context.
-
-        .. warning::
-            This installs *instance-level* method wrappers. cloudpickle pickles
-            the **class**, not the instance, so an env that has tracking enabled
-            and is then bundled via ``bundle_env`` will lose tracking on the
-            remote side. Tracking on the trainer is set up separately by
-            training infrastructure (which calls ``enable_tracking`` on the
-            unpickled instance after construction).
-
-            For local validation use this is fine. For remote training, do not
-            rely on tracking surviving the bundle boundary.
-        """
-        self._tracking_config = TrackingConfig(
-            run_id=run_id, api_key=api_key
-        )
-        cls_compute_reward = type(self).compute_reward
-
-        @wraps(cls_compute_reward)
-        async def _tracked(*args, **kwargs):
-            with tracking_context(self._tracking_config):
-                return await cls_compute_reward(self, *args, **kwargs)
-
-        self.compute_reward = _tracked
-
-        cls_compute_group_reward = type(self).compute_group_reward
-
-        @wraps(cls_compute_group_reward)
-        async def _tracked_group(*args, **kwargs):
-            with tracking_context(self._tracking_config):
-                return await cls_compute_group_reward(self, *args, **kwargs)
-
-        self.compute_group_reward = _tracked_group
-
-    def get_tracking_config(self) -> Optional[TrackingConfig]:
-        return self._tracking_config
-
     def auth_headers(self, url: str) -> dict[str, str]:
         """No-op by default. Override in a host-app mixin/subclass to attach
         bearer tokens to outbound platform-service calls. Custom envs MUST call
@@ -105,8 +67,6 @@ class BaseEnv(ABC):
         """
         return {}
 
-    def log_env(self, rollout_id: str, message: str) -> None:
-        log_env(rollout_id, message)
 
     # Override this method if your example does not match the default structure
     @classmethod

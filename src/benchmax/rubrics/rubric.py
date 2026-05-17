@@ -1,6 +1,7 @@
 import asyncio
 import fcntl
 import json
+import logging
 import os
 import re
 import tempfile
@@ -10,7 +11,8 @@ from typing import Any, Dict, List, Literal, Optional, cast
 import numpy as np
 
 from openai import AsyncOpenAI
-from benchmax.envs.tracking import log_env
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -773,11 +775,13 @@ async def group_rubric_based_reward_function(
             )
         rewards.append(reward)
 
-    try:
-        for rid in rollout_ids:
-            log_env(rid, "\n".join(log_buffer[rid]))
-    except Exception as e:
-        print(f"Error logging rubric evaluation details: {e}")
+    # log_buffer is keyed by rollout_id but rubric evaluation runs outside
+    # any per-rollout env_service context, so the auto-capture handler can't
+    # bind these to a rollout. Emit at INFO with the rid embedded — if the
+    # caller wants rollout-scoped capture they should call this inside a
+    # rollout_context block.
+    for rid in rollout_ids:
+        _LOGGER.info("[rubric rid=%s]\n%s", rid, "\n".join(log_buffer[rid]))
     return rewards
 
 
@@ -828,9 +832,5 @@ async def single_rubric_based_reward_function(
             f"  [{marker}] {rubric.title} ({key}): score={score} reasoning={result['reasoning']}"
         )
 
-    try:
-        log_env(rollout_id, "\n".join(log_lines))
-    except Exception as e:
-        print(f"Error logging rubric evaluation details: {e}")
-
+    _LOGGER.info("[rubric rid=%s]\n%s", rollout_id, "\n".join(log_lines))
     return scores
