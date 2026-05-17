@@ -29,14 +29,23 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, List
 
-from benchmax.envs.base_env import BaseEnv
 import logging
-_LOGGER = logging.getLogger(__name__)
-def log_env(_rid, msg):
-    """Compat shim — example script. Real envs use logging directly."""
-    _LOGGER.info("%s", msg)
-from contextlib import nullcontext as tracking_context  # no-op
+from contextlib import nullcontext as tracking_context  # noqa: F401 — see shim note below
+
+from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.types import StandardizedExample, ToolDefinition
+
+_LOGGER = logging.getLogger(__name__)
+
+
+# Example-only compat shim: the new env_log redesign deleted
+# benchmax.envs.tracking. Real envs should `import logging; log = logging.getLogger(__name__)`
+# and call `log.info(...)` directly — the trainer's env_service ContextVar-wraps
+# every env method so records are auto-captured per-rollout. This file has
+# ~25 historical `log_env(rid, msg)` callsites and is illustrative only, so
+# we route them through a thin local function rather than rewriting them all.
+def log_env(_rid, msg):
+    _LOGGER.info("%s", msg)
 from benchmax.envs.reward_helpers import clip01, extract_completion_text
 from english_words import get_english_words_set
 from openai import AsyncOpenAI
