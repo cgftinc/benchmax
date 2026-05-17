@@ -22,7 +22,7 @@ import logging
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.types import StandardizedExample, ToolDefinition
 
-_LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 from benchmax.rag.corpus.search_client import SearchClient
 from benchmax.envs.reward_helpers import (
@@ -238,7 +238,7 @@ class SearchEnv(BaseEnv):
             reference_chunks = kwargs.get("reference_chunks", [])
             reference_chunk_count = len(reference_chunks)
 
-            _LOGGER.info(
+            logger.info(
                 "[SearchEnv] Q: %s\n  GT: %s\n  A: %s",
                 prompt[:200], gt_str[:200], answer[:200],
             )
@@ -271,11 +271,11 @@ class SearchEnv(BaseEnv):
                 reference_chunk_count=reference_chunk_count,
             )
 
-            _LOGGER.info("[SearchEnv] rewards=%s", rewards)
+            logger.info("[SearchEnv] rewards=%s", rewards)
             return rewards
 
         except (KeyError, ValueError, TypeError, AttributeError) as exc:
-            _LOGGER.exception("[SearchEnv] compute_reward failed: %s", exc)
+            logger.exception("[SearchEnv] compute_reward failed: %s", exc)
             return zeros
 
     # ------------------------------------------------------------------

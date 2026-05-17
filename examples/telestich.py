@@ -20,6 +20,7 @@ JSON a frontend would render as "what code is in this env."
 
 import asyncio
 import json
+import logging
 import math
 import os
 import random
@@ -29,28 +30,16 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, List
 
-import logging
-from contextlib import nullcontext as tracking_context  # noqa: F401 — see shim note below
-
-from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.types import StandardizedExample, ToolDefinition
-
-_LOGGER = logging.getLogger(__name__)
-
-
-# Example-only compat shim: the new env_log redesign deleted
-# benchmax.envs.tracking. Real envs should `import logging; log = logging.getLogger(__name__)`
-# and call `log.info(...)` directly — the trainer's env_service ContextVar-wraps
-# every env method so records are auto-captured per-rollout. This file has
-# ~25 historical `log_env(rid, msg)` callsites and is illustrative only, so
-# we route them through a thin local function rather than rewriting them all.
-def log_env(_rid, msg):
-    _LOGGER.info("%s", msg)
-from benchmax.envs.reward_helpers import clip01, extract_completion_text
+import pronouncing
 from english_words import get_english_words_set
 from openai import AsyncOpenAI
-import pronouncing
 from wordfreq import top_n_list, word_frequency
+
+from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.reward_helpers import clip01, extract_completion_text
+from benchmax.envs.types import StandardizedExample, ToolDefinition
+
+logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -873,20 +862,18 @@ def _log_judge_breakdown(rollout_id: str, judge: dict) -> None:
     axes = judge.get("axes", {}) or {}
     s = axes.get("specificity", "?")
     c = axes.get("coherence", "?")
-    log_env(
-        rollout_id,
-        f"[TelestichEnv] judge: verdict={verdict} score={score:.2f} "
+    logger.info(f"[TelestichEnv] judge: verdict={verdict} score={score:.2f} "
         f"penalty={penalty:.2f} axes(s/c)={s}/{c}",
     )
     rationale = str(judge.get("rationale", "")).strip()
     if rationale:
-        log_env(rollout_id, f"  rationale: {rationale[:240]}")
+        logger.info(f"  rationale: {rationale[:240]}")
     for cat, hits in (judge.get("problems") or {}).items():
         if not hits:
             continue
-        log_env(rollout_id, f"  {cat}:")
+        logger.info(f"  {cat}:")
         for h in hits:
-            log_env(rollout_id, f"    {str(h)[:240]}")
+            logger.info(f"    {str(h)[:240]}")
 
 
 _MARKUP_WRAPPER_RE = re.compile(r"^[\*_`\\{}]+|[\*_`\\{}]+$")
@@ -1219,113 +1206,107 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         ground_truths: list[Any],
         **kwargs: Any,
     ) -> list[dict[str, float]]:
-        # tracking_context is now a no-op shim — per-rollout capture is set
-        # up by env_service in the env-actor process. Kept structure to
-        # minimize churn in this example file.
-        with tracking_context():
-            n = len(rollout_ids)
+        # Note: compute_group_reward is NOT auto-captured per-rollout (no
+        # single rid to bind). If you need rollout-attributed reasoning,
+        # emit it from compute_reward instead. Plain stdlib logging from
+        # here goes to stderr only.
+        n = len(rollout_ids)
 
-            # Per-rollout rewards, computed concurrently.
-            per_kwargs = [
-                {
-                    k: (v[i] if isinstance(v, list) and len(v) == n else v)
-                    for k, v in kwargs.items()
-                }
-                for i in range(n)
+        # Per-rollout rewards, computed concurrently.
+        per_kwargs = [
+            {
+                k: (v[i] if isinstance(v, list) and len(v) == n else v)
+                for k, v in kwargs.items()
+            }
+            for i in range(n)
+        ]
+        per_rewards = await asyncio.gather(
+            *[
+                self._compute_single_reward(rid, comp, gt, **pk)
+                for rid, comp, gt, pk in zip(
+                    rollout_ids, completions, ground_truths, per_kwargs
+                )
             ]
-            per_rewards = await asyncio.gather(
-                *[
-                    self._compute_single_reward(rid, comp, gt, **pk)
-                    for rid, comp, gt, pk in zip(
-                        rollout_ids, completions, ground_truths, per_kwargs
+        )
+
+        # Text-similarity divisor (full-poem near-duplicates).
+        cluster_texts: list[str] = []
+        ending_texts: list[str] = []
+        languages: list[str] = []
+        for completion in completions:
+            text = extract_completion_text(completion)
+            poem_for_lang = _extract_answer_block(text) or text
+            cluster_texts.append(poem_for_lang)
+            ending_texts.append(_ending_sequence(text))
+            languages.append(_detect_language(poem_for_lang))
+        text_divisors = _cluster_similarity_divisors(cluster_texts, threshold=0.85)
+        # Ending-word divisor (sibling rollouts that share the same
+        # per-line ending token sequence — template mode-collapse).
+        # Skipped for Mandarin: the acrostic forces every correct rollout
+        # to share the same ending characters, so this divisor would
+        # mechanically punish correctness.
+        ending_divisors_raw = _cluster_similarity_divisors(ending_texts, threshold=0.85)
+        ending_divisors = [
+            1.0 if lang == "zh" else d
+            for lang, d in zip(languages, ending_divisors_raw)
+        ]
+        # Combine by max — a rollout is "duplicated" by whichever signal
+        # fires more strongly. Using max instead of multiplying avoids
+        # double-penalizing rollouts that happen to collide on both.
+        divisors = [max(t, e) for t, e in zip(text_divisors, ending_divisors)]
+
+        # Group-relative efficiency bonus (length + tool calls), anchored
+        # on the winners' averages within this group. Non-winners get 0
+        # so sub-standard-but-short rollouts aren't rewarded.
+        raw_q = [
+            (r.get("quality", 0.0) / self._w_quality) if self._w_quality else 0.0
+            for r in per_rewards
+        ]
+        lengths = [len(extract_completion_text(c)) for c in completions]
+        tool_counts = [_count_tool_calls(c) for c in completions]
+        max_q = max(raw_q) if raw_q else 0.0
+        bar = max(self._winner_bar, max_q - self._winner_eps)
+        winners = [i for i, q in enumerate(raw_q) if q >= bar]
+
+        efficiencies = [0.0] * n
+        if winners:
+            L_anchor = sum(lengths[i] for i in winners) / len(winners)
+            C_anchor = sum(tool_counts[i] for i in winners) / len(winners)
+            for i in winners:
+                len_ineff = (
+                    1 - math.exp(-max(0.0, lengths[i] / L_anchor - 1.0))
+                    if L_anchor > 0 else 0.0
+                )
+                if C_anchor > 0:
+                    call_ineff = 1 - math.exp(
+                        -max(0.0, tool_counts[i] / C_anchor - 1.0)
                     )
-                ]
+                else:
+                    # All winners used zero tool calls — any use by this
+                    # winner is pure excess.
+                    call_ineff = 1.0 if tool_counts[i] > 0 else 0.0
+                efficiencies[i] = 1.0 - 0.5 * (len_ineff + call_ineff)
+            logger.info(f"[TelestichEnv] group efficiency: bar={bar:.3f} "
+                f"winners={len(winners)}/{n} L_anchor={L_anchor:.0f} "
+                f"C_anchor={C_anchor:.2f}",
             )
 
-            # Text-similarity divisor (full-poem near-duplicates).
-            cluster_texts: list[str] = []
-            ending_texts: list[str] = []
-            languages: list[str] = []
-            for completion in completions:
-                text = extract_completion_text(completion)
-                poem_for_lang = _extract_answer_block(text) or text
-                cluster_texts.append(poem_for_lang)
-                ending_texts.append(_ending_sequence(text))
-                languages.append(_detect_language(poem_for_lang))
-            text_divisors = _cluster_similarity_divisors(cluster_texts, threshold=0.85)
-            # Ending-word divisor (sibling rollouts that share the same
-            # per-line ending token sequence — template mode-collapse).
-            # Skipped for Mandarin: the acrostic forces every correct rollout
-            # to share the same ending characters, so this divisor would
-            # mechanically punish correctness.
-            ending_divisors_raw = _cluster_similarity_divisors(ending_texts, threshold=0.85)
-            ending_divisors = [
-                1.0 if lang == "zh" else d
-                for lang, d in zip(languages, ending_divisors_raw)
-            ]
-            # Combine by max — a rollout is "duplicated" by whichever signal
-            # fires more strongly. Using max instead of multiplying avoids
-            # double-penalizing rollouts that happen to collide on both.
-            divisors = [max(t, e) for t, e in zip(text_divisors, ending_divisors)]
-
-            # Group-relative efficiency bonus (length + tool calls), anchored
-            # on the winners' averages within this group. Non-winners get 0
-            # so sub-standard-but-short rollouts aren't rewarded.
-            raw_q = [
-                (r.get("quality", 0.0) / self._w_quality) if self._w_quality else 0.0
-                for r in per_rewards
-            ]
-            lengths = [len(extract_completion_text(c)) for c in completions]
-            tool_counts = [_count_tool_calls(c) for c in completions]
-            max_q = max(raw_q) if raw_q else 0.0
-            bar = max(self._winner_bar, max_q - self._winner_eps)
-            winners = [i for i, q in enumerate(raw_q) if q >= bar]
-
-            efficiencies = [0.0] * n
-            if winners:
-                L_anchor = sum(lengths[i] for i in winners) / len(winners)
-                C_anchor = sum(tool_counts[i] for i in winners) / len(winners)
-                for i in winners:
-                    len_ineff = (
-                        1 - math.exp(-max(0.0, lengths[i] / L_anchor - 1.0))
-                        if L_anchor > 0 else 0.0
-                    )
-                    if C_anchor > 0:
-                        call_ineff = 1 - math.exp(
-                            -max(0.0, tool_counts[i] / C_anchor - 1.0)
-                        )
-                    else:
-                        # All winners used zero tool calls — any use by this
-                        # winner is pure excess.
-                        call_ineff = 1.0 if tool_counts[i] > 0 else 0.0
-                    efficiencies[i] = 1.0 - 0.5 * (len_ineff + call_ineff)
-                log_env(
-                    rollout_ids[0] if rollout_ids else "group",
-                    f"[TelestichEnv] group efficiency: bar={bar:.3f} "
-                    f"winners={len(winners)}/{n} L_anchor={L_anchor:.0f} "
-                    f"C_anchor={C_anchor:.2f}",
+        adjusted: list[dict[str, float]] = []
+        for i, (rid, rewards, div, t_div, e_div) in enumerate(
+            zip(rollout_ids, per_rewards, divisors, text_divisors, ending_divisors)
+        ):
+            rewards = dict(rewards)
+            rewards["conciseness"] = self._w_conciseness * efficiencies[i]
+            logger.info(f"[TelestichEnv] efficiency={efficiencies[i]:.3f} "
+                f"(len={lengths[i]} calls={tool_counts[i]} "
+                f"winner={i in winners})",
+            )
+            if div > 1.0:
+                logger.info(f"[TelestichEnv] duplication divisor={div} "
+                    f"(text={t_div}, ending={e_div}) applied to {rewards}",
                 )
-
-            adjusted: list[dict[str, float]] = []
-            for i, (rid, rewards, div, t_div, e_div) in enumerate(
-                zip(rollout_ids, per_rewards, divisors, text_divisors, ending_divisors)
-            ):
-                rewards = dict(rewards)
-                rewards["conciseness"] = self._w_conciseness * efficiencies[i]
-                log_env(
-                    rid,
-                    f"[TelestichEnv] efficiency={efficiencies[i]:.3f} "
-                    f"(len={lengths[i]} calls={tool_counts[i]} "
-                    f"winner={i in winners})",
-                )
-                if div > 1.0:
-                    log_env(
-                        rid,
-                        f"[TelestichEnv] duplication divisor={div} "
-                        f"(text={t_div}, ending={e_div}) applied to {rewards}",
-                    )
-                adjusted.append({k: v / div for k, v in rewards.items()})
-            return adjusted
+            adjusted.append({k: v / div for k, v in rewards.items()})
+        return adjusted
 
     async def _compute_single_reward(
         self,
@@ -1353,7 +1334,7 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
             prompt = str(kwargs.get("prompt", ""))
             poem_text = _extract_answer_block(final_text)
             if poem_text is None:
-                log_env(rollout_id, "[TelestichEnv] No <answer> block found")
+                logger.info("[TelestichEnv] No <answer> block found")
                 return zeros
             lines = _parse_poem_lines(poem_text)
 
@@ -1400,16 +1381,12 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
             else:
                 judge = {"score": 0.0, "reasoning": "correctness below gate"}
                 judge_score = 0.0
-                log_env(
-                    rollout_id,
-                    f"[TelestichEnv] judge: skipped (correctness={correctness:.3f} < 0.5)",
+                logger.info(f"[TelestichEnv] judge: skipped (correctness={correctness:.3f} < 0.5)",
                 )
 
             # 4. Quality: multiply correctness and judge score
             quality = correctness * judge_score
-            log_env(
-                rollout_id,
-                f"[TelestichEnv] quality breakdown: correctness={correctness:.3f} × "
+            logger.info(f"[TelestichEnv] quality breakdown: correctness={correctness:.3f} × "
                 f"judge_score={judge_score:.3f} → quality={quality:.3f}",
             )
 
@@ -1419,9 +1396,7 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
             cheated = _contains_hidden_word(poem_text, target_word, language)
             if cheated:
                 quality = 0.0
-                log_env(
-                    rollout_id,
-                    f"[TelestichEnv] cheating penalty: hidden word '{target_word}' in poem body → quality=0",
+                logger.info(f"[TelestichEnv] cheating penalty: hidden word '{target_word}' in poem body → quality=0",
                 )
 
             # 6. Rhyme/form bonus, hard-gated on perfect acrostic + no cheat.
@@ -1434,20 +1409,14 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
                         self._w_rhyme_en if language == "en" else self._w_rhyme_zh
                     )
                     rhyme = w_rhyme * rhyme_raw
-                    log_env(
-                        rollout_id,
-                        f"[TelestichEnv] rhyme: lang={language} raw={rhyme_raw:.3f} "
+                    logger.info(f"[TelestichEnv] rhyme: lang={language} raw={rhyme_raw:.3f} "
                         f"weighted={rhyme:.3f} info={str(rhyme_info)[:240]}",
                     )
                 else:
-                    log_env(
-                        rollout_id,
-                        "[TelestichEnv] rhyme: skipped (too few scoreable lines)",
+                    logger.info("[TelestichEnv] rhyme: skipped (too few scoreable lines)",
                     )
             else:
-                log_env(
-                    rollout_id,
-                    f"[TelestichEnv] rhyme: skipped "
+                logger.info(f"[TelestichEnv] rhyme: skipped "
                     f"(correctness={correctness:.3f}, cheated={cheated})",
                 )
 
@@ -1459,11 +1428,11 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
                 "conciseness": 0.0,
                 "rhyme": rhyme,
             }
-            log_env(rollout_id, f"[TelestichEnv] per-rollout rewards={rewards} (conciseness filled at group level)")
+            logger.info(f"[TelestichEnv] per-rollout rewards={rewards} (conciseness filled at group level)")
             return rewards
 
         except Exception as e:
-            log_env(rollout_id, f"[TelestichEnv] compute_reward error: {e}")
+            logger.info(f"[TelestichEnv] compute_reward error: {e}")
             print(f"[TelestichEnv] compute_reward error: {e}")
             return zeros
 

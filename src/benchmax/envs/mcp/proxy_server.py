@@ -24,12 +24,12 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse, FileResponse, JSONResponse, Response
 from starlette.datastructures import UploadFile
 
-import logging as _logging
+import logging
 
 from reward_fn import reward_functions as imported_reward_functions  # type: ignore
 
-_LOGGER = _logging.getLogger(__name__)
-_LEGACY_LOG_ENV = _logging.getLogger("benchmax.envs.legacy")
+logger = logging.getLogger(__name__)
+legacy_logger = logging.getLogger("benchmax.envs.legacy")
 
 RewardFunction = Callable[..., Union[float, Awaitable[float]]]
 DEFAULT_API_SECRET = "dev_default_api_secret_please_change_me_32chars!"
@@ -42,7 +42,7 @@ def _legacy_log_env(rollout_id: str, message: str, *_, **__) -> None:
     captured by the per-rollout context handler — they only show up in the
     MCP subprocess's own log stream. Cross-process MCP log capture is a
     follow-up (see PLAN.md)."""
-    _LEGACY_LOG_ENV.info("[rid=%s] %s", rollout_id, message)
+    legacy_logger.info("[rid=%s] %s", rollout_id, message)
 
 
 def _with_log_env(func: RewardFunction) -> RewardFunction:

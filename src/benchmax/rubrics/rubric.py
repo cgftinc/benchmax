@@ -12,7 +12,7 @@ import numpy as np
 
 from openai import AsyncOpenAI
 
-_LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -781,7 +781,7 @@ async def group_rubric_based_reward_function(
     # caller wants rollout-scoped capture they should call this inside a
     # rollout_context block.
     for rid in rollout_ids:
-        _LOGGER.info("[rubric rid=%s]\n%s", rid, "\n".join(log_buffer[rid]))
+        logger.info("[rubric rid=%s]\n%s", rid, "\n".join(log_buffer[rid]))
     return rewards
 
 
@@ -832,5 +832,5 @@ async def single_rubric_based_reward_function(
             f"  [{marker}] {rubric.title} ({key}): score={score} reasoning={result['reasoning']}"
         )
 
-    _LOGGER.info("[rubric rid=%s]\n%s", rollout_id, "\n".join(log_lines))
+    logger.info("[rubric rid=%s]\n%s", rollout_id, "\n".join(log_lines))
     return scores

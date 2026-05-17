@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from benchmax.envs.types import Completion, StandardizedExample, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
 
-_LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
@@ -51,7 +51,7 @@ class BaseEnv(ABC):
         """
         super().__init_subclass__(**kwargs)
         if "auth_headers" in cls.__dict__ and cls.__dict__["auth_headers"] is not BaseEnv.auth_headers:
-            _LOGGER.warning(
+            logger.warning(
                 "%s overrides auth_headers; the trainer will replace this at "
                 "the instance level, so the override has no effect on training "
                 "rollouts. Issue HTTP via self.auth_headers(url) instead of "
