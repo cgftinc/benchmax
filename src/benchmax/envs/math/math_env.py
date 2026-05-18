@@ -5,7 +5,8 @@ from benchmax.envs.mcp.parallel_mcp_env import ParallelMcpEnv
 from benchmax.envs.mcp.provisioners.base_provisioner import BaseProvisioner
 from benchmax.envs.mcp.provisioners.local_provisioner import LocalProvisioner
 from benchmax.envs.mcp.provisioners.skypilot_provisioner import SkypilotProvisioner
-from benchmax.envs.types import StandardizedExample
+from benchmax.envs.example_id import make_example
+from benchmax.envs.types import Example
 
 if TYPE_CHECKING:
     import sky
@@ -24,11 +25,10 @@ class MathEnv(ParallelMcpEnv):
         super().__init__(workdir_path=workdir_path, provisioner=provisioner, **kwargs)
 
     @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> StandardizedExample:
-        return StandardizedExample(
-            prompt=example.get("task", ""),
-            ground_truth=example.get("answer", ""),
-            init_rollout_args=None,
+    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
+        return make_example(
+            seed_messages=[{"role": "user", "content": example.get("task", "")}],
+            task={"ground_truth": example.get("answer", "")},
         )
 
 

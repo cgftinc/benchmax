@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.types import Completion, ToolDefinition
+from benchmax.envs.types import Messages, ToolDefinition
 from benchmax.platform import (
     StorageClient,
     UploadedTrainingRun,
@@ -32,7 +32,11 @@ class MinimalEnv(BaseEnv):
         return None
 
     async def compute_reward(
-        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
+        self,
+        rollout_id: str,
+        messages: Messages,
+        task: Optional[Dict[str, Any]],
+        **kwargs: Any,
     ) -> Dict[str, float]:
         return {"score": 0.0}
 

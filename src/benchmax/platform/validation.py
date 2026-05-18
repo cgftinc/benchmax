@@ -111,43 +111,45 @@ def validate_env(
     preprocessed = None
     try:
         preprocessed = env_class.dataset_preprocess(examples[0])
-        if not isinstance(preprocessed, dict) or "prompt" not in preprocessed:
-            print("  \u2717 dataset_preprocess did not return StandardizedExample")
+        required = {"id", "seed_messages"}
+        if not isinstance(preprocessed, dict) or not required.issubset(preprocessed):
+            missing = (
+                required - set(preprocessed)
+                if isinstance(preprocessed, dict)
+                else required
+            )
             print(
-                "    Fix: Must return StandardizedExample with prompt,"
-                " ground_truth, init_rollout_args."
+                f"  \u2717 dataset_preprocess did not return Example "
+                f"(missing {sorted(missing)})"
+            )
+            print(
+                "    Fix: return benchmax.envs.example_id.make_example("
+                "seed_messages=[...], task=...)."
             )
             failed += 1
         else:
-            print("  \u2713 dataset_preprocess returns StandardizedExample")
+            print("  \u2713 dataset_preprocess returns Example with id + seed_messages")
             passed += 1
     except Exception as exc:
         print(f"  \u2717 dataset_preprocess raised {type(exc).__name__}: {exc}")
         failed += 1
 
-    # ── 2. Prompt hashability ────────────────────────────────────
-    if preprocessed and isinstance(preprocessed, dict) and "prompt" in preprocessed:
-        prompt = preprocessed["prompt"]
-        try:
-            hash(prompt)
-            {prompt: True}
-            if not isinstance(prompt, str):
-                print(f"  \u2717 prompt is hashable but not a string — got {type(prompt).__name__}")
-                print("    Fix: dataset_preprocess should return prompt as a string.")
-                failed += 1
-            else:
-                print("  \u2713 prompt is hashable (string)")
-                passed += 1
-        except TypeError:
-            print(f"  \u2717 prompt is NOT hashable — got {type(prompt).__name__}")
-            print(
-                "    Fix: dataset_preprocess must return prompt as a"
-                " string, not a list of messages."
-            )
-            print("    The reward worker uses prompts as dict keys for reroll tracking.")
+    # ── 2. seed_messages shape ───────────────────────────────────
+    if preprocessed and isinstance(preprocessed, dict) and "seed_messages" in preprocessed:
+        seed = preprocessed["seed_messages"]
+        if not isinstance(seed, list) or not all(
+            isinstance(mm, dict) and "role" in mm and "content" in mm for mm in seed
+        ):
+            print("  \u2717 seed_messages is not a list of {role,content} dicts")
             failed += 1
+        elif not seed:
+            print("  \u2717 seed_messages is empty")
+            failed += 1
+        else:
+            print(f"  \u2713 seed_messages is a {len(seed)}-message chat list")
+            passed += 1
     else:
-        print("  - prompt hashability: skipped (no preprocessed result)")
+        print("  - seed_messages shape check: skipped (no preprocessed result)")
 
     # ── 3. load_dataset ──────────────────────────────────────────
     try:
@@ -224,30 +226,25 @@ def validate_env(
             print(f"  \u2717 list_tools raised {type(exc).__name__}: {exc}")
             failed += 1
 
-    # ── 5. compute_reward with trainer-style kwargs ──────────────
-    if env is not None and isinstance(preprocessed, dict) and "prompt" in preprocessed:
+    # ── 5. compute_reward with trainer-style args ────────────────
+    if env is not None and isinstance(preprocessed, dict) and "seed_messages" in preprocessed:
         try:
-            sample_gt = preprocessed.get("ground_truth", "")
-            init_args = preprocessed.get("init_rollout_args", {})
-            if not isinstance(init_args, dict):
-                init_args = {}
+            task = preprocessed.get("task")
+            init_args = preprocessed.get("init_rollout_args") or {}
 
-            # Build the sample dict the same way reward_worker.py does:
-            # {**data_record, **completion_dict, **data_record["init_rollout_args"]}
-            flattened = {
-                "prompt": preprocessed["prompt"],
-                "ground_truth": sample_gt,
-                "init_rollout_args": init_args,
-                "rollout_ids": "test-rollout",
-                "completions": "I found the answer based on the search results.",
-                **init_args,
-            }
+            # Simulate the trainer's call: a fake one-turn transcript echoing
+            # the seed plus a stub assistant turn. compute_reward receives
+            # task verbatim and runtime kwargs (init_rollout_args fields).
+            messages = list(preprocessed["seed_messages"]) + [
+                {"role": "assistant", "content": "I found the answer based on the search results."}
+            ]
 
             reward = _run_async(
                 env.compute_reward(
-                    rollout_id=flattened["rollout_ids"],
-                    completion=flattened["completions"],
-                    **flattened,
+                    rollout_id="test-rollout",
+                    messages=messages,
+                    task=task,
+                    **init_args,
                 )
             )
 
@@ -280,28 +277,31 @@ def validate_env(
                         passed += 1
         except Exception as exc:
             print(f"  \u2717 compute_reward raised {type(exc).__name__}: {exc}")
-            print("    Fix: compute_reward must accept (rollout_id, completion, **sample).")
-            print("    The trainer flattens init_rollout_args into the sample dict.")
+            print("    Fix: compute_reward signature is (rollout_id, messages, task, **kwargs).")
+            print("    Read example data from `task`, runtime fields from `kwargs`.")
             failed += 1
 
-    # ── 5b. Simulated rollout (E2E) ────────────────────────────────
-    if env is not None and isinstance(preprocessed, dict) and "prompt" in preprocessed:
+    # ── 5b. Simulated rollout (E2E) ──────────────────────────────
+    if env is not None and isinstance(preprocessed, dict) and "seed_messages" in preprocessed:
         try:
-            example = examples[0]
-            prompt_text = preprocessed["prompt"]
-            gt = preprocessed.get("ground_truth", "")
-            init_args = preprocessed.get("init_rollout_args", {})
-            if not isinstance(init_args, dict):
-                init_args = {}
+            seed_messages = preprocessed["seed_messages"]
+            task = preprocessed.get("task")
+            init_args = preprocessed.get("init_rollout_args") or {}
 
             tools = _run_async(env.list_tools())
 
+            # Seed text used for dummy tool-arg generation.
+            first_user = next(
+                (m["content"] for m in seed_messages if m.get("role") == "user"),
+                "",
+            )
+            query_text = first_user[:200] if isinstance(first_user, str) else "test"
+
             # ── Call each tool twice (catch stateful bugs) ──────
-            completion_msgs: list[dict[str, Any]] = []
+            transcript: list[dict[str, Any]] = list(seed_messages)
             tool_call_count = 0
             for tool in tools:
-                query = prompt_text[:200] if prompt_text else "test"
-                tool_args = _build_dummy_args(tool.input_schema, query)
+                tool_args = _build_dummy_args(tool.input_schema, query_text)
                 for _ in range(2):
                     result = _run_async(
                         env.run_tool(
@@ -310,32 +310,20 @@ def validate_env(
                             **tool_args,
                         )
                     )
-                    completion_msgs.append({"role": "assistant", "content": "Calling tool."})
-                    completion_msgs.append({"role": "tool", "content": str(result)[:500]})
+                    transcript.append({"role": "assistant", "content": "Calling tool."})
+                    transcript.append({"role": "tool", "content": str(result)[:500]})
                     tool_call_count += 1
 
-            # Final assistant message with ground truth as answer
-            answer_text = str(gt or "test answer")
-            completion_msgs.append({"role": "assistant", "content": answer_text})
-
-            # ── Call compute_reward with full context ───────────
-            # Same flattening as reward_worker.py line 190.
-            # Pass through all fields from the original example.
-            sim_sample: dict[str, Any] = {
-                **example,
-                "prompt": prompt_text,
-                "ground_truth": gt,
-                "init_rollout_args": init_args,
-                "rollout_ids": "sim-rollout",
-                "completions": completion_msgs,
-                **init_args,
-            }
+            # Final assistant message echoing ground truth if available.
+            gt = (task or {}).get("ground_truth")
+            transcript.append({"role": "assistant", "content": str(gt or "test answer")})
 
             reward = _run_async(
                 env.compute_reward(
-                    rollout_id=sim_sample["rollout_ids"],
-                    completion=sim_sample["completions"],
-                    **sim_sample,
+                    rollout_id="sim-rollout",
+                    messages=transcript,
+                    task=task,
+                    **init_args,
                 )
             )
 

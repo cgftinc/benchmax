@@ -3,7 +3,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from benchmax.envs.types import Completion, StandardizedExample, ToolDefinition
+from benchmax.envs.example_id import canonical_example_id
+from benchmax.envs.types import Example, Messages, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
 
 logger = logging.getLogger(__name__)
@@ -68,27 +69,34 @@ class BaseEnv(ABC):
         return {}
 
 
-    # Override this method if your example does not match the default structure
+    # Override this method if your dataset rows aren't already shaped as
+    # ``{seed_messages, task, init_rollout_args}``.
     @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> StandardizedExample:
-        """
-        Preprocess a single dataset example into a dict with keys:
-        - "prompt": str
-        - "ground_truth": Any
-        - "init_rollout_args": Dict[str, Any]
+    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
+        """Preprocess a single dataset row into an :class:`Example`.
 
-        Treats ``example`` as read-only — the original is never mutated, so
-        the same example can be passed through multiple envs (e.g. multi-env
-        eval) or preprocessed twice without raising KeyError on the second call.
+        The default implementation assumes ``example`` already has
+        ``seed_messages`` (and optionally ``task`` / ``init_rollout_args``) and
+        just computes the canonical ``id``. Envs whose source datasets have a
+        different shape (HuggingFace columns, jsonl with custom keys, etc.)
+        should override this to build the ``seed_messages`` chat list and
+        ``task`` dict.
+
+        Treats ``example`` as read-only — the original is never mutated.
         """
-        # Copy + read; the original example dict is left untouched.
-        remaining = {k: v for k, v in example.items()
-                     if k not in ("prompt", "ground_truth", "init_rollout_args")}
-        return StandardizedExample(
-            prompt=example.get("prompt", ""),
-            ground_truth=example.get("ground_truth", ""),
-            init_rollout_args=example["init_rollout_args"],
-            **remaining,
+        if "seed_messages" not in example:
+            raise ValueError(
+                f"{cls.__name__}.dataset_preprocess: row is missing "
+                "'seed_messages'. Override dataset_preprocess to build it "
+                "from your dataset's columns."
+            )
+        seed_messages = example["seed_messages"]
+        task = example.get("task")
+        return Example(
+            id=canonical_example_id(seed_messages, task),
+            seed_messages=seed_messages,
+            task=task,
+            init_rollout_args=example.get("init_rollout_args"),
         )
 
     @classmethod
@@ -131,39 +139,54 @@ class BaseEnv(ABC):
 
     @abstractmethod
     async def compute_reward(
-        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
+        self,
+        rollout_id: str,
+        messages: Messages,
+        task: Optional[Dict[str, Any]],
+        **kwargs: Any,
     ) -> Dict[str, float]:
-        """Compute rewards using registered functions
+        """Compute rewards for a single rollout.
 
-        Returns dict mapping reward function names to their computed scores.
+        Args:
+            rollout_id: Identifier for the rollout being graded.
+            messages: Full conversation transcript (seed messages + every assistant /
+                tool turn produced during the rollout). Was named ``completion`` in
+                the legacy signature, which was misleading: this is the entire
+                message list, not just the model's final answer.
+            task: Per-example reward-side data from
+                :class:`benchmax.envs.types.Example` (e.g. ``ground_truth``,
+                scoring config). ``None`` for envs that grade without per-row data.
+            **kwargs: Trainer-runtime context (e.g. ``workspace_path``). Example
+                fields should be read from ``task``, not ``kwargs``.
+
+        Returns:
+            Mapping of reward function name to scalar score.
         """
         pass
 
     async def compute_group_reward(
         self,
         rollout_ids: List[str],
-        completions: List[str | List[Dict[str, str]]],
-        ground_truths: List[Any],
+        messages_list: List[Messages],
+        tasks: List[Optional[Dict[str, Any]]],
         **kwargs: Any,
     ) -> List[Dict[str, float]]:
         """Compute rewards across a group of rollouts jointly.
 
         Override this when reward computation requires cross-rollout context (e.g.,
-        relative scoring, group normalization, or deduplication). Can be used alongside
-        ``compute_reward`` — the two are not mutually exclusive. The default implementation
-        returns empty reward dicts, deferring entirely to per-rollout ``compute_reward`` calls.
+        relative scoring, group normalization, deduplication). Default returns
+        empty dicts so per-rollout ``compute_reward`` runs in isolation.
 
         Args:
             rollout_ids: Identifiers for each rollout in the group.
-            completions: Model outputs, one per rollout. Each entry is either a
-                plain string or a list of message dicts.
-            ground_truths: Reference answers, one per rollout.
-            **kwargs: Additional environment-specific arguments.
+            messages_list: One message transcript per rollout (see
+                :meth:`compute_reward` for the renaming from ``completions``).
+            tasks: One task dict (or ``None``) per rollout, paired by index.
+            **kwargs: Trainer-runtime context shared across the group.
 
         Returns:
-            A list of reward dicts (one per rollout), each mapping reward function
-            names to their computed scores. An empty dict signals that no group
-            reward was computed for that rollout.
+            One reward dict per rollout, in input order. An empty dict signals
+            that no group reward was computed for that rollout.
         """
         return [{} for _ in rollout_ids]
 

@@ -11,7 +11,8 @@ import traceback
 from typing import Any
 
 from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.types import StandardizedExample, ToolDefinition
+from benchmax.envs.example_id import make_example
+from benchmax.envs.types import Example, Messages, ToolDefinition
 
 from benchmax.rag.corpus.search_client import SearchClient
 
@@ -155,7 +156,7 @@ class LinkerEnv(BaseEnv):
         return await tool_fn(**tool_args)
 
     @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs: Any) -> StandardizedExample:
+    def dataset_preprocess(cls, example: Any, **kwargs: Any) -> Example:
         target_n = example.get("target_n", 1)
         reasoning_mode = example.get("reasoning_mode", "")
         mode_hint = _REASONING_MODE_HINTS.get(reasoning_mode, "")
@@ -167,17 +168,16 @@ class LinkerEnv(BaseEnv):
             f"— not just topically related content.{mode_hint}\n\n"
             f"Primary chunk:\n{example.get('prompt', '')}"
         )
-        return StandardizedExample(
-            prompt=prompt,
-            ground_truth=None,
-            init_rollout_args={},
+        return make_example(
+            seed_messages=[{"role": "user", "content": prompt}],
+            task={"target_n": target_n, "reasoning_mode": reasoning_mode},
         )
 
     async def compute_reward(
         self,
         rollout_id: str,
-        completion: str | list[dict[str, Any]],
-        ground_truth: Any,
+        messages: Messages,
+        task: dict[str, Any] | None,
         **kwargs: Any,
     ) -> dict[str, float]:
         return {"linking": 1.0}

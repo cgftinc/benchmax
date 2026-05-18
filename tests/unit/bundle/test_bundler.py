@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.types import Completion, ToolDefinition
+from benchmax.envs.types import Messages, ToolDefinition
 from benchmax.bundle.bundler import bundle_env, read_bundle_files, write_bundle_files
 from benchmax.bundle.errors import (
     IncompatibleBenchmaxError,
@@ -73,9 +73,14 @@ class MinimalEnv(BaseEnv):
         pass
 
     async def compute_reward(
-        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
+        self,
+        rollout_id: str,
+        messages: Messages,
+        task: Any,
+        **kwargs: Any,
     ) -> Dict[str, float]:
-        return {"score": 1.0 if completion == ground_truth else 0.0}
+        gt = (task or {}).get("ground_truth")
+        return {"score": 1.0 if messages == gt else 0.0}
 
 
 class BadInitEnv(MinimalEnv):
@@ -242,7 +247,11 @@ class TestLoadEnv:
         result = await env.run_tool("r1", "echo", msg="world")
         assert result == "test: world"
 
-        reward = await env.compute_reward("r1", "answer", "answer")
+        reward = await env.compute_reward(
+            "r1",
+            [{"role": "user", "content": "q"}, {"role": "assistant", "content": "answer"}],
+            {"ground_truth": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "answer"}]},
+        )
         assert reward == {"score": 1.0}
 
         await env.shutdown()

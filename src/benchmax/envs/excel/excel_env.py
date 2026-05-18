@@ -7,7 +7,8 @@ from benchmax.envs.mcp.parallel_mcp_env import ParallelMcpEnv
 from benchmax.envs.mcp.provisioners.base_provisioner import BaseProvisioner
 from benchmax.envs.mcp.provisioners.local_provisioner import LocalProvisioner
 from benchmax.envs.mcp.provisioners.skypilot_provisioner import SkypilotProvisioner
-from benchmax.envs.types import Completion, StandardizedExample
+from benchmax.envs.example_id import make_example
+from benchmax.envs.types import Example, Messages
 from .data_utils import download_and_extract
 
 # Using library shared with mcp workdir
@@ -34,14 +35,6 @@ SPREADSHEET_SAMPLE = "sample_data_200"
 
 # Set train data to full for proper training
 SPREADSHEET_BENCH_TRAIN_DATA = SPREADSHEET_SAMPLE
-
-
-class ExcelExample(StandardizedExample):
-    id: str
-    answer_position: str
-    output_filename: str
-    ground_truth_filename: str
-    spreadsheet_base_dir: str
 
 
 class ExcelEnv(ParallelMcpEnv):
@@ -89,23 +82,23 @@ class ExcelEnv(ParallelMcpEnv):
     @classmethod
     def dataset_preprocess(
         cls, example: Any, dataset_path: Optional[str | Path] = None, **kwargs
-    ) -> ExcelExample:
-        # convert dataset json into ExcelExample (a subclass of StandardizedExample)
-        example_id: Optional[str] = example.get("id")
+    ) -> Example:
+        row_id: Optional[str] = example.get("id")
         spreadsheet_path: Optional[str] = example.get("spreadsheet_path")
         instruction: Optional[str] = example.get("instruction")
         instruction_type: Optional[str] = example.get("instruction_type")
         answer_position: Optional[str] = example.get("answer_position")
 
         if (
-            not example_id
+            not row_id
             or not spreadsheet_path
             or not instruction
             or not instruction_type
             or not answer_position
         ):
             raise ValueError(
-                "Example must contain 'id', 'spreadsheet_path', 'instruction', 'instruction_type', and 'answer_position' fields"
+                "Example must contain 'id', 'spreadsheet_path', 'instruction', "
+                "'instruction_type', and 'answer_position' fields"
             )
         if not isinstance(spreadsheet_path, str):
             raise TypeError("spreadsheet_path must be a string")
@@ -123,9 +116,9 @@ class ExcelEnv(ParallelMcpEnv):
             )
 
         # File path in the workspace (input spreadsheet will be copied into the workspace at init_rollout)
-        input_filename = f"1_{example_id}_input.xlsx"
-        output_filename = f"1_{example_id}_output.xlsx"
-        ground_truth_filename = f"1_{example_id}_answer.xlsx"
+        input_filename = f"1_{row_id}_input.xlsx"
+        output_filename = f"1_{row_id}_output.xlsx"
+        ground_truth_filename = f"1_{row_id}_answer.xlsx"
 
         input_src_path = spreadsheet_base_dir / input_filename
         input_spreadsheet_content = excel_to_str_repr(input_src_path, True)
@@ -134,22 +127,20 @@ class ExcelEnv(ParallelMcpEnv):
 Instruction: {instruction}
 Spreadsheet Path: {input_filename}
 Spreadsheet Content: {input_spreadsheet_content}
-Instruction Type: {instruction_type} 
+Instruction Type: {instruction_type}
 Answer Position: {answer_position}
 Output Path: {output_filename}"""
 
-        return ExcelExample(
-            prompt=prompt.strip(),
-            # Ground truth unused in ExcelEnv
-            ground_truth=None,
-            init_rollout_args={
-                "input_src_path": str(input_src_path),
+        return make_example(
+            seed_messages=[{"role": "user", "content": prompt.strip()}],
+            task={
+                "dataset_row_id": row_id,
+                "answer_position": answer_position,
+                "output_filename": output_filename,
+                "ground_truth_filename": ground_truth_filename,
+                "spreadsheet_base_dir": str(spreadsheet_base_dir),
             },
-            id=example_id,
-            answer_position=answer_position,
-            output_filename=output_filename,
-            ground_truth_filename=ground_truth_filename,
-            spreadsheet_base_dir=str(spreadsheet_base_dir),
+            init_rollout_args={"input_src_path": str(input_src_path)},
         )
 
     async def init_rollout(self, rollout_id: str, **rollout_args):
@@ -162,12 +153,17 @@ Output Path: {output_filename}"""
         await self.copy_to_workspace(rollout_id, Path(input_src_path))
 
     async def compute_reward(
-        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
+        self,
+        rollout_id: str,
+        messages: Messages,
+        task: Optional[Dict[str, Any]],
+        **kwargs: Any,
     ) -> Dict[str, float]:
-        answer_position: Optional[str] = kwargs.get("answer_position")
-        output_filename: Optional[str] = kwargs.get("output_filename")
-        ground_truth_filename: Optional[str] = kwargs.get("ground_truth_filename")
-        spreadsheet_base_dir: Optional[str] = kwargs.get("spreadsheet_base_dir")
+        t = task or {}
+        answer_position: Optional[str] = t.get("answer_position")
+        output_filename: Optional[str] = t.get("output_filename")
+        ground_truth_filename: Optional[str] = t.get("ground_truth_filename")
+        spreadsheet_base_dir: Optional[str] = t.get("spreadsheet_base_dir")
 
         if (
             not answer_position
@@ -176,20 +172,25 @@ Output Path: {output_filename}"""
             or not spreadsheet_base_dir
         ):
             raise ValueError(
-                "kwargs must contain 'answer_position', 'output_filename', 'ground_truth_filename', and 'spreadsheet_base_dir' fields"
+                "task must contain 'answer_position', 'output_filename', "
+                "'ground_truth_filename', and 'spreadsheet_base_dir' fields"
             )
 
         # Copy ground truth file to workspace for reward computation
         await self.copy_to_workspace(
             rollout_id, Path(spreadsheet_base_dir) / ground_truth_filename
         )
+        # ParallelMcpEnv flattens task entries (minus ground_truth) into the
+        # wire kwargs reaching workdir/reward_fn.py, so we keep them in `task`
+        # rather than spelling them out a second time as kwargs here.
         return await super().compute_reward(
             rollout_id,
-            completion,
-            ground_truth,
-            answer_position=answer_position,
-            output_filename=output_filename,
-            ground_truth_filename=ground_truth_filename,
+            messages,
+            {
+                "answer_position": answer_position,
+                "output_filename": output_filename,
+                "ground_truth_filename": ground_truth_filename,
+            },
         )
 
 

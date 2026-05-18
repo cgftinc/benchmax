@@ -20,7 +20,8 @@ from typing import Any
 import logging
 
 from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.types import StandardizedExample, ToolDefinition
+from benchmax.envs.example_id import make_example
+from benchmax.envs.types import Example, Messages, ToolDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -209,11 +210,13 @@ class SearchEnv(BaseEnv):
         return await tool_function(**tool_args)
 
     @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> StandardizedExample:
-        return StandardizedExample(
-            prompt=example.get("question", ""),
-            ground_truth=example.get("answer", None),
-            init_rollout_args={
+    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
+        question = example.get("question", "")
+        return make_example(
+            seed_messages=[{"role": "user", "content": question}],
+            task={
+                "question": question,
+                "ground_truth": example.get("answer"),
                 "reference_chunks": example.get("reference_chunks", []),
             },
         )
@@ -221,21 +224,22 @@ class SearchEnv(BaseEnv):
     async def compute_reward(
         self,
         rollout_id: str,
-        completion: str | list[dict[str, Any]],
-        ground_truth: Any,
+        messages: Messages,
+        task: dict[str, Any] | None,
         **kwargs: Any,
     ) -> dict[str, float]:
         """Compute 5-component reward."""
         zeros = self._zero_rewards()
         try:
-            text = extract_completion_text(completion)
+            text = extract_completion_text(messages)
             if not text.strip():
                 return zeros
 
+            t = task or {}
             answer = extract_answer_block(text)
-            prompt = str(kwargs.get("prompt") or kwargs.get("question") or "")
-            gt_str = str(ground_truth or "")
-            reference_chunks = kwargs.get("reference_chunks", [])
+            prompt = str(t.get("question") or t.get("prompt") or "")
+            gt_str = str(t.get("ground_truth") or "")
+            reference_chunks = t.get("reference_chunks", [])
             reference_chunk_count = len(reference_chunks)
 
             logger.info(
@@ -264,7 +268,7 @@ class SearchEnv(BaseEnv):
             rewards["citation_precision"] = self._w_citation_precision * precision
 
             # 3. Search efficiency (shaped by search count vs. gold chunk baseline)
-            calls = count_search_calls(completion)
+            calls = count_search_calls(messages)
             rewards["search_efficiency"] = self._score_search_efficiency(
                 calls=calls,
                 correctness_raw=correctness_raw,

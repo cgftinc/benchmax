@@ -92,20 +92,27 @@ Check out [math env's reward_fn.py](/src/benchmax/envs/math/workdir/reward_fn.py
 
 ### 4. Define **`dataset_preprocess`**
 
-If your dataset is not already standardized, implement this method to convert a raw example into a standardized one with:
+If your dataset rows aren't already shaped as `benchmax.envs.types.Example`,
+implement this method to build one. The returned `Example` has:
 
-- `"prompt"`: A fully constructed string prompt.
-- `"ground_truth"`: A known correct output (optional depending on reward).
-- `"init_rollout_args"`: Arguments needed to initialize a rollout.
+- `seed_messages`: The chat history that becomes the model input (one
+  `{role, content}` dict per turn).
+- `task` (optional): Per-example reward-side data — typically
+  `{"ground_truth": ...}` plus anything else `compute_reward` needs.
+- `init_rollout_args` (optional): Args passed to `init_rollout` for
+  per-rollout setup.
+- `id`: Automatically computed canonical hash; use `make_example()` so you
+  don't have to call `canonical_example_id` yourself.
 
 Example for our math task:
 
 ```python
-def dataset_preprocess(self, example: dict) -> StandardizedExample:
-    return StandardizedExample(
-        prompt=example.get("task", ""),
-        ground_truth=example.get("answer", ""),
-        init_rollout_args={}
+from benchmax.envs.example_id import make_example
+
+def dataset_preprocess(self, example: dict) -> Example:
+    return make_example(
+        seed_messages=[{"role": "user", "content": example.get("task", "")}],
+        task={"ground_truth": example.get("answer", "")},
     )
 ```
 
@@ -123,13 +130,11 @@ Example:
 
 ```python
 # Inside dataset_preprocess
-return {
-    "prompt": "...",
-    "ground_truth": "...",
-    "init_rollout_args": {
-        "spreadsheet_path": "/path/to/1_001_input.xlsx"
-    }
-}
+return make_example(
+    seed_messages=[{"role": "user", "content": "..."}],
+    task={"ground_truth": "..."},
+    init_rollout_args={"spreadsheet_path": "/path/to/1_001_input.xlsx"},
+)
 ```
 
 Then in your `init_rollout()` method:
@@ -164,11 +169,10 @@ class MathEnv(ParallelMcpEnv):
         super().__init__(workdir_path=workdir_path, provisioner=provisioner, **kwargs)
 
     @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> StandardizedExample:
-        return StandardizedExample(
-            prompt=example.get("task", ""),
-            ground_truth=example.get("answer", ""),
-            init_rollout_args=None,
+    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
+        return make_example(
+            seed_messages=[{"role": "user", "content": example.get("task", "")}],
+            task={"ground_truth": example.get("answer", "")},
         )
 ```
 

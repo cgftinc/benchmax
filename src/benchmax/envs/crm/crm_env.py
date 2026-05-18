@@ -5,7 +5,8 @@ from benchmax.envs.mcp.parallel_mcp_env import ParallelMcpEnv
 from benchmax.envs.mcp.provisioners.base_provisioner import BaseProvisioner
 from benchmax.envs.mcp.provisioners.local_provisioner import LocalProvisioner
 from benchmax.envs.mcp.provisioners.skypilot_provisioner import SkypilotProvisioner
-from benchmax.envs.types import StandardizedExample
+from benchmax.envs.example_id import make_example
+from benchmax.envs.types import Example
 
 if TYPE_CHECKING:
     import sky
@@ -30,10 +31,6 @@ If nothing matches, output <answer>None</answer>
 """
 
 
-class CRMExample(StandardizedExample):
-    reward_metric: str
-
-
 class CRMEnv(ParallelMcpEnv):
     """Environment for CRM tasks using MCP with Salesforce"""
 
@@ -44,30 +41,29 @@ class CRMEnv(ParallelMcpEnv):
         super().__init__(workdir_path, provisioner, **kwargs)
 
     @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> CRMExample:
-        # convert dataset example into CRMExample (inherit from StandardizedExample)
-        task: Optional[str] = example.get("task")
+    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
+        # Source dataset column named "task" is the *instruction text*, not
+        # the Example.task dict — rename locally to keep the two distinct.
+        instruction: Optional[str] = example.get("task")
         persona: Optional[str] = example.get("persona")
         metadata: Optional[Dict[str, Any]] = example.get("metadata")
         answer: Optional[List[str]] = example.get("answer")
         query: Optional[str] = example.get("query")
         reward_metric: Optional[str] = example.get("reward_metric")
 
-        if not task or not persona or not query or answer is None or not reward_metric:
+        if not instruction or not persona or not query or answer is None or not reward_metric:
             raise ValueError(
                 "Example must contain 'task', 'persona', 'query', 'answer', and 'reward_metric' fields"
             )
 
-        prompt = f"{persona}\n{task}\n{query}"
+        prompt = f"{persona}\n{instruction}\n{query}"
         if metadata and "required" in metadata:
             required_metadata = metadata["required"]
-            prompt = f"{persona}\n{task}\n{required_metadata}\n{query}"
+            prompt = f"{persona}\n{instruction}\n{required_metadata}\n{query}"
 
-        return CRMExample(
-            prompt=prompt,
-            ground_truth=answer,
-            init_rollout_args=None,
-            reward_metric=reward_metric,
+        return make_example(
+            seed_messages=[{"role": "user", "content": prompt}],
+            task={"ground_truth": answer, "reward_metric": reward_metric},
         )
 
 

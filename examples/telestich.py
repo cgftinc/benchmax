@@ -37,7 +37,8 @@ from wordfreq import top_n_list, word_frequency
 
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.reward_helpers import clip01, extract_completion_text
-from benchmax.envs.types import StandardizedExample, ToolDefinition
+from benchmax.envs.example_id import make_example
+from benchmax.envs.types import Example, Messages, ToolDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -1142,11 +1143,14 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         self._max_tool_calls = 2
 
     @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> StandardizedExample:
-        return StandardizedExample(
-            prompt=example.get("prompt", ""),
-            ground_truth=example.get("ground_truth", ""),
-            init_rollout_args={},
+    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
+        prompt_text = example.get("prompt", "")
+        return make_example(
+            seed_messages=[{"role": "user", "content": prompt_text}],
+            task={
+                "prompt": prompt_text,
+                "ground_truth": example.get("ground_truth", ""),
+            },
         )
 
     async def list_tools(self) -> list[ToolDefinition]:
@@ -1190,8 +1194,8 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
     async def compute_reward(
         self,
         rollout_id: str,
-        completion: str | list[dict[str, Any]],
-        ground_truth: Any,
+        messages: Messages,
+        task: dict[str, Any] | None,
         **kwargs: Any,
     ) -> dict[str, float]:
         # All reward logic lives in compute_group_reward (so we can divide by
@@ -1202,8 +1206,8 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
     async def compute_group_reward(
         self,
         rollout_ids: list[str],
-        completions: list[str | list[dict[str, Any]]],
-        ground_truths: list[Any],
+        messages_list: list[Messages],
+        tasks: list[dict[str, Any] | None],
         **kwargs: Any,
     ) -> list[dict[str, float]]:
         # Note: compute_group_reward is NOT auto-captured per-rollout (no
@@ -1213,19 +1217,10 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         n = len(rollout_ids)
 
         # Per-rollout rewards, computed concurrently.
-        per_kwargs = [
-            {
-                k: (v[i] if isinstance(v, list) and len(v) == n else v)
-                for k, v in kwargs.items()
-            }
-            for i in range(n)
-        ]
         per_rewards = await asyncio.gather(
             *[
-                self._compute_single_reward(rid, comp, gt, **pk)
-                for rid, comp, gt, pk in zip(
-                    rollout_ids, completions, ground_truths, per_kwargs
-                )
+                self._compute_single_reward(rid, msgs, t, **kwargs)
+                for rid, msgs, t in zip(rollout_ids, messages_list, tasks)
             ]
         )
 
@@ -1311,35 +1306,36 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
     async def _compute_single_reward(
         self,
         rollout_id: str,
-        completion: str | list[dict[str, Any]],
-        ground_truth: Any,
+        messages: Messages,
+        task: dict[str, Any] | None,
         **kwargs: Any,
     ) -> dict[str, float]:
         zeros = {"quality": 0.0, "conciseness": 0.0, "rhyme": 0.0}
         try:
             # Extract only the final assistant message for answer extraction
-            if isinstance(completion, list):
+            if isinstance(messages, list):
                 final_text = ""
-                for msg in reversed(completion):
+                for msg in reversed(messages):
                     if isinstance(msg, dict) and msg.get("role") == "assistant":
                         content = msg.get("content", "")
                         if isinstance(content, str) and content.strip():
                             final_text = content
                             break
             else:
-                final_text = extract_completion_text(completion)
+                final_text = extract_completion_text(messages)
             if not final_text.strip():
                 return zeros
 
-            prompt = str(kwargs.get("prompt", ""))
+            t = task or {}
+            prompt = str(t.get("prompt", ""))
             poem_text = _extract_answer_block(final_text)
             if poem_text is None:
                 logger.info("[TelestichEnv] No <answer> block found")
                 return zeros
             lines = _parse_poem_lines(poem_text)
 
-            # 1. Get target word from ground_truth (stored at dataset generation time)
-            target_word = str(ground_truth or "").strip()
+            # 1. Get target word from task.ground_truth
+            target_word = str(t.get("ground_truth") or "").strip()
             if not target_word:
                 return zeros
 
