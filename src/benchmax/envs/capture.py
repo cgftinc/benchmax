@@ -35,8 +35,8 @@ from __future__ import annotations
 import logging
 import traceback as _tb
 from collections import OrderedDict
-from collections.abc import Iterator
-from contextlib import AbstractContextManager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import AbstractContextManager, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from threading import Lock
@@ -47,8 +47,11 @@ from time import time as _time
 __all__ = [
     "CapturedRecord",
     "install_capture",
+    "is_installed",
     "rollout_context",
     "current_rollout_id",
+    "maybe_capture_errors",
+    "maybe_capture_group_errors",
     "pop",
     "drop",
     "get_counters",
@@ -60,6 +63,8 @@ __all__ = [
 MAX_PENDING_ROLLOUTS = 4096
 MAX_PENDING_PER_ROLLOUT = 1000
 MAX_MESSAGE_BYTES = 64 * 1024  # 64 KiB per message; truncated past this.
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -141,6 +146,17 @@ class _CaptureHandler(logging.Handler):
         _append(rid, captured)
 
 
+def is_installed() -> bool:
+    """Return True if :func:`install_capture` has been called in this process.
+
+    Used by base_env wrappers to gate auto-error-capture: when no capture
+    handler is installed, nothing drains the per-rollout buffer, so emitting
+    records into it is wasted work. Eval scripts / standalone callers don't
+    call ``install_capture`` and therefore bypass the wrapper's logging path.
+    """
+    return _installed
+
+
 def install_capture(*, level: int = logging.INFO) -> None:
     """Install the capture handler on the root logger. Idempotent.
 
@@ -182,6 +198,56 @@ def current_rollout_id() -> str | None:
     decorators) that want to take different paths depending on whether
     a record will be captured per-rollout or fall through to stderr."""
     return _CURRENT_ROLLOUT_ID.get()
+
+
+@asynccontextmanager
+async def maybe_capture_errors(
+    rollout_id: str, method: str
+) -> AsyncIterator[None]:
+    """Auto-attribute an env method's failures to ``rollout_id``.
+
+    No-op when :func:`is_installed` is False — eval scripts / standalone
+    callers see no extra logging side effects. When capture is installed,
+    enters :func:`rollout_context` around the body and emits a
+    ``logger.exception`` for any exception escaping the body, then re-raises.
+
+    Used by :class:`benchmax.envs.base_env.BaseEnv`'s auto-wrap to attribute
+    failures from ``run_tool`` / ``compute_reward`` / ``init_rollout`` /
+    ``release_rollout`` / ``copy_*`` to the rollout that triggered them.
+    """
+    if not _installed:
+        yield
+        return
+    with rollout_context(rollout_id):
+        try:
+            yield
+        except Exception:
+            logger.exception("%s failed", method)
+            raise
+
+
+@asynccontextmanager
+async def maybe_capture_group_errors(
+    rollout_ids: list[str], method: str
+) -> AsyncIterator[None]:
+    """Group-reward variant of :func:`maybe_capture_errors`.
+
+    A failure in ``compute_group_reward`` affects every rollout in the
+    group, so the exception is logged once per rid into each rollout's
+    env_log buffer (fan-out). The body itself runs OUTSIDE any single
+    rollout context — internal logging during the group call is not
+    auto-captured per-rollout (there is no single rid to bind).
+    """
+    if not _installed:
+        yield
+        return
+    try:
+        yield
+    except Exception:
+        for rid in rollout_ids:
+            with rollout_context(rid):
+                logger.exception("%s failed", method)
+        raise
 
 
 def pop(rollout_ids: list[str]) -> dict[str, list[CapturedRecord]]:

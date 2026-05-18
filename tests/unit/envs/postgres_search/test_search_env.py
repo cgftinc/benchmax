@@ -150,6 +150,13 @@ class TestSearchTool:
         assert calls[0]["top_k"] == 5
 
 
+def _msgs(content):
+    """Wrap a completion string in a messages list (assistant-only)."""
+    if isinstance(content, list):
+        return content
+    return [{"role": "assistant", "content": content}]
+
+
 class TestComputeReward:
     @patch("benchmax.envs.postgres_search.search_env.evaluate_single_rubric", new_callable=AsyncMock)
     def test_all_components_returned(self, mock_eval):
@@ -157,11 +164,13 @@ class TestComputeReward:
         env = _make_env(w_correctness=1.0, w_conciseness=0.5)
         result = asyncio.run(
             env.compute_reward(
-                rollout_id="r1",
-                completion="The answer is <answer>42 [Source: doc_a]</answer>",
-                ground_truth="42",
-                prompt="What?",
-                reference_chunks=[{"content": "...", "metadata": {"file": "doc_a"}}],
+                "r1",
+                _msgs("The answer is <answer>42 [Source: doc_a]</answer>"),
+                {
+                    "question": "What?",
+                    "ground_truth": "42",
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
+                },
             )
         )
         assert "answer_correctness" in result
@@ -176,10 +185,9 @@ class TestComputeReward:
         env = _make_env(w_correctness=2.0)
         result = asyncio.run(
             env.compute_reward(
-                rollout_id="r1",
-                completion="<answer>partial</answer>",
-                ground_truth="full answer",
-                prompt="Q?",
+                "r1",
+                _msgs("<answer>partial</answer>"),
+                {"question": "Q?", "ground_truth": "full answer"},
             )
         )
         assert result["answer_correctness"] == pytest.approx(1.0)  # 0.5 * 2.0
@@ -191,10 +199,9 @@ class TestComputeReward:
         env = _make_env()
         result = asyncio.run(
             env.compute_reward(
-                rollout_id="r1",
-                completion="<answer>wrong</answer>",
-                ground_truth="right",
-                prompt="Q?",
+                "r1",
+                _msgs("<answer>wrong</answer>"),
+                {"question": "Q?", "ground_truth": "right"},
             )
         )
         assert result["conciseness"] == 0.0
@@ -205,14 +212,16 @@ class TestComputeReward:
         env = _make_env(w_citation_recall=1.0, w_citation_precision=1.0)
         result = asyncio.run(
             env.compute_reward(
-                rollout_id="r1",
-                completion="<answer>Found it [Source: statute_a] [Source: statute_b]</answer>",
-                ground_truth="answer",
-                prompt="Q?",
-                reference_chunks=[
-                    {"content": "...", "metadata": {"file": "statute_a"}},
-                    {"content": "...", "metadata": {"file": "statute_b"}},
-                ],
+                "r1",
+                _msgs("<answer>Found it [Source: statute_a] [Source: statute_b]</answer>"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "answer",
+                    "reference_chunks": [
+                        {"content": "...", "metadata": {"file": "statute_a"}},
+                        {"content": "...", "metadata": {"file": "statute_b"}},
+                    ],
+                },
             )
         )
         assert result["citation_recall"] == pytest.approx(1.0)
@@ -224,14 +233,16 @@ class TestComputeReward:
         env = _make_env(w_citation_recall=1.0, w_citation_precision=1.0)
         result = asyncio.run(
             env.compute_reward(
-                rollout_id="r1",
-                completion="<answer>Found it [Source: statute_a]</answer>",
-                ground_truth="answer",
-                prompt="Q?",
-                reference_chunks=[
-                    {"content": "...", "metadata": {"file": "statute_a"}},
-                    {"content": "...", "metadata": {"file": "statute_b"}},
-                ],
+                "r1",
+                _msgs("<answer>Found it [Source: statute_a]</answer>"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "answer",
+                    "reference_chunks": [
+                        {"content": "...", "metadata": {"file": "statute_a"}},
+                        {"content": "...", "metadata": {"file": "statute_b"}},
+                    ],
+                },
             )
         )
         assert result["citation_recall"] == pytest.approx(0.5)
@@ -242,18 +253,20 @@ class TestComputeReward:
         mock_eval.return_value = {"score": 1.0}
         env = _make_env(max_search_calls=3)
         # Baseline is len(reference_chunks) + 2 = 3, so full reward at 2 calls.
-        completion = [
+        messages = [
             {"role": "assistant", "content": "<tool_call>search1</tool_call>"},
             {"role": "assistant", "content": "<tool_call>search2</tool_call>"},
             {"role": "assistant", "content": "<answer>answer</answer>"},
         ]
         result = asyncio.run(
             env.compute_reward(
-                rollout_id="r1",
-                completion=completion,
-                ground_truth="answer",
-                prompt="Q?",
-                reference_chunks=[{"content": "...", "metadata": {"file": "doc_a"}}],
+                "r1",
+                messages,
+                {
+                    "question": "Q?",
+                    "ground_truth": "answer",
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
+                },
             )
         )
         assert result["search_efficiency"] == 0.1
@@ -263,17 +276,16 @@ class TestComputeReward:
         mock_eval.return_value = {"score": 1.0}
         env = _make_env(max_search_calls=2)
         # 3 tool calls — over budget
-        completion = [
+        messages = [
             {"role": "assistant", "content": "<tool_call>s1</tool_call>"},
             {"role": "assistant", "content": "<tool_call>s2</tool_call>"},
             {"role": "assistant", "content": "<tool_call>s3</tool_call> <answer>a</answer>"},
         ]
         result = asyncio.run(
             env.compute_reward(
-                rollout_id="r1",
-                completion=completion,
-                ground_truth="a",
-                prompt="Q?",
+                "r1",
+                messages,
+                {"question": "Q?", "ground_truth": "a"},
             )
         )
         assert result["search_efficiency"] == 0.0
@@ -282,7 +294,7 @@ class TestComputeReward:
     def test_search_efficiency_decays_past_baseline(self, mock_eval):
         mock_eval.return_value = {"score": 1.0}
         env = _make_env(max_search_calls=10)
-        completion = [
+        messages = [
             {"role": "assistant", "content": "<tool_call>search1</tool_call>"},
             {"role": "assistant", "content": "<tool_call>search2</tool_call>"},
             {"role": "assistant", "content": "<tool_call>search3</tool_call>"},
@@ -292,11 +304,13 @@ class TestComputeReward:
         ]
         result = asyncio.run(
             env.compute_reward(
-                rollout_id="r1",
-                completion=completion,
-                ground_truth="answer",
-                prompt="Q?",
-                reference_chunks=[{"content": "...", "metadata": {"file": "doc_a"}}],
+                "r1",
+                messages,
+                {
+                    "question": "Q?",
+                    "ground_truth": "answer",
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
+                },
             )
         )
         assert result["search_efficiency"] == pytest.approx(0.1 * math.exp(-0.4))
@@ -305,16 +319,15 @@ class TestComputeReward:
     def test_search_efficiency_uses_weight_and_correctness_scale(self, mock_eval):
         mock_eval.return_value = {"score": 0.5}
         env = _make_env(max_search_calls=10, w_search_efficiency=0.25)
-        completion = [
+        messages = [
             {"role": "assistant", "content": "<tool_call>search1</tool_call>"},
             {"role": "assistant", "content": "<answer>answer</answer>"},
         ]
         result = asyncio.run(
             env.compute_reward(
-                rollout_id="r1",
-                completion=completion,
-                ground_truth="answer",
-                prompt="Q?",
+                "r1",
+                messages,
+                {"question": "Q?", "ground_truth": "answer"},
             )
         )
         assert result["search_efficiency"] == pytest.approx(0.125)
@@ -323,9 +336,9 @@ class TestComputeReward:
         env = _make_env()
         result = asyncio.run(
             env.compute_reward(
-                rollout_id="r1",
-                completion="   ",
-                ground_truth="42",
+                "r1",
+                _msgs("   "),
+                {"ground_truth": "42"},
             )
         )
         assert all(v == 0.0 for v in result.values())
@@ -364,14 +377,17 @@ class TestCitationScoring:
 class TestDatasetPreprocess:
     def test_extracts_question_answer(self):
         result = SearchEnv.dataset_preprocess({"question": "What is X?", "answer": "Y"})
-        assert result["prompt"] == "What is X?"
-        assert result["ground_truth"] == "Y"
+        # User message carries the question text (system msg is prepended by make_example).
+        user_msgs = [m for m in result["seed_messages"] if m["role"] == "user"]
+        assert user_msgs and user_msgs[0]["content"] == "What is X?"
+        assert result["task"]["question"] == "What is X?"
+        assert result["task"]["ground_truth"] == "Y"
 
     def test_passes_reference_chunks(self):
         result = SearchEnv.dataset_preprocess(
             {"question": "Q", "answer": "A", "reference_chunks": [{"id": "c1"}]}
         )
-        assert result["init_rollout_args"]["reference_chunks"] == [{"id": "c1"}]
+        assert result["task"]["reference_chunks"] == [{"id": "c1"}]
 
 
 class TestListTools:

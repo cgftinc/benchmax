@@ -1,8 +1,10 @@
+import functools
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
+from benchmax.envs import capture
 from benchmax.envs.example_id import canonical_example_id
 from benchmax.envs.types import Example, Messages, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
@@ -11,6 +13,64 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
+
+
+# Per-rollout env methods auto-wrapped by ``BaseEnv.__init_subclass__``.
+# Signature: ``async def m(self, rollout_id, ...)``. Subclass overrides are
+# wrapped in ``capture.maybe_capture_errors(rollout_id, name)`` so any
+# exception lands in the per-rollout buffer when capture is installed.
+_AUTOCAPTURE_SINGLE_RID: tuple[str, ...] = (
+    "run_tool",
+    "compute_reward",
+    "init_rollout",
+    "release_rollout",
+    "copy_to_workspace",
+    "copy_content_to_workspace",
+    "copy_from_workspace",
+)
+
+# Group-reward gets a different wrap: the body spans multiple rids so there
+# is no single ContextVar to bind, but a failure affects every rollout in
+# the group, so the exception fans out one env_log per rid.
+_AUTOCAPTURE_GROUP_RID: tuple[str, ...] = ("compute_group_reward",)
+
+# Sentinel attribute marking an already-wrapped method so inheritance
+# chains don't re-wrap (which would nest capture contexts multiple deep —
+# safe, but pointless).
+_AUTOCAPTURE_SENTINEL = "__benchmax_auto_captured__"
+
+
+def _wrap_single(method: Callable, name: str) -> Callable:
+    @functools.wraps(method)
+    async def wrapper(self, rollout_id, *args, **kwargs):
+        async with capture.maybe_capture_errors(rollout_id, name):
+            return await method(self, rollout_id, *args, **kwargs)
+    setattr(wrapper, _AUTOCAPTURE_SENTINEL, True)
+    return wrapper
+
+
+def _wrap_group(method: Callable, name: str) -> Callable:
+    @functools.wraps(method)
+    async def wrapper(self, rollout_ids, *args, **kwargs):
+        async with capture.maybe_capture_group_errors(rollout_ids, name):
+            return await method(self, rollout_ids, *args, **kwargs)
+    setattr(wrapper, _AUTOCAPTURE_SENTINEL, True)
+    return wrapper
+
+
+def _apply_autocapture(cls: type) -> None:
+    """Wrap any per-rollout env method defined directly on ``cls`` with the
+    capture helper. Re-wrap is a no-op (sentinel attr short-circuits)."""
+    for name in _AUTOCAPTURE_SINGLE_RID:
+        method = cls.__dict__.get(name)
+        if method is None or getattr(method, _AUTOCAPTURE_SENTINEL, False):
+            continue
+        setattr(cls, name, _wrap_single(method, name))
+    for name in _AUTOCAPTURE_GROUP_RID:
+        method = cls.__dict__.get(name)
+        if method is None or getattr(method, _AUTOCAPTURE_SENTINEL, False):
+            continue
+        setattr(cls, name, _wrap_group(method, name))
 
 
 class BaseEnv(ABC):
@@ -42,15 +102,24 @@ class BaseEnv(ABC):
         pass
 
     def __init_subclass__(cls, **kwargs):
-        """Warn when subclasses override auth_headers — easy to misunderstand.
+        """Wrap per-rollout method overrides with capture auto-attribution +
+        warn when subclasses override ``auth_headers`` (easy to misunderstand).
 
-        The trainer monkeypatches ``auth_headers`` at the *instance* level,
-        which always wins over class-level overrides. A subclass that defines
-        its own ``auth_headers`` is dead code on the trainer (instance attr
-        beats class attr in Python attribute lookup). Surface that explicitly
-        so users don't silently configure auth that never takes effect.
+        Auto-wrap: any override of a method in :data:`_AUTOCAPTURE_SINGLE_RID`
+        / :data:`_AUTOCAPTURE_GROUP_RID` gets wrapped in
+        :func:`capture.maybe_capture_errors` / :func:`capture.maybe_capture_group_errors`
+        at class-definition time. Subclass authors keep writing
+        ``async def run_tool(...)`` as before — the wrapper is added
+        transparently, and is a no-op when capture is not installed.
+        Sentinel attr on the wrapped callable prevents double-wrap on
+        inheritance chains.
+
+        Auth: the trainer monkeypatches ``auth_headers`` at the *instance*
+        level, which always wins over class-level overrides. A subclass that
+        defines its own ``auth_headers`` is dead code on the trainer.
         """
         super().__init_subclass__(**kwargs)
+        _apply_autocapture(cls)
         if "auth_headers" in cls.__dict__ and cls.__dict__["auth_headers"] is not BaseEnv.auth_headers:
             logger.warning(
                 "%s overrides auth_headers; the trainer will replace this at "
@@ -125,7 +194,16 @@ class BaseEnv(ABC):
 
         return load_dataset(dataset_name, **kwargs), None
 
-    # Methods all environment subclasses must implement
+    # Methods all environment subclasses must implement.
+    #
+    # Per-rollout methods (run_tool / compute_reward / init_rollout /
+    # release_rollout / copy_* / compute_group_reward) are auto-wrapped by
+    # ``__init_subclass__`` with ``capture.maybe_capture_errors`` so any
+    # exception from a subclass override is attributed to the rollout
+    # automatically when ``capture.install_capture()`` has been called.
+    # Subclass authors don't need to opt in — just write the method
+    # normally and standard ``logging`` from the body lands in the
+    # rollout's env_log.
 
     @abstractmethod
     async def list_tools(self) -> List[ToolDefinition]:
@@ -187,6 +265,13 @@ class BaseEnv(ABC):
         Returns:
             One reward dict per rollout, in input order. An empty dict signals
             that no group reward was computed for that rollout.
+
+        Note: failures fan out one ``logger.exception`` per rid (see
+        :data:`_AUTOCAPTURE_GROUP_RID`), since a group-level error affects
+        every rollout in the group. Internal logging from the body is NOT
+        auto-captured per-rollout (multiple rids in flight, no single
+        ContextVar binding) — surface per-rollout reasoning from
+        :meth:`compute_reward` if you need it in ``rollout_env_logs``.
         """
         return [{} for _ in rollout_ids]
 
@@ -235,3 +320,11 @@ class BaseEnv(ABC):
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support workspace file retrieval operations"
         )
+
+
+# Auto-wrap is applied via ``BaseEnv.__init_subclass__`` to SUBCLASS
+# overrides only — not to ``BaseEnv``'s own defaults. The defaults here
+# are either no-ops (``init_rollout`` / ``release_rollout``) or honest
+# configuration errors (``copy_*`` raising NotImplementedError); wrapping
+# them would only add cost without changing observability. If an env
+# subclass overrides one of these, that override gets the wrap.

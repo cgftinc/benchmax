@@ -432,7 +432,7 @@ class ParallelMcpEnv(BaseEnv):
     async def release_rollout(self, rollout_id: str):
         """
         Releases a rollout from the server pool which triggers the server to reset.
-        Mostly used internally by compute_reward to clean up the rollout.
+        Mostly used internally by ``compute_reward`` to clean up the rollout.
 
         Args:
             rollout_id: ID of the rollout.

@@ -213,7 +213,7 @@ class TestComputeReward:
                 return_value=mock_response,
             ):
                 result = await env.compute_reward(
-                    rollout_id, completion="output", ground_truth="truth"
+                    rollout_id, "output", {"ground_truth": "truth"}
                 )
                 assert isinstance(result, dict)
                 assert result["reward"] == 1.0
@@ -245,7 +245,7 @@ class TestComputeReward:
             ):
                 with pytest.raises(RuntimeError, match="Reward computation failed"):
                     await env.compute_reward(
-                        rollout_id, completion="output", ground_truth="truth"
+                        rollout_id, "output", {"ground_truth": "truth"}
                     )
 
 

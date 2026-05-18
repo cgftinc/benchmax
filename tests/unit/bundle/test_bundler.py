@@ -51,27 +51,6 @@ class MinimalEnv(BaseEnv):
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
         return f"{self.greeting}: {tool_args.get('msg', '')}"
 
-    async def init_rollout(self, rollout_id: str, **rollout_args) -> None:
-        pass
-
-    async def release_rollout(self, rollout_id: str) -> None:
-        pass
-
-    async def copy_to_workspace(
-        self, rollout_id: str, src_path: Path, dst_filename: Optional[str] = None
-    ) -> None:
-        pass
-
-    async def copy_content_to_workspace(
-        self, rollout_id: str, src_content: str | bytes, dst_filename: str
-    ) -> None:
-        pass
-
-    async def copy_from_workspace(
-        self, rollout_id: str, src_filename: str, dst_path: Path
-    ) -> None:
-        pass
-
     async def compute_reward(
         self,
         rollout_id: str,

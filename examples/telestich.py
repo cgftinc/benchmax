@@ -1199,7 +1199,7 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         task: dict[str, Any] | None,
         **kwargs: Any,
     ) -> dict[str, float]:
-        # All reward logic lives in compute_group_reward (so we can divide by
+        # All reward logic lives in _compute_group_reward (so we can divide by
         # the cluster-duplication divisor). Return empty so the trainer doesn't
         # double-write quality/conciseness keys.
         return {}

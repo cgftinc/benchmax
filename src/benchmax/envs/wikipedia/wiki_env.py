@@ -242,30 +242,22 @@ class WikipediaEnv(BaseEnv):
         _, tool_function = self._tools[tool_name]
         return await tool_function(**tool_args)
 
-    async def init_rollout(self, rollout_id: str, **rollout_args) -> None:
-        """Initialize rollout (no-op for stateless environment)."""
-        pass
-
-    async def release_rollout(self, rollout_id: str) -> None:
-        """Release rollout (no-op for stateless environment)."""
-        pass
-
     async def copy_to_workspace(
         self, rollout_id: str, src_path: Path, dst_filename: Optional[str] = None
     ) -> None:
-        """Not implemented for this environment."""
+        """Silent no-op — overrides base default (which raises NotImplementedError)
+        so trainer code that conditionally copies files doesn't blow up on this
+        stateless env."""
         pass
 
     async def copy_content_to_workspace(
         self, rollout_id: str, src_content: str | bytes, dst_filename: str
     ) -> None:
-        """Not implemented for this environment."""
         pass
 
     async def copy_from_workspace(
         self, rollout_id: str, src_filename: str, dst_path: Path
     ) -> None:
-        """Not implemented for this environment."""
         pass
 
     async def compute_reward(
