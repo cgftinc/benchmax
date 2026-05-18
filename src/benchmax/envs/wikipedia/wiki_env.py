@@ -220,6 +220,7 @@ class WikipediaEnv(BaseEnv):
         return make_example(
             seed_messages=[{"role": "user", "content": example.get("Question", "")}],
             task={"ground_truth": example.get("Answer")},
+            system_prompt=cls.system_prompt,
         )
 
     async def list_tools(self) -> List[ToolDefinition]:

@@ -141,6 +141,7 @@ Output Path: {output_filename}"""
                 "spreadsheet_base_dir": str(spreadsheet_base_dir),
             },
             init_rollout_args={"input_src_path": str(input_src_path)},
+            system_prompt=cls.system_prompt,
         )
 
     async def init_rollout(self, rollout_id: str, **rollout_args):

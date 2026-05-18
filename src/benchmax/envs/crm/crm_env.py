@@ -64,6 +64,7 @@ class CRMEnv(ParallelMcpEnv):
         return make_example(
             seed_messages=[{"role": "user", "content": prompt}],
             task={"ground_truth": answer, "reward_metric": reward_metric},
+            system_prompt=cls.system_prompt,
         )
 
 

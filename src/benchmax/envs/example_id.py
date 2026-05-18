@@ -103,8 +103,25 @@ def make_example(
     seed_messages: Messages,
     task: dict[str, Any] | None = None,
     init_rollout_args: dict[str, Any] | None = None,
+    system_prompt: str | None = None,
 ) -> Example:
     """Build an :class:`Example` with the canonical id pre-computed.
+
+    If ``system_prompt`` is non-empty, it is prepended to ``seed_messages``
+    as ``{"role": "system", "content": system_prompt}`` so the env's system
+    prompt is part of the example's identity. Two envs with the same user
+    prompt but different system prompts (e.g. "be concise" vs "be verbose")
+    will therefore hash to distinct example_ids — same dataset row, but the
+    model is being graded on materially different inputs, so they shouldn't
+    collapse into one group.
+
+    Tool definitions (rendered via ``render_tools_prompt``) are NOT included
+    in the hash — they're a dynamic property of the env instance that
+    requires an async ``list_tools()`` call, which doesn't fit
+    ``dataset_preprocess``'s classmethod contract. The trainer renders
+    tools into the first system message at LLM-call time without mutating
+    ``seed_messages``. Envs that need tool-set sensitivity in their group
+    identity should bake a tool-signature string into ``task``.
 
     Convenience for env authors overriding ``dataset_preprocess``::
 
@@ -113,8 +130,14 @@ def make_example(
             return make_example(
                 seed_messages=[{"role": "user", "content": row["question"]}],
                 task={"answer": row["answer"]},
+                system_prompt=cls.system_prompt,
             )
     """
+    if system_prompt:
+        seed_messages = [
+            {"role": "system", "content": system_prompt},
+            *seed_messages,
+        ]
     return Example(
         id=canonical_example_id(seed_messages, task),
         seed_messages=seed_messages,

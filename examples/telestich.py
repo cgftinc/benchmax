@@ -1151,6 +1151,7 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
                 "prompt": prompt_text,
                 "ground_truth": example.get("ground_truth", ""),
             },
+            system_prompt=cls.system_prompt,
         )
 
     async def list_tools(self) -> list[ToolDefinition]:

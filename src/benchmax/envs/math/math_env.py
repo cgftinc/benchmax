@@ -29,6 +29,7 @@ class MathEnv(ParallelMcpEnv):
         return make_example(
             seed_messages=[{"role": "user", "content": example.get("task", "")}],
             task={"ground_truth": example.get("answer", "")},
+            system_prompt=cls.system_prompt,
         )
 
 

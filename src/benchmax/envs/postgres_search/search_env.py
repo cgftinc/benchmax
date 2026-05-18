@@ -219,6 +219,7 @@ class SearchEnv(BaseEnv):
                 "ground_truth": example.get("answer"),
                 "reference_chunks": example.get("reference_chunks", []),
             },
+            system_prompt=cls.system_prompt,
         )
 
     async def compute_reward(
