@@ -15,6 +15,12 @@ class BundleMetadata:
     constructor_args: Optional[Dict[str, Any]] = None
     constructor_args_pickled: bool = False
     format_version: int = FORMAT_VERSION
+    # Plaintext source for the env class's module + every register_pickle_by_value
+    # module. Captured at bundle time via inspect.getsource so consumers (UIs,
+    # JS frontends, reviewers) can display the env's code without unpickling —
+    # which would otherwise need a Python runtime + matching deps + arbitrary
+    # code execution.
+    sources: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -24,6 +30,7 @@ class BundleMetadata:
             "constructor_args": self.constructor_args,
             "constructor_args_pickled": self.constructor_args_pickled,
             "format_version": self.format_version,
+            "sources": self.sources,
         }
 
     def to_json_bytes(self) -> bytes:
@@ -62,6 +69,7 @@ class BundleMetadata:
             constructor_args=data.get("constructor_args"),
             constructor_args_pickled=bool(data.get("constructor_args_pickled", False)),
             format_version=int(data.get("format_version", FORMAT_VERSION)),
+            sources=data.get("sources"),
         )
 
     @classmethod

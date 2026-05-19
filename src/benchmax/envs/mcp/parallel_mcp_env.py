@@ -19,8 +19,7 @@ except ModuleNotFoundError as e:
     ) from e
 
 from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.tracking import to_tracking_payload
-from benchmax.envs.types import Completion, ToolDefinition
+from benchmax.envs.types import Messages, ToolDefinition
 from .server_pool import ServerPool
 from .provisioners.base_provisioner import BaseProvisioner
 from .utils import (
@@ -344,10 +343,21 @@ class ParallelMcpEnv(BaseEnv):
             return str(e)
 
     async def compute_reward(
-        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
+        self,
+        rollout_id: str,
+        messages: Messages,
+        task: Optional[Dict[str, Any]],
+        **kwargs: Any,
     ) -> Dict[str, float]:
         """
         Compute reward and cleanup rollout.
+
+        Bridges the new Python-side ``(messages, task)`` shape to the MCP
+        proxy server's wire format, which still uses the legacy
+        ``(completion, ground_truth, **extras)`` payload. The
+        ``proxy_server._compute_reward`` handler unpacks ``extras`` as kwargs
+        for each workdir ``reward_fn``; ``task``'s other entries flatten into
+        that bag so reward_fn signatures don't have to change.
 
         Raises:
             RuntimeError: If rollout is not initialized or computation fails.
@@ -370,12 +380,16 @@ class ParallelMcpEnv(BaseEnv):
         headers = get_auth_headers(self._api_secret, rollout_id)
         headers["Content-Type"] = "application/json"
 
+        task_dict = task or {}
+        ground_truth = task_dict.get("ground_truth", "")
+        wire_extras = {k: v for k, v in task_dict.items() if k != "ground_truth"}
+
         compute_reward_url = f"http://{server_info.address}/compute_reward"
         payload = {
-            "completion": completion or "",
-            "ground_truth": ground_truth or "",
-            **to_tracking_payload(self.get_tracking_config()),
+            "completion": messages or "",
+            "ground_truth": ground_truth,
             "rollout_id": rollout_id,
+            **wire_extras,
             **kwargs,
         }
 
@@ -418,7 +432,7 @@ class ParallelMcpEnv(BaseEnv):
     async def release_rollout(self, rollout_id: str):
         """
         Releases a rollout from the server pool which triggers the server to reset.
-        Mostly used internally by compute_reward to clean up the rollout.
+        Mostly used internally by ``compute_reward`` to clean up the rollout.
 
         Args:
             rollout_id: ID of the rollout.

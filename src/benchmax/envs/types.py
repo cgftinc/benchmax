@@ -1,13 +1,33 @@
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, NotRequired, Optional, TypedDict
 
-Completion = List[Dict[str, Any]]
+Messages = List[Dict[str, Any]]
 
 
-class StandardizedExample(TypedDict):
-    prompt: str | List[Dict[str, Any]]
-    ground_truth: Any
-    init_rollout_args: Optional[Dict[str, Any]]
+class Example(TypedDict):
+    """A dataset example after preprocessing.
+
+    ``id`` is a SHA-256 hash over ``(seed_messages, task)`` computed by
+    :func:`benchmax.envs.example_id.canonical_example_id`. Equal seeds + tasks
+    across calls (and across Python/TypeScript) produce equal ids.
+
+    ``seed_messages`` is the full prompt as a chat-message list. Includes the
+    system message if the env has one (rendered with tool definitions when
+    tools are present).
+
+    ``task`` carries per-example reward-side data: ground truth, scoring config,
+    or anything else the env's ``compute_reward`` needs to grade the rollout.
+    Must be JSON-serializable. May be ``None`` if the env grades without
+    per-example data.
+
+    ``init_rollout_args`` carries trainer-runtime context passed to
+    ``init_rollout`` (e.g. workspace_path). Not part of the example identity.
+    """
+
+    id: str
+    seed_messages: Messages
+    task: NotRequired[Optional[Dict[str, Any]]]
+    init_rollout_args: NotRequired[Optional[Dict[str, Any]]]
 
 
 @dataclass

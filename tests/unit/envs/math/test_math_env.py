@@ -45,16 +45,21 @@ def mock_workspace(tmp_path: Path) -> Path:
 class TestDatasetPreprocess:
     """Test dataset preprocessing logic."""
 
+    def _user_msg(self, ex):
+        for m in ex["seed_messages"]:
+            if m["role"] == "user":
+                return m["content"]
+        return ""
+
     def test_valid_example(self, math_env: MathEnv) -> None:
         """Test preprocessing with valid task and answer."""
-        # Create a mock MathEnv that doesn't initialize the parent
         example: Dict[str, str] = {"task": "Calculate 2+2", "answer": "4"}
 
         result = math_env.dataset_preprocess(example)
 
-        assert result["prompt"] == "Calculate 2+2"
-        assert result["ground_truth"] == "4"
-        assert result["init_rollout_args"] == None
+        assert self._user_msg(result) == "Calculate 2+2"
+        assert result["task"]["ground_truth"] == "4"
+        assert result.get("init_rollout_args") is None
 
     def test_missing_answer(self, math_env: MathEnv) -> None:
         """Test preprocessing when answer is missing."""
@@ -62,9 +67,9 @@ class TestDatasetPreprocess:
 
         result = math_env.dataset_preprocess(example)
 
-        assert result["prompt"] == "1+1"
-        assert result["ground_truth"] == ""
-        assert result["init_rollout_args"] == None
+        assert self._user_msg(result) == "1+1"
+        assert result["task"]["ground_truth"] == ""
+        assert result.get("init_rollout_args") is None
 
     def test_missing_task(self, math_env: MathEnv) -> None:
         """Test preprocessing when task is missing."""
@@ -72,9 +77,9 @@ class TestDatasetPreprocess:
 
         result = math_env.dataset_preprocess(example)
 
-        assert result["prompt"] == ""
-        assert result["ground_truth"] == "5"
-        assert result["init_rollout_args"] == None
+        assert self._user_msg(result) == ""
+        assert result["task"]["ground_truth"] == "5"
+        assert result.get("init_rollout_args") is None
 
     def test_extra_fields_ignored(self, math_env: MathEnv) -> None:
         """Test that extra fields in example are ignored."""
@@ -87,9 +92,9 @@ class TestDatasetPreprocess:
 
         result = math_env.dataset_preprocess(example)
 
-        assert result["prompt"] == "3*3"
-        assert result["ground_truth"] == "9"
-        assert result["init_rollout_args"] == None
+        assert self._user_msg(result) == "3*3"
+        assert result["task"]["ground_truth"] == "9"
+        assert result.get("init_rollout_args") is None
 
 
 class TestRewardComputation:
@@ -100,7 +105,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test exact numeric match in answer tags."""
-        completion = "<answer>4</answer>"
+        completion = [{"role": "assistant", "content": "<answer>4</answer>"}]
         ground_truth = "4"
 
         reward = await text_match_reward(
@@ -117,7 +122,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test that answer tags are case insensitive."""
-        completion = "<ANSWER>4</ANSWER>"
+        completion = [{"role": "assistant", "content": "<ANSWER>4</ANSWER>"}]
         ground_truth = "4"
 
         reward = await text_match_reward(
@@ -134,7 +139,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test float string comparison."""
-        completion = "<answer>4.0</answer>"
+        completion = [{"role": "assistant", "content": "<answer>4.0</answer>"}]
         ground_truth = "4"
 
         reward = await text_match_reward(
@@ -151,7 +156,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test float with multiple decimal places."""
-        completion = "<answer>3.14159</answer>"
+        completion = [{"role": "assistant", "content": "<answer>3.14159</answer>"}]
         ground_truth = "3.14159"
 
         reward = await text_match_reward(
@@ -168,7 +173,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test incorrect answer returns 0."""
-        completion = "<answer>5</answer>"
+        completion = [{"role": "assistant", "content": "<answer>5</answer>"}]
         ground_truth = "4"
 
         reward = await text_match_reward(
@@ -185,7 +190,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test missing answer tags returns 0."""
-        completion = "The answer is 4"
+        completion = [{"role": "assistant", "content": "The answer is 4"}]
         ground_truth = "4"
 
         reward = await text_match_reward(
@@ -202,7 +207,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test empty answer tags returns 0."""
-        completion = "<answer></answer>"
+        completion = [{"role": "assistant", "content": "<answer></answer>"}]
         ground_truth = "4"
 
         reward = await text_match_reward(
@@ -220,7 +225,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test whitespace is normalized in answer tags."""
-        completion = "<answer>  4  </answer>"
+        completion = [{"role": "assistant", "content": "<answer>  4  </answer>"}]
         ground_truth = "4"
 
         reward = await text_match_reward(
@@ -237,7 +242,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test answer with surrounding text."""
-        completion = "Let me think. <answer>35</answer> That's correct."
+        completion = [{"role": "assistant", "content": "Let me think. <answer>35</answer> That's correct."}]
         ground_truth = "35"
 
         reward = await text_match_reward(
@@ -254,7 +259,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test that only first answer tag is used."""
-        completion = "<answer>4</answer> No wait <answer>5</answer>"
+        completion = [{"role": "assistant", "content": "<answer>4</answer> No wait <answer>5</answer>"}]
         ground_truth = "4"
 
         reward = await text_match_reward(
@@ -271,7 +276,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test negative numbers are handled correctly."""
-        completion = "<answer>-10</answer>"
+        completion = [{"role": "assistant", "content": "<answer>-10</answer>"}]
         ground_truth = "-10"
 
         reward = await text_match_reward(
@@ -288,7 +293,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test decimal numbers are handled correctly."""
-        completion = "<answer>0.5</answer>"
+        completion = [{"role": "assistant", "content": "<answer>0.5</answer>"}]
         ground_truth = "0.5"
 
         reward = await text_match_reward(
@@ -305,7 +310,7 @@ class TestRewardComputation:
         self, mock_mcp_client: Mock, mock_workspace: Path
     ) -> None:
         """Test non-numeric answer returns 0 (cannot convert to float)."""
-        completion = "<answer>not a number</answer>"
+        completion = [{"role": "assistant", "content": "<answer>not a number</answer>"}]
         ground_truth = "4"
 
         reward = await text_match_reward(

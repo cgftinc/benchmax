@@ -1,5 +1,9 @@
+import dataclasses
+import inspect
+import json
 import logging
 import sys
+import threading
 import types
 from typing import Any, Dict, List, Optional, Type
 
@@ -13,6 +17,15 @@ from benchmax.bundle.payload import BundleMetadata, BundledEnv
 from benchmax.bundle.validator import validate_structure
 
 logger = logging.getLogger(__name__)
+
+# cloudpickle.register_pickle_by_value mutates process-global state. Two
+# concurrent bundle_env() calls registering the same module would race —
+# T1's unregister would silently un-register T2's still-needed registration,
+# and T2's pickled output would fall back to by-reference (wrong behavior).
+# This lock serializes the register/dump/unregister window only — the
+# underlying cloudpickle.dumps releases the GIL so it's still parallel-friendly
+# for the bytes-shuffling phase.
+_BUNDLE_LOCK = threading.Lock()
 
 
 def bundle_env(
@@ -54,44 +67,45 @@ def bundle_env(
         for w in warnings:
             logger.warning(f"[bundling] {w}")
 
-    # --- Register local modules for pickle-by-value ---
-    registered_modules: List[types.ModuleType] = []
-    if local_modules:
-        for mod in local_modules:
-            if not isinstance(mod, types.ModuleType):
-                raise BundlingError(
-                    f"local_modules must contain module objects, got "
-                    f"{type(mod)}: {mod}"
-                )
-            cloudpickle.register_pickle_by_value(mod)
-            registered_modules.append(mod)
-            logger.info(
-                f"[bundling] Registered module for pickle-by-value: "
-                f"{mod.__name__}"
-            )
-
-    # --- Serialize the class AND constructor_args while modules are registered ---
+    # --- Register local modules + serialize, all under a single lock ---
+    # See module-level _BUNDLE_LOCK comment for rationale.
     pickled_constructor_args: bytes | None = None
-    try:
-        pickled_class = cloudpickle.dumps(env_class)
-        # Pickle constructor_args now (while local_modules are registered)
-        # so non-JSON-serializable objects get pickled by value.
-        if constructor_args is not None:
-            try:
-                import json
-                json.dumps(constructor_args)
-            except TypeError:
-                pickled_constructor_args = cloudpickle.dumps(constructor_args)
-    except Exception as e:
-        raise BundlingError(
-            f"Failed to serialize {env_class.__name__} with cloudpickle: {e}"
-        ) from e
-    finally:
-        for mod in registered_modules:
-            try:
-                cloudpickle.unregister_pickle_by_value(mod)
-            except Exception:
-                pass
+    with _BUNDLE_LOCK:
+        registered_modules: List[types.ModuleType] = []
+        if local_modules:
+            for mod in local_modules:
+                if not isinstance(mod, types.ModuleType):
+                    raise BundlingError(
+                        f"local_modules must contain module objects, got "
+                        f"{type(mod)}: {mod}"
+                    )
+                cloudpickle.register_pickle_by_value(mod)
+                registered_modules.append(mod)
+                logger.info(
+                    f"[bundling] Registered module for pickle-by-value: "
+                    f"{mod.__name__}"
+                )
+
+        try:
+            pickled_class = cloudpickle.dumps(env_class)
+            # Pickle constructor_args now (while local_modules are registered)
+            # so non-JSON-serializable objects get pickled by value.
+            if constructor_args is not None:
+                try:
+                    json.dumps(constructor_args)
+                except TypeError:
+                    pickled_constructor_args = cloudpickle.dumps(constructor_args)
+            sources = _collect_sources(env_class)
+        except Exception as e:
+            raise BundlingError(
+                f"Failed to serialize {env_class.__name__} with cloudpickle: {e}"
+            ) from e
+        finally:
+            for mod in registered_modules:
+                try:
+                    cloudpickle.unregister_pickle_by_value(mod)
+                except Exception:
+                    pass
 
     # --- Version info ---
     python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -109,6 +123,7 @@ def bundle_env(
         benchmax_version=benchmax_version,
         constructor_args=constructor_args,
         constructor_args_pickled=pickled_constructor_args is not None,
+        sources=sources or None,
     )
     payload = BundledEnv(
         pickled_class=pickled_class,
@@ -123,6 +138,26 @@ def bundle_env(
     )
 
     return payload
+
+
+def _collect_sources(env_class: Type[BaseEnv]) -> Dict[str, str]:
+    """Capture just the env class definition as Python source.
+
+    Returns ``{class_name: source_text}``. We deliberately do NOT capture the
+    enclosing module, ``local_modules``, or transitive imports — for the "show
+    the user the env code" use case the class block is what matters; helpers
+    and dataset-generation code in the same file are noise.
+
+    A consequence: module-level helpers the class calls (``_extract_answer_block``,
+    etc.) won't appear here. Readers see *what* the class does, not *how* its
+    private helpers work.
+    """
+    out: Dict[str, str] = {}
+    try:
+        out[env_class.__name__] = inspect.getsource(env_class)
+    except (OSError, TypeError) as e:
+        logger.debug("[bundling] no source for class %s: %s", env_class.__name__, e)
+    return out
 
 
 def ensure_safe_python_version() -> None:
@@ -169,13 +204,7 @@ def read_bundle_files(pickle_path: Path, metadata_path: Path) -> BundledEnv:
         args_pickle_path = pickle_path.with_suffix(".args.pkl")
         if args_pickle_path.exists():
             constructor_args = cloudpickle.loads(args_pickle_path.read_bytes())
-            metadata = BundleMetadata(
-                pip_dependencies=metadata.pip_dependencies,
-                python_version=metadata.python_version,
-                benchmax_version=metadata.benchmax_version,
-                constructor_args=constructor_args,
-                format_version=metadata.format_version,
-            )
+            metadata = dataclasses.replace(metadata, constructor_args=constructor_args)
             logger.info("[bundling] Loaded pickled constructor_args from %s", args_pickle_path)
         else:
             logger.warning(

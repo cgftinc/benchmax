@@ -86,14 +86,15 @@ class TestDatasetPreprocess:
         ):
             result = ExcelEnv.dataset_preprocess(example, dataset_path=mock_dataset)
 
-        # Result is a mapping-like StandardizedExample (TypedDict / dataclass)
+        # Result is an Example TypedDict: id, seed_messages, task, init_rollout_args.
         assert result is not None
-        assert "Fill cell A1 with 10" in result["prompt"]
-        assert "1_42_input.xlsx" in result["prompt"]
+        prompt_blob = "\n".join(m["content"] for m in result["seed_messages"])
+        assert "Fill cell A1 with 10" in prompt_blob
+        assert "1_42_input.xlsx" in prompt_blob
         assert result["init_rollout_args"] is not None
         assert result["init_rollout_args"]["input_src_path"].endswith("1_42_input.xlsx")
-        assert result["answer_position"] == "A1"
-        assert result["output_filename"] == "1_42_output.xlsx"
+        assert result["task"]["answer_position"] == "A1"
+        assert result["task"]["output_filename"] == "1_42_output.xlsx"
 
     def test_missing_fields_raise(self, excel_env: ExcelEnv) -> None:
         """Missing required fields should raise ValueError."""

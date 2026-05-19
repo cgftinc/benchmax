@@ -46,8 +46,8 @@ class TestLocalProvisionerProvision:
 
         assert len(addresses) == 2
         mock_setup.assert_called_once_with(example_workdir)
-        # First call is setup_cmd (wait=True), next calls are servers
-        assert mock_spawn.call_count == 3
+        # setup_cmd (wait=True) + port-cleanup (wait=True) + 2 servers (wait=False)
+        assert mock_spawn.call_count == 4
         assert addresses == ["localhost:8080", "localhost:8081"]
 
     @pytest.mark.asyncio
@@ -73,24 +73,31 @@ class TestLocalProvisionerTeardown:
 
     @pytest.mark.asyncio
     @patch("benchmax.envs.mcp.provisioners.local_provisioner.cleanup_dir")
+    @patch("benchmax.envs.mcp.provisioners.local_provisioner.os.killpg")
+    @patch("benchmax.envs.mcp.provisioners.local_provisioner.os.getpgid", return_value=4321)
     async def test_teardown_kills_processes_and_cleans_up(
-        self, mock_cleanup: Mock, example_workdir: Path, test_sync_dir: Path
+        self,
+        _mock_getpgid: Mock,
+        mock_killpg: Mock,
+        mock_cleanup: Mock,
+        example_workdir: Path,
+        test_sync_dir: Path,
     ) -> None:
-        """Active processes are killed and sync dir cleaned up."""
+        """Active processes are signalled (SIGTERM then SIGKILL) and sync dir cleaned up."""
         provisioner = LocalProvisioner(workdir_path=example_workdir)
 
         proc = MagicMock()
         proc.poll.return_value = None
-        proc.kill = MagicMock()
-        proc.wait = MagicMock()
+        proc.pid = 4321
         provisioner._processes = [proc]
         provisioner._sync_dir = test_sync_dir
         provisioner._is_provisioned = True
 
         await provisioner.teardown()
-        proc.kill.assert_called_once()
-        proc.wait.assert_called_once()
+        # SIGTERM then SIGKILL via process group.
+        assert mock_killpg.call_count >= 1
         mock_cleanup.assert_called_once_with(test_sync_dir)
+        assert provisioner._processes == []
 
     @pytest.mark.asyncio
     @patch("benchmax.envs.mcp.provisioners.local_provisioner.cleanup_dir")

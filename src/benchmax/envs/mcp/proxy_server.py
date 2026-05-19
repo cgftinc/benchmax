@@ -24,21 +24,31 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse, FileResponse, JSONResponse, Response
 from starlette.datastructures import UploadFile
 
-try:
-    from benchmax.envs.tracking import log_env, pop_tracking_config, tracking_context
-except Exception:
-    # In provisioned MCP servers, this helper is copied as env_tracking.py.
-    from env_tracking import log_env, pop_tracking_config, tracking_context  # type: ignore
+import logging
 
 from reward_fn import reward_functions as imported_reward_functions  # type: ignore
+
+logger = logging.getLogger(__name__)
+legacy_logger = logging.getLogger("benchmax.envs.legacy")
 
 RewardFunction = Callable[..., Union[float, Awaitable[float]]]
 DEFAULT_API_SECRET = "dev_default_api_secret_please_change_me_32chars!"
 
 
+def _legacy_log_env(rollout_id: str, message: str, *_, **__) -> None:
+    """Compat for reward_fn modules still calling ``log_env(rid, msg)``.
+
+    NB: MCP runs cross-process from env-actor, so logs emitted here are NOT
+    captured by the per-rollout context handler — they only show up in the
+    MCP subprocess's own log stream. Cross-process MCP log capture is a
+    follow-up (see PLAN.md)."""
+    legacy_logger.info("[rid=%s] %s", rollout_id, message)
+
+
 def _with_log_env(func: RewardFunction) -> RewardFunction:
-    """Decorator that binds the shared log_env callable into reward_fn globals."""
-    func.__globals__["log_env"] = log_env
+    """Bind the legacy log_env callable into reward_fn globals so existing
+    custom reward functions keep working."""
+    func.__globals__["log_env"] = _legacy_log_env
     return func
 
 
@@ -350,7 +360,10 @@ class ProxyServer:
         payload_kwargs: Dict[str, Any] = {
             k: v for k, v in data.items() if k not in ("completion", "ground_truth")
         }
-        tracking_config = pop_tracking_config(payload_kwargs)
+        # Legacy tracking-config keys (if any sneak through from older callers)
+        # — silently drop. Cross-process MCP log capture is a follow-up.
+        payload_kwargs.pop("__benchmax_telemetry_run_id", None)
+        payload_kwargs.pop("__benchmax_telemetry_api_key", None)
 
         kwargs: Dict[str, Any] = {
             "completion": completion,
@@ -378,9 +391,8 @@ class ProxyServer:
         rf: Dict[str, RewardFunction] = reward_functions or {}
 
         try:
-            with tracking_context(tracking_config):
-                tasks = [_call_reward(name, func) for name, func in rf.items()]
-                results_list: List[Tuple[str, float]] = await asyncio.gather(*tasks)
+            tasks = [_call_reward(name, func) for name, func in rf.items()]
+            results_list: List[Tuple[str, float]] = await asyncio.gather(*tasks)
             results: Dict[str, float] = dict(results_list)
             return JSONResponse(results)
         except Exception as e:

@@ -67,12 +67,15 @@ class SimpleMathEnv(BaseEnv):
         self.tools: Dict[str, Tuple[ToolDefinition, Callable]] = {
             "evaluate": (eval_tool, evaluate_expression)
         }
-    def dataset_preprocess(self, example: dict) -> StandardizedExample:
-        return {
-            "prompt": f"Question: {example['question']}\n\nWrite your answer below.",
-            "ground_truth": example.get("answer", ""),
-            "init_rollout_args": {}
-    }
+    def dataset_preprocess(self, example: dict) -> Example:
+        from benchmax.envs.example_id import make_example
+        return make_example(
+            seed_messages=[{
+                "role": "user",
+                "content": f"Question: {example['question']}\n\nWrite your answer below.",
+            }],
+            task={"ground_truth": example.get("answer", "")},
+        )
 
     def list_tools(self) -> List[ToolDefinition]:
         return [tool_def for tool_def, _ in self.tools.values()]

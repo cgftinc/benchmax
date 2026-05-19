@@ -1,16 +1,19 @@
 [project]
 name = "benchmax"
-version = "0.1.2.dev23"
+version = "0.1.2.dev25"
 description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
 readme = "README.md"
-authors = [{ name = "cgft.io" }]
-requires-python = ">=3.12"
+authors = [{ name = "castie@castform.com" }]
+requires-python = "==3.12.*"
 dependencies = [
     "aiohttp>=3.13.1",
     "asyncio>=4.0.0",
     "cloudpickle>=3.0.0",
     "datasets>=4.0.0",
-    "expt-logger>=0.1.0.dev22",
+    "httpx>=0.27.0",
+    "job-telemetry>=0.1.0",
+    "openai>=2.15.0",
+    "pydantic>=2.0.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -34,6 +37,23 @@ skypilot = [
     "pip>=25.3",
     "msrestazure>=0.6.4.post1",
 ]
+excel = ["openpyxl>=3.1.5"]
+excel-mac-windows = ["openpyxl>=3.1.5", "xlwings>=0.33.16"]
+crm = ["python-dateutil>=2.9.0.post0"]
+rag = [
+    "keybert>=0.8",
+    "langchain-text-splitters>=0.3.0",
+    "nest-asyncio>=1.5.0",
+    "ragas>=0.4.3",
+    "ruamel-yaml>=0.19.1",
+    "scikit-learn>=1.8.0",
+    "sentence-transformers>=5.2.3",
+    "tqdm>=4.66.0",
+]
+traces = []
+chroma = ["chromadb>=1.0.0"]
+pinecone = ["pinecone>=5.0.0"]
+turbopuffer = ["turbopuffer>=1.16.2"]
 
 [dependency-groups]
 dev = [
@@ -51,23 +71,9 @@ skypilot = [
     "pip>=25.3",                      # Added as needed for skypilot launch
     "msrestazure>=0.6.4.post1",
 ]
-skyrl = [
-    "grpcio>=1.60.0",
-    "hydra-core>=1.3.2",
-    "omegaconf>=2.3.0",
-    "ray>=2.48.0",
-    "skyrl-gym>=0.1.1",
-    "skyrl-train[vllm]>=0.2.0",
-]
 excel = ["openpyxl>=3.1.5"]
 excel-mac-windows = ["openpyxl>=3.1.5", "xlwings>=0.33.16"]
-crm = ["python-dateutil>=2.9.0.post0", "simple-salesforce>=1.12.9"]
+crm = ["python-dateutil>=2.9.0.post0"]
 
-[tool.uv]
-conflicts = [[{ group = "skypilot" }, { group = "skyrl" }]]
-
-# [tool.uv.extra-build-dependencies]
-# flash-attn = [{ requirement = "torch", match-runtime = true }]
-
-# [tool.uv.extra-build-variables]
-# flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
+[tool.uv.sources]
+job-telemetry = { path = "../job-telemetry", editable = true }

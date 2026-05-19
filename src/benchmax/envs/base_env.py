@@ -1,75 +1,78 @@
+import logging
 from abc import ABC, abstractmethod
-from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from benchmax.envs.tracking import TrackingConfig, log_env, tracking_context
-from benchmax.envs.types import Completion, StandardizedExample, ToolDefinition
+from benchmax.envs.example_id import canonical_example_id
+from benchmax.envs.types import Example, Messages, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 
 
 class BaseEnv(ABC):
-    """Base benchmax environment for tool execution and reward computation"""
+    """Base benchmax environment for tool execution and reward computation.
+
+    Logging:
+        Use ``logging.getLogger(__name__)`` from any env method — your
+        logs (and tracebacks from ``logger.exception``) show up in the
+        trainer's log view, attributed to the rollout that triggered them.
+
+        In ``compute_group_reward``, logs apply to every rollout in the
+        group by default. To attribute a log to one specific rollout
+        only, wrap it in ``rollout_context(rid)`` from
+        :mod:`benchmax.envs.logging`.
+    """
 
     system_prompt: str = ""
-    _tracking_config: TrackingConfig | None = None
+
+    # Env-declared hints for training infra. None = use system defaults.
+    recommended_max_turns: Optional[int] = None
+    recommended_max_tool_calls: Optional[int] = None
 
     def __init__(self, **kwargs):
-        self._tracking_config: Optional[TrackingConfig] = None
+        pass
 
-    def enable_tracking(
-        self,
-        experiment_id: Optional[str] = None,
-        api_key: Optional[str] = None,
-    ) -> None:
-        """Enable experiment tracking. Wraps compute_reward on this instance with a tracking context."""
-        self._tracking_config = TrackingConfig(
-            experiment_id=experiment_id, api_key=api_key
-        )
-        cls_compute_reward = type(self).compute_reward
-
-        @wraps(cls_compute_reward)
-        async def _tracked(*args, **kwargs):
-            with tracking_context(self._tracking_config):
-                return await cls_compute_reward(self, *args, **kwargs)
-
-        self.compute_reward = _tracked
-
-        cls_compute_group_reward = type(self).compute_group_reward
-
-        @wraps(cls_compute_group_reward)
-        async def _tracked_group(*args, **kwargs):
-            with tracking_context(self._tracking_config):
-                return await cls_compute_group_reward(self, *args, **kwargs)
-
-        self.compute_group_reward = _tracked_group
-
-    def get_tracking_config(self) -> Optional[TrackingConfig]:
-        return self._tracking_config
-
-    def log_env(self, rollout_id: str, message: str) -> None:
-        log_env(rollout_id, message)
-
-    # Override this method if your example does not match the default structure
     @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> StandardizedExample:
+    def dataset_preprocess(cls, row: Any, **kwargs) -> Example:
+        """Turn a dataset row into an :class:`Example`.
+
+        ``seed_messages`` is built from the first column that's present:
+
+        - ``seed_messages``: already a chat list — used as-is.
+        - ``messages``: chat list — used as ``seed_messages``.
+        - ``prompt``: single string — wrapped as one user message.
+
+        ``task`` is the entire row as a dict, so any column
+        (``answer``, ``ground_truth``, etc.) is available to
+        ``compute_reward`` without per-env wiring. ``init_rollout_args``
+        is pulled out separately if present.
+
+        Override this for datasets with other column names or to project
+        ``task`` down to a subset of fields.
         """
-        Preprocess a single dataset example into a dict with keys:
-        - "prompt": str
-        - "ground_truth": Any
-        - "init_rollout_args": Dict[str, Any]
-        """
-        prompt = example.pop("prompt", "")
-        ground_truth = example.pop("ground_truth", "")
-        init_rollout_args = example.pop("init_rollout_args")
-        return StandardizedExample(
-            prompt=prompt,
-            ground_truth=ground_truth,
-            init_rollout_args=init_rollout_args,
-            **example,
+        if "seed_messages" in row:
+            seed_messages = row["seed_messages"]
+        elif "messages" in row:
+            seed_messages = row["messages"]
+        elif "prompt" in row:
+            seed_messages = [{"role": "user", "content": row["prompt"]}]
+        else:
+            raise ValueError(
+                f"{cls.__name__}.dataset_preprocess: row has none of "
+                "'seed_messages', 'messages', 'prompt'. Override "
+                "dataset_preprocess to build seed_messages from your "
+                "dataset's columns."
+            )
+        task = dict(row)
+        return Example(
+            id=canonical_example_id(seed_messages, task),
+            seed_messages=seed_messages,
+            task=task,
+            init_rollout_args=row.get("init_rollout_args"),
         )
 
     @classmethod
@@ -98,7 +101,7 @@ class BaseEnv(ABC):
 
         return load_dataset(dataset_name, **kwargs), None
 
-    # Methods all environment subclasses must implement
+    # Methods all environment subclasses must implement.
 
     @abstractmethod
     async def list_tools(self) -> List[ToolDefinition]:
@@ -112,39 +115,54 @@ class BaseEnv(ABC):
 
     @abstractmethod
     async def compute_reward(
-        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
+        self,
+        rollout_id: str,
+        messages: Messages,
+        task: Optional[Dict[str, Any]],
+        **kwargs: Any,
     ) -> Dict[str, float]:
-        """Compute rewards using registered functions
+        """Compute rewards for a single rollout.
 
-        Returns dict mapping reward function names to their computed scores.
+        Args:
+            rollout_id: Identifier for the rollout being graded.
+            messages: Full conversation transcript (seed messages + every assistant /
+                tool turn produced during the rollout). Was named ``completion`` in
+                the legacy signature, which was misleading: this is the entire
+                message list, not just the model's final answer.
+            task: Per-example reward-side data from
+                :class:`benchmax.envs.types.Example` (e.g. ``ground_truth``,
+                scoring config). ``None`` for envs that grade without per-row data.
+            **kwargs: Trainer-runtime context (e.g. ``workspace_path``). Example
+                fields should be read from ``task``, not ``kwargs``.
+
+        Returns:
+            Mapping of reward function name to scalar score.
         """
         pass
 
     async def compute_group_reward(
         self,
         rollout_ids: List[str],
-        completions: List[str | List[Dict[str, str]]],
-        ground_truths: List[Any],
+        messages_list: List[Messages],
+        tasks: List[Optional[Dict[str, Any]]],
         **kwargs: Any,
     ) -> List[Dict[str, float]]:
         """Compute rewards across a group of rollouts jointly.
 
         Override this when reward computation requires cross-rollout context (e.g.,
-        relative scoring, group normalization, or deduplication). Can be used alongside
-        ``compute_reward`` — the two are not mutually exclusive. The default implementation
-        returns empty reward dicts, deferring entirely to per-rollout ``compute_reward`` calls.
+        relative scoring, group normalization, deduplication). Default returns
+        empty dicts so per-rollout ``compute_reward`` runs in isolation.
 
         Args:
             rollout_ids: Identifiers for each rollout in the group.
-            completions: Model outputs, one per rollout. Each entry is either a
-                plain string or a list of message dicts.
-            ground_truths: Reference answers, one per rollout.
-            **kwargs: Additional environment-specific arguments.
+            messages_list: One message transcript per rollout (see
+                :meth:`compute_reward` for the renaming from ``completions``).
+            tasks: One task dict (or ``None``) per rollout, paired by index.
+            **kwargs: Trainer-runtime context shared across the group.
 
         Returns:
-            A list of reward dicts (one per rollout), each mapping reward function
-            names to their computed scores. An empty dict signals that no group
-            reward was computed for that rollout.
+            One reward dict per rollout, in input order. An empty dict signals
+            that no group reward was computed for that rollout.
         """
         return [{} for _ in rollout_ids]
 

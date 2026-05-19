@@ -4,8 +4,8 @@ import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.tracking import log_env
-from benchmax.envs.types import Completion, ToolDefinition, StandardizedExample
+from benchmax.envs.example_id import make_example
+from benchmax.envs.types import Example, Messages, ToolDefinition
 from benchmax.envs.wikipedia.utils import APIKeyRotator, clean_html, safe_request
 
 SYSTEM_PROMPT = """Please use the tools provided to get accurate, up-to-date information.
@@ -14,7 +14,7 @@ Write your complete answer on the final line only as a concise entity, within th
 """
 
 
-def text_match_reward_function(completion: Completion, ground_truth: str, rollout_id: str, **kwargs) -> float:
+def text_match_reward_function(completion: Messages, ground_truth: str, rollout_id: str, **kwargs) -> float:
     """
     Score 1.0 if ground truth appears in <answer> tags, else 0.0.
 
@@ -216,11 +216,11 @@ class WikipediaEnv(BaseEnv):
         pass
 
     @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> StandardizedExample:
-        return StandardizedExample(
-            prompt=example.get("Question", ""),
-            ground_truth=example.get("Answer", None),
-            init_rollout_args={},
+    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
+        return make_example(
+            seed_messages=[{"role": "user", "content": example.get("Question", "")}],
+            task={"ground_truth": example.get("Answer")},
+            system_prompt=cls.system_prompt,
         )
 
     async def list_tools(self) -> List[ToolDefinition]:
@@ -242,36 +242,33 @@ class WikipediaEnv(BaseEnv):
         _, tool_function = self._tools[tool_name]
         return await tool_function(**tool_args)
 
-    async def init_rollout(self, rollout_id: str, **rollout_args) -> None:
-        """Initialize rollout (no-op for stateless environment)."""
-        pass
-
-    async def release_rollout(self, rollout_id: str) -> None:
-        """Release rollout (no-op for stateless environment)."""
-        pass
-
     async def copy_to_workspace(
         self, rollout_id: str, src_path: Path, dst_filename: Optional[str] = None
     ) -> None:
-        """Not implemented for this environment."""
+        """Silent no-op — overrides base default (which raises NotImplementedError)
+        so trainer code that conditionally copies files doesn't blow up on this
+        stateless env."""
         pass
 
     async def copy_content_to_workspace(
         self, rollout_id: str, src_content: str | bytes, dst_filename: str
     ) -> None:
-        """Not implemented for this environment."""
         pass
 
     async def copy_from_workspace(
         self, rollout_id: str, src_filename: str, dst_path: Path
     ) -> None:
-        """Not implemented for this environment."""
         pass
 
     async def compute_reward(
-        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
+        self,
+        rollout_id: str,
+        messages: Messages,
+        task: Optional[Dict[str, Any]],
+        **kwargs: Any,
     ) -> Dict[str, float]:
         """Compute rewards using the text match reward function."""
+        ground_truth = (task or {}).get("ground_truth")
         return {
-            "text_match": text_match_reward_function(completion, ground_truth, rollout_id, **kwargs)
+            "text_match": text_match_reward_function(messages, ground_truth, rollout_id, **kwargs)
         }

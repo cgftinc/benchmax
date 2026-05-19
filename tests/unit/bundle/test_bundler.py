@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.types import Completion, ToolDefinition
+from benchmax.envs.types import Messages, ToolDefinition
 from benchmax.bundle.bundler import bundle_env, read_bundle_files, write_bundle_files
 from benchmax.bundle.errors import (
     IncompatibleBenchmaxError,
@@ -51,31 +51,15 @@ class MinimalEnv(BaseEnv):
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
         return f"{self.greeting}: {tool_args.get('msg', '')}"
 
-    async def init_rollout(self, rollout_id: str, **rollout_args) -> None:
-        pass
-
-    async def release_rollout(self, rollout_id: str) -> None:
-        pass
-
-    async def copy_to_workspace(
-        self, rollout_id: str, src_path: Path, dst_filename: Optional[str] = None
-    ) -> None:
-        pass
-
-    async def copy_content_to_workspace(
-        self, rollout_id: str, src_content: str | bytes, dst_filename: str
-    ) -> None:
-        pass
-
-    async def copy_from_workspace(
-        self, rollout_id: str, src_filename: str, dst_path: Path
-    ) -> None:
-        pass
-
     async def compute_reward(
-        self, rollout_id: str, completion: Completion, ground_truth: Any, **kwargs: Any
+        self,
+        rollout_id: str,
+        messages: Messages,
+        task: Any,
+        **kwargs: Any,
     ) -> Dict[str, float]:
-        return {"score": 1.0 if completion == ground_truth else 0.0}
+        gt = (task or {}).get("ground_truth")
+        return {"score": 1.0 if messages == gt else 0.0}
 
 
 class BadInitEnv(MinimalEnv):
@@ -175,6 +159,29 @@ class TestBundleEnv:
         assert restored.pickled_class == bundle.pickled_class
         assert restored.metadata == bundle.metadata
 
+    def test_sources_captured_and_viewable_without_unpickling(self, tmp_path: Path):
+        from benchmax.bundle.view import read_sources, render
+
+        bundle = bundle_env(MinimalEnv)
+        # Source for this test module should be captured since MinimalEnv lives here
+        assert bundle.metadata.sources is not None
+        assert any("class MinimalEnv" in src for src in bundle.metadata.sources.values())
+
+        pickle_path = tmp_path / "env_class.pkl"
+        metadata_path = tmp_path / "env_meta.json"
+        write_bundle_files(bundle, pickle_path, metadata_path)
+
+        # Sources are inlined in metadata.json — readable without cloudpickle
+        sources = read_sources(metadata_path)
+        assert sources == bundle.metadata.sources
+
+        rendered = render(sources)
+        assert "class MinimalEnv" in rendered
+
+        # And the file roundtrip preserves it
+        restored = read_bundle_files(pickle_path, metadata_path)
+        assert restored.metadata.sources == bundle.metadata.sources
+
 
 # ---------------------------------------------------------------------------
 # Tests: loader.py (load_env)
@@ -219,7 +226,11 @@ class TestLoadEnv:
         result = await env.run_tool("r1", "echo", msg="world")
         assert result == "test: world"
 
-        reward = await env.compute_reward("r1", "answer", "answer")
+        reward = await env.compute_reward(
+            "r1",
+            [{"role": "user", "content": "q"}, {"role": "assistant", "content": "answer"}],
+            {"ground_truth": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "answer"}]},
+        )
         assert reward == {"score": 1.0}
 
         await env.shutdown()
