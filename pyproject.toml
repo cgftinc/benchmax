@@ -39,7 +39,7 @@ skypilot = [
 ]
 excel = ["openpyxl>=3.1.5"]
 excel-mac-windows = ["openpyxl>=3.1.5", "xlwings>=0.33.16"]
-crm = ["python-dateutil>=2.9.0.post0", "simple-salesforce>=1.12.9"]
+crm = ["python-dateutil>=2.9.0.post0"]
 rag = [
     "keybert>=0.8",
     "langchain-text-splitters>=0.3.0",
@@ -73,7 +73,7 @@ skypilot = [
 ]
 excel = ["openpyxl>=3.1.5"]
 excel-mac-windows = ["openpyxl>=3.1.5", "xlwings>=0.33.16"]
-crm = ["python-dateutil>=2.9.0.post0", "simple-salesforce>=1.12.9"]
+crm = ["python-dateutil>=2.9.0.post0"]
 
 [tool.uv.sources]
 job-telemetry = { path = "../job-telemetry", editable = true }

@@ -1,10 +1,8 @@
-import functools
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from benchmax.envs import capture
 from benchmax.envs.example_id import canonical_example_id
 from benchmax.envs.types import Example, Messages, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
@@ -15,81 +13,18 @@ if TYPE_CHECKING:
     from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 
 
-# Per-rollout env methods auto-wrapped by ``BaseEnv.__init_subclass__``.
-# Signature: ``async def m(self, rollout_id, ...)``. Subclass overrides are
-# wrapped in ``capture.maybe_capture_errors(rollout_id, name)`` so any
-# exception lands in the per-rollout buffer when capture is installed.
-_AUTOCAPTURE_SINGLE_RID: tuple[str, ...] = (
-    "run_tool",
-    "compute_reward",
-    "init_rollout",
-    "release_rollout",
-    "copy_to_workspace",
-    "copy_content_to_workspace",
-    "copy_from_workspace",
-)
-
-# Group-reward gets a different wrap: the body spans multiple rids so there
-# is no single ContextVar to bind, but a failure affects every rollout in
-# the group, so the exception fans out one env_log per rid.
-_AUTOCAPTURE_GROUP_RID: tuple[str, ...] = ("compute_group_reward",)
-
-# Sentinel attribute marking an already-wrapped method so inheritance
-# chains don't re-wrap (which would nest capture contexts multiple deep —
-# safe, but pointless).
-_AUTOCAPTURE_SENTINEL = "__benchmax_auto_captured__"
-
-
-def _wrap_single(method: Callable, name: str) -> Callable:
-    @functools.wraps(method)
-    async def wrapper(self, rollout_id, *args, **kwargs):
-        async with capture.maybe_capture_errors(rollout_id, name):
-            return await method(self, rollout_id, *args, **kwargs)
-    setattr(wrapper, _AUTOCAPTURE_SENTINEL, True)
-    return wrapper
-
-
-def _wrap_group(method: Callable, name: str) -> Callable:
-    @functools.wraps(method)
-    async def wrapper(self, rollout_ids, *args, **kwargs):
-        async with capture.maybe_capture_group_errors(rollout_ids, name):
-            return await method(self, rollout_ids, *args, **kwargs)
-    setattr(wrapper, _AUTOCAPTURE_SENTINEL, True)
-    return wrapper
-
-
-def _apply_autocapture(cls: type) -> None:
-    """Wrap any per-rollout env method defined directly on ``cls`` with the
-    capture helper. Re-wrap is a no-op (sentinel attr short-circuits)."""
-    for name in _AUTOCAPTURE_SINGLE_RID:
-        method = cls.__dict__.get(name)
-        if method is None or getattr(method, _AUTOCAPTURE_SENTINEL, False):
-            continue
-        setattr(cls, name, _wrap_single(method, name))
-    for name in _AUTOCAPTURE_GROUP_RID:
-        method = cls.__dict__.get(name)
-        if method is None or getattr(method, _AUTOCAPTURE_SENTINEL, False):
-            continue
-        setattr(cls, name, _wrap_group(method, name))
-
-
 class BaseEnv(ABC):
     """Base benchmax environment for tool execution and reward computation.
 
-    Auth contract (G2):
-        Subclasses that issue HTTP to platform services MUST call
-        ``self.auth_headers(url)`` rather than reading ``os.environ`` directly.
-        The default ``auth_headers`` is a no-op (safe for standalone/test use).
-        Training infrastructure injects a live implementation via
-        ``trainer.data.async_workers.orchestrator._wrap_with_castform_auth``, which
-        monkeypatches the instance before the env is handed to a Ray actor.
+    Logging:
+        Use ``logging.getLogger(__name__)`` from any env method — your
+        logs (and tracebacks from ``logger.exception``) show up in the
+        trainer's log view, attributed to the rollout that triggered them.
 
-    Logging contract:
-        Use standard ``logging.getLogger(__name__)`` from any env method.
-        Records emitted while the trainer is running will be captured
-        per-rollout and shipped as ``rollout_env_logs`` rows. ``logger.exception``
-        carries the traceback through. No need to import anything benchmax-
-        specific or pass ``rollout_id`` to logging calls.
+        In ``compute_group_reward``, logs apply to every rollout in the
+        group by default. To attribute a log to one specific rollout
+        only, wrap it in ``rollout_context(rid)`` from
+        :mod:`benchmax.envs.logging`.
     """
 
     system_prompt: str = ""
@@ -101,71 +36,43 @@ class BaseEnv(ABC):
     def __init__(self, **kwargs):
         pass
 
-    def __init_subclass__(cls, **kwargs):
-        """Wrap per-rollout method overrides with capture auto-attribution +
-        warn when subclasses override ``auth_headers`` (easy to misunderstand).
-
-        Auto-wrap: any override of a method in :data:`_AUTOCAPTURE_SINGLE_RID`
-        / :data:`_AUTOCAPTURE_GROUP_RID` gets wrapped in
-        :func:`capture.maybe_capture_errors` / :func:`capture.maybe_capture_group_errors`
-        at class-definition time. Subclass authors keep writing
-        ``async def run_tool(...)`` as before — the wrapper is added
-        transparently, and is a no-op when capture is not installed.
-        Sentinel attr on the wrapped callable prevents double-wrap on
-        inheritance chains.
-
-        Auth: the trainer monkeypatches ``auth_headers`` at the *instance*
-        level, which always wins over class-level overrides. A subclass that
-        defines its own ``auth_headers`` is dead code on the trainer.
-        """
-        super().__init_subclass__(**kwargs)
-        _apply_autocapture(cls)
-        if "auth_headers" in cls.__dict__ and cls.__dict__["auth_headers"] is not BaseEnv.auth_headers:
-            logger.warning(
-                "%s overrides auth_headers; the trainer will replace this at "
-                "the instance level, so the override has no effect on training "
-                "rollouts. Issue HTTP via self.auth_headers(url) instead of "
-                "reading os.environ directly.",
-                cls.__name__,
-            )
-
-    def auth_headers(self, url: str) -> dict[str, str]:
-        """No-op by default. Override in a host-app mixin/subclass to attach
-        bearer tokens to outbound platform-service calls. Custom envs MUST call
-        self.auth_headers(url) when issuing HTTP to internal services rather
-        than reading os.environ directly.
-        """
-        return {}
-
-
-    # Override this method if your dataset rows aren't already shaped as
-    # ``{seed_messages, task, init_rollout_args}``.
     @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
-        """Preprocess a single dataset row into an :class:`Example`.
+    def dataset_preprocess(cls, row: Any, **kwargs) -> Example:
+        """Turn a dataset row into an :class:`Example`.
 
-        The default implementation assumes ``example`` already has
-        ``seed_messages`` (and optionally ``task`` / ``init_rollout_args``) and
-        just computes the canonical ``id``. Envs whose source datasets have a
-        different shape (HuggingFace columns, jsonl with custom keys, etc.)
-        should override this to build the ``seed_messages`` chat list and
-        ``task`` dict.
+        ``seed_messages`` is built from the first column that's present:
 
-        Treats ``example`` as read-only — the original is never mutated.
+        - ``seed_messages``: already a chat list — used as-is.
+        - ``messages``: chat list — used as ``seed_messages``.
+        - ``prompt``: single string — wrapped as one user message.
+
+        ``task`` is the entire row as a dict, so any column
+        (``answer``, ``ground_truth``, etc.) is available to
+        ``compute_reward`` without per-env wiring. ``init_rollout_args``
+        is pulled out separately if present.
+
+        Override this for datasets with other column names or to project
+        ``task`` down to a subset of fields.
         """
-        if "seed_messages" not in example:
+        if "seed_messages" in row:
+            seed_messages = row["seed_messages"]
+        elif "messages" in row:
+            seed_messages = row["messages"]
+        elif "prompt" in row:
+            seed_messages = [{"role": "user", "content": row["prompt"]}]
+        else:
             raise ValueError(
-                f"{cls.__name__}.dataset_preprocess: row is missing "
-                "'seed_messages'. Override dataset_preprocess to build it "
-                "from your dataset's columns."
+                f"{cls.__name__}.dataset_preprocess: row has none of "
+                "'seed_messages', 'messages', 'prompt'. Override "
+                "dataset_preprocess to build seed_messages from your "
+                "dataset's columns."
             )
-        seed_messages = example["seed_messages"]
-        task = example.get("task")
+        task = dict(row)
         return Example(
             id=canonical_example_id(seed_messages, task),
             seed_messages=seed_messages,
             task=task,
-            init_rollout_args=example.get("init_rollout_args"),
+            init_rollout_args=row.get("init_rollout_args"),
         )
 
     @classmethod
@@ -195,15 +102,6 @@ class BaseEnv(ABC):
         return load_dataset(dataset_name, **kwargs), None
 
     # Methods all environment subclasses must implement.
-    #
-    # Per-rollout methods (run_tool / compute_reward / init_rollout /
-    # release_rollout / copy_* / compute_group_reward) are auto-wrapped by
-    # ``__init_subclass__`` with ``capture.maybe_capture_errors`` so any
-    # exception from a subclass override is attributed to the rollout
-    # automatically when ``capture.install_capture()`` has been called.
-    # Subclass authors don't need to opt in — just write the method
-    # normally and standard ``logging`` from the body lands in the
-    # rollout's env_log.
 
     @abstractmethod
     async def list_tools(self) -> List[ToolDefinition]:
@@ -265,13 +163,6 @@ class BaseEnv(ABC):
         Returns:
             One reward dict per rollout, in input order. An empty dict signals
             that no group reward was computed for that rollout.
-
-        Note: failures fan out one ``logger.exception`` per rid (see
-        :data:`_AUTOCAPTURE_GROUP_RID`), since a group-level error affects
-        every rollout in the group. Internal logging from the body is NOT
-        auto-captured per-rollout (multiple rids in flight, no single
-        ContextVar binding) — surface per-rollout reasoning from
-        :meth:`compute_reward` if you need it in ``rollout_env_logs``.
         """
         return [{} for _ in rollout_ids]
 
@@ -320,11 +211,3 @@ class BaseEnv(ABC):
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support workspace file retrieval operations"
         )
-
-
-# Auto-wrap is applied via ``BaseEnv.__init_subclass__`` to SUBCLASS
-# overrides only — not to ``BaseEnv``'s own defaults. The defaults here
-# are either no-ops (``init_rollout`` / ``release_rollout``) or honest
-# configuration errors (``copy_*`` raising NotImplementedError); wrapping
-# them would only add cost without changing observability. If an env
-# subclass overrides one of these, that override gets the wrap.

@@ -14,7 +14,7 @@ Write your complete answer on the final line only as a concise entity, within th
 """
 
 
-def text_match_reward_function(completion: Completion, ground_truth: str, rollout_id: str, **kwargs) -> float:
+def text_match_reward_function(completion: Messages, ground_truth: str, rollout_id: str, **kwargs) -> float:
     """
     Score 1.0 if ground truth appears in <answer> tags, else 0.0.
 

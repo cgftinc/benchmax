@@ -11,6 +11,12 @@ def wiki_env() -> WikipediaEnv:
     return WikipediaEnv(wikipedia_api_keys=None)
 
 
+def _msgs(completion: str) -> list[dict]:
+    """Wrap a completion string in the message-list shape compute_reward expects
+    after the Example-as-first-class redesign."""
+    return [{"role": "assistant", "content": completion}]
+
+
 class TestDatasetPreprocess:
     """Tests for dataset preprocessing."""
 
@@ -23,8 +29,10 @@ class TestDatasetPreprocess:
 
         result = wiki_env.dataset_preprocess(example)
 
-        assert result["prompt"] == "Who created Python?"
-        assert result["ground_truth"] == "Guido van Rossum"
+        # Find the user seed message (preprocess injects the system prompt first).
+        user_msg = next(m for m in result["seed_messages"] if m["role"] == "user")
+        assert user_msg["content"] == "Who created Python?"
+        assert result["task"] == {"ground_truth": "Guido van Rossum"}
 
 
 class TestComputeReward:
@@ -33,11 +41,10 @@ class TestComputeReward:
     @pytest.mark.asyncio
     async def test_compute_reward_exact_match(self, wiki_env: WikipediaEnv) -> None:
         """Test that exact match returns 1.0."""
-        completion = "The answer is <answer>Paris</answer>"
-        ground_truth = "Paris"
-
         rewards = await wiki_env.compute_reward(
-            rollout_id="test", completion=completion, ground_truth=ground_truth
+            "test",
+            _msgs("The answer is <answer>Paris</answer>"),
+            {"ground_truth": "Paris"},
         )
 
         assert rewards["text_match"] == 1.0
@@ -47,11 +54,10 @@ class TestComputeReward:
         self, wiki_env: WikipediaEnv
     ) -> None:
         """Test that matching is case-insensitive."""
-        completion = "The answer is <answer>PARIS</answer>"
-        ground_truth = "paris"
-
         rewards = await wiki_env.compute_reward(
-            rollout_id="test", completion=completion, ground_truth=ground_truth
+            "test",
+            _msgs("The answer is <answer>PARIS</answer>"),
+            {"ground_truth": "paris"},
         )
 
         assert rewards["text_match"] == 1.0
@@ -59,11 +65,10 @@ class TestComputeReward:
     @pytest.mark.asyncio
     async def test_compute_reward_no_match(self, wiki_env: WikipediaEnv) -> None:
         """Test that wrong answer returns 0.0."""
-        completion = "The answer is <answer>London</answer>"
-        ground_truth = "Paris"
-
         rewards = await wiki_env.compute_reward(
-            rollout_id="test", completion=completion, ground_truth=ground_truth
+            "test",
+            _msgs("The answer is <answer>London</answer>"),
+            {"ground_truth": "Paris"},
         )
 
         assert rewards["text_match"] == 0.0
@@ -73,11 +78,10 @@ class TestComputeReward:
         self, wiki_env: WikipediaEnv
     ) -> None:
         """Test that missing answer tags returns 0.0."""
-        completion = "The answer is Paris"
-        ground_truth = "Paris"
-
         rewards = await wiki_env.compute_reward(
-            rollout_id="test", completion=completion, ground_truth=ground_truth
+            "test",
+            _msgs("The answer is Paris"),
+            {"ground_truth": "Paris"},
         )
 
         assert rewards["text_match"] == 0.0

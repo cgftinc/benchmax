@@ -4,12 +4,6 @@ Example: TelestichEnv — a poem-writing env.
 Train a model to write telestich poems — poems where the last letter
 (or character, for Chinese) of each line spells out a hidden word.
 
-This is a port of an internal notebook script (originally distributed as
-``cgft/notebooks/telestich.py``) updated for the post-``cgft`` benchmax
-layout: ``cgft.envs.reward_helpers`` is now ``benchmax.envs.reward_helpers``,
-and the env no longer needs ``local_modules=[cgft]`` since everything is
-shipped inside benchmax itself.
-
 The script doubles as a demo of ``benchmax.bundle``: running it bundles
 ``TelestichEnv`` and prints the captured plaintext source — the same
 JSON a frontend would render as "what code is in this env."
@@ -36,8 +30,9 @@ from openai import AsyncOpenAI
 from wordfreq import top_n_list, word_frequency
 
 from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.reward_helpers import clip01, extract_completion_text
 from benchmax.envs.example_id import make_example
+from benchmax.envs.logging import rollout_context
+from benchmax.envs.reward_helpers import clip01, extract_completion_text
 from benchmax.envs.types import Example, Messages, ToolDefinition
 
 logger = logging.getLogger(__name__)
@@ -1211,10 +1206,11 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         tasks: list[dict[str, Any] | None],
         **kwargs: Any,
     ) -> list[dict[str, float]]:
-        # Note: compute_group_reward is NOT auto-captured per-rollout (no
-        # single rid to bind). If you need rollout-attributed reasoning,
-        # emit it from compute_reward instead. Plain stdlib logging from
-        # here goes to stderr only.
+        # Logs emitted from this body fan out to every rid in the group by
+        # default (env_service wraps the call in ``group_context``). Per-rid
+        # log lines are wrapped in ``rollout_context(rid)`` below so each
+        # rollout's env_log only sees its own efficiency/divisor line, not
+        # the other N-1 rollouts'.
         n = len(rollout_ids)
 
         # Per-rollout rewards, computed concurrently.
@@ -1229,8 +1225,8 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         cluster_texts: list[str] = []
         ending_texts: list[str] = []
         languages: list[str] = []
-        for completion in completions:
-            text = extract_completion_text(completion)
+        for messages in messages_list:
+            text = extract_completion_text(messages)
             poem_for_lang = _extract_answer_block(text) or text
             cluster_texts.append(poem_for_lang)
             ending_texts.append(_ending_sequence(text))
@@ -1258,8 +1254,8 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
             (r.get("quality", 0.0) / self._w_quality) if self._w_quality else 0.0
             for r in per_rewards
         ]
-        lengths = [len(extract_completion_text(c)) for c in completions]
-        tool_counts = [_count_tool_calls(c) for c in completions]
+        lengths = [len(extract_completion_text(m)) for m in messages_list]
+        tool_counts = [_count_tool_calls(m) for m in messages_list]
         max_q = max(raw_q) if raw_q else 0.0
         bar = max(self._winner_bar, max_q - self._winner_eps)
         winners = [i for i, q in enumerate(raw_q) if q >= bar]
@@ -1282,6 +1278,7 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
                     # winner is pure excess.
                     call_ineff = 1.0 if tool_counts[i] > 0 else 0.0
                 efficiencies[i] = 1.0 - 0.5 * (len_ineff + call_ineff)
+            # Group-level summary: fans out to every rid in the group.
             logger.info(f"[TelestichEnv] group efficiency: bar={bar:.3f} "
                 f"winners={len(winners)}/{n} L_anchor={L_anchor:.0f} "
                 f"C_anchor={C_anchor:.2f}",
@@ -1293,14 +1290,15 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         ):
             rewards = dict(rewards)
             rewards["conciseness"] = self._w_conciseness * efficiencies[i]
-            logger.info(f"[TelestichEnv] efficiency={efficiencies[i]:.3f} "
-                f"(len={lengths[i]} calls={tool_counts[i]} "
-                f"winner={i in winners})",
-            )
-            if div > 1.0:
-                logger.info(f"[TelestichEnv] duplication divisor={div} "
-                    f"(text={t_div}, ending={e_div}) applied to {rewards}",
+            with rollout_context(rid):
+                logger.info(f"[TelestichEnv] efficiency={efficiencies[i]:.3f} "
+                    f"(len={lengths[i]} calls={tool_counts[i]} "
+                    f"winner={i in winners})",
                 )
+                if div > 1.0:
+                    logger.info(f"[TelestichEnv] duplication divisor={div} "
+                        f"(text={t_div}, ending={e_div}) applied to {rewards}",
+                    )
             adjusted.append({k: v / div for k, v in rewards.items()})
         return adjusted
 
