@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 
 _SIMPLE_TEMPLATE_FIELD_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 _CONDITIONAL_TOKEN_RE = re.compile(r"\[\[if\s+([a-zA-Z_][a-zA-Z0-9_]*)\]\]|\[\[endif\]\]")
-_ESCAPED_OPEN_BRACE = "__CGFT_ESCAPED_OPEN_BRACE__"
-_ESCAPED_CLOSE_BRACE = "__CGFT_ESCAPED_CLOSE_BRACE__"
+_ESCAPED_OPEN_BRACE = "__BENCHMAX_ESCAPED_OPEN_BRACE__"
+_ESCAPED_CLOSE_BRACE = "__BENCHMAX_ESCAPED_CLOSE_BRACE__"
 
 
 def _template_value_present(value: Any) -> bool:

@@ -37,8 +37,8 @@ _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.IGNORECASE | re.DOTALL)
 _TEMPLATE_FIELD_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _THINK_UNCLOSED_RE = re.compile(r"<think>.*", re.IGNORECASE | re.DOTALL)
-_ESCAPED_OPEN_BRACE = "__CGFT_ESCAPED_OPEN_BRACE__"
-_ESCAPED_CLOSE_BRACE = "__CGFT_ESCAPED_CLOSE_BRACE__"
+_ESCAPED_OPEN_BRACE = "__BENCHMAX_ESCAPED_OPEN_BRACE__"
+_ESCAPED_CLOSE_BRACE = "__BENCHMAX_ESCAPED_CLOSE_BRACE__"
 
 _REASONING_MODE_INSTRUCTIONS: dict[str, str] = {
     "temporal": (

@@ -16,7 +16,7 @@ class PostgresSearch:
     Supports lexical (BM25) search only.
 
     Args:
-        api_key: CGFT API key.
+        api_key: Castform API key.
         corpus_name: Name of the corpus.
         base_url: Corpora API base URL.
         corpus_id: Optional corpus ID (skips name lookup).

@@ -1509,15 +1509,10 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
 # ══════════════════════════════════════════════════════════════════════
 # DEMO: BUNDLE + VIEW
 # ══════════════════════════════════════════════════════════════════════
-# The original notebook script ended with a call to ``cgft.trainer.pipeline.train``
-# that uploaded the bundle and launched a training job. That entrypoint has
-# moved into the internal ``trainer`` service and is no longer a user-facing
-# Python API — training is now driven by the platform CLI / web UI.
-#
-# What this block demonstrates instead: how ``benchmax.bundle`` packages this
-# env class into a ``.pkl`` + ``.json`` pair, and how the captured plaintext
-# source travels alongside the pickle so a UI can show "what code is in this
-# env" without unpickling.
+# Demonstrates how ``benchmax.bundle`` packages this env class into a
+# ``.pkl`` + ``.json`` pair, and how the captured plaintext source travels
+# alongside the pickle so a UI can show "what code is in this env" without
+# unpickling.
 if __name__ == "__main__":
     import tempfile
     import uuid
