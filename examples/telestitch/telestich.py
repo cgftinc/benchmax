@@ -8,8 +8,9 @@ The script doubles as a demo of ``benchmax.bundle``: running it bundles
 ``TelestichEnv`` and prints the captured plaintext source — the same
 JSON a frontend would render as "what code is in this env."
 
-    cd core/benchmax
-    uv run python examples/telestich.py
+    cd core/benchmax/examples/telestitch
+    uv sync
+    CASTFORM_API_KEY=sk_... CASTFORM_LLM_API_KEY=sk_... uv run python telestich.py
 """
 
 import asyncio
@@ -1581,4 +1582,4 @@ if __name__ == "__main__":
         )
 
     print(f"\n✓ Launched run_id={run_id}")
-    print(f"  View / cancel at: {BASE_URL}/runs/{run_id}")
+    print(f"  View / cancel at: {config.web_app_url()}/train/{run_id}")

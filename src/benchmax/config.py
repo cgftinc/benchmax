@@ -29,6 +29,12 @@ def platform_url() -> str:
     return os.environ.get("CASTFORM_PLATFORM_URL") or f"https://api.{base_domain()}"
 
 
+def web_app_url() -> str:
+    """User-facing web app (run dashboard, etc.). Runs are viewable at
+    ``{web_app_url}/train/{run_id}``."""
+    return os.environ.get("CASTFORM_WEB_APP_URL") or f"https://app.{base_domain()}"
+
+
 def llm_url() -> str:
     """OpenAI-compatible LLM endpoint hosted by the platform."""
     return os.environ.get("CASTFORM_LLM_URL") or f"https://llm.{base_domain()}/v1"

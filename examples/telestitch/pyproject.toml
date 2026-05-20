@@ -2,9 +2,9 @@
 # installing benchmax globally. Benchmax itself is pulled in editable from
 # the parent directory.
 #
-#     cd core/benchmax/examples
+#     cd core/benchmax/examples/telestitch
 #     uv sync
-#     uv run python telestich.py
+#     CASTFORM_API_KEY=sk_... CASTFORM_LLM_API_KEY=sk_... uv run python telestich.py
 #
 # To target a non-prod environment, set CASTFORM_BASE_DOMAIN (or override
 # CASTFORM_PLATFORM_URL / CASTFORM_LLM_URL individually). See benchmax.config.
@@ -22,4 +22,4 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-benchmax = { path = "..", editable = true }
+benchmax = { path = "../..", editable = true }
