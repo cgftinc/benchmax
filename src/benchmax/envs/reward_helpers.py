@@ -5,7 +5,9 @@ No Chunk or Pydantic dependency — uses only plain strings and dicts.
 
 from __future__ import annotations
 
+import math
 import re
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -111,3 +113,105 @@ def count_search_calls(completion: str | list[dict[str, Any]]) -> int:
 def search_within_budget(calls: int, max_calls: int) -> bool:
     """Check if the number of search calls is within budget."""
     return calls <= max_calls
+
+
+# ── Citation scoring ──────────────────────────────────────────────────────
+
+_SOURCE_CITE_RE = re.compile(r"\[Source:\s*([^\]]+)\]", re.IGNORECASE)
+
+
+def citation_score(
+    completion: str | list[dict[str, Any]],
+    reference_chunks: list[dict[str, Any]],
+    *,
+    source_field: str | list[str] = "source_id",
+    canonicalize: Callable[[str], str] | None = None,
+) -> dict[str, float]:
+    """Score citation precision and recall against reference chunks.
+
+    Parses ``[Source: id]`` patterns from the completion (case-insensitive)
+    and compares against source IDs found in each reference chunk's
+    ``metadata[source_field]``.
+
+    Args:
+        source_field: metadata key to read source IDs from. When a list is
+            passed, the first non-empty key on each chunk wins.
+        canonicalize: optional normalizer applied to both cited IDs and
+            reference IDs before set intersection.
+
+    Returns ``{"precision": float, "recall": float}``.
+    """
+    fields = [source_field] if isinstance(source_field, str) else list(source_field)
+    norm = canonicalize if canonicalize is not None else (lambda s: s.strip())
+
+    text = extract_completion_text(completion)
+    cited = {norm(c) for c in _SOURCE_CITE_RE.findall(text)}
+    cited.discard("")
+
+    ref_ids: set[str] = set()
+    for chunk in reference_chunks:
+        meta = chunk.get("metadata", {})
+        if not isinstance(meta, dict):
+            continue
+        for field in fields:
+            sid = meta.get(field)
+            if sid is None or sid == "":
+                continue
+            norm_sid = norm(str(sid))
+            if norm_sid:
+                ref_ids.add(norm_sid)
+            break
+
+    if not cited:
+        return {"precision": 0.0, "recall": 0.0}
+    if not ref_ids:
+        return {"precision": 1.0, "recall": 0.0}
+
+    precision = len(cited & ref_ids) / len(cited)
+    recall = len(cited & ref_ids) / len(ref_ids)
+    return {"precision": precision, "recall": recall}
+
+
+# ── Tool-call efficiency ─────────────────────────────────────────────────
+
+_DEFAULT_DECAY_RATE = 0.2
+
+
+def tool_call_efficiency(
+    completion: str | list[dict[str, Any]],
+    *,
+    correctness_raw: float = 1.0,
+    reference_chunk_count: int = 0,
+    max_calls: int = 10,
+    decay_rate: float = _DEFAULT_DECAY_RATE,
+    ranges: list[tuple[int, int | None, float]] | None = None,
+) -> float:
+    """Score tool call efficiency.
+
+    Two modes:
+    - **ranges** (wizard path): explicit ``[(min, max, score), ...]`` lookup.
+    - **decay** (SDK path): correctness-scaled exp decay over an adaptive
+      baseline of ``reference_chunk_count + 2``.
+
+    Args:
+        correctness_raw: Correctness score in [0, 1]. <= 0 returns 0.
+        reference_chunk_count: Number of gold chunks (decay baseline).
+        max_calls: Hard cliff for decay mode.
+        decay_rate: Exp-decay constant for excess calls.
+        ranges: If provided, use range-lookup instead of decay.
+    """
+    calls = count_search_calls(completion)
+
+    if ranges is not None:
+        for min_c, max_c, score in ranges:
+            if calls >= min_c and (max_c is None or calls <= max_c):
+                return score
+        return 0.0
+
+    if correctness_raw <= 0:
+        return 0.0
+    if calls > max_calls:
+        return 0.0
+    baseline = reference_chunk_count + 2
+    excess = max(0, calls - baseline)
+    return correctness_raw * math.exp(-decay_rate * excess)
