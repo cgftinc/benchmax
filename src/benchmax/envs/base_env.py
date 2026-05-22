@@ -40,10 +40,10 @@ class BaseEnv(ABC):
     def dataset_preprocess(cls, row: Any, **kwargs) -> Example:
         """Turn a dataset row into an :class:`Example`.
 
-        ``seed_messages`` is built from the first column that's present:
+        ``prompt_messages`` is built from the first column that's present:
 
-        - ``seed_messages``: already a chat list — used as-is.
-        - ``messages``: chat list — used as ``seed_messages``.
+        - ``prompt_messages``: already a chat list — used as-is.
+        - ``messages``: chat list — used as ``prompt_messages``.
         - ``prompt``: single string — wrapped as one user message.
 
         ``task`` is the entire row as a dict, so any column
@@ -54,23 +54,23 @@ class BaseEnv(ABC):
         Override this for datasets with other column names or to project
         ``task`` down to a subset of fields.
         """
-        if "seed_messages" in row:
-            seed_messages = row["seed_messages"]
+        if "prompt_messages" in row:
+            prompt_messages = row["prompt_messages"]
         elif "messages" in row:
-            seed_messages = row["messages"]
+            prompt_messages = row["messages"]
         elif "prompt" in row:
-            seed_messages = [{"role": "user", "content": row["prompt"]}]
+            prompt_messages = [{"role": "user", "content": row["prompt"]}]
         else:
             raise ValueError(
                 f"{cls.__name__}.dataset_preprocess: row has none of "
-                "'seed_messages', 'messages', 'prompt'. Override "
-                "dataset_preprocess to build seed_messages from your "
+                "'prompt_messages', 'messages', 'prompt'. Override "
+                "dataset_preprocess to build prompt_messages from your "
                 "dataset's columns."
             )
         task = dict(row)
         return Example(
-            id=canonical_example_id(seed_messages, task),
-            seed_messages=seed_messages,
+            id=canonical_example_id(prompt_messages, task),
+            prompt_messages=prompt_messages,
             task=task,
             init_rollout_args=row.get("init_rollout_args"),
         )

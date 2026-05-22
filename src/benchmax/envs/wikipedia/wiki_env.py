@@ -218,7 +218,7 @@ class WikipediaEnv(BaseEnv):
     @classmethod
     def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
         return make_example(
-            seed_messages=[{"role": "user", "content": example.get("Question", "")}],
+            prompt_messages=[{"role": "user", "content": example.get("Question", "")}],
             task={"ground_truth": example.get("Answer")},
             system_prompt=cls.system_prompt,
         )

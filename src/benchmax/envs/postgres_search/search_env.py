@@ -213,7 +213,7 @@ class SearchEnv(BaseEnv):
     def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
         question = example.get("question", "")
         return make_example(
-            seed_messages=[{"role": "user", "content": question}],
+            prompt_messages=[{"role": "user", "content": question}],
             task={
                 "question": question,
                 "ground_truth": example.get("answer"),

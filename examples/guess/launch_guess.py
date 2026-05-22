@@ -66,7 +66,7 @@ class GuessEnv(BaseEnv):
     @classmethod
     def dataset_preprocess(cls, example: Any, **kwargs: Any) -> Example:
         return make_example(
-            seed_messages=[
+            prompt_messages=[
                 {"role": "user", "content": "Are you ready to play a guessing game?"},
                 {
                     "role": "assistant",

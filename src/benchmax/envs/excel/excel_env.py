@@ -132,7 +132,7 @@ Answer Position: {answer_position}
 Output Path: {output_filename}"""
 
         return make_example(
-            seed_messages=[{"role": "user", "content": prompt.strip()}],
+            prompt_messages=[{"role": "user", "content": prompt.strip()}],
             task={
                 "dataset_row_id": row_id,
                 "answer_position": answer_position,
