@@ -1,6 +1,6 @@
 """Canonical example identity.
 
-``canonical_example_id(seed_messages, task)`` returns a SHA-256 hex digest
+``canonical_example_id(prompt_messages, task)`` returns a SHA-256 hex digest
 that is stable across processes and languages: a TypeScript port lives in
 ``platform-service/src/lib/canonical-example-id.ts`` and is exercised by a
 parity test.
@@ -15,8 +15,9 @@ Determinism is achieved by:
 - emitting canonical JSON with sorted keys, no whitespace, and no ASCII
   escaping (modern JSON.stringify also preserves non-ASCII).
 
-The hash is computed over ``{"v": 1, "seed_messages": ..., "task": ...}`` —
-the version tag lets us bump the algorithm later without ambiguity.
+The hash is computed over ``{"v": 2, "prompt_messages": ..., "task": ...}``.
+v:2 bump went together with the ``seed_messages`` → ``prompt_messages``
+field rename in 2026-05; v:1 hashes are obsolete.
 """
 from __future__ import annotations
 
@@ -86,10 +87,10 @@ def _normalize(v: Any) -> Any:
 
 
 def canonical_example_id(
-    seed_messages: Messages,
+    prompt_messages: Messages,
     task: dict[str, Any] | None,
 ) -> str:
-    payload = {"v": 1, "seed_messages": seed_messages, "task": task}
+    payload = {"v": 2, "prompt_messages": prompt_messages, "task": task}
     serialized = json.dumps(
         _normalize(payload),
         sort_keys=True,
@@ -100,14 +101,14 @@ def canonical_example_id(
 
 
 def make_example(
-    seed_messages: Messages,
+    prompt_messages: Messages,
     task: dict[str, Any] | None = None,
     init_rollout_args: dict[str, Any] | None = None,
     system_prompt: str | None = None,
 ) -> Example:
     """Build an :class:`Example` with the canonical id pre-computed.
 
-    If ``system_prompt`` is non-empty, it is prepended to ``seed_messages``
+    If ``system_prompt`` is non-empty, it is prepended to ``prompt_messages``
     as ``{"role": "system", "content": system_prompt}`` so the env's system
     prompt is part of the example's identity. Two envs with the same user
     prompt but different system prompts (e.g. "be concise" vs "be verbose")
@@ -120,7 +121,7 @@ def make_example(
     requires an async ``list_tools()`` call, which doesn't fit
     ``dataset_preprocess``'s classmethod contract. The trainer renders
     tools into the first system message at LLM-call time without mutating
-    ``seed_messages``. Envs that need tool-set sensitivity in their group
+    ``prompt_messages``. Envs that need tool-set sensitivity in their group
     identity should bake a tool-signature string into ``task``.
 
     Convenience for env authors overriding ``dataset_preprocess``::
@@ -128,19 +129,19 @@ def make_example(
         @classmethod
         def dataset_preprocess(cls, row, **_):
             return make_example(
-                seed_messages=[{"role": "user", "content": row["question"]}],
+                prompt_messages=[{"role": "user", "content": row["question"]}],
                 task={"answer": row["answer"]},
                 system_prompt=cls.system_prompt,
             )
     """
     if system_prompt:
-        seed_messages = [
+        prompt_messages = [
             {"role": "system", "content": system_prompt},
-            *seed_messages,
+            *prompt_messages,
         ]
     return Example(
-        id=canonical_example_id(seed_messages, task),
-        seed_messages=seed_messages,
+        id=canonical_example_id(prompt_messages, task),
+        prompt_messages=prompt_messages,
         task=task,
         init_rollout_args=init_rollout_args,
     )

@@ -86,9 +86,9 @@ class TestDatasetPreprocess:
         ):
             result = ExcelEnv.dataset_preprocess(example, dataset_path=mock_dataset)
 
-        # Result is an Example TypedDict: id, seed_messages, task, init_rollout_args.
+        # Result is an Example TypedDict: id, prompt_messages, task, init_rollout_args.
         assert result is not None
-        prompt_blob = "\n".join(m["content"] for m in result["seed_messages"])
+        prompt_blob = "\n".join(m["content"] for m in result["prompt_messages"])
         assert "Fill cell A1 with 10" in prompt_blob
         assert "1_42_input.xlsx" in prompt_blob
         assert result["init_rollout_args"] is not None

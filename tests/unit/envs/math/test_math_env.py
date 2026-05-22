@@ -46,7 +46,7 @@ class TestDatasetPreprocess:
     """Test dataset preprocessing logic."""
 
     def _user_msg(self, ex):
-        for m in ex["seed_messages"]:
+        for m in ex["prompt_messages"]:
             if m["role"] == "user":
                 return m["content"]
         return ""

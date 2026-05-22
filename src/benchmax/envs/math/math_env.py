@@ -27,7 +27,7 @@ class MathEnv(ParallelMcpEnv):
     @classmethod
     def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
         return make_example(
-            seed_messages=[{"role": "user", "content": example.get("task", "")}],
+            prompt_messages=[{"role": "user", "content": example.get("task", "")}],
             task={"ground_truth": example.get("answer", "")},
             system_prompt=cls.system_prompt,
         )

@@ -1142,7 +1142,7 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
     def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
         prompt_text = example.get("prompt", "")
         return make_example(
-            seed_messages=[{"role": "user", "content": prompt_text}],
+            prompt_messages=[{"role": "user", "content": prompt_text}],
             task={
                 "prompt": prompt_text,
                 "ground_truth": example.get("ground_truth", ""),

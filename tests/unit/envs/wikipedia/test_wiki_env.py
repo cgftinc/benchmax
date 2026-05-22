@@ -30,7 +30,7 @@ class TestDatasetPreprocess:
         result = wiki_env.dataset_preprocess(example)
 
         # Find the user seed message (preprocess injects the system prompt first).
-        user_msg = next(m for m in result["seed_messages"] if m["role"] == "user")
+        user_msg = next(m for m in result["prompt_messages"] if m["role"] == "user")
         assert user_msg["content"] == "Who created Python?"
         assert result["task"] == {"ground_truth": "Guido van Rossum"}
 

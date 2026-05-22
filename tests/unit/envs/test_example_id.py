@@ -16,13 +16,13 @@ import pytest
 from benchmax.envs.example_id import canonical_example_id
 
 
-# Each case: (name, seed_messages, task, expected_hex)
+# Each case: (name, prompt_messages, task, expected_hex)
 GOLDEN_CASES = [
     (
         "bare_single_user",
         [{"role": "user", "content": "Hello"}],
         None,
-        "0bbb7577dbc0523b59e954d128ef3b112645477ae2d9081b0007189090421b8f",
+        "04d553add09f1f28f35139014176fe64cf3cbbecb0de22e99370c49b3e35088b",
     ),
     (
         "multi_turn",
@@ -33,25 +33,25 @@ GOLDEN_CASES = [
             {"role": "user", "content": "Solve 2+2"},
         ],
         {"ground_truth": "4"},
-        "9bd75cd9d5e39c53f02763adc43062bd80542f5c0b6b851d317f5a59dacefe05",
+        "dcf4e5fcce040c41d527b27c3c6e9c4f1df0745c7f48c3f11b0e21a4500ea5fa",
     ),
     (
         "task_none",
         [{"role": "user", "content": "x"}],
         None,
-        "8b39309c8f43c56551281509f9e8f76973f64f94ef98afd7826a9f6eb161a8ca",
+        "e4d534ac3d401153ec029cd68bae30cdcbe03314cc69296ffc48ce4458dddff8",
     ),
     (
         "task_empty_dict",
         [{"role": "user", "content": "x"}],
         {},
-        "839198565d0c3acd3151efc10c9e65a2dac911b06f8eb199f2e107b567c23e14",
+        "5d6763943667224756336ff9ffc2eff2e9267ac8a815745db54a75373073134a",
     ),
     (
         "unicode",
         [{"role": "user", "content": "你好 émoji 🚀"}],
         {"locale": "zh-CN"},
-        "a50f4c4ad3fd5c6838098fe4b09e6b9a24a875a4c9c4ee717d304a53ebe31873",
+        "d1f6a202e088221a60711f105c02e8cfce9da69c14ef479efcbf7416d63280b9",
     ),
     (
         "nested_task",
@@ -62,14 +62,14 @@ GOLDEN_CASES = [
             "max_steps": 5,
             "scoring": {"weights": {"correctness": 1, "format": 0}},
         },
-        "c1d79889b683b3d5129d07a7b68bce827fbcae50437f164e76769667145b5b1f",
+        "cee4165ba98d0c7b7ac8b12ce2587bdad88e38ef63d2235a071423fb3968915d",
     ),
 ]
 
 
-@pytest.mark.parametrize("name,seed_messages,task,expected", GOLDEN_CASES)
-def test_golden_hash(name: str, seed_messages, task, expected: str) -> None:
-    assert canonical_example_id(seed_messages, task) == expected
+@pytest.mark.parametrize("name,prompt_messages,task,expected", GOLDEN_CASES)
+def test_golden_hash(name: str, prompt_messages, task, expected: str) -> None:
+    assert canonical_example_id(prompt_messages, task) == expected
 
 
 def test_none_task_differs_from_empty_task() -> None:

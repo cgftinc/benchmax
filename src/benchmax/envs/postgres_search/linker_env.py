@@ -169,7 +169,7 @@ class LinkerEnv(BaseEnv):
             f"Primary chunk:\n{example.get('prompt', '')}"
         )
         return make_example(
-            seed_messages=[{"role": "user", "content": prompt}],
+            prompt_messages=[{"role": "user", "content": prompt}],
             task={"target_n": target_n, "reasoning_mode": reasoning_mode},
             system_prompt=cls.system_prompt,
         )

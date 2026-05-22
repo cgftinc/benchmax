@@ -378,7 +378,7 @@ class TestDatasetPreprocess:
     def test_extracts_question_answer(self):
         result = SearchEnv.dataset_preprocess({"question": "What is X?", "answer": "Y"})
         # User message carries the question text (system msg is prepended by make_example).
-        user_msgs = [m for m in result["seed_messages"] if m["role"] == "user"]
+        user_msgs = [m for m in result["prompt_messages"] if m["role"] == "user"]
         assert user_msgs and user_msgs[0]["content"] == "What is X?"
         assert result["task"]["question"] == "What is X?"
         assert result["task"]["ground_truth"] == "Y"

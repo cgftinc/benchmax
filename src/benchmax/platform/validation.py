@@ -111,7 +111,7 @@ def validate_env(
     preprocessed = None
     try:
         preprocessed = env_class.dataset_preprocess(examples[0])
-        required = {"id", "seed_messages"}
+        required = {"id", "prompt_messages"}
         if not isinstance(preprocessed, dict) or not required.issubset(preprocessed):
             missing = (
                 required - set(preprocessed)
@@ -124,32 +124,32 @@ def validate_env(
             )
             print(
                 "    Fix: return benchmax.envs.example_id.make_example("
-                "seed_messages=[...], task=...)."
+                "prompt_messages=[...], task=...)."
             )
             failed += 1
         else:
-            print("  \u2713 dataset_preprocess returns Example with id + seed_messages")
+            print("  \u2713 dataset_preprocess returns Example with id + prompt_messages")
             passed += 1
     except Exception as exc:
         print(f"  \u2717 dataset_preprocess raised {type(exc).__name__}: {exc}")
         failed += 1
 
-    # ── 2. seed_messages shape ───────────────────────────────────
-    if preprocessed and isinstance(preprocessed, dict) and "seed_messages" in preprocessed:
-        seed = preprocessed["seed_messages"]
+    # ── 2. prompt_messages shape ───────────────────────────────────
+    if preprocessed and isinstance(preprocessed, dict) and "prompt_messages" in preprocessed:
+        seed = preprocessed["prompt_messages"]
         if not isinstance(seed, list) or not all(
             isinstance(mm, dict) and "role" in mm and "content" in mm for mm in seed
         ):
-            print("  \u2717 seed_messages is not a list of {role,content} dicts")
+            print("  \u2717 prompt_messages is not a list of {role,content} dicts")
             failed += 1
         elif not seed:
-            print("  \u2717 seed_messages is empty")
+            print("  \u2717 prompt_messages is empty")
             failed += 1
         else:
-            print(f"  \u2713 seed_messages is a {len(seed)}-message chat list")
+            print(f"  \u2713 prompt_messages is a {len(seed)}-message chat list")
             passed += 1
     else:
-        print("  - seed_messages shape check: skipped (no preprocessed result)")
+        print("  - prompt_messages shape check: skipped (no preprocessed result)")
 
     # ── 3. load_dataset ──────────────────────────────────────────
     try:
@@ -227,7 +227,7 @@ def validate_env(
             failed += 1
 
     # ── 5. compute_reward with trainer-style args ────────────────
-    if env is not None and isinstance(preprocessed, dict) and "seed_messages" in preprocessed:
+    if env is not None and isinstance(preprocessed, dict) and "prompt_messages" in preprocessed:
         try:
             task = preprocessed.get("task")
             init_args = preprocessed.get("init_rollout_args") or {}
@@ -235,7 +235,7 @@ def validate_env(
             # Simulate the trainer's call: a fake one-turn transcript echoing
             # the seed plus a stub assistant turn. compute_reward receives
             # task verbatim and runtime kwargs (init_rollout_args fields).
-            messages = list(preprocessed["seed_messages"]) + [
+            messages = list(preprocessed["prompt_messages"]) + [
                 {"role": "assistant", "content": "I found the answer based on the search results."}
             ]
 
@@ -282,9 +282,9 @@ def validate_env(
             failed += 1
 
     # ── 5b. Simulated rollout (E2E) ──────────────────────────────
-    if env is not None and isinstance(preprocessed, dict) and "seed_messages" in preprocessed:
+    if env is not None and isinstance(preprocessed, dict) and "prompt_messages" in preprocessed:
         try:
-            seed_messages = preprocessed["seed_messages"]
+            prompt_messages = preprocessed["prompt_messages"]
             task = preprocessed.get("task")
             init_args = preprocessed.get("init_rollout_args") or {}
 
@@ -292,13 +292,13 @@ def validate_env(
 
             # Seed text used for dummy tool-arg generation.
             first_user = next(
-                (m["content"] for m in seed_messages if m.get("role") == "user"),
+                (m["content"] for m in prompt_messages if m.get("role") == "user"),
                 "",
             )
             query_text = first_user[:200] if isinstance(first_user, str) else "test"
 
             # ── Call each tool twice (catch stateful bugs) ──────
-            transcript: list[dict[str, Any]] = list(seed_messages)
+            transcript: list[dict[str, Any]] = list(prompt_messages)
             tool_call_count = 0
             for tool in tools:
                 tool_args = _build_dummy_args(tool.input_schema, query_text)

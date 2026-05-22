@@ -4,7 +4,7 @@ The Example-as-first-class redesign exists primarily to fix one pathology:
 envs where every row shares a generic seed prompt template ("guess my
 number", "solve the wordle puzzle") but differs in the per-row ground
 truth would, under the old prompt_text-hash grouping, collapse into a
-single group. The new ``canonical_example_id(seed_messages, task)`` hash
+single group. The new ``canonical_example_id(prompt_messages, task)`` hash
 includes ``task``, so identical seeds with distinct tasks correctly land
 in distinct groups.
 
@@ -51,7 +51,7 @@ class GuessEnv(BaseEnv):
     def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
         # Constant seed across all rows — the wordle pathology.
         return make_example(
-            seed_messages=[
+            prompt_messages=[
                 {"role": "user", "content": "I have a number in mind. What is it?"},
             ],
             task={"target": int(example["target"])},
@@ -95,18 +95,18 @@ def test_distinct_targets_produce_distinct_example_ids():
     # All three ids must differ from each other (3 distinct rows).
     assert len(set(ids)) == 3, f"expected 3 distinct ids, got {ids}"
 
-    # And the seed_messages must in fact be identical across rows —
+    # And the prompt_messages must in fact be identical across rows —
     # that's what makes this a useful test (the property would be trivial
-    # if rows varied in seed_messages too).
-    seed_strings = {tuple((m["role"], m["content"]) for m in ex["seed_messages"]) for ex in examples}
-    assert len(seed_strings) == 1, "seed_messages should be identical across rows"
+    # if rows varied in prompt_messages too).
+    seed_strings = {tuple((m["role"], m["content"]) for m in ex["prompt_messages"]) for ex in examples}
+    assert len(seed_strings) == 1, "prompt_messages should be identical across rows"
 
 
-def test_seed_messages_includes_system_prompt():
-    """make_example bakes the env's static system_prompt into seed_messages
+def test_prompt_messages_includes_system_prompt():
+    """make_example bakes the env's static system_prompt into prompt_messages
     at index 0, so the system prompt is part of the example's identity."""
     ex = GuessEnv.dataset_preprocess({"target": 1})
-    seed = ex["seed_messages"]
+    seed = ex["prompt_messages"]
     assert len(seed) == 2, f"expected [system, user], got {len(seed)} messages"
     assert seed[0] == {"role": "system", "content": SYSTEM_PROMPT}
     assert seed[1]["role"] == "user"
@@ -115,7 +115,7 @@ def test_seed_messages_includes_system_prompt():
 def test_distinct_system_prompts_produce_distinct_example_ids():
     """Same dataset row + different env system prompts → different ids.
 
-    This is the property that would have been broken if seed_messages had
+    This is the property that would have been broken if prompt_messages had
     stayed user-only: two envs with the same dataset rows but different
     system instructions would have collapsed into the same example_id.
     """
@@ -143,10 +143,10 @@ def test_same_target_produces_same_example_id():
 def test_example_id_matches_direct_canonical_hash():
     """The id baked into Example.id matches the hash an external caller
     (e.g. external-eval webhook, or the TS port) would compute from the
-    same (seed_messages, task) pair."""
+    same (prompt_messages, task) pair."""
     row = {"target": 17}
     ex = GuessEnv.dataset_preprocess(row)
-    expected = canonical_example_id(ex["seed_messages"], ex["task"])
+    expected = canonical_example_id(ex["prompt_messages"], ex["task"])
     assert ex["id"] == expected
 
 
