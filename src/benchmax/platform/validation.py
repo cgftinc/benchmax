@@ -352,8 +352,8 @@ def validate_env(
 
     # ── 6. Pickle round-trip ─────────────────────────────────────
     # Use cloudpickle on both sides so envs that import from local modules
-    # (registered via local_modules in bundle_env) round-trip the same way as
-    # they will on the trainer. Plain pickle.loads can read simple cloudpickle
+    # (registered via local_modules in dump_bundle) round-trip the same way
+    # as they will on the trainer. Plain pickle.loads can read simple cloudpickle
     # output but breaks on by-value module pickling — silently mismatching
     # local validation vs trainer behavior.
     try:
@@ -365,6 +365,33 @@ def validate_env(
         passed += 1
     except Exception as exc:
         print(f"  \u2717 pickle round-trip failed: {type(exc).__name__}: {exc}")
+        failed += 1
+
+    # \u2500\u2500 6a. Local-modules guard \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # Same-process round-trip above succeeds even when local_modules are
+    # forgotten, because the user's working module is already in sys.modules
+    # so cloudpickle's by-reference resolves via cache. On a fresh worker
+    # process there's no cache and the import fails. Inspect the pickle's
+    # find_class refs to catch this pre-upload.
+    try:
+        from benchmax.bundle import unregistered_local_refs
+
+        risky = unregistered_local_refs(cloudpickle.dumps(env_class))
+        if risky:
+            print(
+                f"  \u2717 {env_class.__name__}: missing "
+                f"local_modules=[{', '.join(risky)}]"
+            )
+            print(
+                "    (round-trip above passed because sys.modules cache "
+                "hides this in-process; trainer will fail to import)"
+            )
+            failed += 1
+        else:
+            print("  \u2713 no unregistered local-module references")
+            passed += 1
+    except Exception as exc:
+        print(f"  \u2717 local-modules check failed: {type(exc).__name__}: {exc}")
         failed += 1
 
     # ── 6b. env_args pickle ────────────────────────────────────────

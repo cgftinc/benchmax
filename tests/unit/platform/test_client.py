@@ -51,7 +51,7 @@ def test_launch_training_run_posts_to_train_runs_launch():
     trainer = _make_trainer_with_transport(handler)
     run_id = trainer.launch_training_run(
         training_run_type="simple",
-        env_cls_path="x/env-cls.bmxp",
+        env_cls_path="x/env-cls.pkl",
         env_metadata_path="x/env-metadata.json",
         train_dataset_path="x/train.jsonl",
         eval_dataset_path="x/eval.jsonl",
