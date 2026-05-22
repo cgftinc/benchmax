@@ -15,7 +15,7 @@ import random
 import re
 from typing import Any
 
-from benchmax.bundle.bundler import bundle_env
+from benchmax.bundle import dump_bundle
 
 import benchmax
 from benchmax.rag.corpus.search_client import SearchClient
@@ -108,7 +108,6 @@ class SearchAgentLinker:
 
         self._env_cls_bytes: bytes | None = None
         self._env_meta_bytes: bytes | None = None
-        self._env_args_bytes: bytes | None = None
         self._used_hashes: set[str] = set()
         self._prepare_env_bundle(search_client)
 
@@ -120,22 +119,20 @@ class SearchAgentLinker:
         """Bundle LinkerEnv with the SearchClient for rollout server use.
 
         If the user pre-configured env_bundle paths/files, those take
-        precedence.  Otherwise, use ``bundle_env`` (same mechanism as
-        ``train()``) to package LinkerEnv with its constructor args.
+        precedence. Otherwise, use ``dump_bundle`` to package LinkerEnv
+        with its constructor args inline.
         """
         bundle = self._cfg.env_bundle
         if bundle.has_paths() or bundle.has_files():
             return
 
-        env_bundle = bundle_env(
+        env_bundle = dump_bundle(
             LinkerEnv,
             local_modules=[benchmax],
             constructor_args={"search": search_client},
-            validate=False,
         )
-        self._env_cls_bytes = env_bundle.pickled_class
+        self._env_cls_bytes = env_bundle.pickled
         self._env_meta_bytes = env_bundle.metadata.to_json_bytes()
-        self._env_args_bytes = env_bundle.pickled_constructor_args
 
     def reset_used_hashes(self) -> None:
         """Clear cross-question dedup state (e.g. between batches)."""
@@ -314,8 +311,6 @@ class SearchAgentLinker:
         else:
             kwargs["env_cls_bytes"] = self._env_cls_bytes
             kwargs["env_metadata_bytes"] = self._env_meta_bytes
-            if self._env_args_bytes is not None:
-                kwargs["env_args_bytes"] = self._env_args_bytes
 
         return self._rollout_client.stream_rollout(**kwargs)
 

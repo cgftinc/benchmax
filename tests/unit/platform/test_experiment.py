@@ -96,7 +96,7 @@ def test_upload_training_run_uploads_four_files_with_correct_storage_paths():
 
     paths = [path for path, _ in storage.uploads]
     assert paths == [
-        "training-runs/run-abc/env-cls.bmxp",
+        "training-runs/run-abc/env-cls.pkl",
         "training-runs/run-abc/env-metadata.json",
         "training-runs/run-abc/train.jsonl",
         "training-runs/run-abc/eval.jsonl",
@@ -171,6 +171,6 @@ def test_upload_training_run_passes_constructor_args_through_to_bundle():
         storage_client=CapturingStorage(),  # type: ignore[arg-type]
     )
 
-    import json
-    metadata = json.loads(captured["training-runs/ctor-args/env-metadata.json"].decode())
-    assert metadata["constructor_args"] == {"greeting": "hola"}
+    import cloudpickle
+    _, ctor_args = cloudpickle.loads(captured["training-runs/ctor-args/env-cls.pkl"])
+    assert ctor_args == {"greeting": "hola"}

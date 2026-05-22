@@ -89,7 +89,6 @@ _MIME_TYPES = {
     ".yml": "text/yaml",
     ".pkl": "application/octet-stream",
     ".pickle": "application/octet-stream",
-    ".bmxp": "application/octet-stream",
 }
 
 
@@ -295,7 +294,7 @@ class TrainerClient:
         client = TrainerClient(api_key="sk_...", base_url="http://localhost:3000")
         run_id = client.launch_training_run(
             training_run_type="simple",
-            env_cls_path="training-runs/abc123/env-cls.bmxp",
+            env_cls_path="training-runs/abc123/env-cls.pkl",
             env_metadata_path="training-runs/abc123/env-metadata.json",
             train_dataset_path="training-runs/abc123/train.jsonl",
             eval_dataset_path="training-runs/abc123/eval.jsonl",
@@ -357,8 +356,8 @@ class TrainerClient:
         Args:
             training_run_type: Job template selector. Currently ``"simple"``
                 (gpu4 pool) or ``"simple-r5"`` (gpu4-r5 smoke-test pool).
-            env_cls_path: Path to the environment class bundle (.bmxp file)
-            env_metadata_path: Path to the environment kwargs JSON file
+            env_cls_path: Path to the environment class pickle (.pkl file)
+            env_metadata_path: Path to the environment metadata JSON file
             train_dataset_path: Path to the training dataset
             eval_dataset_path: Path to the evaluation dataset
             name: Optional name for the training run
@@ -726,7 +725,6 @@ class RolloutClient:
         env_metadata_path: str | None,
         env_cls_bytes: bytes | None,
         env_metadata_bytes: bytes | None,
-        env_args_bytes: bytes | None = None,
     ) -> dict[str, str]:
         """Build the ``env`` dict for the request payload.
 
@@ -749,13 +747,10 @@ class RolloutClient:
                 "env_metadata_path": env_metadata_path,  # type: ignore[dict-item]
             }
 
-        result: dict[str, str] = {
+        return {
             "env_cls_bytes": base64.b64encode(env_cls_bytes).decode(),  # type: ignore[arg-type]
             "env_metadata_bytes": base64.b64encode(env_metadata_bytes).decode(),  # type: ignore[arg-type]
         }
-        if env_args_bytes is not None:
-            result["env_args_bytes"] = base64.b64encode(env_args_bytes).decode()
-        return result
 
     def stream_rollout(
         self,
@@ -765,7 +760,6 @@ class RolloutClient:
         *,
         env_cls_bytes: bytes | None = None,
         env_metadata_bytes: bytes | None = None,
-        env_args_bytes: bytes | None = None,
         example_index: int = 0,
         llm_base_url: str | None = None,
         llm_model: str = _VALIDATION_MODEL,
@@ -815,7 +809,6 @@ class RolloutClient:
             env_metadata_path,
             env_cls_bytes,
             env_metadata_bytes,
-            env_args_bytes=env_args_bytes,
         )
 
         # Resolve LLM URL lazily. The platform key is only auto-forwarded when
