@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from benchmax.envs.example_id import canonical_example_id
+from benchmax.envs.example_id import canonical_example_id, make_example
 from benchmax.envs.types import Example, Messages, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
 
@@ -73,6 +73,34 @@ class BaseEnv(ABC):
             prompt_messages=prompt_messages,
             task=task,
             init_rollout_args=row.get("init_rollout_args"),
+        )
+
+    def playground_preprocess(self, prompt: str, **kwargs: Any) -> Example:
+        """Turn a one-shot playground prompt into an :class:`Example`.
+
+        The playground counterpart to ``dataset_preprocess``. Unlike
+        ``dataset_preprocess`` (which is a classmethod that runs during
+        dataset loading before any env instance exists), this is an
+        instance method so subclasses that interpolate ``self.system_prompt``
+        in ``__init__`` (e.g. :class:`SearchEnv` formatting in
+        ``corpus_description``) see the resolved value here.
+
+        The default builds ``[system?, user(prompt)]`` via :func:`make_example`,
+        which prepends ``self.system_prompt`` when non-empty. Override for
+        envs that need to wrap playground prompts differently — e.g.
+        structured user messages, env-side context preludes, or a separate
+        playground-only system prompt distinct from the training one.
+
+        ``task`` is ``None`` because playground prompts carry no ground
+        truth, references, or scoring config — the worker skips reward
+        computation for playground examples entirely. Override may set
+        ``task=...`` if the env can score playground prompts in a
+        meaningful way without operator-supplied grading data.
+        """
+        return make_example(
+            prompt_messages=[{"role": "user", "content": prompt}],
+            task=None,
+            system_prompt=self.system_prompt,
         )
 
     @classmethod
