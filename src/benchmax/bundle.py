@@ -1,13 +1,3 @@
-"""Bundling a BaseEnv subclass for remote execution.
-
-Two functions, two dataclasses. The bundle module is pure serialization —
-disk, blob storage, and transport are the caller's concern.
-
-For validation (does this env actually work end-to-end?), use
-``benchmax.platform.validation.validate_env`` *before* bundling. If that
-passes, ``dump_bundle`` will produce a loadable bundle.
-"""
-
 from __future__ import annotations
 
 import inspect
@@ -30,28 +20,20 @@ logger = logging.getLogger(__name__)
 
 
 class BundlingError(Exception):
-    """Raised when cloudpickle serialization or class-shape checks fail."""
+    """Cloudpickle serialization or class-shape failure."""
 
 
 class IncompatiblePythonError(Exception):
-    """Raised when the loading interpreter doesn't match the bundle's python_version."""
+    """Loader's interpreter doesn't match the bundle's python_version."""
 
 
-# cloudpickle.register_pickle_by_value mutates process-global state. Two
-# concurrent dump_bundle() calls registering the same module would race —
-# T1's unregister would silently un-register T2's still-needed registration,
-# and T2's pickled output would fall back to by-reference (wrong behavior).
+# register_pickle_by_value mutates process-global state; serialize against races.
 _BUNDLE_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
 class BundleMetadata:
-    """Pre-unpickle info — readable without touching the pickle.
-
-    The trainer / rollout-service / frontend read this to decide what to
-    install, which interpreter to launch, or to render the env source in
-    a UI tab, before (or without) unpickling the class.
-    """
+    """Readable without unpickling: install deps, version checks, UI source."""
 
     pip_dependencies: list[str]
     python_version: str
@@ -81,10 +63,7 @@ class BundleMetadata:
 
 @dataclass(frozen=True)
 class Bundle:
-    """A serialized env.
-
-    ``pickled`` is ``cloudpickle.dumps((env_class, constructor_args))``.
-    """
+    """Serialized env. ``pickled`` is ``cloudpickle.dumps((env_class, constructor_args))``."""
 
     pickled: bytes
     metadata: BundleMetadata
@@ -101,21 +80,14 @@ def dump_bundle(
 
     Args:
         env_class: A concrete BaseEnv subclass.
-        constructor_args: kwargs passed to ``env_class(**...)`` on load.
-            Defaults to ``{}``.
-        pip_dependencies: Packages the trainer/worker must have installed
-            before loading. Recorded in metadata; this function does NOT
-            install anything.
-        local_modules: Module objects to register with cloudpickle for
-            pickle-by-value. Required when the env class — or anything it
-            transitively references — lives in a local ``.py`` file that
-            isn't installed as a distribution.
+        constructor_args: kwargs for ``env_class(**...)`` on load.
+        pip_dependencies: Recorded in metadata. NOT installed by this call.
+        local_modules: Modules to pickle by-value. Required when the env class
+            (or anything it references) lives in a local ``.py``.
 
     Raises:
-        BundlingError: ``env_class`` is not a concrete BaseEnv subclass,
-            cloudpickle fails, or the pickle references non-installed modules
-            that weren't passed in ``local_modules`` (a bundle that would
-            ``ModuleNotFoundError`` on a fresh worker process).
+        BundlingError: bad env_class, cloudpickle failure, or pickle references
+            non-installed modules absent from ``local_modules``.
     """
     _ensure_safe_python_version()
     _check_env_class(env_class)
@@ -137,7 +109,7 @@ def dump_bundle(
                 pickled = cloudpickle.dumps((env_class, constructor_args))
             except Exception as e:
                 raise BundlingError(
-                    f"Failed to serialize {env_class.__name__} with cloudpickle: {e}"
+                    f"Failed to serialize {env_class.__name__}: {e}"
                 ) from e
         finally:
             for mod in local_modules:
@@ -180,19 +152,16 @@ def load_bundle(
 ) -> BaseEnv | tuple[type[BaseEnv], dict[str, Any]]:
     """Unpickle and (optionally) instantiate.
 
-    Always verifies the bundle's ``python_version`` matches the current
-    interpreter. Never installs pip dependencies — the caller's image must
-    already have them.
+    Verifies ``python_version`` matches. Never installs pip deps — image must.
 
     Args:
         bundle: The Bundle to load.
-        instantiate: If True (default), returns ``env_class(**constructor_args)``.
-            If False, returns ``(env_class, constructor_args)``.
+        instantiate: If True (default), return ``env_class(**constructor_args)``.
+            If False, return ``(env_class, constructor_args)``.
 
     Raises:
-        IncompatiblePythonError: Bundle's python_version != current interpreter.
-        BundlingError: Pickle bytes are corrupt, or the unpickled object isn't
-            a (env_class, constructor_args) tuple with a BaseEnv subclass.
+        IncompatiblePythonError: bundle's python_version != current.
+        BundlingError: corrupt bytes or non-BaseEnv payload.
     """
     current = f"{sys.version_info.major}.{sys.version_info.minor}"
     if bundle.metadata.python_version != current:
@@ -204,16 +173,12 @@ def load_bundle(
     try:
         payload = cloudpickle.loads(bundle.pickled)
     except Exception as e:
-        raise BundlingError(
-            f"Failed to unpickle bundle: {e}. "
-            "This usually means a dependency is missing or there's a "
-            "Python version mismatch."
-        ) from e
+        raise BundlingError(f"Failed to unpickle bundle: {e}") from e
 
     if not (isinstance(payload, tuple) and len(payload) == 2):
         raise BundlingError(
             f"Unpickled payload is {type(payload).__name__}, expected "
-            "(env_class, constructor_args) tuple. The bundle may be corrupt."
+            "(env_class, constructor_args) tuple."
         )
     env_class, constructor_args = payload
     if not (isinstance(env_class, type) and issubclass(env_class, BaseEnv)):
@@ -233,12 +198,9 @@ def load_bundle(
 
 def _check_env_class(env_class: type[BaseEnv]) -> None:
     if not (isinstance(env_class, type) and issubclass(env_class, BaseEnv)):
-        raise BundlingError(
-            f"{env_class!r} is not a BaseEnv subclass. "
-            "Bundled classes must inherit from benchmax.envs.base_env.BaseEnv."
-        )
+        raise BundlingError(f"{env_class!r} is not a BaseEnv subclass.")
     if env_class is BaseEnv:
-        raise BundlingError("Cannot bundle BaseEnv directly. Provide a concrete subclass.")
+        raise BundlingError("Cannot bundle BaseEnv directly; provide a concrete subclass.")
     abstract = getattr(env_class, "__abstractmethods__", frozenset())
     if abstract:
         raise BundlingError(
@@ -265,24 +227,17 @@ def _benchmax_version() -> str:
 
 
 def _ensure_safe_python_version() -> None:
+    # 3.13 has a pathlib.Path pickle incompatibility that breaks cross-version unpickling.
     v = sys.version_info
     if (v.major, v.minor) == (3, 13):
         raise BundlingError(
             f"Python {v.major}.{v.minor}.{v.micro} is unsupported. "
-            "Python 3.13.x has a pathlib.Path pickle incompatibility that "
-            "breaks cross-version unpickling. Use Python 3.12 or >= 3.14."
+            "Use Python 3.12 or >= 3.14."
         )
 
 
 def unregistered_local_refs(pickled: bytes) -> list[str]:
-    """Return modules this pickle would try to import that aren't installed.
-
-    These are the modules the unpickler would attempt via ``find_class``;
-    if none of them is a registered distribution or stdlib module, a fresh
-    worker process will hit ``ModuleNotFoundError``. Exposed for callers
-    (e.g. ``validate_env``) that want to surface the same check at a
-    different layer.
-    """
+    """Modules this pickle would import that aren't installed locally."""
     return _unregistered_local_refs(pickled)
 
 
@@ -291,13 +246,9 @@ def _unregistered_local_refs(pickled: bytes) -> list[str]:
 
 
 def _referenced_modules(pickled: bytes) -> set[str]:
-    """Modules the unpickler would resolve via import on load.
-
-    Hooks ``pickle.Unpickler.find_class`` to record every ``(module, name)``
-    lookup the unpickler attempts — i.e. exactly the imports that'd fail
-    with ``ModuleNotFoundError`` on a fresh interpreter. Returns a stub so
-    unpickling proceeds past missing classes and we collect every ref.
-    """
+    # Hooks find_class so we see every (module, name) the unpickler would import —
+    # i.e. exactly what'd raise ModuleNotFoundError on a fresh interpreter. The stub
+    # lets unpickling proceed past missing classes so we collect every ref.
     refs: set[str] = set()
 
     class _Stub:
@@ -321,14 +272,11 @@ def _referenced_modules(pickled: bytes) -> set[str]:
     try:
         _Recorder(io.BytesIO(pickled)).load()
     except Exception:
-        # We only care which modules got looked up; later REDUCE failures
-        # against stubs are expected and ignored.
-        pass
+        pass  # later REDUCE failures against stubs are expected
     return refs
 
 
 def _looks_like_installed(mod_name: str) -> bool:
-    """Heuristic: True if a fresh interpreter could import this top-level module."""
     top = mod_name.split(".")[0]
     if top in sys.stdlib_module_names:
         return True
