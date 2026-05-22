@@ -379,17 +379,16 @@ def validate_env(
         risky = unregistered_local_refs(cloudpickle.dumps(env_class))
         if risky:
             print(
-                f"  \u2717 pickle references modules that won't import on a "
-                f"fresh worker: {risky}"
+                f"  \u2717 {env_class.__name__}: missing "
+                f"local_modules=[{', '.join(risky)}]"
             )
             print(
-                "    Fix: pass local_modules=[<those modules>] when calling "
-                "dump_bundle. validate_env runs in-process where these resolve "
-                "via sys.modules, hiding the failure until the trainer loads."
+                "    (round-trip above passed because sys.modules cache "
+                "hides this in-process; trainer will fail to import)"
             )
             failed += 1
         else:
-            print("  \u2713 pickle has no unregistered local-module references")
+            print("  \u2713 no unregistered local-module references")
             passed += 1
     except Exception as exc:
         print(f"  \u2717 local-modules check failed: {type(exc).__name__}: {exc}")

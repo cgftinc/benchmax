@@ -148,12 +148,14 @@ def dump_bundle(
 
     risky = _unregistered_local_refs(pickled)
     if risky:
-        raise BundlingError(
-            f"{env_class.__name__}'s pickle references modules that won't "
-            f"import on a fresh worker process: {risky}. "
-            f"Pass these to local_modules= when calling dump_bundle. "
-            f"Already-registered: {sorted(m.__name__ for m in local_modules)}."
+        msg = (
+            f"{env_class.__name__}: missing "
+            f"local_modules=[{', '.join(risky)}]"
         )
+        if local_modules:
+            already = ", ".join(sorted(m.__name__ for m in local_modules))
+            msg += f" (already registered: [{already}])"
+        raise BundlingError(msg)
 
     metadata = BundleMetadata(
         pip_dependencies=pip_dependencies,
