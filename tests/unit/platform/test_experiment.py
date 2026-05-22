@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import sys
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -15,6 +16,11 @@ from benchmax.platform import (
     UploadedTrainingRun,
     upload_training_run,
 )
+
+# MinimalEnv is defined in this test module; cloudpickle would otherwise
+# pickle it by-reference and fail on a fresh worker. dump_bundle now
+# enforces this, so the test module itself must be registered for by-value.
+_TEST_MODULE = sys.modules[__name__]
 
 
 class MinimalEnv(BaseEnv):
@@ -71,6 +77,7 @@ def test_upload_training_run_returns_paths_matching_launch_kwargs():
         eval_dataset=[{"prompt": "p2", "ground_truth": "g2"}],
         name="test-run",
         storage_client=storage,  # type: ignore[arg-type]
+        local_modules=[_TEST_MODULE],
     )
 
     assert isinstance(result, UploadedTrainingRun)
@@ -92,6 +99,7 @@ def test_upload_training_run_uploads_four_files_with_correct_storage_paths():
         eval_dataset=[{"prompt": "p"}],
         name="run-abc",
         storage_client=storage,  # type: ignore[arg-type]
+        local_modules=[_TEST_MODULE],
     )
 
     paths = [path for path, _ in storage.uploads]
@@ -112,6 +120,7 @@ def test_upload_training_run_respects_storage_prefix_override():
         name="run-x",
         storage_prefix="custom/path",
         storage_client=storage,  # type: ignore[arg-type]
+        local_modules=[_TEST_MODULE],
     )
 
     paths = [path for path, _ in storage.uploads]
@@ -133,6 +142,7 @@ def test_upload_training_run_writes_jsonl_one_object_per_line(tmp_path: Path, mo
         eval_dataset=[{"b": 3}],
         name="jsonl-test",
         storage_client=CapturingStorage(),  # type: ignore[arg-type]
+        local_modules=[_TEST_MODULE],
     )
 
     train_lines = captured["training-runs/jsonl-test/train.jsonl"].decode().splitlines()
@@ -169,6 +179,7 @@ def test_upload_training_run_passes_constructor_args_through_to_bundle():
         name="ctor-args",
         constructor_args={"greeting": "hola"},
         storage_client=CapturingStorage(),  # type: ignore[arg-type]
+        local_modules=[_TEST_MODULE],
     )
 
     import cloudpickle

@@ -11,11 +11,14 @@ passes, ``dump_bundle`` will produce a loadable bundle.
 from __future__ import annotations
 
 import inspect
+import io
 import json
 import logging
+import pickle
 import sys
 import threading
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, distribution, packages_distributions
 from types import ModuleType
 from typing import Any
 
@@ -104,13 +107,15 @@ def dump_bundle(
             before loading. Recorded in metadata; this function does NOT
             install anything.
         local_modules: Module objects to register with cloudpickle for
-            pickle-by-value. Required when the env class imports from local
-            ``.py`` files that aren't installed packages. Not needed for
-            notebook cells.
+            pickle-by-value. Required when the env class — or anything it
+            transitively references — lives in a local ``.py`` file that
+            isn't installed as a distribution.
 
     Raises:
-        BundlingError: ``env_class`` is not a concrete BaseEnv subclass, or
-            cloudpickle fails.
+        BundlingError: ``env_class`` is not a concrete BaseEnv subclass,
+            cloudpickle fails, or the pickle references non-installed modules
+            that weren't passed in ``local_modules`` (a bundle that would
+            ``ModuleNotFoundError`` on a fresh worker process).
     """
     _ensure_safe_python_version()
     _check_env_class(env_class)
@@ -140,6 +145,15 @@ def dump_bundle(
                     cloudpickle.unregister_pickle_by_value(mod)
                 except Exception:
                     pass
+
+    risky = _unregistered_local_refs(pickled)
+    if risky:
+        raise BundlingError(
+            f"{env_class.__name__}'s pickle references modules that won't "
+            f"import on a fresh worker process: {risky}. "
+            f"Pass these to local_modules= when calling dump_bundle. "
+            f"Already-registered: {sorted(m.__name__ for m in local_modules)}."
+        )
 
     metadata = BundleMetadata(
         pip_dependencies=pip_dependencies,
@@ -256,3 +270,74 @@ def _ensure_safe_python_version() -> None:
             "Python 3.13.x has a pathlib.Path pickle incompatibility that "
             "breaks cross-version unpickling. Use Python 3.12 or >= 3.14."
         )
+
+
+def unregistered_local_refs(pickled: bytes) -> list[str]:
+    """Return modules this pickle would try to import that aren't installed.
+
+    These are the modules the unpickler would attempt via ``find_class``;
+    if none of them is a registered distribution or stdlib module, a fresh
+    worker process will hit ``ModuleNotFoundError``. Exposed for callers
+    (e.g. ``validate_env``) that want to surface the same check at a
+    different layer.
+    """
+    return _unregistered_local_refs(pickled)
+
+
+def _unregistered_local_refs(pickled: bytes) -> list[str]:
+    return sorted(m for m in _referenced_modules(pickled) if not _looks_like_installed(m))
+
+
+def _referenced_modules(pickled: bytes) -> set[str]:
+    """Modules the unpickler would resolve via import on load.
+
+    Hooks ``pickle.Unpickler.find_class`` to record every ``(module, name)``
+    lookup the unpickler attempts — i.e. exactly the imports that'd fail
+    with ``ModuleNotFoundError`` on a fresh interpreter. Returns a stub so
+    unpickling proceeds past missing classes and we collect every ref.
+    """
+    refs: set[str] = set()
+
+    class _Stub:
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        def __call__(self, *a: Any, **kw: Any) -> "_Stub":
+            return self
+
+        def __reduce__(self) -> tuple:
+            return (type(self), ())
+
+    class _Recorder(pickle.Unpickler):
+        def find_class(self, module: str, name: str) -> Any:
+            refs.add(module)
+            try:
+                return super().find_class(module, name)
+            except Exception:
+                return _Stub
+
+    try:
+        _Recorder(io.BytesIO(pickled)).load()
+    except Exception:
+        # We only care which modules got looked up; later REDUCE failures
+        # against stubs are expected and ignored.
+        pass
+    return refs
+
+
+def _looks_like_installed(mod_name: str) -> bool:
+    """Heuristic: True if a fresh interpreter could import this top-level module."""
+    top = mod_name.split(".")[0]
+    if top in sys.stdlib_module_names:
+        return True
+    try:
+        distribution(top)
+        return True
+    except PackageNotFoundError:
+        pass
+    try:
+        if packages_distributions().get(top):
+            return True
+    except Exception:
+        pass
+    return False

@@ -367,6 +367,34 @@ def validate_env(
         print(f"  \u2717 pickle round-trip failed: {type(exc).__name__}: {exc}")
         failed += 1
 
+    # \u2500\u2500 6a. Local-modules guard \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # Same-process round-trip above succeeds even when local_modules are
+    # forgotten, because the user's working module is already in sys.modules
+    # so cloudpickle's by-reference resolves via cache. On a fresh worker
+    # process there's no cache and the import fails. Inspect the pickle's
+    # find_class refs to catch this pre-upload.
+    try:
+        from benchmax.bundle import unregistered_local_refs
+
+        risky = unregistered_local_refs(cloudpickle.dumps(env_class))
+        if risky:
+            print(
+                f"  \u2717 pickle references modules that won't import on a "
+                f"fresh worker: {risky}"
+            )
+            print(
+                "    Fix: pass local_modules=[<those modules>] when calling "
+                "dump_bundle. validate_env runs in-process where these resolve "
+                "via sys.modules, hiding the failure until the trainer loads."
+            )
+            failed += 1
+        else:
+            print("  \u2713 pickle has no unregistered local-module references")
+            passed += 1
+    except Exception as exc:
+        print(f"  \u2717 local-modules check failed: {type(exc).__name__}: {exc}")
+        failed += 1
+
     # ── 6b. env_args pickle ────────────────────────────────────────
     try:
         args_data = cloudpickle.dumps(env_args)
