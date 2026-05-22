@@ -352,8 +352,8 @@ def validate_env(
 
     # ── 6. Pickle round-trip ─────────────────────────────────────
     # Use cloudpickle on both sides so envs that import from local modules
-    # (registered via local_modules in bundle_env) round-trip the same way as
-    # they will on the trainer. Plain pickle.loads can read simple cloudpickle
+    # (registered via local_modules in dump_bundle) round-trip the same way
+    # as they will on the trainer. Plain pickle.loads can read simple cloudpickle
     # output but breaks on by-value module pickling — silently mismatching
     # local validation vs trainer behavior.
     try:
