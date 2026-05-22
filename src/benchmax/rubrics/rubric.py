@@ -382,7 +382,12 @@ async def generate_instance_wise_adaptive_rubrics(
 
     prompt = INSTANCE_WISE_RUBRIC_GENERATION_PROMPT + prompt_suffix
 
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=3)
+    # `api_key or None` so an unset/empty value falls through to OPENAI_API_KEY.
+    # The OpenAI SDK only checks the env var when api_key is None or omitted;
+    # passing api_key="" is treated as a real (invalid) credential and skips
+    # the fallback, which is the failure mode when this helper is called from
+    # paths that don't thread an api_key (e.g. single_rubric_based_reward_function).
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key or None, max_retries=3)
 
     try:
         response = await client.chat.completions.create(
@@ -410,10 +415,10 @@ async def generate_instance_wise_adaptive_rubrics(
 async def evaluate_single_rubric(
     rubric: Rubric,
     question: str,
-    ground_truth: Optional[str],
     response: str,
     model_name: str,
     base_url: str,
+    ground_truth: Optional[str] = None,
     api_key: str = "",
     timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
@@ -464,7 +469,12 @@ async def evaluate_single_rubric(
             response=response,
         )
 
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=3)
+    # `api_key or None` so an unset/empty value falls through to OPENAI_API_KEY.
+    # The OpenAI SDK only checks the env var when api_key is None or omitted;
+    # passing api_key="" is treated as a real (invalid) credential and skips
+    # the fallback, which is the failure mode when this helper is called from
+    # paths that don't thread an api_key (e.g. single_rubric_based_reward_function).
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key or None, max_retries=3)
 
     try:
         resp = await client.chat.completions.create(
@@ -793,6 +803,7 @@ async def single_rubric_based_reward_function(
     llm_judge_url: str,
     prompt: str,
     model: str,
+    api_key: str = "",
     timeout: Optional[float] = None,
 ) -> Dict[str, float]:
     """
@@ -816,6 +827,8 @@ async def single_rubric_based_reward_function(
             response=text,
             model_name=model,
             base_url=llm_judge_url,
+            ground_truth=ground_truth,
+            api_key=api_key,
             timeout=timeout,
         )
         for rubric in rubrics
