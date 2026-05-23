@@ -98,6 +98,14 @@ class LinkerEnv(BaseEnv):
         max_search_calls: Maximum number of search calls allowed.
     """
 
+    # Static prompt exposed as a class attribute (not assigned on the
+    # instance) so the ``dataset_preprocess`` classmethod can read it via
+    # ``cls.system_prompt``. Setting it only on ``self`` left
+    # ``cls.system_prompt`` resolving to BaseEnv's "" — dropping the prompt
+    # from training Examples. See BaseEnv.dataset_preprocess for the
+    # classmethod-vs-instance-method rationale.
+    system_prompt: str = _SYSTEM_PROMPT
+
     def __init__(
         self,
         search: SearchClient,
@@ -139,8 +147,6 @@ class LinkerEnv(BaseEnv):
         self._tools: dict[str, tuple[ToolDefinition, Any]] = {
             "search": (search_tool, self._search_tool),
         }
-
-        self.system_prompt = _SYSTEM_PROMPT
 
     # ------------------------------------------------------------------
     # BaseEnv interface
@@ -196,7 +202,9 @@ class LinkerEnv(BaseEnv):
         if not query:
             return "Error: Missing required parameter: 'query'"
         try:
-            results = self._search.search(query=query, mode=self._default_mode, top_k=limit)
+            results = self._search.search(
+                query=query, mode=self._default_mode, top_k=limit
+            )
             return self._format_results(results)
         except Exception:
             return f"Error:\n{traceback.format_exc()}"
