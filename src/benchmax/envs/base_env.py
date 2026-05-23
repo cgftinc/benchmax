@@ -53,6 +53,22 @@ class BaseEnv(ABC):
 
         Override this for datasets with other column names or to project
         ``task`` down to a subset of fields.
+
+        Classmethod vs. instance method
+            The default is a classmethod so envs with a static
+            ``system_prompt`` (set as a class attribute) can preprocess
+            without paying the cost of constructing an env instance. The
+            trainer detects which form a subclass overrode with and
+            dispatches accordingly (``utils.is_classmethod``).
+
+            If your env interpolates runtime kwargs into
+            ``self.system_prompt`` in ``__init__`` (e.g. a corpus
+            description known only at construction time), override
+            ``dataset_preprocess`` as an **instance method** instead
+            and read ``self.system_prompt`` — ``cls.system_prompt``
+            would still be the unresolved class default. See
+            :class:`benchmax.envs.postgres_search.search_env.SearchEnv`
+            for the reference pattern.
         """
         if "prompt_messages" in row:
             prompt_messages = row["prompt_messages"]

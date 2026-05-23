@@ -60,31 +60,6 @@ _CONCISENESS_RUBRIC = Rubric(
     type="positive",
 )
 
-SYSTEM_PROMPT_TEMPLATE = """\
-Answer the given question by searching over {corpus_description}.
-
-First, reason about the question inside <think>...</think>. You may want to rephrase the
-question or break it down into sub-questions.
-
-Call the search tool to retrieve relevant results. After receiving information, reason
-about it inside <think>...</think> before either:
-(1) issuing a new search query
-(2) providing the final answer
-
-Each reasoning step should be grounded in retrieved information.
-
-You can search up to {max_search_calls} times. Break the question down across multiple
-search queries to gather comprehensive information.
-
-Recommended approach:
-1. If initial results do not contain the answer, re-query with broadened or rephrased language.
-2. Reference retrieved chunks to formulate more specific follow-up queries
-(e.g. using keywords in chunk content or using metadata).
-
-When you have gathered enough information, return your final answer inside <answer>...</answer>
-tags. Cite your sources inline using [Source: <source_id>] next to each claim.
-"""
-
 MAX_TOOL_OUTPUT_CHARS = 10000
 TOOL_OUTPUT_TRUNCATION_SUFFIX = "\n...[truncated due to character limit]"
 SEARCH_EFFICIENCY_DECAY_RATE = 0.2
@@ -109,6 +84,31 @@ class SearchEnv(BaseEnv):
         w_search_efficiency: Weight for search efficiency reward component.
         max_search_calls: Hard search call budget (0 reward if exceeded).
     """
+
+    SYSTEM_PROMPT_TEMPLATE = """\
+Answer the given question by searching over {corpus_description}.
+
+First, reason about the question inside <think>...</think>. You may want to rephrase the
+question or break it down into sub-questions.
+
+Call the search tool to retrieve relevant results. After receiving information, reason
+about it inside <think>...</think> before either:
+(1) issuing a new search query
+(2) providing the final answer
+
+Each reasoning step should be grounded in retrieved information.
+
+You can search up to {max_search_calls} times. Break the question down across multiple
+search queries to gather comprehensive information.
+
+Recommended approach:
+1. If initial results do not contain the answer, re-query with broadened or rephrased language.
+2. Reference retrieved chunks to formulate more specific follow-up queries
+(e.g. using keywords in chunk content or using metadata).
+
+When you have gathered enough information, return your final answer inside <answer>...</answer>
+tags. Cite your sources inline using [Source: <source_id>] next to each claim.
+"""
 
     def __init__(
         self,
@@ -190,11 +190,13 @@ class SearchEnv(BaseEnv):
             "search": (search_tool, self._search_tool),
         }
 
-        # Build system prompt.
-        self.system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-            corpus_description=corpus_description,
-            max_search_calls=max_search_calls,
-        )
+        # Build system prompt — but only if the subclass hasn't overridden
+        # `system_prompt` as a class attribute (BaseEnv-style extension).
+        if not type(self).system_prompt:
+            self.system_prompt = self.SYSTEM_PROMPT_TEMPLATE.format(
+                corpus_description=corpus_description,
+                max_search_calls=max_search_calls,
+            )
 
     # ------------------------------------------------------------------
     # BaseEnv interface
@@ -209,8 +211,11 @@ class SearchEnv(BaseEnv):
         _, tool_function = self._tools[tool_name]
         return await tool_function(**tool_args)
 
-    @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
+    def dataset_preprocess(self, example: Any, **kwargs) -> Example:
+        # Instance method (vs. BaseEnv's classmethod default) because the system
+        # prompt is interpolated in __init__ from runtime kwargs — only `self`
+        # has the resolved value; `cls.system_prompt` is still BaseEnv's "".
+        # See BaseEnv.dataset_preprocess docstring for the broader pattern.
         question = example.get("question", "")
         return make_example(
             prompt_messages=[{"role": "user", "content": question}],
@@ -219,7 +224,7 @@ class SearchEnv(BaseEnv):
                 "ground_truth": example.get("answer"),
                 "reference_chunks": example.get("reference_chunks", []),
             },
-            system_prompt=cls.system_prompt,
+            system_prompt=self.system_prompt,
         )
 
     async def compute_reward(

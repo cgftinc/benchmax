@@ -111,6 +111,24 @@ class TestInit:
         env = _make_env()
         assert env._w_search_efficiency == pytest.approx(0.1)
 
+    def test_subclass_can_override_system_prompt_via_class_attribute(self):
+        class CustomEnv(SearchEnv):
+            system_prompt = "Override prompt"
+
+        defaults = {"search": StubSearch(), **JUDGE_ARGS}
+        env = CustomEnv(**defaults, corpus_description="ignored", max_search_calls=99)
+        assert env.system_prompt == "Override prompt"
+
+    def test_subclass_can_override_system_prompt_template(self):
+        class CustomEnv(SearchEnv):
+            SYSTEM_PROMPT_TEMPLATE = (
+                "Search over {corpus_description} with {max_search_calls} budget."
+            )
+
+        defaults = {"search": StubSearch(), **JUDGE_ARGS}
+        env = CustomEnv(**defaults, corpus_description="Korean law", max_search_calls=7)
+        assert env.system_prompt == "Search over Korean law with 7 budget."
+
 
 class TestSearchTool:
     def test_empty_query_returns_error(self):
@@ -376,7 +394,8 @@ class TestCitationScoring:
 
 class TestDatasetPreprocess:
     def test_extracts_question_answer(self):
-        result = SearchEnv.dataset_preprocess({"question": "What is X?", "answer": "Y"})
+        env = _make_env()
+        result = env.dataset_preprocess({"question": "What is X?", "answer": "Y"})
         # User message carries the question text (system msg is prepended by make_example).
         user_msgs = [m for m in result["prompt_messages"] if m["role"] == "user"]
         assert user_msgs and user_msgs[0]["content"] == "What is X?"
@@ -384,10 +403,23 @@ class TestDatasetPreprocess:
         assert result["task"]["ground_truth"] == "Y"
 
     def test_passes_reference_chunks(self):
-        result = SearchEnv.dataset_preprocess(
+        env = _make_env()
+        result = env.dataset_preprocess(
             {"question": "Q", "answer": "A", "reference_chunks": [{"id": "c1"}]}
         )
         assert result["task"]["reference_chunks"] == [{"id": "c1"}]
+
+    def test_bakes_interpolated_system_prompt_into_example(self):
+        # The whole point of making this an instance method: the system prompt
+        # is interpolated in __init__ from runtime kwargs, so only `self` has
+        # the resolved value. Verifies the bug from
+        # project_searchenv_classmethod_system_prompt_drop is fixed.
+        env = _make_env(corpus_description="Korean legal statutes", max_search_calls=4)
+        result = env.dataset_preprocess({"question": "Q", "answer": "A"})
+        system_msgs = [m for m in result["prompt_messages"] if m["role"] == "system"]
+        assert len(system_msgs) == 1
+        assert "Korean legal statutes" in system_msgs[0]["content"]
+        assert "4 times" in system_msgs[0]["content"]
 
 
 class TestListTools:
