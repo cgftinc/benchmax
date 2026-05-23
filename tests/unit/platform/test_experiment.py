@@ -75,7 +75,7 @@ def test_upload_training_run_returns_paths_matching_launch_kwargs():
         env_class=MinimalEnv,
         train_dataset=[{"prompt": "p", "ground_truth": "g"}],
         eval_dataset=[{"prompt": "p2", "ground_truth": "g2"}],
-        name="test-run",
+        run_name="test-run",
         storage_client=storage,  # type: ignore[arg-type]
         local_modules=[_TEST_MODULE],
     )
@@ -91,43 +91,94 @@ def test_upload_training_run_returns_paths_matching_launch_kwargs():
     }
 
 
-def test_upload_training_run_uploads_four_files_with_correct_storage_paths():
+def test_upload_training_run_uses_hashed_envs_and_datasets_layout():
     storage = FakeStorageClient()
     upload_training_run(
         env_class=MinimalEnv,
         train_dataset=[{"prompt": "p"}],
         eval_dataset=[{"prompt": "p"}],
-        name="run-abc",
+        run_name="run-abc",
         storage_client=storage,  # type: ignore[arg-type]
         local_modules=[_TEST_MODULE],
     )
 
     paths = [path for path, _ in storage.uploads]
-    assert paths == [
-        "training-runs/run-abc/env-cls.pkl",
-        "training-runs/run-abc/env-metadata.json",
-        "training-runs/run-abc/train.jsonl",
-        "training-runs/run-abc/eval.jsonl",
-    ]
+    assert len(paths) == 4
+    env_paths = [p for p in paths if p.startswith("envs/")]
+    dataset_paths = [p for p in paths if p.startswith("datasets/")]
+    assert len(env_paths) == 2
+    assert len(dataset_paths) == 2
+
+    # All env files sit under a single envs/<run>/<16-hex>/ prefix.
+    env_dirs = {p.rsplit("/", 1)[0] for p in env_paths}
+    assert len(env_dirs) == 1
+    (env_dir,) = env_dirs
+    parts = env_dir.split("/")
+    assert parts[0] == "envs"
+    assert parts[1] == "run-abc"
+    assert len(parts[2]) == 16  # hash slice
+    assert {p.rsplit("/", 1)[1] for p in env_paths} == {
+        "env-cls.pkl",
+        "env-metadata.json",
+    }
+
+    # All dataset files sit under a single datasets/<run>/<8-hex>/ prefix.
+    ds_dirs = {p.rsplit("/", 1)[0] for p in dataset_paths}
+    assert len(ds_dirs) == 1
+    (ds_dir,) = ds_dirs
+    parts = ds_dir.split("/")
+    assert parts[0] == "datasets"
+    assert parts[1] == "run-abc"
+    assert len(parts[2]) == 8
+    assert {p.rsplit("/", 1)[1] for p in dataset_paths} == {
+        "train.jsonl",
+        "eval.jsonl",
+    }
 
 
-def test_upload_training_run_respects_storage_prefix_override():
+def test_upload_training_run_respects_env_prefix_override():
     storage = FakeStorageClient()
     upload_training_run(
         env_class=MinimalEnv,
         train_dataset=[],
         eval_dataset=[],
-        name="run-x",
-        storage_prefix="custom/path",
+        run_name="run-x",
+        env_prefix="custom/env/path",
         storage_client=storage,  # type: ignore[arg-type]
         local_modules=[_TEST_MODULE],
     )
 
     paths = [path for path, _ in storage.uploads]
-    assert all(p.startswith("custom/path/run-x/") for p in paths)
+    env_paths = [p for p in paths if not p.startswith("datasets/")]
+    assert set(env_paths) == {
+        "custom/env/path/env-cls.pkl",
+        "custom/env/path/env-metadata.json",
+    }
+    # Datasets still use the default layout.
+    assert all(p.startswith("datasets/run-x/") for p in paths if p.startswith("datasets/"))
 
 
-def test_upload_training_run_writes_jsonl_one_object_per_line(tmp_path: Path, monkeypatch):
+def test_upload_training_run_respects_dataset_prefix_override():
+    storage = FakeStorageClient()
+    upload_training_run(
+        env_class=MinimalEnv,
+        train_dataset=[],
+        eval_dataset=[],
+        run_name="run-y",
+        dataset_prefix="custom/data/path",
+        storage_client=storage,  # type: ignore[arg-type]
+        local_modules=[_TEST_MODULE],
+    )
+
+    paths = [path for path, _ in storage.uploads]
+    ds_paths = [p for p in paths if not p.startswith("envs/")]
+    assert set(ds_paths) == {
+        "custom/data/path/train.jsonl",
+        "custom/data/path/eval.jsonl",
+    }
+
+
+def test_upload_training_run_writes_jsonl_one_object_per_line():
     """The train/eval files must be valid JSONL."""
     captured: dict[str, bytes] = {}
 
@@ -140,13 +191,14 @@ def test_upload_training_run_writes_jsonl_one_object_per_line(tmp_path: Path, mo
         env_class=MinimalEnv,
         train_dataset=[{"a": 1}, {"a": 2}],
         eval_dataset=[{"b": 3}],
-        name="jsonl-test",
+        run_name="jsonl-test",
+        dataset_prefix="fixed/ds",
         storage_client=CapturingStorage(),  # type: ignore[arg-type]
         local_modules=[_TEST_MODULE],
     )
 
-    train_lines = captured["training-runs/jsonl-test/train.jsonl"].decode().splitlines()
-    eval_lines = captured["training-runs/jsonl-test/eval.jsonl"].decode().splitlines()
+    train_lines = captured["fixed/ds/train.jsonl"].decode().splitlines()
+    eval_lines = captured["fixed/ds/eval.jsonl"].decode().splitlines()
 
     import json
     assert [json.loads(line) for line in train_lines] == [{"a": 1}, {"a": 2}]
@@ -159,7 +211,7 @@ def test_upload_training_run_requires_api_key_or_storage_client():
             env_class=MinimalEnv,
             train_dataset=[],
             eval_dataset=[],
-            name="test",
+            run_name="test",
         )
 
 
@@ -176,12 +228,13 @@ def test_upload_training_run_passes_constructor_args_through_to_bundle():
         env_class=MinimalEnv,
         train_dataset=[],
         eval_dataset=[],
-        name="ctor-args",
+        run_name="ctor-args",
+        env_prefix="fixed/env",
         constructor_args={"greeting": "hola"},
         storage_client=CapturingStorage(),  # type: ignore[arg-type]
         local_modules=[_TEST_MODULE],
     )
 
     import cloudpickle
-    _, ctor_args = cloudpickle.loads(captured["training-runs/ctor-args/env-cls.pkl"])
+    _, ctor_args = cloudpickle.loads(captured["fixed/env/env-cls.pkl"])
     assert ctor_args == {"greeting": "hola"}

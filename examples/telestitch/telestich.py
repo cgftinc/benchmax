@@ -1551,7 +1551,7 @@ if __name__ == "__main__":
         env_class=TelestichEnv,
         train_dataset=train_data,
         eval_dataset=eval_data,
-        name=run_name,
+        run_name=run_name,
         api_key=API_KEY,
         base_url=BASE_URL,
         constructor_args={

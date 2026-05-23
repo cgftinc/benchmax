@@ -294,10 +294,10 @@ class TrainerClient:
         client = TrainerClient(api_key="sk_...", base_url="http://localhost:3000")
         run_id = client.launch_training_run(
             training_run_type="simple",
-            env_cls_path="training-runs/abc123/env-cls.pkl",
-            env_metadata_path="training-runs/abc123/env-metadata.json",
-            train_dataset_path="training-runs/abc123/train.jsonl",
-            eval_dataset_path="training-runs/abc123/eval.jsonl",
+            env_cls_path="envs/run-abc/abc123/env-cls.pkl",
+            env_metadata_path="envs/run-abc/abc123/env-metadata.json",
+            train_dataset_path="datasets/run-abc/def456/train.jsonl",
+            eval_dataset_path="datasets/run-abc/def456/eval.jsonl",
         )
         print(f"Launched: {run_id}")
     """

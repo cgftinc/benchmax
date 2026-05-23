@@ -128,7 +128,7 @@ def main() -> None:
         env_class=GuessEnv,
         train_dataset=train_data,
         eval_dataset=eval_data,
-        name=run_name,
+        run_name=run_name,
         api_key=API_KEY,
         base_url=BASE_URL,
         constructor_args=None,
