@@ -75,6 +75,7 @@ def dump_bundle(
     constructor_args: dict[str, Any] | None = None,
     pip_dependencies: list[str] | None = None,
     local_modules: list[ModuleType] | None = None,
+    env_class_source: str | None = None,
 ) -> Bundle:
     """Pickle ``(env_class, constructor_args)`` and stamp metadata.
 
@@ -84,6 +85,11 @@ def dump_bundle(
         pip_dependencies: Recorded in metadata. NOT installed by this call.
         local_modules: Modules to pickle by-value. Required when the env class
             (or anything it references) lives in a local ``.py``.
+        env_class_source: Override for the recorded source. Pass this when the
+            caller already holds the source and ``inspect.getsource`` can't
+            recover it — e.g. a class produced by ``exec()`` into an in-memory
+            namespace, which has no source file on disk. When ``None``
+            (default), source is introspected from ``env_class``.
 
     Raises:
         BundlingError: bad env_class, cloudpickle failure, or pickle references
@@ -133,7 +139,11 @@ def dump_bundle(
         pip_dependencies=pip_dependencies,
         python_version=f"{sys.version_info.major}.{sys.version_info.minor}",
         benchmax_version=_benchmax_version(),
-        env_class_source=_get_source(env_class),
+        env_class_source=(
+            env_class_source
+            if env_class_source is not None
+            else _get_source(env_class)
+        ),
     )
 
     logger.info(
