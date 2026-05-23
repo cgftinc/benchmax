@@ -61,28 +61,28 @@ _CONCISENESS_RUBRIC = Rubric(
 )
 
 SYSTEM_PROMPT_TEMPLATE = """\
-Answer the given question by using a search engine over {corpus_description}.
+Answer the given question by searching over {corpus_description}.
 
-You will first reason about the question inside <think> and </think>. For instance you may want
-to rephrase the question or break down the question into multiple sub-questions that you will search for.
+First, reason about the question inside <think>...</think>. You may want to rephrase the
+question or break it down into sub-questions.
 
-You must call the search engine with <tool_call> and it will return the top searched results.
-After receiving the information, you must reason about it inside <think> and </think> before either
-(1) issuing a new query with <tool_call>
-(2) providing the final answer inside <answer> and </answer> tags.
+Call the search tool to retrieve relevant results. After receiving information, reason
+about it inside <think>...</think> before either:
+(1) issuing a new search query
+(2) providing the final answer
 
-Each of your reasoning steps should be grounded in the retrieved information.
+Each reasoning step should be grounded in retrieved information.
 
-You can search up to {max_search_calls} times. Try to break down the question for each search query \
-and gather comprehensive information.
+You can search up to {max_search_calls} times. Break the question down across multiple
+search queries to gather comprehensive information.
 
 Recommended approach:
-1. If initial results do not contain the answer, try to re-query with broadened or rephrased language.
-2. Reference retrieved chunks to formulate more specific follow-up queries \
-(e.g. using keywords in chunk content or using metadata)
+1. If initial results do not contain the answer, re-query with broadened or rephrased language.
+2. Reference retrieved chunks to formulate more specific follow-up queries
+(e.g. using keywords in chunk content or using metadata).
 
-If you have gathered enough information to answer the question,
-return your final answer inside <answer>...</answer> and cite supporting sources as [Source: <source_id>].\
+When you have gathered enough information, return your final answer inside <answer>...</answer>
+tags. Cite your sources inline using [Source: <source_id>] next to each claim.
 """
 
 MAX_TOOL_OUTPUT_CHARS = 10000
