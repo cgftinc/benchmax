@@ -37,6 +37,26 @@ from benchmax.rubrics.rubric import Rubric, evaluate_single_rubric
 
 _CITATION_RE = re.compile(r"\[Source:\s*([^\]]+)\]", re.IGNORECASE)
 
+# Match Python-style `{name}` placeholders with word-char names only —
+# leaves JSON-like literals (e.g. `{"answer": "X"}`) and unknown keys
+# untouched, so a user-edited SYSTEM_PROMPT_TEMPLATE that contains JSON
+# examples doesn't blow up at env construction time.
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
+
+
+def _render_template(template: str, **vars: Any) -> str:
+    """Substitute `{name}` placeholders, leaving unknown matches verbatim.
+
+    Safer than ``str.format`` for templates that may legitimately contain
+    raw `{` / `}` characters (JSON examples, escape sequences). Only word-
+    character placeholders are considered; ``{"answer": "X"}`` passes
+    through unchanged.
+    """
+    return _TEMPLATE_PLACEHOLDER_RE.sub(
+        lambda m: str(vars[m.group(1)]) if m.group(1) in vars else m.group(0),
+        template,
+    )
+
 _CORRECTNESS_RUBRIC = Rubric(
     title="Answer correctness",
     description=(
@@ -193,7 +213,8 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         # Build system prompt — but only if the subclass hasn't overridden
         # `system_prompt` as a class attribute (BaseEnv-style extension).
         if not type(self).system_prompt:
-            self.system_prompt = self.SYSTEM_PROMPT_TEMPLATE.format(
+            self.system_prompt = _render_template(
+                self.SYSTEM_PROMPT_TEMPLATE,
                 corpus_description=corpus_description,
                 max_search_calls=max_search_calls,
             )

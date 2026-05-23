@@ -129,6 +129,31 @@ class TestInit:
         env = CustomEnv(**defaults, corpus_description="Korean law", max_search_calls=7)
         assert env.system_prompt == "Search over Korean law with 7 budget."
 
+    def test_template_substitution_preserves_json_like_literals(self):
+        # RAG prompts frequently include JSON few-shot examples. The regex
+        # substitution should leave them untouched instead of crashing.
+        class CustomEnv(SearchEnv):
+            SYSTEM_PROMPT_TEMPLATE = (
+                'Example: {"answer": "X"} for {corpus_description}.'
+            )
+
+        defaults = {"search": StubSearch(), **JUDGE_ARGS}
+        env = CustomEnv(**defaults, corpus_description="legal docs")
+        assert env.system_prompt == 'Example: {"answer": "X"} for legal docs.'
+
+    def test_template_substitution_preserves_unknown_placeholders(self):
+        # An unknown {name} placeholder should be passed through verbatim
+        # rather than raising KeyError, so users can author templates
+        # forward-compatibly without crashing on terms we don't yet support.
+        class CustomEnv(SearchEnv):
+            SYSTEM_PROMPT_TEMPLATE = (
+                "Use {corpus_description}. Future hook: {custom_var}."
+            )
+
+        defaults = {"search": StubSearch(), **JUDGE_ARGS}
+        env = CustomEnv(**defaults, corpus_description="legal docs")
+        assert env.system_prompt == "Use legal docs. Future hook: {custom_var}."
+
 
 class TestSearchTool:
     def test_empty_query_returns_error(self):
