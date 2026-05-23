@@ -11,21 +11,15 @@ Provides 5 reward components:
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
 import traceback
 from collections.abc import Callable
 from typing import Any
 
-import logging
-
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.example_id import make_example
-from benchmax.envs.types import Example, Messages, ToolDefinition
-
-logger = logging.getLogger(__name__)
-
-from benchmax.rag.corpus.search_client import SearchClient
 from benchmax.envs.reward_helpers import (
     clip01,
     count_search_calls,
@@ -33,9 +27,34 @@ from benchmax.envs.reward_helpers import (
     extract_completion_text,
     search_within_budget,
 )
+from benchmax.envs.types import Example, Messages, ToolDefinition
+from benchmax.rag.corpus.search_client import SearchClient
 from benchmax.rubrics.rubric import Rubric, evaluate_single_rubric
 
+logger = logging.getLogger(__name__)
+
 _CITATION_RE = re.compile(r"\[Source:\s*([^\]]+)\]", re.IGNORECASE)
+
+# Match Python-style `{name}` placeholders with word-char names only —
+# leaves JSON-like literals (e.g. `{"answer": "X"}`) and unknown keys
+# untouched, so a user-edited SYSTEM_PROMPT_TEMPLATE that contains JSON
+# examples doesn't blow up at env construction time.
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
+
+
+def _render_template(template: str, **vars: Any) -> str:
+    """Substitute `{name}` placeholders, leaving unknown matches verbatim.
+
+    Safer than ``str.format`` for templates that may legitimately contain
+    raw `{` / `}` characters (JSON examples, escape sequences). Only word-
+    character placeholders are considered; ``{"answer": "X"}`` passes
+    through unchanged.
+    """
+    return _TEMPLATE_PLACEHOLDER_RE.sub(
+        lambda m: str(vars[m.group(1)]) if m.group(1) in vars else m.group(0),
+        template,
+    )
+
 
 _CORRECTNESS_RUBRIC = Rubric(
     title="Answer correctness",
@@ -59,31 +78,6 @@ _CONCISENESS_RUBRIC = Rubric(
     ),
     type="positive",
 )
-
-SYSTEM_PROMPT_TEMPLATE = """\
-Answer the given question by using a search engine over {corpus_description}.
-
-You will first reason about the question inside <think> and </think>. For instance you may want
-to rephrase the question or break down the question into multiple sub-questions that you will search for.
-
-You must call the search engine with <tool_call> and it will return the top searched results.
-After receiving the information, you must reason about it inside <think> and </think> before either
-(1) issuing a new query with <tool_call>
-(2) providing the final answer inside <answer> and </answer> tags.
-
-Each of your reasoning steps should be grounded in the retrieved information.
-
-You can search up to {max_search_calls} times. Try to break down the question for each search query \
-and gather comprehensive information.
-
-Recommended approach:
-1. If initial results do not contain the answer, try to re-query with broadened or rephrased language.
-2. Reference retrieved chunks to formulate more specific follow-up queries \
-(e.g. using keywords in chunk content or using metadata)
-
-If you have gathered enough information to answer the question,
-return your final answer inside <answer>...</answer> and cite supporting sources as [Source: <source_id>].\
-"""
 
 MAX_TOOL_OUTPUT_CHARS = 10000
 TOOL_OUTPUT_TRUNCATION_SUFFIX = "\n...[truncated due to character limit]"
@@ -109,6 +103,31 @@ class SearchEnv(BaseEnv):
         w_search_efficiency: Weight for search efficiency reward component.
         max_search_calls: Hard search call budget (0 reward if exceeded).
     """
+
+    SYSTEM_PROMPT_TEMPLATE = """\
+Answer the given question by searching over {corpus_description}.
+
+First, reason about the question inside <think>...</think>. You may want to rephrase the
+question or break it down into sub-questions.
+
+Call the search tool to retrieve relevant results. After receiving information, reason
+about it inside <think>...</think> before either:
+(1) issuing a new search query
+(2) providing the final answer
+
+Each reasoning step should be grounded in retrieved information.
+
+You can search up to {max_search_calls} times. Break the question down across multiple
+search queries to gather comprehensive information.
+
+Recommended approach:
+1. If initial results do not contain the answer, re-query with broadened or rephrased language.
+2. Reference retrieved chunks to formulate more specific follow-up queries
+(e.g. using keywords in chunk content or using metadata).
+
+When you have gathered enough information, return your final answer inside <answer>...</answer>
+tags. Cite your sources inline using [Source: <source_id>] next to each claim.
+"""
 
     def __init__(
         self,
@@ -174,7 +193,9 @@ class SearchEnv(BaseEnv):
             search_props["mode"] = {
                 "type": "string",
                 "enum": modes,
-                "description": (f"Search mode. Available: {modes}. Default: {self._default_mode}."),
+                "description": (
+                    f"Search mode. Available: {modes}. Default: {self._default_mode}."
+                ),
             }
 
         search_tool = ToolDefinition(
@@ -190,11 +211,14 @@ class SearchEnv(BaseEnv):
             "search": (search_tool, self._search_tool),
         }
 
-        # Build system prompt.
-        self.system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-            corpus_description=corpus_description,
-            max_search_calls=max_search_calls,
-        )
+        # Build system prompt — but only if the subclass hasn't overridden
+        # `system_prompt` as a class attribute (BaseEnv-style extension).
+        if not type(self).system_prompt:
+            self.system_prompt = _render_template(
+                self.SYSTEM_PROMPT_TEMPLATE,
+                corpus_description=corpus_description,
+                max_search_calls=max_search_calls,
+            )
 
     # ------------------------------------------------------------------
     # BaseEnv interface
@@ -209,8 +233,11 @@ class SearchEnv(BaseEnv):
         _, tool_function = self._tools[tool_name]
         return await tool_function(**tool_args)
 
-    @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
+    def dataset_preprocess(self, example: Any, **kwargs) -> Example:
+        # Instance method (vs. BaseEnv's classmethod default) because the system
+        # prompt is interpolated in __init__ from runtime kwargs — only `self`
+        # has the resolved value; `cls.system_prompt` is still BaseEnv's "".
+        # See BaseEnv.dataset_preprocess docstring for the broader pattern.
         question = example.get("question", "")
         return make_example(
             prompt_messages=[{"role": "user", "content": question}],
@@ -219,7 +246,7 @@ class SearchEnv(BaseEnv):
                 "ground_truth": example.get("answer"),
                 "reference_chunks": example.get("reference_chunks", []),
             },
-            system_prompt=cls.system_prompt,
+            system_prompt=self.system_prompt,
         )
 
     async def compute_reward(
@@ -245,7 +272,9 @@ class SearchEnv(BaseEnv):
 
             logger.info(
                 "[SearchEnv] Q: %s\n  GT: %s\n  A: %s",
-                prompt[:200], gt_str[:200], answer[:200],
+                prompt[:200],
+                gt_str[:200],
+                answer[:200],
             )
 
             # 1. Correctness + Conciseness (concurrent judge calls)
@@ -259,7 +288,9 @@ class SearchEnv(BaseEnv):
             rewards: dict[str, float] = {
                 "answer_correctness": self._w_correctness * clip01(correctness_raw),
                 "conciseness": (
-                    self._w_conciseness * clip01(conciseness_raw) if correctness_ok else 0.0
+                    self._w_conciseness * clip01(conciseness_raw)
+                    if correctness_ok
+                    else 0.0
                 ),
             }
 
@@ -441,7 +472,9 @@ class SearchEnv(BaseEnv):
         precision = len(overlap) / len(cited_ids) if cited_ids else 0.0
         return recall, precision
 
-    def _extract_reference_ids(self, reference_chunks: list[dict[str, Any]]) -> set[str]:
+    def _extract_reference_ids(
+        self, reference_chunks: list[dict[str, Any]]
+    ) -> set[str]:
         """Extract document-level source IDs from reference chunks.
 
         Default uses the ``file`` metadata key. Override in subclasses

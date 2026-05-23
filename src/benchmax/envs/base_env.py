@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from benchmax.envs.example_id import canonical_example_id
+from benchmax.envs.example_id import canonical_example_id, make_example
 from benchmax.envs.types import Example, Messages, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
 
@@ -53,6 +53,22 @@ class BaseEnv(ABC):
 
         Override this for datasets with other column names or to project
         ``task`` down to a subset of fields.
+
+        Classmethod vs. instance method
+            The default is a classmethod so envs with a static
+            ``system_prompt`` (set as a class attribute) can preprocess
+            without paying the cost of constructing an env instance. The
+            trainer detects which form a subclass overrode with and
+            dispatches accordingly (``utils.is_classmethod``).
+
+            If your env interpolates runtime kwargs into
+            ``self.system_prompt`` in ``__init__`` (e.g. a corpus
+            description known only at construction time), override
+            ``dataset_preprocess`` as an **instance method** instead
+            and read ``self.system_prompt`` — ``cls.system_prompt``
+            would still be the unresolved class default. See
+            :class:`benchmax.envs.postgres_search.search_env.SearchEnv`
+            for the reference pattern.
         """
         if "prompt_messages" in row:
             prompt_messages = row["prompt_messages"]
@@ -75,27 +91,32 @@ class BaseEnv(ABC):
             init_rollout_args=row.get("init_rollout_args"),
         )
 
+    def playground_preprocess(self, prompt: str, **kwargs: Any) -> Example:
+        """Wrap a one-shot playground prompt into an :class:`Example`.
+
+        Instance method (vs classmethod :meth:`dataset_preprocess`) so
+        subclasses that interpolate ``self.system_prompt`` in ``__init__``
+        see the resolved value. Default prepends ``self.system_prompt`` via
+        :func:`make_example` with ``task=None`` — the rollout worker skips
+        reward computation for playground examples.
+        """
+        return make_example(
+            prompt_messages=[{"role": "user", "content": prompt}],
+            task=None,
+            system_prompt=self.system_prompt,
+        )
+
     @classmethod
     def load_dataset(
         cls, dataset_name: str, **kwargs
     ) -> Tuple[
         "DatasetDict | Dataset | IterableDatasetDict | IterableDataset", str | None
     ]:
-        """
-        Download and prepare a dataset for use with this environment.
+        """Load + prepare a dataset for this env.
 
-        This method should handle retrieving the specified dataset (e.g., from HuggingFace, local files,
-        or a custom source), preprocessing or converting it into a compatible structure, and storing it
-        locally in a reusable format. The processed dataset should be suitable for downstream use with
-        `dataset_preprocess`, which standardizes individual examples into the expected format.
-
-        Args:
-            dataset_name (str): Identifier of the dataset to be loaded.
-            **kwargs: Additional dataset-specific arguments (e.g., split, filtering options, cache directory).
-
-        Returns:
-            Dataset: A dataset object (e.g., HuggingFace Dataset or similar) ready for processing.
-            str: Optional string pointing to where the dataset is stored locally
+        Default thin-wraps ``datasets.load_dataset``. Override to fetch from
+        custom sources or to materialize a local cache; return the dataset
+        and an optional local path.
         """
         from datasets import load_dataset
 
@@ -121,22 +142,12 @@ class BaseEnv(ABC):
         task: Optional[Dict[str, Any]],
         **kwargs: Any,
     ) -> Dict[str, float]:
-        """Compute rewards for a single rollout.
+        """Score a rollout.
 
-        Args:
-            rollout_id: Identifier for the rollout being graded.
-            messages: Full conversation transcript (seed messages + every assistant /
-                tool turn produced during the rollout). Was named ``completion`` in
-                the legacy signature, which was misleading: this is the entire
-                message list, not just the model's final answer.
-            task: Per-example reward-side data from
-                :class:`benchmax.envs.types.Example` (e.g. ``ground_truth``,
-                scoring config). ``None`` for envs that grade without per-row data.
-            **kwargs: Trainer-runtime context (e.g. ``workspace_path``). Example
-                fields should be read from ``task``, not ``kwargs``.
-
-        Returns:
-            Mapping of reward function name to scalar score.
+        ``messages`` is the full transcript (seed + assistant + tool turns).
+        ``task`` carries per-example reward-side data (e.g. ``ground_truth``,
+        scoring config); ``None`` for envs that grade without per-row data.
+        Returns ``{reward_name: score}``.
         """
         pass
 
@@ -147,22 +158,12 @@ class BaseEnv(ABC):
         tasks: List[Optional[Dict[str, Any]]],
         **kwargs: Any,
     ) -> List[Dict[str, float]]:
-        """Compute rewards across a group of rollouts jointly.
+        """Score a rollout group jointly.
 
-        Override this when reward computation requires cross-rollout context (e.g.,
-        relative scoring, group normalization, deduplication). Default returns
-        empty dicts so per-rollout ``compute_reward`` runs in isolation.
-
-        Args:
-            rollout_ids: Identifiers for each rollout in the group.
-            messages_list: One message transcript per rollout (see
-                :meth:`compute_reward` for the renaming from ``completions``).
-            tasks: One task dict (or ``None``) per rollout, paired by index.
-            **kwargs: Trainer-runtime context shared across the group.
-
-        Returns:
-            One reward dict per rollout, in input order. An empty dict signals
-            that no group reward was computed for that rollout.
+        Override when reward needs cross-rollout context (relative scoring,
+        group normalization, dedup). Default returns one empty dict per
+        rollout, signalling per-rollout :meth:`compute_reward` runs in
+        isolation. Returns are paired with ``rollout_ids`` by index.
         """
         return [{} for _ in rollout_ids]
 
