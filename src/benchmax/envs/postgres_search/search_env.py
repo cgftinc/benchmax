@@ -11,21 +11,15 @@ Provides 5 reward components:
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
 import traceback
 from collections.abc import Callable
 from typing import Any
 
-import logging
-
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.example_id import make_example
-from benchmax.envs.types import Example, Messages, ToolDefinition
-
-logger = logging.getLogger(__name__)
-
-from benchmax.rag.corpus.search_client import SearchClient
 from benchmax.envs.reward_helpers import (
     clip01,
     count_search_calls,
@@ -33,7 +27,11 @@ from benchmax.envs.reward_helpers import (
     extract_completion_text,
     search_within_budget,
 )
+from benchmax.envs.types import Example, Messages, ToolDefinition
+from benchmax.rag.corpus.search_client import SearchClient
 from benchmax.rubrics.rubric import Rubric, evaluate_single_rubric
+
+logger = logging.getLogger(__name__)
 
 _CITATION_RE = re.compile(r"\[Source:\s*([^\]]+)\]", re.IGNORECASE)
 
@@ -56,6 +54,7 @@ def _render_template(template: str, **vars: Any) -> str:
         lambda m: str(vars[m.group(1)]) if m.group(1) in vars else m.group(0),
         template,
     )
+
 
 _CORRECTNESS_RUBRIC = Rubric(
     title="Answer correctness",
@@ -194,7 +193,9 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             search_props["mode"] = {
                 "type": "string",
                 "enum": modes,
-                "description": (f"Search mode. Available: {modes}. Default: {self._default_mode}."),
+                "description": (
+                    f"Search mode. Available: {modes}. Default: {self._default_mode}."
+                ),
             }
 
         search_tool = ToolDefinition(
@@ -271,7 +272,9 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
 
             logger.info(
                 "[SearchEnv] Q: %s\n  GT: %s\n  A: %s",
-                prompt[:200], gt_str[:200], answer[:200],
+                prompt[:200],
+                gt_str[:200],
+                answer[:200],
             )
 
             # 1. Correctness + Conciseness (concurrent judge calls)
@@ -285,7 +288,9 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             rewards: dict[str, float] = {
                 "answer_correctness": self._w_correctness * clip01(correctness_raw),
                 "conciseness": (
-                    self._w_conciseness * clip01(conciseness_raw) if correctness_ok else 0.0
+                    self._w_conciseness * clip01(conciseness_raw)
+                    if correctness_ok
+                    else 0.0
                 ),
             }
 
@@ -467,7 +472,9 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         precision = len(overlap) / len(cited_ids) if cited_ids else 0.0
         return recall, precision
 
-    def _extract_reference_ids(self, reference_chunks: list[dict[str, Any]]) -> set[str]:
+    def _extract_reference_ids(
+        self, reference_chunks: list[dict[str, Any]]
+    ) -> set[str]:
         """Extract document-level source IDs from reference chunks.
 
         Default uses the ``file`` metadata key. Override in subclasses
