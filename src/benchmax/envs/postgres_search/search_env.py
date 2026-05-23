@@ -28,6 +28,7 @@ from benchmax.envs.reward_helpers import (
     search_within_budget,
 )
 from benchmax.envs.types import Example, Messages, ToolDefinition
+from benchmax.platform.credentials import TokenProvider, platform_bearer
 from benchmax.rag.corpus.search_client import SearchClient
 from benchmax.rubrics.rubric import Rubric, evaluate_single_rubric
 
@@ -92,8 +93,9 @@ class SearchEnv(BaseEnv):
     Args:
         search: A :class:`SearchClient` instance (pickle-safe).
         judge_base_url: Base URL for the LLM judge API (required).
-        judge_api_key: API key for the LLM judge (required).
         judge_model: Model name for the LLM judge (required).
+        judge_token_provider: Optional; resolves the judge bearer per call.
+            Defaults to ``platform_bearer`` (the credential seam).
         corpus_description: Description injected into system prompt.
         judge_timeout: Timeout for judge API calls.
         w_correctness: Weight for correctness reward component.
@@ -134,8 +136,8 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         search: SearchClient,
         *,
         judge_base_url: str,
-        judge_api_key: str,
         judge_model: str,
+        judge_token_provider: TokenProvider | None = None,
         corpus_description: str = "a document corpus",
         judge_timeout: float = 30.0,
         w_correctness: float = 1.0,
@@ -146,16 +148,20 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         max_search_calls: int = 10,
         **kwargs: Any,
     ) -> None:
-        if not judge_base_url or not judge_api_key or not judge_model:
+        if not judge_base_url or not judge_model:
             raise ValueError(
-                "SearchEnv requires judge_base_url, judge_api_key, and judge_model. "
-                "All three must be non-empty."
+                "SearchEnv requires judge_base_url and judge_model; both must be "
+                "non-empty. The judge credential is resolved at call time via "
+                "judge_token_provider (default: platform_bearer)."
             )
 
         self._search = search
         self._judge_base_url = judge_base_url
-        self._judge_api_key = judge_api_key
         self._judge_model = judge_model
+        # Resolved per call (default: the platform credential seam). A customer
+        # may inject their own provider; baking their own key stays supported
+        # but discouraged — see docs/design/env-credential-model.md §7.1.
+        self._judge_token_provider = judge_token_provider or platform_bearer
         self._judge_timeout = judge_timeout
         self._corpus_description = corpus_description
         self._w_correctness = w_correctness
@@ -407,7 +413,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
                 response=response,
                 model_name=self._judge_model,
                 base_url=self._judge_base_url,
-                api_key=self._judge_api_key,
+                api_key=self._judge_token_provider(),
                 timeout=self._judge_timeout,
             )
             conciseness_task = evaluate_single_rubric(
@@ -417,7 +423,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
                 response=response,
                 model_name=self._judge_model,
                 base_url=self._judge_base_url,
-                api_key=self._judge_api_key,
+                api_key=self._judge_token_provider(),
                 timeout=self._judge_timeout,
             )
             correctness_result, conciseness_result = await asyncio.gather(

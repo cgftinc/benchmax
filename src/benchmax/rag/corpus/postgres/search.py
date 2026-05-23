@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from benchmax.platform.credentials import TokenProvider, platform_bearer
+
 from .client import CorpusClient
 
 
@@ -15,32 +17,37 @@ class PostgresSearch:
 
     Supports lexical (BM25) search only.
 
+    The bearer token is resolved per request via ``token_provider`` (default:
+    the platform credential resolver — rotating act-as token in training, or
+    ``PLATFORM_API_KEY`` in playground / self-serve). No credential is stored,
+    so nothing is frozen into the pickled env.
+
     Args:
-        api_key: Castform API key.
         corpus_name: Name of the corpus.
         base_url: Corpora API base URL.
         corpus_id: Optional corpus ID (skips name lookup).
+        token_provider: Optional override; defaults to ``platform_bearer``.
     """
 
     def __init__(
         self,
-        api_key: str,
         corpus_name: str,
         base_url: str,
         *,
         corpus_id: str | None = None,
+        token_provider: TokenProvider | None = None,
     ) -> None:
-        self._api_key = api_key
         self._corpus_name = corpus_name
         self._base_url = base_url
         self._corpus_id = corpus_id
+        self._token_provider = token_provider or platform_bearer
         self._client: CorpusClient | None = None
 
     def _get_client(self) -> CorpusClient:
         if self._client is None:
             self._client = CorpusClient(
-                api_key=self._api_key,
                 base_url=self._base_url,
+                token_provider=self._token_provider,
             )
         return self._client
 
@@ -87,7 +94,6 @@ class PostgresSearch:
     def get_params(self) -> dict[str, Any]:
         return {
             "backend": "corpora",
-            "api_key": self._api_key[:8] + "...",
             "corpus_name": self._corpus_name,
             "base_url": self._base_url,
         }
