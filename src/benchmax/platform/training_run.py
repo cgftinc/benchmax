@@ -12,6 +12,7 @@ in-memory datasets and wants the four blob paths needed to launch.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 from dataclasses import dataclass
@@ -50,30 +51,40 @@ def upload_training_run(
     env_class: type,
     train_dataset: list[dict[str, Any]],
     eval_dataset: list[dict[str, Any]],
-    name: str,
+    run_name: str,
     api_key: str | None = None,
     base_url: str | None = None,
     constructor_args: dict[str, Any] | None = None,
     pip_dependencies: list[str] | None = None,
     local_modules: list[ModuleType] | None = None,
-    storage_prefix: str = "training-runs",
+    env_prefix: str | None = None,
+    dataset_prefix: str | None = None,
     storage_client: StorageClient | None = None,
 ) -> UploadedTrainingRun:
     """Bundle the env class and upload it + datasets to platform storage.
+
+    Default layout:
+        envs/<run_name>/<env_hash>/{env-cls.pkl, env-metadata.json}
+        datasets/<run_name>/<dataset_hash>/{train.jsonl, eval.jsonl}
+
+    Hashes are sha256 of the pickled bundle (envs) and of the concatenated
+    train+eval JSONL bytes (datasets), truncated to 16 / 8 hex chars.
 
     Args:
         env_class: BaseEnv subclass to bundle.
         train_dataset: Training examples (list of dicts).
         eval_dataset: Eval examples (list of dicts).
-        name: Training run name; used as the storage path segment.
+        run_name: Training run identifier; used as the storage path segment.
         api_key: Platform API key. Required if ``storage_client`` not provided.
         base_url: Platform base URL. Defaults to ``config.platform_url()``.
         constructor_args: Optional kwargs to bake into the env bundle.
         pip_dependencies: Pip deps to install on the trainer before unpickling.
         local_modules: Module objects to pickle by value (for envs that import
             from local .py files). See ``dump_bundle`` docs.
-        storage_prefix: Storage path prefix. Files land at
-            ``{storage_prefix}/{name}/{file}``. Default: ``"training-runs"``.
+        env_prefix: Override the default env directory. When set, env files
+            land at ``<env_prefix>/{env-cls.pkl, env-metadata.json}``.
+        dataset_prefix: Override the default dataset directory. When set,
+            JSONL files land at ``<dataset_prefix>/{train.jsonl, eval.jsonl}``.
         storage_client: BYOC. Pass an existing client to reuse its connection
             pool, custom timeouts, or test fakes. Otherwise constructed from
             ``api_key``/``base_url``.
@@ -96,7 +107,19 @@ def upload_training_run(
         local_modules=local_modules,
     )
 
-    prefix = f"{storage_prefix}/{name}"
+    train_jsonl = "\n".join(json.dumps(r) for r in train_dataset) + "\n"
+    eval_jsonl = "\n".join(json.dumps(r) for r in eval_dataset) + "\n"
+
+    if env_prefix is None:
+        env_hash = hashlib.sha256(bundle.pickled).hexdigest()[:16]
+        env_prefix = f"envs/{run_name}/{env_hash}"
+
+    if dataset_prefix is None:
+        dataset_hash = hashlib.sha256(
+            train_jsonl.encode() + eval_jsonl.encode()
+        ).hexdigest()[:8]
+        dataset_prefix = f"datasets/{run_name}/{dataset_hash}"
+
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
         cls_local = tmpdir / "env-cls.pkl"
@@ -106,24 +129,20 @@ def upload_training_run(
 
         cls_local.write_bytes(bundle.pickled)
         meta_local.write_bytes(bundle.metadata.to_json_bytes())
-        train_local.write_text(
-            "\n".join(json.dumps(r) for r in train_dataset) + "\n"
-        )
-        eval_local.write_text(
-            "\n".join(json.dumps(r) for r in eval_dataset) + "\n"
-        )
+        train_local.write_text(train_jsonl)
+        eval_local.write_text(eval_jsonl)
 
         return UploadedTrainingRun(
             env_cls_path=storage_client.upload_local_file(
-                f"{prefix}/env-cls.pkl", cls_local
+                f"{env_prefix}/env-cls.pkl", cls_local
             )["blobPath"],
             env_metadata_path=storage_client.upload_local_file(
-                f"{prefix}/env-metadata.json", meta_local
+                f"{env_prefix}/env-metadata.json", meta_local
             )["blobPath"],
             train_dataset_path=storage_client.upload_local_file(
-                f"{prefix}/train.jsonl", train_local
+                f"{dataset_prefix}/train.jsonl", train_local
             )["blobPath"],
             eval_dataset_path=storage_client.upload_local_file(
-                f"{prefix}/eval.jsonl", eval_local
+                f"{dataset_prefix}/eval.jsonl", eval_local
             )["blobPath"],
         )
