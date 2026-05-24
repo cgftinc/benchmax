@@ -7,7 +7,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from benchmax.platform.credentials import TokenProvider, platform_bearer
+from benchmax.platform.credentials import (
+    TokenProvider,
+    as_token_provider,
+    platform_bearer,
+)
 
 from .client import CorpusClient
 
@@ -26,7 +30,8 @@ class PostgresSearch:
         corpus_name: Name of the corpus.
         base_url: Corpora API base URL.
         corpus_id: Optional corpus ID (skips name lookup).
-        token_provider: Optional override; defaults to ``platform_bearer``.
+        token_provider: Optional override — a callable resolving the bearer per
+            call, or a literal key (string sugar). Defaults to ``platform_bearer``.
     """
 
     def __init__(
@@ -35,12 +40,12 @@ class PostgresSearch:
         base_url: str,
         *,
         corpus_id: str | None = None,
-        token_provider: TokenProvider | None = None,
+        token_provider: str | TokenProvider | None = None,
     ) -> None:
         self._corpus_name = corpus_name
         self._base_url = base_url
         self._corpus_id = corpus_id
-        self._token_provider = token_provider or platform_bearer
+        self._token_provider = as_token_provider(token_provider, platform_bearer)
         self._client: CorpusClient | None = None
 
     def _get_client(self) -> CorpusClient:

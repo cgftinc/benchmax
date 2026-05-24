@@ -28,7 +28,11 @@ from benchmax.envs.reward_helpers import (
     search_within_budget,
 )
 from benchmax.envs.types import Example, Messages, ToolDefinition
-from benchmax.platform.credentials import TokenProvider, platform_bearer
+from benchmax.platform.credentials import (
+    TokenProvider,
+    as_token_provider,
+    platform_bearer,
+)
 from benchmax.rag.corpus.search_client import SearchClient
 from benchmax.rubrics.rubric import Rubric, evaluate_single_rubric
 
@@ -137,7 +141,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         *,
         judge_base_url: str,
         judge_model: str,
-        judge_token_provider: TokenProvider | None = None,
+        judge_token_provider: str | TokenProvider | None = None,
         corpus_description: str = "a document corpus",
         judge_timeout: float = 30.0,
         w_correctness: float = 1.0,
@@ -161,7 +165,9 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         # Resolved per call (default: the platform credential seam). A customer
         # may inject their own provider; baking their own key stays supported
         # but discouraged — see docs/design/env-credential-model.md §7.1.
-        self._judge_token_provider = judge_token_provider or platform_bearer
+        self._judge_token_provider = as_token_provider(
+            judge_token_provider, platform_bearer
+        )
         self._judge_timeout = judge_timeout
         self._corpus_description = corpus_description
         self._w_correctness = w_correctness

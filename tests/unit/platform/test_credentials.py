@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import pickle
+
+import cloudpickle
 import pytest
 
-from benchmax.platform.credentials import platform_bearer
+from benchmax.platform.credentials import (
+    as_token_provider,
+    env_token,
+    platform_bearer,
+)
 
 _TOKEN_PATH_ENV = "ACT_AS_TOKEN_PATH"
 _API_KEY_ENV = "PLATFORM_API_KEY"
@@ -63,3 +70,53 @@ def test_rotation_is_picked_up_per_call(tmp_path, monkeypatch):
     assert platform_bearer() == "token-1"
     f.write_text("token-2")
     assert platform_bearer() == "token-2"
+
+
+# ---- env_token (external-provider keys) ----
+
+
+def test_env_token_reads_var(monkeypatch):
+    monkeypatch.setenv("TPUF_API_KEY", "tpuf_abc")
+    assert env_token("TPUF_API_KEY")() == "tpuf_abc"
+
+
+def test_env_token_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("TPUF_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="TPUF_API_KEY is not set"):
+        env_token("TPUF_API_KEY")()
+
+
+def test_env_token_reads_per_call(monkeypatch):
+    provider = env_token("TPUF_API_KEY")
+    monkeypatch.setenv("TPUF_API_KEY", "k1")
+    assert provider() == "k1"
+    monkeypatch.setenv("TPUF_API_KEY", "k2")
+    assert provider() == "k2"
+
+
+def test_env_token_pickles_by_reference_small(monkeypatch):
+    """partial-over-module-fn → tiny pickle, var name travels (no secret)."""
+    provider = env_token("TPUF_API_KEY")
+    data = cloudpickle.dumps(provider)
+    assert len(data) < 500
+    assert b"tpuf_" not in data  # nothing read at pickle time
+    monkeypatch.setenv("TPUF_API_KEY", "tpuf_xyz")
+    assert pickle.loads(data)() == "tpuf_xyz"
+
+
+# ---- as_token_provider (normalization + string sugar) ----
+
+
+def test_as_token_provider_none_returns_default():
+    default = env_token("X")
+    assert as_token_provider(None, default) is default
+
+
+def test_as_token_provider_callable_passthrough():
+    fn = env_token("X")
+    assert as_token_provider(fn, platform_bearer) is fn
+
+
+def test_as_token_provider_string_sugar():
+    provider = as_token_provider("sk_literal", platform_bearer)
+    assert provider() == "sk_literal"

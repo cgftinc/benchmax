@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from benchmax.platform.credentials import TokenProvider, as_token_provider, env_token
+
 
 class PineconeSearch:
     """Pickle-safe Pinecone search client for RL environments.
@@ -16,8 +18,11 @@ class PineconeSearch:
     Stores only serializable connection parameters.  The SDK client is
     created lazily on first search call (including after unpickle).
 
+    The Pinecone key is resolved per request via ``token_provider`` (default:
+    reads ``PINECONE_API_KEY`` at runtime), so no key is frozen into the pickled
+    env. Pinecone is an external provider — we neither mint nor rotate this key.
+
     Args:
-        api_key: Pinecone API key.
         index_name: Name of the Pinecone index.
         index_host: Optional host URL (bypasses index name lookup).
         namespace: Pinecone namespace within the index (default ``""``).
@@ -26,11 +31,13 @@ class PineconeSearch:
         embed_model: Pinecone hosted embedding model name. Ignored
             when ``embed_fn`` is provided.
         field_mapping: Maps Pinecone metadata keys to internal names.
+        token_provider: Optional override — a callable resolving the key per
+            call, or a literal key (string sugar). Defaults to reading
+            ``PINECONE_API_KEY``.
     """
 
     def __init__(
         self,
-        api_key: str,
         index_name: str,
         *,
         index_host: str | None = None,
@@ -38,14 +45,17 @@ class PineconeSearch:
         embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
         embed_model: str = "multilingual-e5-large",
         field_mapping: dict[str, str] | None = None,
+        token_provider: str | TokenProvider | None = None,
     ) -> None:
-        self._api_key = api_key
         self._index_name = index_name
         self._index_host = index_host
         self._namespace = namespace
         self._embed_fn = embed_fn
         self._embed_model = embed_model
         self._field_mapping = field_mapping
+        self._token_provider = as_token_provider(
+            token_provider, env_token("PINECONE_API_KEY")
+        )
         self._client: Any = None
 
     def _get_client(self) -> Any:
@@ -53,7 +63,7 @@ class PineconeSearch:
             from .index_client import PineconeIndexClient
 
             self._client = PineconeIndexClient(
-                api_key=self._api_key,
+                api_key=self._token_provider(),
                 index_name=self._index_name,
                 index_host=self._index_host,
                 namespace=self._namespace,
@@ -92,7 +102,6 @@ class PineconeSearch:
     def get_params(self) -> dict[str, Any]:
         return {
             "backend": "pinecone",
-            "api_key": self._api_key[:8] + "...",
             "index_name": self._index_name,
             "namespace": self._namespace,
             "embed_model": self._embed_model,

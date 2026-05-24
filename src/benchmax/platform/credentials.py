@@ -21,6 +21,7 @@ unauthenticated call.
 
 from __future__ import annotations
 
+import functools
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -56,3 +57,48 @@ def platform_bearer() -> str:
         f"(in training) ensure {_TOKEN_PATH_ENV} points at the token_refresher "
         f"output ({_TOKEN_PATH_ENV}={token_path!r})."
     )
+
+
+def _read_env_token(env_var: str) -> str:
+    value = os.environ.get(env_var)
+    if not value:
+        raise RuntimeError(
+            f"{env_var} is not set. The launcher must inject it into the "
+            f"run process (or set it locally for a self-serve run)."
+        )
+    return value
+
+
+def env_token(env_var: str) -> TokenProvider:
+    """A per-call provider that reads a static key from ``env_var``.
+
+    For **external-provider** credentials (Turbopuffer, Pinecone, …) — keys we
+    neither mint nor rotate. Read at runtime (never baked); raises if unset.
+    The launcher injects ``env_var`` into the trainer/worker process; for
+    self-serve the user sets it locally. Convention: ``<PROVIDER>_API_KEY``.
+
+    Returned as a ``functools.partial`` over a module-level function so it
+    pickles by reference (tiny bundle, no closure) — the var name travels, not
+    a secret.
+    """
+    return functools.partial(_read_env_token, env_var)
+
+
+def as_token_provider(
+    value: str | TokenProvider | None,
+    default: TokenProvider,
+) -> TokenProvider:
+    """Normalize a credential argument into a per-call provider.
+
+    - ``None``     → ``default`` (the runtime seam; nothing baked).
+    - ``str``      → a fixed-value provider. Ergonomic, but the literal is
+      captured in the closure, so it **bakes** if the env is pickled — the
+      discouraged class-A "your own key" carve-out (see
+      ``docs/design/env-credential-model.md`` §7.1). Prefer the env-var default.
+    - ``callable`` → used as-is.
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return lambda: value
+    return value

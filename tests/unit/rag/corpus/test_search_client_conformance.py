@@ -12,31 +12,34 @@ from benchmax.rag.corpus.search_client import SearchClient
 
 class TestPineconeSearchConformance:
     def test_isinstance(self):
-        ps = PineconeSearch(api_key="test", index_name="test")
+        ps = PineconeSearch(index_name="test")
         assert isinstance(ps, SearchClient)
 
     def test_available_modes(self):
-        ps = PineconeSearch(api_key="test", index_name="test")
+        ps = PineconeSearch(index_name="test")
         assert ps.available_modes == ["vector"]
 
-    def test_get_params_masks_key(self):
-        ps = PineconeSearch(api_key="sk_secret_key_here", index_name="idx")
+    def test_get_params_carries_no_credential(self):
+        ps = PineconeSearch(index_name="idx")
         params = ps.get_params()
         assert params["backend"] == "pinecone"
         assert params["index_name"] == "idx"
-        assert "secret_key_here" not in params["api_key"]
+        assert "api_key" not in params
 
     def test_pickle_roundtrip(self):
-        ps = PineconeSearch(api_key="test", index_name="test")
+        ps = PineconeSearch(index_name="test")
         data = cloudpickle.dumps(ps)
         restored = pickle.loads(data)
         assert isinstance(restored, SearchClient)
         assert restored.available_modes == ["vector"]
 
-    def test_pickle_size_reasonable(self):
-        ps = PineconeSearch(api_key="test", index_name="test")
+    def test_pickle_carries_no_secret(self):
+        # Default token_provider reads PINECONE_API_KEY at runtime; the bundle
+        # carries the var name (via partial), not a key.
+        ps = PineconeSearch(index_name="test")
         data = cloudpickle.dumps(ps)
-        assert len(data) < 1000  # should be ~200B
+        assert len(data) < 1500
+        assert b"PINECONE_API_KEY" in data
 
 
 class TestChromaSearchConformance:
