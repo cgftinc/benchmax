@@ -12,6 +12,8 @@ import numpy as np
 
 from openai import AsyncOpenAI
 
+from benchmax.platform.credentials import platform_bearer
+
 logger = logging.getLogger(__name__)
 
 
@@ -347,6 +349,25 @@ def _extract_json(s: str) -> dict:
     raise ValueError("Response did not contain valid JSON.")
 
 
+def _resolve_judge_key(api_key: str) -> str | None:
+    """Resolve the bearer for an LLM-judge call.
+
+    Explicit ``api_key`` wins. Otherwise fall back to the Castform platform
+    credential seam (``ACT_AS_TOKEN_PATH`` in training, ``PLATFORM_API_KEY`` in
+    playground / self-serve) — the same surface the search clients resolve
+    through ``platform_bearer``. If no platform credential is available, return
+    ``None`` so the OpenAI SDK can still pick up ``OPENAI_API_KEY`` for direct
+    customer usage. This is the seam the judge rubrics were missing — without
+    it they sent a baked/empty key and llm-proxy returned 401 invalid_api_key.
+    """
+    if api_key:
+        return api_key
+    try:
+        return platform_bearer()
+    except Exception:
+        return None
+
+
 async def generate_instance_wise_adaptive_rubrics(
     question: str,
     ground_truth: str,
@@ -382,12 +403,13 @@ async def generate_instance_wise_adaptive_rubrics(
 
     prompt = INSTANCE_WISE_RUBRIC_GENERATION_PROMPT + prompt_suffix
 
-    # `api_key or None` so an unset/empty value falls through to OPENAI_API_KEY.
-    # The OpenAI SDK only checks the env var when api_key is None or omitted;
-    # passing api_key="" is treated as a real (invalid) credential and skips
-    # the fallback, which is the failure mode when this helper is called from
-    # paths that don't thread an api_key (e.g. single_rubric_based_reward_function).
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key or None, max_retries=3)
+    # Explicit api_key wins; otherwise resolve the Castform platform credential
+    # seam (ACT_AS_TOKEN_PATH in training, PLATFORM_API_KEY in playground /
+    # self-serve) — the same surface the search clients use. Falls back to None
+    # (→ OPENAI_API_KEY) when no platform credential is present, for direct use.
+    client = AsyncOpenAI(
+        base_url=base_url, api_key=_resolve_judge_key(api_key), max_retries=3
+    )
 
     try:
         response = await client.chat.completions.create(
@@ -469,12 +491,13 @@ async def evaluate_single_rubric(
             response=response,
         )
 
-    # `api_key or None` so an unset/empty value falls through to OPENAI_API_KEY.
-    # The OpenAI SDK only checks the env var when api_key is None or omitted;
-    # passing api_key="" is treated as a real (invalid) credential and skips
-    # the fallback, which is the failure mode when this helper is called from
-    # paths that don't thread an api_key (e.g. single_rubric_based_reward_function).
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key or None, max_retries=3)
+    # Explicit api_key wins; otherwise resolve the Castform platform credential
+    # seam (ACT_AS_TOKEN_PATH in training, PLATFORM_API_KEY in playground /
+    # self-serve) — the same surface the search clients use. Falls back to None
+    # (→ OPENAI_API_KEY) when no platform credential is present, for direct use.
+    client = AsyncOpenAI(
+        base_url=base_url, api_key=_resolve_judge_key(api_key), max_retries=3
+    )
 
     try:
         resp = await client.chat.completions.create(
