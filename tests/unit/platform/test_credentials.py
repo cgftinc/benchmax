@@ -118,5 +118,15 @@ def test_as_token_provider_callable_passthrough():
 
 
 def test_as_token_provider_string_sugar():
-    provider = as_token_provider("sk_literal", platform_bearer)
+    with pytest.warns(UserWarning, match="baked into the bundle"):
+        provider = as_token_provider("sk_literal", platform_bearer)
     assert provider() == "sk_literal"
+
+
+def test_as_token_provider_string_sugar_bakes_secret_when_pickled():
+    """The warning's premise: a literal token is captured in the closure and
+    travels with the pickled provider — the at-rest leak the default avoids."""
+    with pytest.warns(UserWarning):
+        provider = as_token_provider("sk_literal", platform_bearer)
+    revived = cloudpickle.loads(cloudpickle.dumps(provider))
+    assert revived() == "sk_literal"  # secret survived pickling — that's the risk

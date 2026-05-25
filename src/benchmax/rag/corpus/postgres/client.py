@@ -46,7 +46,10 @@ class CorpusClient:
 
     base_url: str = "http://localhost:3000"
     timeout: float = 30.0
-    max_retries: int = 3
+    # Shared budget for network-error retries AND 429 rate-limit backoff. A
+    # large corpus can span several rate-limit windows, so a late batch may be
+    # throttled more than once — give it enough attempts to ride them out.
+    max_retries: int = 5
     retry_backoff_seconds: float = 0.5
     token_provider: TokenProvider = platform_bearer
     _http_client: httpx.Client = field(init=False, repr=False)
@@ -80,7 +83,7 @@ class CorpusClient:
         attempt = 1
         while True:
             try:
-                return self._http_client.request(
+                response = self._http_client.request(
                     method, path, headers=headers, **kwargs
                 )
             except (httpx.ConnectTimeout, httpx.ConnectError, httpx.ReadTimeout) as exc:
@@ -107,6 +110,43 @@ class CorpusClient:
                 )
                 time.sleep(delay)
                 attempt += 1
+                continue
+
+            # Server-side rate limiting (429): the chunk-upload endpoint caps
+            # requests per user, and a bulk upload runs many batches in
+            # parallel — so 429s are expected, not fatal. Honor the server's
+            # Retry-After and retry within the budget instead of raising and
+            # failing the whole upload partway through.
+            if response.status_code == 429 and attempt < retries:
+                delay = self._retry_after_delay(response, attempt)
+                logger.warning(
+                    "Corpora API rate-limited (429) on attempt %s/%s. Retrying in %.2fs. "
+                    "method=%s path=%s base_url=%s",
+                    attempt,
+                    retries,
+                    delay,
+                    method,
+                    path,
+                    self.base_url,
+                )
+                time.sleep(delay)
+                attempt += 1
+                continue
+
+            return response
+
+    def _retry_after_delay(self, response: httpx.Response, attempt: int) -> float:
+        """Seconds to wait before retrying a 429.
+
+        Prefer the server's ``Retry-After`` header (delta-seconds); fall back
+        to exponential backoff when it's absent or unparseable."""
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                pass
+        return self.retry_backoff_seconds * (2 ** (attempt - 1))
 
     def __enter__(self) -> "CorpusClient":
         return self

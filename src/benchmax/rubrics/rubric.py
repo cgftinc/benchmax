@@ -349,23 +349,45 @@ def _extract_json(s: str) -> dict:
     raise ValueError("Response did not contain valid JSON.")
 
 
-def _resolve_judge_key(api_key: str) -> str | None:
+def _resolve_judge_key(api_key: str, base_url: str | None = None) -> str | None:
     """Resolve the bearer for an LLM-judge call.
 
     Explicit ``api_key`` wins. Otherwise fall back to the Castform platform
     credential seam (``ACT_AS_TOKEN_PATH`` in training, ``PLATFORM_API_KEY`` in
     playground / self-serve) — the same surface the search clients resolve
-    through ``platform_bearer``. If no platform credential is available, return
-    ``None`` so the OpenAI SDK can still pick up ``OPENAI_API_KEY`` for direct
-    customer usage. This is the seam the judge rubrics were missing — without
-    it they sent a baked/empty key and llm-proxy returned 401 invalid_api_key.
+    through ``platform_bearer``. This is the seam the judge rubrics were missing
+    — without it they sent a baked/empty key and llm-proxy returned 401
+    invalid_api_key.
+
+    Failure modes are deliberately *loud*, to match the search clients and avoid
+    the silent-auth-failure-as-opaque-401 class this seam exists to kill:
+
+    - No platform credential **and** ``OPENAI_API_KEY`` set → return ``None`` so
+      the OpenAI SDK picks it up (legitimate direct-customer use).
+    - No platform credential and no ``OPENAI_API_KEY`` → re-raise
+      ``platform_bearer``'s ``RuntimeError`` (a real training/eval misconfig;
+      don't degrade it into a downstream 401).
+    - Platform credential resolved but ``base_url`` unset → raise. The platform
+      token is multi-audience and only valid against our llm-proxy; handing it
+      to the OpenAI SDK's default endpoint (api.openai.com) would leak it
+      off-platform — the same risk the worker avoids by never setting
+      ``OPENAI_API_KEY``.
     """
     if api_key:
         return api_key
     try:
-        return platform_bearer()
-    except Exception:
-        return None
+        token = platform_bearer()
+    except RuntimeError:
+        if os.environ.get("OPENAI_API_KEY"):
+            return None
+        raise
+    if not base_url:
+        raise RuntimeError(
+            "Refusing to send the Castform platform credential to the OpenAI "
+            "SDK default endpoint: judge base_url is unset. Set base_url to the "
+            "llm-proxy, or pass an explicit api_key for direct OpenAI use."
+        )
+    return token
 
 
 async def generate_instance_wise_adaptive_rubrics(
@@ -408,7 +430,7 @@ async def generate_instance_wise_adaptive_rubrics(
     # self-serve) — the same surface the search clients use. Falls back to None
     # (→ OPENAI_API_KEY) when no platform credential is present, for direct use.
     client = AsyncOpenAI(
-        base_url=base_url, api_key=_resolve_judge_key(api_key), max_retries=3
+        base_url=base_url, api_key=_resolve_judge_key(api_key, base_url), max_retries=3
     )
 
     try:
@@ -496,7 +518,7 @@ async def evaluate_single_rubric(
     # self-serve) — the same surface the search clients use. Falls back to None
     # (→ OPENAI_API_KEY) when no platform credential is present, for direct use.
     client = AsyncOpenAI(
-        base_url=base_url, api_key=_resolve_judge_key(api_key), max_retries=3
+        base_url=base_url, api_key=_resolve_judge_key(api_key, base_url), max_retries=3
     )
 
     try:

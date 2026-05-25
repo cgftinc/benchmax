@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import functools
 import os
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 
@@ -100,5 +101,13 @@ def as_token_provider(
     if value is None:
         return default
     if isinstance(value, str):
+        warnings.warn(
+            "A literal token was passed where a per-call provider is expected. "
+            "It is captured in a closure and will be baked into the bundle if "
+            "the env is pickled — a secret written to storage at rest. Prefer "
+            "the default resolver (platform_bearer) or an env-var provider "
+            "(env_token); see docs/design/env-credential-model.md §7.1.",
+            stacklevel=2,
+        )
         return lambda: value
     return value

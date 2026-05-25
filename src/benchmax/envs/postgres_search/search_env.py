@@ -176,8 +176,6 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         self._w_citation_precision = w_citation_precision
         self._w_search_efficiency = w_search_efficiency
         self._max_search_calls = max_search_calls
-        self._run_id = kwargs.get("run_id")
-        self._rollout_api_key = kwargs.get("api_key")
 
         # Determine default search mode.
         modes = sorted(search.available_modes)
