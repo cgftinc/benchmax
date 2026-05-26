@@ -54,20 +54,16 @@ class BaseEnv(ABC):
         Override this for datasets with other column names or to project
         ``task`` down to a subset of fields.
 
-        Classmethod vs. instance method
-            The default is a classmethod so envs with a static
-            ``system_prompt`` (set as a class attribute) can preprocess
-            without paying the cost of constructing an env instance. The
-            trainer detects which form a subclass overrode with and
-            dispatches accordingly (``utils.is_classmethod``).
+        System prompt
+            Set ``system_prompt`` as a **static class attribute** and read it
+            via ``cls.system_prompt`` (the default below does). Preprocessing
+            then never constructs an env instance, and the system prompt
+            baked into training Examples matches what the playground uses.
 
-            If your env interpolates runtime kwargs into
-            ``self.system_prompt`` in ``__init__`` (e.g. a corpus
-            description known only at construction time), override
-            ``dataset_preprocess`` as an **instance method** instead
-            and read ``self.system_prompt`` — ``cls.system_prompt``
-            would still be the unresolved class default. See
-            :class:`benchmax.envs.postgres_search.search_env.SearchEnv`
+            If your prompt is templated (e.g. a corpus description), render it
+            at class-definition time and assign the result — don't defer it to
+            ``__init__``. See
+            :meth:`benchmax.envs.postgres_search.search_env.SearchEnv.render_system_prompt`
             for the reference pattern.
         """
         if "prompt_messages" in row:
@@ -91,19 +87,21 @@ class BaseEnv(ABC):
             init_rollout_args=row.get("init_rollout_args"),
         )
 
-    def playground_preprocess(self, prompt: str, **kwargs: Any) -> Example:
+    @classmethod
+    def playground_preprocess(cls, prompt: str, **kwargs: Any) -> Example:
         """Wrap a one-shot playground prompt into an :class:`Example`.
 
-        Instance method (vs classmethod :meth:`dataset_preprocess`) so
-        subclasses that interpolate ``self.system_prompt`` in ``__init__``
-        see the resolved value. Default prepends ``self.system_prompt`` via
-        :func:`make_example` with ``task=None`` — the rollout worker skips
+        Classmethod (like :meth:`dataset_preprocess`), reading the static
+        ``cls.system_prompt`` class attribute — so a one-shot playground
+        prompt is preprocessed without constructing an env instance, and the
+        system prompt matches what training uses. Prepends ``cls.system_prompt``
+        via :func:`make_example` with ``task=None`` — the rollout worker skips
         reward computation for playground examples.
         """
         return make_example(
             prompt_messages=[{"role": "user", "content": prompt}],
             task=None,
-            system_prompt=self.system_prompt,
+            system_prompt=cls.system_prompt,
         )
 
     @classmethod

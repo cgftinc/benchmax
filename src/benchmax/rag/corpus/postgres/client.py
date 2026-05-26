@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from tqdm.auto import tqdm
 
+from benchmax.platform.credentials import TokenProvider, platform_bearer
+
 from .exceptions import (
     AuthenticationError,
     ChunkLimitError,
@@ -31,28 +33,30 @@ class CorpusClient:
     """Client for interacting with the Corpora API.
 
     Example:
-        >>> client = CorpusClient(api_key="sk_...", base_url="http://localhost:3000")
+        >>> client = CorpusClient(base_url="http://localhost:3000")
         >>> corpus = client.create_corpus("my-docs")
         >>> result = client.upload_chunks(corpus.id, collection)
         >>> print(f"Uploaded {result.inserted_count} chunks")
+
+    The bearer token is resolved **per request** via ``token_provider`` (default:
+    the platform credential resolver), so a rotating act-as token stays valid
+    across a long run and is never frozen into a pickled env. Callers with an
+    explicit key inject one, e.g. ``token_provider=lambda: my_key``.
     """
 
-    api_key: str
     base_url: str = "http://localhost:3000"
     timeout: float = 30.0
-    max_retries: int = 3
+    # Shared budget for network-error retries AND 429 rate-limit backoff. A
+    # large corpus can span several rate-limit windows, so a late batch may be
+    # throttled more than once — give it enough attempts to ride them out.
+    max_retries: int = 5
     retry_backoff_seconds: float = 0.5
+    token_provider: TokenProvider = platform_bearer
     _http_client: httpx.Client = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Initialize HTTP client with auth headers."""
-        normalized_api_key = self.api_key.strip()
-        if not normalized_api_key:
-            raise AuthenticationError(
-                "Missing Corpora API key. Pass a non-empty `api_key` to PostgresChunkSource/CorpusClient."
-            )
-
-        self.api_key = normalized_api_key
+        """Initialize the persistent HTTP client. Auth is attached per request
+        in ``_request`` — not baked here."""
         timeout_config = httpx.Timeout(
             timeout=self.timeout,
             connect=self.timeout,
@@ -62,20 +66,26 @@ class CorpusClient:
         )
         self._http_client = httpx.Client(
             base_url=self.base_url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers={"Content-Type": "application/json"},
             timeout=timeout_config,
         )
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        """Execute an HTTP request with retry/backoff for transient network failures."""
+        """Execute an HTTP request with retry/backoff for transient network failures.
+
+        Resolves the bearer per request via ``token_provider`` so a rotating
+        act-as token stays valid across a long run."""
+        headers = {
+            **kwargs.pop("headers", {}),
+            "Authorization": f"Bearer {self.token_provider()}",
+        }
         retries = max(1, int(self.max_retries))
         attempt = 1
         while True:
             try:
-                return self._http_client.request(method, path, **kwargs)
+                response = self._http_client.request(
+                    method, path, headers=headers, **kwargs
+                )
             except (httpx.ConnectTimeout, httpx.ConnectError, httpx.ReadTimeout) as exc:
                 if attempt >= retries:
                     raise CorpusAPIError(
@@ -100,6 +110,43 @@ class CorpusClient:
                 )
                 time.sleep(delay)
                 attempt += 1
+                continue
+
+            # Server-side rate limiting (429): the chunk-upload endpoint caps
+            # requests per user, and a bulk upload runs many batches in
+            # parallel — so 429s are expected, not fatal. Honor the server's
+            # Retry-After and retry within the budget instead of raising and
+            # failing the whole upload partway through.
+            if response.status_code == 429 and attempt < retries:
+                delay = self._retry_after_delay(response, attempt)
+                logger.warning(
+                    "Corpora API rate-limited (429) on attempt %s/%s. Retrying in %.2fs. "
+                    "method=%s path=%s base_url=%s",
+                    attempt,
+                    retries,
+                    delay,
+                    method,
+                    path,
+                    self.base_url,
+                )
+                time.sleep(delay)
+                attempt += 1
+                continue
+
+            return response
+
+    def _retry_after_delay(self, response: httpx.Response, attempt: int) -> float:
+        """Seconds to wait before retrying a 429.
+
+        Prefer the server's ``Retry-After`` header (delta-seconds); fall back
+        to exponential backoff when it's absent or unparseable."""
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                pass
+        return self.retry_backoff_seconds * (2 ** (attempt - 1))
 
     def __enter__(self) -> "CorpusClient":
         return self
@@ -226,7 +273,9 @@ class CorpusClient:
 
             if on_limit == "oldest":
                 oldest = min(existing, key=lambda c: c.created_at)
-                print(f"Deleting oldest corpus: {oldest.name} (created {oldest.created_at})")
+                print(
+                    f"Deleting oldest corpus: {oldest.name} (created {oldest.created_at})"
+                )
                 self.delete_corpus(oldest.id)
                 return self.create_corpus(name)
 
@@ -235,7 +284,9 @@ class CorpusClient:
 
             raise ValueError(f"Unknown on_limit strategy: {on_limit}")
 
-    def _interactive_corpus_selection(self, new_name: str, existing: list[Corpus]) -> Corpus:
+    def _interactive_corpus_selection(
+        self, new_name: str, existing: list[Corpus]
+    ) -> Corpus:
         """Interactive corpus selection for Jupyter notebooks."""
         print("\n" + "=" * 60)
         print("CORPUS LIMIT REACHED (max 5)")
@@ -252,7 +303,9 @@ class CorpusClient:
 
         while True:
             try:
-                choice = input(f"Enter number to delete (1-{len(existing)}) or 0 to cancel: ")
+                choice = input(
+                    f"Enter number to delete (1-{len(existing)}) or 0 to cancel: "
+                )
                 choice_int = int(choice)
 
                 if choice_int == 0:
@@ -328,7 +381,9 @@ class CorpusClient:
                 ]
             }
 
-            response = self._request("POST", f"/v1/corpora/{corpus_id}/chunks", json=payload)
+            response = self._request(
+                "POST", f"/v1/corpora/{corpus_id}/chunks", json=payload
+            )
             self._handle_response_errors(response)
 
             data = response.json()
@@ -337,7 +392,10 @@ class CorpusClient:
             return inserted_count, chunk_ids
 
         pbar = tqdm(
-            total=total_batches, desc="Uploading chunks", disable=not show_progress, unit="batch"
+            total=total_batches,
+            desc="Uploading chunks",
+            disable=not show_progress,
+            unit="batch",
         )
 
         if max_workers == 1:
@@ -448,7 +506,9 @@ class CorpusClient:
         if filters:
             payload["filters"] = filters
 
-        response = self._request("POST", f"/v1/corpora/{corpus_id}/search", json=payload)
+        response = self._request(
+            "POST", f"/v1/corpora/{corpus_id}/search", json=payload
+        )
         self._handle_response_errors(response)
 
         data = response.json()

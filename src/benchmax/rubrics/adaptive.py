@@ -11,7 +11,7 @@ from .cache import (
     load_rubric_cache,
 )
 from .prompts import INSTANCE_WISE_RUBRIC_GENERATION_PROMPT
-from .rubric import _cache_dict_to_rubric, evaluate_single_rubric
+from .rubric import _cache_dict_to_rubric, _resolve_judge_key, evaluate_single_rubric
 
 
 async def generate_instance_wise_adaptive_rubrics(
@@ -49,12 +49,13 @@ async def generate_instance_wise_adaptive_rubrics(
 
     prompt = INSTANCE_WISE_RUBRIC_GENERATION_PROMPT + prompt_suffix
 
-    # `api_key or None` so an unset/empty value falls through to OPENAI_API_KEY.
-    # The OpenAI SDK only checks the env var when api_key is None or omitted;
-    # passing api_key="" is treated as a real (invalid) credential and skips
-    # the fallback, which is the failure mode when this helper is called from
-    # paths that don't thread an api_key (e.g. single_rubric_based_reward_function).
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key or None, max_retries=3)
+    # Explicit api_key wins; otherwise resolve the Castform platform credential
+    # seam (ACT_AS_TOKEN_PATH in training, PLATFORM_API_KEY in playground /
+    # self-serve) — the same surface the search clients use. Falls back to None
+    # (→ OPENAI_API_KEY) when no platform credential is present, for direct use.
+    client = AsyncOpenAI(
+        base_url=base_url, api_key=_resolve_judge_key(api_key, base_url), max_retries=3
+    )
 
     try:
         response = await client.chat.completions.create(

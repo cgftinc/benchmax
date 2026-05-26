@@ -50,10 +50,14 @@ class PostgresChunkSource:
     """
 
     def __init__(self, api_key: str, corpus_name: str, base_url: str) -> None:
-        self._client = CorpusClient(api_key=api_key, base_url=base_url)
+        # Indexing client: an explicit user key, injected as the per-request
+        # token provider (CorpusClient no longer bakes a static key).
+        self._client = CorpusClient(base_url=base_url, token_provider=lambda: api_key)
         self._corpus_name = corpus_name
         self._corpus: Corpus | None = None
-        self.collection: ChunkCollection | None = None  # exposed publicly for advanced users
+        self.collection: ChunkCollection | None = (
+            None  # exposed publicly for advanced users
+        )
         self._search_capabilities: SearchCapabilities = {
             "backend": "corpora",
             "modes": {"lexical"},
@@ -108,7 +112,9 @@ class PostgresChunkSource:
             inspector = ChunkInspector(collection)
             inspector.summary(max_depth=3, max_files_per_folder=4)
 
-        self.populate_from_chunks(collection, batch_size=batch_size, show_summary=show_summary)
+        self.populate_from_chunks(
+            collection, batch_size=batch_size, show_summary=show_summary
+        )
 
     def populate_from_chunks(
         self,
@@ -126,7 +132,9 @@ class PostgresChunkSource:
         """
         self.collection = collection
 
-        self._corpus = self._client.get_or_create_corpus(self._corpus_name, on_limit="prompt")
+        self._corpus = self._client.get_or_create_corpus(
+            self._corpus_name, on_limit="prompt"
+        )
 
         if show_summary:
             print(f"Using corpus: {self._corpus.name} (ID: {self._corpus.id})")
@@ -163,7 +171,9 @@ class PostgresChunkSource:
         self._corpus_name = self._corpus.name
 
         if show_summary:
-            print(f"Loading chunks from corpus: {self._corpus.name} (ID: {self._corpus.id})")
+            print(
+                f"Loading chunks from corpus: {self._corpus.name} (ID: {self._corpus.id})"
+            )
 
         chunks: list[Chunk] = []
         cursor: str | None = None
@@ -253,7 +263,9 @@ class PostgresChunkSource:
             Dict with keys: chunk_content, prev_chunk_preview, next_chunk_preview
         """
         self._assert_ready()
-        return self.collection.get_chunk_with_context(chunk, context_max_chars=max_chars)
+        return self.collection.get_chunk_with_context(
+            chunk, context_max_chars=max_chars
+        )
 
     def get_top_level_chunks(self) -> list[Chunk]:
         """Return chunks from files at the shallowest directory depth in the corpus."""
@@ -292,17 +304,23 @@ class PostgresChunkSource:
 
         for query in queries:
             matched_chunks = self._client.search_with_chunks(
-                corpus_id=self._corpus.id, query=query, collection=self.collection, limit=top_k
+                corpus_id=self._corpus.id,
+                query=query,
+                collection=self.collection,
+                limit=top_k,
             )
 
             for result_chunk, score in matched_chunks[:top_k]:
                 if result_chunk.hash == source.hash:
                     continue
 
-                is_same_file = result_chunk.get_metadata("file") == source.get_metadata("file")
+                is_same_file = result_chunk.get_metadata("file") == source.get_metadata(
+                    "file"
+                )
                 if is_same_file:
                     index_diff = abs(
-                        result_chunk.get_metadata("index", 0) - source.get_metadata("index", 0)
+                        result_chunk.get_metadata("index", 0)
+                        - source.get_metadata("index", 0)
                     )
                     if index_diff <= 1:
                         continue
@@ -365,7 +383,9 @@ class PostgresChunkSource:
     ) -> list[Chunk]:
         """Search chunks with a text query and optional filter."""
         return self.search(
-            SearchSpec(mode="lexical", text_query=text_query, top_k=top_k, filter=filter)
+            SearchSpec(
+                mode="lexical", text_query=text_query, top_k=top_k, filter=filter
+            )
         )
 
     def search_content(self, spec: SearchSpec) -> list[str]:
