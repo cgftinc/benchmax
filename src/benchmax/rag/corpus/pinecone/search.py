@@ -18,9 +18,14 @@ class PineconeSearch:
     Stores only serializable connection parameters.  The SDK client is
     created lazily on first search call (including after unpickle).
 
-    The Pinecone key is resolved per request via ``token_provider`` (default:
-    reads ``PINECONE_API_KEY`` at runtime), so no key is frozen into the pickled
-    env. Pinecone is an external provider — we neither mint nor rotate this key.
+    The Pinecone key is resolved per request via ``token_provider``. With the
+    default (``env_token("PINECONE_API_KEY")``) the key is read from the env at
+    runtime and nothing is frozen — the self-serve / hand-written-env path.
+    Platform-orchestrated training instead passes an explicit ``token_provider``
+    that **bakes** the build-time key into the pickled env, because the trainer
+    runs this env in a Ray actor that can't read the external secret from its
+    environment at runtime. Pinecone is an external provider — we neither mint
+    nor rotate this key.
 
     Args:
         index_name: Name of the Pinecone index.

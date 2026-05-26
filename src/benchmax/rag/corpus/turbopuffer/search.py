@@ -18,9 +18,14 @@ class TpufSearch:
     Supports lexical (BM25), vector, and hybrid search depending on
     whether ``embed_fn`` is provided.
 
-    The Turbopuffer key is resolved per request via ``token_provider`` (default:
-    reads ``TPUF_API_KEY`` at runtime), so no key is frozen into the pickled env.
-    Turbopuffer is an external provider — we neither mint nor rotate this key.
+    The Turbopuffer key is resolved per request via ``token_provider``. With the
+    default (``env_token("TPUF_API_KEY")``) the key is read from the env at
+    runtime and nothing is frozen — the self-serve / hand-written-env path.
+    Platform-orchestrated training instead passes an explicit ``token_provider``
+    that **bakes** the build-time key into the pickled env, because the trainer
+    runs this env in a Ray actor that can't read the external secret from its
+    environment at runtime. Turbopuffer is an external provider — we neither mint
+    nor rotate this key.
 
     Args:
         namespace: Turbopuffer namespace name.

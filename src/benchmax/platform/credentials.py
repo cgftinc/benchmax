@@ -75,8 +75,13 @@ def env_token(env_var: str) -> TokenProvider:
 
     For **external-provider** credentials (Turbopuffer, Pinecone, …) — keys we
     neither mint nor rotate. Read at runtime (never baked); raises if unset.
-    The launcher injects ``env_var`` into the trainer/worker process; for
-    self-serve the user sets it locally. Convention: ``<PROVIDER>_API_KEY``.
+    This is the self-serve / hand-written-env path: the user sets ``env_var``
+    locally. NOTE: platform-orchestrated training does NOT reach this — the
+    trainer runs the env in a Ray actor that can't read these external secrets
+    at runtime, so the platform codegen bakes the key at build instead (passes
+    an explicit ``token_provider``; see :func:`as_token_provider`). Until
+    first-party runtime injection exists, baking is the platform path.
+    Convention: ``<PROVIDER>_API_KEY``.
 
     Returned as a ``functools.partial`` over a module-level function so it
     pickles by reference (tiny bundle, no closure) — the var name travels, not
@@ -91,22 +96,29 @@ def as_token_provider(
 ) -> TokenProvider:
     """Normalize a credential argument into a per-call provider.
 
-    - ``None``     → ``default`` (the runtime seam; nothing baked).
-    - ``str``      → a fixed-value provider. Ergonomic, but the literal is
-      captured in the closure, so it **bakes** if the env is pickled — the
-      discouraged class-A "your own key" carve-out (see
-      ``docs/design/env-credential-model.md`` §7.1). Prefer the env-var default.
-    - ``callable`` → used as-is.
+    - ``None``     → ``default`` (the runtime seam; nothing baked). The
+      self-serve / hand-written-env path, where ``env_var`` is set at runtime.
+    - ``str``      → a fixed-value provider. The literal is captured in the
+      closure, so it **bakes** into the pickle if the env is serialized. Don't
+      hardcode a first-party key this way — use the env-var default. (A
+      third-party provider key is baked deliberately; see ``callable``.)
+    - ``callable`` → used as-is. The platform codegen passes a callable over a
+      build-time-resolved *third-party* key here on purpose: the
+      platform-orchestrated trainer (a Ray actor) can't read that external
+      secret from its runtime env, so the key is baked at build. Revisit if
+      first-party runtime injection of external keys is added.
     """
     if value is None:
         return default
     if isinstance(value, str):
         warnings.warn(
-            "A literal token was passed where a per-call provider is expected. "
-            "It is captured in a closure and will be baked into the bundle if "
-            "the env is pickled — a secret written to storage at rest. Prefer "
-            "the default resolver (platform_bearer) or an env-var provider "
-            "(env_token); see docs/design/env-credential-model.md §7.1.",
+            "A literal token string was passed where a per-call provider is "
+            "expected. It is captured in a closure and will be baked into the "
+            "bundle if the env is pickled — a secret written to storage at rest. "
+            "For a first-party key prefer the default resolver (platform_bearer) "
+            "or an env-var provider (env_token). For a third-party provider key "
+            "the codegen baking path passes a callable, not a literal string — "
+            "if you are seeing this from generated code, that is a bug.",
             stacklevel=2,
         )
         return lambda: value
