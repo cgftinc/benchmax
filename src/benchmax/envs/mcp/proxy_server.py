@@ -360,10 +360,6 @@ class ProxyServer:
         payload_kwargs: Dict[str, Any] = {
             k: v for k, v in data.items() if k not in ("completion", "ground_truth")
         }
-        # Legacy tracking-config keys (if any sneak through from older callers)
-        # — silently drop. Cross-process MCP log capture is a follow-up.
-        payload_kwargs.pop("__benchmax_telemetry_run_id", None)
-        payload_kwargs.pop("__benchmax_telemetry_api_key", None)
 
         kwargs: Dict[str, Any] = {
             "completion": completion,
