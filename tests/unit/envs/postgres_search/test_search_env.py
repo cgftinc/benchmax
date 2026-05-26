@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import math
 import pickle
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import cloudpickle
@@ -97,13 +96,21 @@ class TestInit:
         env = _make_env(search=StubSearch(modes=["lexical", "vector"]))
         assert env._default_mode == "lexical"
 
-    def test_system_prompt_includes_corpus_description(self):
-        env = _make_env(corpus_description="Korean legal statutes")
-        assert "Korean legal statutes" in env.system_prompt
+    def test_default_system_prompt_is_empty(self):
+        # No runtime render: system_prompt is a static class attr (default "").
+        assert SearchEnv.system_prompt == ""
 
-    def test_system_prompt_includes_max_search_calls(self):
-        env = _make_env(max_search_calls=4)
-        assert "4 times" in env.system_prompt
+    def test_render_system_prompt_includes_corpus_description(self):
+        prompt = SearchEnv.render_system_prompt(
+            corpus_description="Korean legal statutes", max_search_calls=4
+        )
+        assert "Korean legal statutes" in prompt
+
+    def test_render_system_prompt_includes_max_search_calls(self):
+        prompt = SearchEnv.render_system_prompt(
+            corpus_description="docs", max_search_calls=4
+        )
+        assert "4 times" in prompt
 
     def test_default_max_search_calls_is_ten(self):
         env = _make_env()
@@ -113,48 +120,61 @@ class TestInit:
         env = _make_env()
         assert env._w_search_efficiency == pytest.approx(0.1)
 
-    def test_subclass_can_override_system_prompt_via_class_attribute(self):
+    def test_subclass_can_set_plain_system_prompt(self):
         class CustomEnv(SearchEnv):
             system_prompt = "Override prompt"
 
-        defaults = {"search": StubSearch(), **JUDGE_ARGS}
-        env = CustomEnv(**defaults, corpus_description="ignored", max_search_calls=99)
-        assert env.system_prompt == "Override prompt"
+        assert CustomEnv.system_prompt == "Override prompt"
 
-    def test_subclass_can_override_system_prompt_template(self):
+    def test_subclass_sets_system_prompt_via_render_helper(self):
+        class CustomEnv(SearchEnv):
+            system_prompt = SearchEnv.render_system_prompt(
+                corpus_description="Korean law", max_search_calls=7
+            )
+
+        assert "Korean law" in CustomEnv.system_prompt
+        assert "7 times" in CustomEnv.system_prompt
+
+    def test_render_uses_overridden_template(self):
         class CustomEnv(SearchEnv):
             SYSTEM_PROMPT_TEMPLATE = (
                 "Search over {corpus_description} with {max_search_calls} budget."
             )
 
-        defaults = {"search": StubSearch(), **JUDGE_ARGS}
-        env = CustomEnv(**defaults, corpus_description="Korean law", max_search_calls=7)
-        assert env.system_prompt == "Search over Korean law with 7 budget."
+        assert (
+            CustomEnv.render_system_prompt(
+                corpus_description="Korean law", max_search_calls=7
+            )
+            == "Search over Korean law with 7 budget."
+        )
 
-    def test_template_substitution_preserves_json_like_literals(self):
+    def test_render_preserves_json_like_literals(self):
         # RAG prompts frequently include JSON few-shot examples. The regex
         # substitution should leave them untouched instead of crashing.
         class CustomEnv(SearchEnv):
-            SYSTEM_PROMPT_TEMPLATE = (
-                'Example: {"answer": "X"} for {corpus_description}.'
+            SYSTEM_PROMPT_TEMPLATE = 'Example: {"answer": "X"} for {corpus_description}.'
+
+        assert (
+            CustomEnv.render_system_prompt(
+                corpus_description="legal docs", max_search_calls=5
             )
+            == 'Example: {"answer": "X"} for legal docs.'
+        )
 
-        defaults = {"search": StubSearch(), **JUDGE_ARGS}
-        env = CustomEnv(**defaults, corpus_description="legal docs")
-        assert env.system_prompt == 'Example: {"answer": "X"} for legal docs.'
-
-    def test_template_substitution_preserves_unknown_placeholders(self):
-        # An unknown {name} placeholder should be passed through verbatim
-        # rather than raising KeyError, so users can author templates
-        # forward-compatibly without crashing on terms we don't yet support.
+    def test_render_preserves_unknown_placeholders(self):
+        # An unknown {name} placeholder passes through verbatim rather than
+        # raising KeyError, so users can author templates forward-compatibly.
         class CustomEnv(SearchEnv):
             SYSTEM_PROMPT_TEMPLATE = (
                 "Use {corpus_description}. Future hook: {custom_var}."
             )
 
-        defaults = {"search": StubSearch(), **JUDGE_ARGS}
-        env = CustomEnv(**defaults, corpus_description="legal docs")
-        assert env.system_prompt == "Use legal docs. Future hook: {custom_var}."
+        assert (
+            CustomEnv.render_system_prompt(
+                corpus_description="legal docs", max_search_calls=5
+            )
+            == "Use legal docs. Future hook: {custom_var}."
+        )
 
 
 class TestSearchTool:
@@ -481,13 +501,17 @@ class TestDatasetPreprocess:
         )
         assert result["task"]["reference_chunks"] == [{"id": "c1"}]
 
-    def test_bakes_interpolated_system_prompt_into_example(self):
-        # The whole point of making this an instance method: the system prompt
-        # is interpolated in __init__ from runtime kwargs, so only `self` has
-        # the resolved value. Verifies the bug from
-        # project_searchenv_classmethod_system_prompt_drop is fixed.
-        env = _make_env(corpus_description="Korean legal statutes", max_search_calls=4)
-        result = env.dataset_preprocess({"question": "Q", "answer": "A"})
+    def test_bakes_class_attr_system_prompt_into_example(self):
+        # dataset_preprocess is a classmethod that bakes the static
+        # cls.system_prompt into the Example — no env instance needed. Verifies
+        # the system prompt reaches training Examples
+        # (project_searchenv_classmethod_system_prompt_drop).
+        class CustomEnv(SearchEnv):
+            system_prompt = SearchEnv.render_system_prompt(
+                corpus_description="Korean legal statutes", max_search_calls=4
+            )
+
+        result = CustomEnv.dataset_preprocess({"question": "Q", "answer": "A"})
         system_msgs = [m for m in result["prompt_messages"] if m["role"] == "system"]
         assert len(system_msgs) == 1
         assert "Korean legal statutes" in system_msgs[0]["content"]

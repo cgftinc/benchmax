@@ -100,7 +100,6 @@ class SearchEnv(BaseEnv):
         judge_model: Model name for the LLM judge (required).
         judge_token_provider: Optional; resolves the judge bearer per call.
             Defaults to ``platform_bearer`` (the credential seam).
-        corpus_description: Description injected into system prompt.
         judge_timeout: Timeout for judge API calls.
         w_correctness: Weight for correctness reward component.
         w_conciseness: Weight for conciseness reward component.
@@ -135,6 +134,28 @@ When you have gathered enough information, return your final answer inside <answ
 tags. Cite your sources inline using [Source: <source_id>] next to each claim.
 """
 
+    @classmethod
+    def render_system_prompt(
+        cls, *, corpus_description: str, max_search_calls: int
+    ) -> str:
+        """Render :attr:`SYSTEM_PROMPT_TEMPLATE` into a system-prompt string.
+
+        Assign the result to a subclass's ``system_prompt`` class attribute
+        (rendered once at class-definition, not in ``__init__``), and pass the
+        same ``max_search_calls`` to ``__init__`` so the prompt's stated budget
+        matches the enforced one::
+
+            class MyEnv(SearchEnv):
+                system_prompt = SearchEnv.render_system_prompt(
+                    corpus_description="support docs", max_search_calls=10
+                )
+        """
+        return _render_template(
+            cls.SYSTEM_PROMPT_TEMPLATE,
+            corpus_description=corpus_description,
+            max_search_calls=max_search_calls,
+        )
+
     def __init__(
         self,
         search: SearchClient,
@@ -142,7 +163,6 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         judge_base_url: str,
         judge_model: str,
         judge_token_provider: str | TokenProvider | None = None,
-        corpus_description: str = "a document corpus",
         judge_timeout: float = 30.0,
         w_correctness: float = 1.0,
         w_conciseness: float = 0.5,
@@ -169,7 +189,6 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             judge_token_provider, platform_bearer
         )
         self._judge_timeout = judge_timeout
-        self._corpus_description = corpus_description
         self._w_correctness = w_correctness
         self._w_conciseness = w_conciseness
         self._w_citation_recall = w_citation_recall
@@ -221,14 +240,10 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             "search": (search_tool, self._search_tool),
         }
 
-        # Build system prompt — but only if the subclass hasn't overridden
-        # `system_prompt` as a class attribute (BaseEnv-style extension).
-        if not type(self).system_prompt:
-            self.system_prompt = _render_template(
-                self.SYSTEM_PROMPT_TEMPLATE,
-                corpus_description=corpus_description,
-                max_search_calls=max_search_calls,
-            )
+        # `system_prompt` is a static class attribute (default ""). Subclasses
+        # set it at class-definition — e.g.
+        # `system_prompt = SearchEnv.render_system_prompt(...)` — so the
+        # classmethod preprocessors read the resolved value via cls.
 
     # ------------------------------------------------------------------
     # BaseEnv interface
@@ -243,11 +258,8 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         _, tool_function = self._tools[tool_name]
         return await tool_function(**tool_args)
 
-    def dataset_preprocess(self, example: Any, **kwargs) -> Example:
-        # Instance method (vs. BaseEnv's classmethod default) because the system
-        # prompt is interpolated in __init__ from runtime kwargs — only `self`
-        # has the resolved value; `cls.system_prompt` is still BaseEnv's "".
-        # See BaseEnv.dataset_preprocess docstring for the broader pattern.
+    @classmethod
+    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
         question = example.get("question", "")
         return make_example(
             prompt_messages=[{"role": "user", "content": question}],
@@ -256,7 +268,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
                 "ground_truth": example.get("answer"),
                 "reference_chunks": example.get("reference_chunks", []),
             },
-            system_prompt=self.system_prompt,
+            system_prompt=cls.system_prompt,
         )
 
     async def compute_reward(
