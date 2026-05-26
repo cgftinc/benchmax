@@ -11,16 +11,49 @@ import json
 import math
 import tempfile
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import cloudpickle
 
 _TOOL_TIMEOUT = 30.0
 
+_shared_loop: asyncio.AbstractEventLoop | None = None
+
 
 def _run_async(coro: Any, timeout: float = _TOOL_TIMEOUT) -> Any:
-    """Run a coroutine with a timeout."""
-    return asyncio.run(asyncio.wait_for(coro, timeout=timeout))
+    """Run a coroutine with a timeout on the shared validation loop.
+
+    All checks share one loop so that loop-bound resources created inside
+    user code (e.g. httpx.AsyncClient for a judge LLM) stay attached to a
+    live loop across checks. asyncio.run() would close the loop after each
+    call, leaving those clients to schedule aclose() on a dead loop at GC
+    time — surfacing as "Event loop is closed" warnings at shutdown.
+    """
+    global _shared_loop
+    if _shared_loop is None or _shared_loop.is_closed():
+        _shared_loop = asyncio.new_event_loop()
+    return _shared_loop.run_until_complete(asyncio.wait_for(coro, timeout=timeout))
+
+
+def _shutdown_shared_loop() -> None:
+    """Close the shared loop, draining async generators and pending tasks."""
+    global _shared_loop
+    if _shared_loop is None or _shared_loop.is_closed():
+        _shared_loop = None
+        return
+    try:
+        _shared_loop.run_until_complete(_shared_loop.shutdown_asyncgens())
+        pending = [t for t in asyncio.all_tasks(_shared_loop) if not t.done()]
+        for t in pending:
+            t.cancel()
+        if pending:
+            _shared_loop.run_until_complete(
+                asyncio.gather(*pending, return_exceptions=True)
+            )
+    finally:
+        _shared_loop.close()
+        _shared_loop = None
 
 
 def _build_dummy_args(
@@ -65,6 +98,7 @@ def validate_env(
     env_args: dict[str, Any],
     train_dataset: list[dict[str, Any]],
     eval_dataset: list[dict[str, Any]] | None = None,
+    local_modules: list[ModuleType] | None = None,
 ) -> bool:
     """Validate an environment class against the trainer's calling conventions.
 
@@ -85,14 +119,28 @@ def validate_env(
         env_args: Constructor kwargs for the env (same as train(env_args=...)).
         train_dataset: Training examples (list of dicts with question/answer).
         eval_dataset: Optional eval examples. Uses train_dataset[:2] if not given.
+        local_modules: Modules to pickle by value during the pickle round-trip
+            check. Pass the same list you'd pass to ``upload_training_run`` /
+            ``dump_bundle`` when the env imports from sibling .py files;
+            otherwise the local-modules guard will (correctly) flag them as
+            risky.
 
     Returns:
         True if all checks pass, False otherwise.
     """
     _ensure_nest_asyncio()
 
+    local_modules = local_modules or []
+    for mod in local_modules:
+        if not isinstance(mod, ModuleType):
+            raise TypeError(
+                f"local_modules must contain module objects, got "
+                f"{type(mod).__name__}: {mod!r}"
+            )
+
     if not train_dataset:
         print("  \u2717 train_dataset is empty")
+        _shutdown_shared_loop()
         return False
 
     examples = train_dataset[:5]
@@ -356,16 +404,23 @@ def validate_env(
     # as they will on the trainer. Plain pickle.loads can read simple cloudpickle
     # output but breaks on by-value module pickling — silently mismatching
     # local validation vs trainer behavior.
+    # Register local_modules by value for the duration of the pickle checks,
+    # mirroring what dump_bundle does. Without this, sibling-module envs get
+    # pickled by reference and the local-modules guard below flags them \u2014
+    # even though the user did everything right by listing them.
     try:
-        data = cloudpickle.dumps(env_class)
-        restored_cls = cloudpickle.loads(data)
-        restored_env = restored_cls(**env_args)
-        tools = _run_async(restored_env.list_tools())
-        print(f"  \u2713 pickle round-trip OK ({len(data)} bytes, {len(tools)} tools)")
-        passed += 1
-    except Exception as exc:
-        print(f"  \u2717 pickle round-trip failed: {type(exc).__name__}: {exc}")
-        failed += 1
+        for mod in local_modules:
+            cloudpickle.register_pickle_by_value(mod)
+        try:
+            data = cloudpickle.dumps(env_class)
+            restored_cls = cloudpickle.loads(data)
+            restored_env = restored_cls(**env_args)
+            tools = _run_async(restored_env.list_tools())
+            print(f"  \u2713 pickle round-trip OK ({len(data)} bytes, {len(tools)} tools)")
+            passed += 1
+        except Exception as exc:
+            print(f"  \u2717 pickle round-trip failed: {type(exc).__name__}: {exc}")
+            failed += 1
 
     # \u2500\u2500 6a. Local-modules guard \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     # Same-process round-trip above succeeds even when local_modules are
@@ -373,26 +428,32 @@ def validate_env(
     # so cloudpickle's by-reference resolves via cache. On a fresh worker
     # process there's no cache and the import fails. Inspect the pickle's
     # find_class refs to catch this pre-upload.
-    try:
-        from benchmax.bundle import unregistered_local_refs
+        try:
+            from benchmax.bundle import unregistered_local_refs
 
-        risky = unregistered_local_refs(cloudpickle.dumps(env_class))
-        if risky:
-            print(
-                f"  \u2717 {env_class.__name__}: missing "
-                f"local_modules=[{', '.join(risky)}]"
-            )
-            print(
-                "    (round-trip above passed because sys.modules cache "
-                "hides this in-process; trainer will fail to import)"
-            )
+            risky = unregistered_local_refs(cloudpickle.dumps(env_class))
+            if risky:
+                print(
+                    f"  \u2717 {env_class.__name__}: missing "
+                    f"local_modules=[{', '.join(risky)}]"
+                )
+                print(
+                    "    (round-trip above passed because sys.modules cache "
+                    "hides this in-process; trainer will fail to import)"
+                )
+                failed += 1
+            else:
+                print("  \u2713 no unregistered local-module references")
+                passed += 1
+        except Exception as exc:
+            print(f"  \u2717 local-modules check failed: {type(exc).__name__}: {exc}")
             failed += 1
-        else:
-            print("  \u2713 no unregistered local-module references")
-            passed += 1
-    except Exception as exc:
-        print(f"  \u2717 local-modules check failed: {type(exc).__name__}: {exc}")
-        failed += 1
+    finally:
+        for mod in local_modules:
+            try:
+                cloudpickle.unregister_pickle_by_value(mod)
+            except Exception:
+                pass
 
     # ── 6b. env_args pickle ────────────────────────────────────────
     try:
@@ -429,4 +490,5 @@ def validate_env(
     else:
         print(f"{failed} check(s) failed. Fix before calling train().")
 
+    _shutdown_shared_loop()
     return failed == 0
