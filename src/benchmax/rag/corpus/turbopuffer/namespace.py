@@ -260,6 +260,35 @@ class TpufNamespace:
             return None
         return rows[0].id
 
+    def scan_all_rows(self, limit: int | None = None, page_size: int = 10_000) -> list[Any]:
+        """Sequentially scan all rows with attributes via cursor pagination.
+
+        Much faster than random-ID sampling for large fetches — single pass,
+        no retries, no ID collisions. Returns up to ``limit`` rows (all if
+        None).
+        """
+        all_rows: list[Any] = []
+        last_id = 0
+
+        while True:
+            result = self._ns.query(
+                rank_by=["id", "asc"],
+                filters=["id", "Gt", last_id],
+                top_k=page_size,
+                include_attributes=True,
+            )
+            rows = result.rows
+            if not rows:
+                break
+            all_rows.extend(rows)
+            last_id = rows[-1].id
+            if limit is not None and len(all_rows) >= limit:
+                return all_rows[:limit]
+            if len(rows) < page_size:
+                break
+
+        return all_rows
+
     def paginate_all_ids(self, page_size: int = 1000) -> list[int]:
         """Return all row IDs in the namespace via cursor pagination."""
         all_ids: list[int] = []

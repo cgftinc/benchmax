@@ -209,6 +209,26 @@ class TpufChunkSource:
             return approx
         return self._client.get_max_id() or 0
 
+    def scan_chunks(self, limit: int | None = None, min_chars: int = 0) -> list[Chunk]:
+        """Sequentially scan chunks via cursor pagination.
+
+        Much faster than ``sample_chunks`` for large fetches (single pass, no
+        retries). Returns chunks in ID order, not random. Use this when you
+        need most or all of the namespace (e.g. materialization).
+        """
+        # Over-fetch to account for min_chars filtering
+        fetch_limit = None if limit is None else int(limit * (3 if min_chars > 0 else 1.1))
+        rows = self._client.scan_all_rows(limit=fetch_limit)
+        collected: list[Chunk] = []
+        for row in rows:
+            chunk = self._client.row_to_chunk(row)
+            if min_chars > 0 and len(chunk.content) < min_chars:
+                continue
+            collected.append(chunk)
+            if limit is not None and len(collected) >= limit:
+                break
+        return collected
+
     def sample_chunks(self, n: int, min_chars: int = 0) -> list[Chunk]:
         """Return n randomly sampled chunks, optionally filtered by minimum length.
 
