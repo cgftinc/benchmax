@@ -1352,11 +1352,24 @@ class Pipeline:
                     )
             else:
                 logger.warning(
-                    "Corpus too large to materialise (%d chunks > %d cap); "
-                    "entity-chunk graph will use profile sample only.",
+                    "Corpus has %d chunks (limit %d). Materialising a capped "
+                    "sample so entity extraction and the chunk graph still work.",
                     chunk_count,
                     max_materialize,
                 )
+                from benchmax.rag.chunkers.models import ChunkCollection  # noqa: PLC0415
+
+                capped_chunks = source.sample_chunks(
+                    max_materialize,
+                    min_chars=cfg.corpus.min_chunk_chars,
+                )
+                if capped_chunks:
+                    source.collection = ChunkCollection(chunks=capped_chunks)  # type: ignore[attr-defined]
+                    logger.info(
+                        "Cached %d/%d chunks (capped) on source.collection",
+                        len(capped_chunks),
+                        chunk_count,
+                    )
 
         profile_sample = diverse_profile_sample(
             source,

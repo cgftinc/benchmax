@@ -219,6 +219,29 @@ class TpufNamespace:
         return len(all_chunks)
 
     # ------------------------------------------------------------------
+    # Namespace metadata
+    # ------------------------------------------------------------------
+
+    def get_approx_row_count(self) -> int | None:
+        """Return the approximate row count from namespace metadata.
+
+        Uses the tpuf metadata endpoint which returns ``approx_row_count``.
+        Unlike ``get_max_id()``, this reflects actual rows (accounting for
+        deletions) rather than the highest assigned ID.
+        """
+        try:
+            meta = self._ns.metadata()
+            count = getattr(meta, "approx_row_count", None)
+            if isinstance(count, int):
+                return count
+            # Fallback: some SDK versions return a dict
+            if isinstance(meta, dict):
+                return meta.get("approx_row_count")
+            return None
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
     # ID pagination
     # ------------------------------------------------------------------
 

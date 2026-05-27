@@ -198,7 +198,15 @@ class TpufChunkSource:
     # ------------------------------------------------------------------
 
     def get_chunk_count(self) -> int:
-        """Return the total number of chunks in the namespace."""
+        """Return the total number of chunks in the namespace.
+
+        Prefers ``approx_row_count`` from the metadata endpoint (reflects
+        actual rows after deletions). Falls back to ``get_max_id()`` which
+        can over-count in sparse namespaces.
+        """
+        approx = self._client.get_approx_row_count()
+        if approx is not None:
+            return approx
         return self._client.get_max_id() or 0
 
     def sample_chunks(self, n: int, min_chars: int = 0) -> list[Chunk]:
@@ -357,8 +365,11 @@ class TpufChunkSource:
             return []
 
         # Skip expensive full-namespace pagination for large namespaces.
-        # Use actual row count (not max_id) to handle sparse ID spaces where
-        # max_id >> row_count due to deletions or non-sequential assignment.
+        # Use approx_row_count (actual rows) rather than paginating all IDs
+        # just to count them — that's O(N) API calls for large namespaces.
+        chunk_count = self.get_chunk_count()
+        if chunk_count > 50_000:
+            return []
         all_ids = self._client.paginate_all_ids()
         if len(all_ids) > 50_000:
             return []
