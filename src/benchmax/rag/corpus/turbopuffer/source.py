@@ -198,8 +198,36 @@ class TpufChunkSource:
     # ------------------------------------------------------------------
 
     def get_chunk_count(self) -> int:
-        """Return the total number of chunks in the namespace."""
+        """Return the total number of chunks in the namespace.
+
+        Prefers ``approx_row_count`` from the metadata endpoint (reflects
+        actual rows after deletions). Falls back to ``get_max_id()`` which
+        can over-count in sparse namespaces.
+        """
+        approx = self._client.get_approx_row_count()
+        if approx is not None:
+            return approx
         return self._client.get_max_id() or 0
+
+    def scan_chunks(self, limit: int | None = None, min_chars: int = 0) -> list[Chunk]:
+        """Sequentially scan chunks via cursor pagination.
+
+        Much faster than ``sample_chunks`` for large fetches (single pass, no
+        retries). Returns chunks in ID order, not random. Use this when you
+        need most or all of the namespace (e.g. materialization).
+        """
+        # Over-fetch to account for min_chars filtering
+        fetch_limit = None if limit is None else int(limit * (3 if min_chars > 0 else 1.1))
+        rows = self._client.scan_all_rows(limit=fetch_limit)
+        collected: list[Chunk] = []
+        for row in rows:
+            chunk = self._client.row_to_chunk(row)
+            if min_chars > 0 and len(chunk.content) < min_chars:
+                continue
+            collected.append(chunk)
+            if limit is not None and len(collected) >= limit:
+                break
+        return collected
 
     def sample_chunks(self, n: int, min_chars: int = 0) -> list[Chunk]:
         """Return n randomly sampled chunks, optionally filtered by minimum length.
@@ -357,8 +385,11 @@ class TpufChunkSource:
             return []
 
         # Skip expensive full-namespace pagination for large namespaces.
-        # Use actual row count (not max_id) to handle sparse ID spaces where
-        # max_id >> row_count due to deletions or non-sequential assignment.
+        # Use approx_row_count (actual rows) rather than paginating all IDs
+        # just to count them — that's O(N) API calls for large namespaces.
+        chunk_count = self.get_chunk_count()
+        if chunk_count > 50_000:
+            return []
         all_ids = self._client.paginate_all_ids()
         if len(all_ids) > 50_000:
             return []
