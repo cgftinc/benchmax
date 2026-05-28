@@ -167,28 +167,28 @@ class TrainingExample:
     def to_jsonl_dict(self) -> dict[str, Any]:
         """Serialise to the JSONL schema consumed by ``dataset_preprocess``.
 
-        The trainer expects structured message dicts (not human-readable
-        strings).  ``prompt`` is a list of message dicts, ``ground_truth``
-        is the completion message dict.  Metadata goes inside
-        ``init_rollout_args`` so it's available in ``compute_reward()``.
+        Both ``prompt_messages`` and ``ground_truth`` use ``to_dict()``
+        with structured ``tool_calls`` (arguments as JSON strings). The
+        trainer handles Arrow compatibility at template time by parsing
+        argument strings to dicts before ``apply_chat_template``.
 
         Schema::
 
             {
-                "prompt": list[dict],        # chat messages before this turn
-                "ground_truth": dict,         # the assistant completion
+                "prompt_messages": list[{role, content, tool_calls, ...}],
+                "ground_truth": {role, content, tool_calls, ...},
                 "init_rollout_args": {
                     "trace_id": str,
                     "turn_index": int,
                     "total_messages": int,
                     "scores": dict[str, float],
-                    "raw_prompt": str,        # human-readable for judge context
+                    "raw_prompt": str,
                 },
             }
         """
         gt = self.completion_messages[0].to_dict() if self.completion_messages else {}
         return {
-            "prompt": [m.to_dict() for m in self.prompt_messages],
+            "prompt_messages": [m.to_dict() for m in self.prompt_messages],
             "ground_truth": gt,
             "init_rollout_args": {
                 "trace_id": self.trace_id,
