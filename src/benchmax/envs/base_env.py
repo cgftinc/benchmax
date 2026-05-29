@@ -88,20 +88,37 @@ class BaseEnv(ABC):
         )
 
     @classmethod
-    def playground_preprocess(cls, prompt: str, **kwargs: Any) -> Example:
-        """Wrap a one-shot playground prompt into an :class:`Example`.
+    def playground_preprocess(
+        cls,
+        prompt: str | None = None,
+        messages: Messages | None = None,
+        **kwargs: Any,
+    ) -> Example:
+        """Wrap a playground input into an :class:`Example`.
+
+        Accepts either ``prompt`` (single user string — the typical one-shot
+        chat case) or ``messages`` (a full chat list, used when replaying a
+        multi-turn eval prompt). Exactly one must be provided.
 
         Classmethod (like :meth:`dataset_preprocess`), reading the static
-        ``cls.system_prompt`` class attribute — so a one-shot playground
-        prompt is preprocessed without constructing an env instance, and the
-        system prompt matches what training uses. Prepends ``cls.system_prompt``
-        via :func:`make_example` with ``task=None`` — the rollout worker skips
+        ``cls.system_prompt`` class attribute — so a playground input is
+        preprocessed without constructing an env instance, and the system
+        prompt matches what training uses. ``cls.system_prompt`` is prepended
+        unless the caller already supplied a system message (a replayed eval
+        prompt typically does). ``task=None`` — the rollout worker skips
         reward computation for playground examples.
         """
+        if messages is None:
+            if not prompt:
+                raise ValueError(
+                    "playground_preprocess requires either 'prompt' or 'messages'"
+                )
+            messages = [{"role": "user", "content": prompt}]
+        has_system = any(m.get("role") == "system" for m in messages)
         return make_example(
-            prompt_messages=[{"role": "user", "content": prompt}],
+            prompt_messages=messages,
             task=None,
-            system_prompt=cls.system_prompt,
+            system_prompt=None if has_system else cls.system_prompt,
         )
 
     @classmethod
