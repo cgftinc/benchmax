@@ -279,7 +279,9 @@ class StorageClient:
         # Stream from disk instead of read_bytes() to keep memory bounded for
         # multi-GB datasets. httpx infers Content-Length from the file size.
         url_response = self._get_upload_url(
-            path, mime_type, expires_in_minutes=expires_in_minutes,
+            path,
+            mime_type,
+            expires_in_minutes=expires_in_minutes,
         )
         with file_path.open("rb") as fh:
             self._put_to_signed_url(url_response["uploadUrl"], fh, mime_type)
@@ -437,7 +439,11 @@ class TrainerClient:
         specs = self.list_launch_args()
         print(_hdr("Launch args accepted by POST /train/runs/launch"))
         for spec in specs:
-            req = _RED + "required" + _RESET if spec.required else _CYAN + "optional" + _RESET
+            req = (
+                _RED + "required" + _RESET
+                if spec.required
+                else _CYAN + "optional" + _RESET
+            )
             header = f"  {_BOLD}{spec.name}{_RESET} ({spec.type}, {req})"
             bits: list[str] = []
             if spec.default is not None:
@@ -652,7 +658,9 @@ def _print_event(
                                 tool_text,
                             )
                         else:
-                            preview = textwrap.shorten(tool_text, width=120, placeholder="…")
+                            preview = textwrap.shorten(
+                                tool_text, width=120, placeholder="…"
+                            )
                             print(
                                 f"{prefix} → message [{role}/tool_result] "
                                 f"(chars={len(tool_text)}): {preview}"
@@ -690,7 +698,13 @@ def _print_event(
 
 
 class RolloutClient:
-    """Thin synchronous client for the /rollout/stream endpoint.
+    """Thin synchronous client for the rollout-stream endpoint.
+
+    Rollouts are reached through platform-service. platform-service is the API-key
+    gate: it validates the ``sk_`` key and mints a short-lived act_as JWT that
+    rollout-service accepts (rollout-service's own auth only takes
+    auth-service-minted JWTs — never a raw platform key). The proxy is mounted at
+    ``/v1/rollout/stream``.
 
     Supports two ways to provide the environment:
 
@@ -700,8 +714,11 @@ class RolloutClient:
        raw file contents; they will be base64-encoded and sent inline.
 
     Args:
-        api_key:    Bearer token for the rollout server.
-        server_url: Base URL of the rollout server.
+        api_key:    Platform API key (``sk_``); forwarded as the Bearer token
+                    platform-service validates.
+        server_url: Base URL of platform-service. Defaults to
+                    ``config.platform_url()``; the ``/v1/rollout/stream`` path is
+                    appended per request.
         timeout:    Per-request timeout in seconds (default 300 — rollouts can be slow).
     """
 
@@ -716,7 +733,9 @@ class RolloutClient:
         self._api_key = api_key
         # Resolve at construction time, not import time, so env-var changes
         # take effect (mirrors StorageClient/TrainerClient default_factory pattern).
-        self._server_url = (server_url or config.rollout_url()).rstrip("/")
+        # Target platform-service (the API-key gate), not the rollout-service
+        # host directly — see the class docstring for why.
+        self._server_url = (server_url or config.platform_url()).rstrip("/")
         self._timeout = timeout
 
     @staticmethod
@@ -734,7 +753,9 @@ class RolloutClient:
         has_bytes = env_cls_bytes is not None and env_metadata_bytes is not None
 
         if has_paths and has_bytes:
-            raise ValueError("Provide either blob paths or raw bytes for the env, not both.")
+            raise ValueError(
+                "Provide either blob paths or raw bytes for the env, not both."
+            )
         if not has_paths and not has_bytes:
             raise ValueError(
                 "Provide either (env_cls_path, env_metadata_path) or "
@@ -844,7 +865,9 @@ class RolloutClient:
             },
         }
 
-        url = f"{self._server_url}/rollout/stream"
+        # platform-service mounts the proxy at /v1/rollout/stream; it validates
+        # the platform key and forwards to rollout-service with an act_as JWT.
+        url = f"{self._server_url}/v1/rollout/stream"
         headers = {"Authorization": f"Bearer {self._api_key}"}
 
         with httpx.stream(
@@ -950,11 +973,17 @@ class RolloutClient:
             ``result.examples`` for richer reporting.
         """
         # Validate env args early so we fail before running any rollouts.
-        self._build_env(env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes)
+        self._build_env(
+            env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes
+        )
 
         sample = examples[:n]
         if verbose:
-            print(_hdr(f"── Remote validation: {len(sample)} example(s) on {llm_model} ──"))
+            print(
+                _hdr(
+                    f"── Remote validation: {len(sample)} example(s) on {llm_model} ──"
+                )
+            )
 
         per_example: list[ExampleValidation] = []
         for i, example in enumerate(sample):
@@ -972,10 +1001,15 @@ class RolloutClient:
                     max_turns=max_turns,
                 )
                 ok = bool(final.get("success"))
-                per_example.append(ExampleValidation(
-                    index=i, ok=ok,
-                    error=None if ok else (final.get("error") or "rollout reported success=False"),
-                ))
+                per_example.append(
+                    ExampleValidation(
+                        index=i,
+                        ok=ok,
+                        error=None
+                        if ok
+                        else (final.get("error") or "rollout reported success=False"),
+                    )
+                )
             except (RolloutError, RuntimeError) as exc:
                 if verbose:
                     print(_err(f"  Example {i} failed: {exc}"))
@@ -987,6 +1021,10 @@ class RolloutClient:
             if result.ok:
                 print(_ok("Remote validation passed"))
             else:
-                print(_err("Remote validation failed — check output above before launching a full job"))
+                print(
+                    _err(
+                        "Remote validation failed — check output above before launching a full job"
+                    )
+                )
 
         return result
