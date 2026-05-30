@@ -883,7 +883,10 @@ class RolloutClient:
                 body = response.read().decode()
                 # Typed errors so callers can distinguish retryable from
                 # caller-fix from auth-fix without parsing exception messages.
-                if response.status_code == 401:
+                # 403 too: rollouts route through platform-service's optionalAuth
+                # gate, which rejects a missing/invalid/expired key as 403
+                # ("sign in to run rollouts") rather than 401 — same fix (the key).
+                if response.status_code in (401, 403):
                     raise AuthenticationError(body[:300], response.status_code)
                 if response.status_code == 404:
                     raise RolloutNotFound(body[:300], response.status_code)

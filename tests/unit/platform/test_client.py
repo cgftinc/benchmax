@@ -324,6 +324,21 @@ def test_stream_rollout_raises_authentication_error_on_401(monkeypatch):
     assert exc_info.value.status_code == 401
 
 
+def test_stream_rollout_raises_authentication_error_on_403(monkeypatch):
+    """platform-service's optionalAuth gate rejects a bad/expired key as 403
+    ('sign in to run rollouts'), not 401 — surface it as an auth error too."""
+    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
+    _stream_with_status(monkeypatch, 403, b"Demo mode is disabled")
+
+    client = RolloutClient(api_key="bad")
+    with pytest.raises(AuthenticationError) as exc_info:
+        client.stream_rollout(
+            raw_example={"prompt": "hi"},
+            env_cls_path="a", env_metadata_path="b",
+        )
+    assert exc_info.value.status_code == 403
+
+
 def test_stream_rollout_raises_rollout_not_found_on_404(monkeypatch):
     monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
     _stream_with_status(monkeypatch, 404, b"no such endpoint")
