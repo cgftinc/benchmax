@@ -63,12 +63,15 @@ Every platform URL routes through `benchmax.config`:
 from benchmax import config
 config.platform_url()    # https://api.castform.com  (clients add /v1/...)
 config.llm_url()         # https://llm.castform.com/v1
-config.rollout_url()     # https://autobots.castform.com
 ```
 
+Rollouts are reached through the platform API (`platform_url()` +
+`/v1/rollout/stream`), which gates the API key and proxies to rollout-service —
+there is no separate rollout URL.
+
 Override via env vars: `CASTFORM_BASE_DOMAIN`, `CASTFORM_PLATFORM_URL`,
-`CASTFORM_LLM_URL`, `CASTFORM_ROLLOUT_URL`. **Do not** hardcode platform
-URLs in source — always go through `config`.
+`CASTFORM_LLM_URL`. **Do not** hardcode platform URLs in source — always go
+through `config`.
 
 ## Design principles
 

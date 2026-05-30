@@ -185,10 +185,11 @@ def test_print_launch_args_prints_each_spec(capsys):
 
 def test_rollout_client_picks_up_env_var_changes_after_import(monkeypatch):
     """S1 regression: setting CASTFORM_BASE_DOMAIN before constructing
-    RolloutClient must take effect (was frozen at import time)."""
+    RolloutClient must take effect (was frozen at import time). Rollouts route
+    through platform-service, so the base derives from platform_url()."""
     monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "staging.castform.com")
     # Ensure the override env var doesn't pre-empt the base domain test.
-    monkeypatch.delenv("CASTFORM_ROLLOUT_URL", raising=False)
+    monkeypatch.delenv("CASTFORM_PLATFORM_URL", raising=False)
 
     client = RolloutClient(api_key="k")
     assert "staging.castform.com" in client._server_url
@@ -198,6 +199,40 @@ def test_rollout_client_explicit_server_url_wins(monkeypatch):
     monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "staging.castform.com")
     client = RolloutClient(api_key="k", server_url="https://override.example/")
     assert client._server_url == "https://override.example"
+
+
+def test_rollout_client_targets_platform_service_v1(monkeypatch):
+    """Rollouts route through platform-service (the API-key gate): it validates
+    the sk_ key and mints an act_as JWT for rollout-service. The request path is
+    /v1/rollout/stream (platform mounts the proxy at /v1)."""
+    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
+    monkeypatch.delenv("CASTFORM_PLATFORM_URL", raising=False)
+
+    import httpx as httpx_mod
+
+    captured: dict[str, Any] = {}
+
+    class _CM:
+        def __enter__(self):
+            return httpx_mod.Response(503, content=b"stop before SSE loop")
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake_stream(method, url, **kw):
+        captured["url"] = url
+        return _CM()
+
+    monkeypatch.setattr(httpx_mod, "stream", _fake_stream)
+
+    client = RolloutClient(api_key="k")
+    with pytest.raises(RolloutServerError):
+        client.stream_rollout(
+            raw_example={"prompt": "hi"},
+            env_cls_path="a", env_metadata_path="b",
+        )
+
+    assert captured["url"] == "https://api.castform.com/v1/rollout/stream"
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +324,21 @@ def test_stream_rollout_raises_authentication_error_on_401(monkeypatch):
     assert exc_info.value.status_code == 401
 
 
+def test_stream_rollout_raises_authentication_error_on_403(monkeypatch):
+    """platform-service's optionalAuth gate rejects a bad/expired key as 403
+    ('sign in to run rollouts'), not 401 — surface it as an auth error too."""
+    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
+    _stream_with_status(monkeypatch, 403, b"Demo mode is disabled")
+
+    client = RolloutClient(api_key="bad")
+    with pytest.raises(AuthenticationError) as exc_info:
+        client.stream_rollout(
+            raw_example={"prompt": "hi"},
+            env_cls_path="a", env_metadata_path="b",
+        )
+    assert exc_info.value.status_code == 403
+
+
 def test_stream_rollout_raises_rollout_not_found_on_404(monkeypatch):
     monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
     _stream_with_status(monkeypatch, 404, b"no such endpoint")
@@ -331,3 +381,71 @@ def test_validation_result_ok_property():
     ])
     assert r.ok is False
     assert r.examples[1].error == "boom"
+
+
+# ---------------------------------------------------------------------------
+# validate_examples(env_class=...) — bundle locally to bytes, no upload needed
+# ---------------------------------------------------------------------------
+
+
+def _make_smoke_env():
+    """A minimal concrete BaseEnv defined in a local scope so cloudpickle
+    pickles it by value (no local-module ref for dump_bundle to reject)."""
+    from benchmax.envs.base_env import BaseEnv
+
+    class _SmokeEnv(BaseEnv):
+        async def list_tools(self):
+            return []
+
+        async def run_tool(self, rollout_id, tool_name, **tool_args):
+            raise NotImplementedError
+
+        async def compute_reward(self, rollout_id, messages, task, **kwargs):
+            return {"reward": 1.0}
+
+    return _SmokeEnv
+
+
+def test_validate_examples_env_class_bundles_to_bytes(monkeypatch):
+    """env_class is bundled to bytes in-process (no upload) and forwarded as
+    env_cls_bytes/env_metadata_bytes — never as blob paths — to each rollout."""
+    client = RolloutClient(api_key="k")
+
+    captured: list[dict[str, Any]] = []
+
+    def _fake_stream_rollout(**kwargs):
+        captured.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(client, "stream_rollout", _fake_stream_rollout)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}, {"prompt": "yo"}],
+        env_class=_make_smoke_env(),
+        n=2,
+        verbose=False,
+    )
+
+    assert result.ok
+    assert len(captured) == 2
+    for kw in captured:
+        assert kw["env_cls_bytes"] is not None
+        assert kw["env_metadata_bytes"] is not None
+        assert kw["env_cls_path"] is None
+        assert kw["env_metadata_path"] is None
+
+
+def test_validate_examples_env_class_conflicts_with_explicit_env(monkeypatch):
+    """env_class is mutually exclusive with explicit paths/bytes."""
+    client = RolloutClient(api_key="k")
+    # Stub so a missing-guard regression can't accidentally hit the network.
+    monkeypatch.setattr(client, "stream_rollout", lambda **kw: {"success": True})
+
+    with pytest.raises(ValueError, match="env_class OR"):
+        client.validate_examples(
+            [{"prompt": "hi"}],
+            env_class=_make_smoke_env(),
+            env_cls_path="a",
+            env_metadata_path="b",
+            verbose=False,
+        )
