@@ -1,8 +1,11 @@
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
 from openai import AsyncOpenAI
+
+logger = logging.getLogger(__name__)
 
 from benchmax.platform.credentials import platform_bearer
 
@@ -76,6 +79,7 @@ async def evaluate_single_rubric(
     ground_truth: Optional[str] = None,
     api_key: str = "",
     timeout: Optional[float] = None,
+    enable_logging: bool = True,
 ) -> Dict[str, Any]:
     """
     Evaluate a single response against a single rubric.
@@ -146,11 +150,26 @@ async def evaluate_single_rubric(
             return {"score": 0, "reasoning": "Empty response", "llm_output": ""}
 
         result = _extract_json(content)
-        return {
+        out = {
             "score": result.get("score", 0),
             "reasoning": result.get("reasoning", ""),
             "llm_output": content,
         }
+        if enable_logging:
+            logger.info(
+                "\n┌─ rubric: %s ─────────────────────\n"
+                "│ ground_truth : %s\n"
+                "│ score        : %s\n"
+                "│ reasoning    : %s\n"
+                "│ llm_output   :\n%s\n"
+                "└──────────────────────────────────────────────────",
+                rubric.title,
+                (ground_truth or "").strip() or "(none)",
+                out["score"],
+                out["reasoning"],
+                content,
+            )
+        return out
 
     except Exception as e:
         print(f"Error evaluating rubric '{rubric.title}': {e}\njudge output:\n{content}")
@@ -166,6 +185,7 @@ async def evaluate_rubric_ranking(
     api_key: str = "",
     timeout: Optional[float] = None,
     ground_truth: Optional[str] = None,
+    enable_logging: bool = True,
 ) -> Dict[str, Any]:
     """
     Rank N responses against a single rubric in one judge call and convert the
@@ -276,12 +296,34 @@ async def evaluate_rubric_ranking(
             for j, p in pos_of.items():
                 scores[nonempty[j][0]] = 1.0 - p / max_pos if max_pos > 0 else 1.0
 
-        return {
+        out = {
             "scores": scores,
             "ranking": ranking,
             "reasoning": result.get("reasoning", ""),
             "llm_output": content,
         }
+        if enable_logging:
+            scores_fmt = "  ".join(f"[{i}]={s:.3f}" for i, s in enumerate(scores))
+            ranking_fmt = " > ".join(
+                f"[{', '.join(str(j) for j in tier)}]" if isinstance(tier, list) else str(tier)
+                for tier in ranking
+            )
+            logger.info(
+                "\n┌─ ranked rubric: %s ────────────────────\n"
+                "│ ground_truth : %s\n"
+                "│ ranking      : %s\n"
+                "│ scores       : %s\n"
+                "│ reasoning    : %s\n"
+                "│ llm_output   :\n%s\n"
+                "└──────────────────────────────────────────────────",
+                rubric.title,
+                (ground_truth or "").strip() or "(none)",
+                ranking_fmt or "(empty)",
+                scores_fmt,
+                out["reasoning"],
+                content,
+            )
+        return out
     except Exception as e:
         print(f"Error ranking rubric '{rubric.title}': {e}\njudge output:\n{content}")
         return {"scores": scores, "ranking": [], "reasoning": f"Error: {e}", "llm_output": content}
