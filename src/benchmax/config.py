@@ -38,8 +38,3 @@ def web_app_url() -> str:
 def llm_url() -> str:
     """OpenAI-compatible LLM endpoint hosted by the platform."""
     return os.environ.get("CASTFORM_LLM_URL") or f"https://llm.{base_domain()}/v1"
-
-
-def rollout_url() -> str:
-    """Rollout / inference server."""
-    return os.environ.get("CASTFORM_ROLLOUT_URL") or f"https://autobots.{base_domain()}"
