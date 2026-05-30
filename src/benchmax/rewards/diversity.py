@@ -26,11 +26,12 @@ Usage::
 
 from __future__ import annotations
 
-import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional
+
+from benchmax.rubrics._utils import _extract_json
 
 # AsyncOpenAI imported lazily inside _cluster_by_llm to avoid pulling in
 # unpicklable context vars at module level (breaks cloudpickle bundling).
@@ -81,8 +82,8 @@ class DiversityConfig:
     ngram_n: int = 3
     similarity_threshold: float = 0.5
 
-    # LLM retry count
-    max_retries: int = 2
+    # LLM retry count (matches rubric.py default of 3)
+    max_retries: int = 3
 
     # On clustering error, "unique" means every rollout is its own cluster
     # (no penalty). "uniform" means all rollouts share one cluster.
@@ -108,19 +109,9 @@ class ClusterResult:
 # ---------------------------------------------------------------------------
 
 
-def _extract_json(raw: str) -> dict:
-    """Extract JSON from an LLM response, handling code fences and thinking tags."""
-    cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-    # Try markdown fences
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
-    if fence:
-        return json.loads(fence.group(1))
-    # Bare JSON
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start != -1 and end > start:
-        return json.loads(cleaned[start : end + 1])
-    raise ValueError("No JSON found in response")
+def _strip_thinking_tags(text: str) -> str:
+    """Strip <think>...</think> tags that some models emit before JSON."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
 def _ngram_set(text: str, n: int) -> set[str]:
@@ -172,6 +163,10 @@ async def _cluster_by_llm(
     context: str,
 ) -> ClusterResult:
     """Cluster texts by sending them to an LLM."""
+    from openai import AsyncOpenAI
+
+    from benchmax.rubrics.rubric import _resolve_judge_key
+
     items = "\n\n".join(f"[{i}]\n{t}" for i, t in enumerate(texts))
     prompt = config.prompt_template.format(
         context=context or "(none)",
@@ -180,9 +175,11 @@ async def _cluster_by_llm(
         items=items,
     )
 
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key, max_retries=config.max_retries)
+    client = AsyncOpenAI(
+        base_url=config.base_url,
+        api_key=_resolve_judge_key(config.api_key, config.base_url),
+        max_retries=config.max_retries,
+    )
     resp = await client.chat.completions.create(
         model=config.model,
         messages=[{"role": "user", "content": prompt}],
@@ -191,7 +188,7 @@ async def _cluster_by_llm(
         timeout=config.timeout,
     )
 
-    raw = (resp.choices[0].message.content or "").strip()
+    raw = _strip_thinking_tags((resp.choices[0].message.content or ""))
     parsed = _extract_json(raw)
     assignments = parsed.get("assignments", [])
 

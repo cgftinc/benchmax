@@ -5,15 +5,15 @@ import asyncio
 import pytest
 
 from benchmax.rewards.diversity import (
-    ClusterResult,
     DiversityConfig,
     _cluster_by_ngram,
-    _extract_json,
     _jaccard,
     _ngram_set,
+    _strip_thinking_tags,
     cluster_texts,
     scale_by_diversity,
 )
+from benchmax.rubrics._utils import _extract_json
 
 
 # ---------------------------------------------------------------------------
@@ -29,12 +29,12 @@ class TestExtractJson:
         raw = '```json\n{"assignments": [{"index": 0}]}\n```'
         assert _extract_json(raw)["assignments"][0]["index"] == 0
 
-    def test_thinking_tags_stripped(self):
+    def test_thinking_tags_stripped_then_parsed(self):
         raw = '<think>reasoning here</think>\n{"x": 2}'
-        assert _extract_json(raw) == {"x": 2}
+        assert _extract_json(_strip_thinking_tags(raw)) == {"x": 2}
 
     def test_no_json_raises(self):
-        with pytest.raises(ValueError, match="No JSON"):
+        with pytest.raises(ValueError):
             _extract_json("no json here at all")
 
 

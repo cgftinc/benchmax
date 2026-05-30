@@ -2,9 +2,12 @@
 
 Hits real LLM endpoints — requires API credentials.
 Run with: uv run pytest tests/integration/test_diversity_llm.py -v
+
+Credentials: set CASTFORM_LLM_URL and PLATFORM_API_KEY (or load via .env.test).
 """
 
 import asyncio
+import os
 
 import pytest
 
@@ -15,12 +18,14 @@ from benchmax.rewards.diversity import (
     scale_by_diversity,
 )
 
-# Use the same endpoint and model as the red-team notebooks
+_base_url = os.environ.get("CASTFORM_LLM_URL", "https://llm.castform.com/v1")
+_api_key = os.environ.get("PLATFORM_API_KEY", "")
+
 LLM_CONFIG = DiversityConfig(
     method="llm",
-    base_url="https://llm.cgft.io/v1",
-    model="grok-4-1-fast-non-reasoning",
-    api_key="sk_FXrMFFsvOBmXfVKLqNjOrLevOchhaUmzCUQxLjGvyWzmGJPSwNEiDpNGgBJutsxn",
+    base_url=_base_url,
+    model=os.environ.get("DIVERSITY_TEST_MODEL", "grok-4-1-fast-non-reasoning"),
+    api_key=_api_key,
     max_tokens=768,
     temperature=0.0,
     timeout=60.0,
