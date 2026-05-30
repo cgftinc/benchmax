@@ -366,3 +366,71 @@ def test_validation_result_ok_property():
     ])
     assert r.ok is False
     assert r.examples[1].error == "boom"
+
+
+# ---------------------------------------------------------------------------
+# validate_examples(env_class=...) — bundle locally to bytes, no upload needed
+# ---------------------------------------------------------------------------
+
+
+def _make_smoke_env():
+    """A minimal concrete BaseEnv defined in a local scope so cloudpickle
+    pickles it by value (no local-module ref for dump_bundle to reject)."""
+    from benchmax.envs.base_env import BaseEnv
+
+    class _SmokeEnv(BaseEnv):
+        async def list_tools(self):
+            return []
+
+        async def run_tool(self, rollout_id, tool_name, **tool_args):
+            raise NotImplementedError
+
+        async def compute_reward(self, rollout_id, messages, task, **kwargs):
+            return {"reward": 1.0}
+
+    return _SmokeEnv
+
+
+def test_validate_examples_env_class_bundles_to_bytes(monkeypatch):
+    """env_class is bundled to bytes in-process (no upload) and forwarded as
+    env_cls_bytes/env_metadata_bytes — never as blob paths — to each rollout."""
+    client = RolloutClient(api_key="k")
+
+    captured: list[dict[str, Any]] = []
+
+    def _fake_stream_rollout(**kwargs):
+        captured.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(client, "stream_rollout", _fake_stream_rollout)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}, {"prompt": "yo"}],
+        env_class=_make_smoke_env(),
+        n=2,
+        verbose=False,
+    )
+
+    assert result.ok
+    assert len(captured) == 2
+    for kw in captured:
+        assert kw["env_cls_bytes"] is not None
+        assert kw["env_metadata_bytes"] is not None
+        assert kw["env_cls_path"] is None
+        assert kw["env_metadata_path"] is None
+
+
+def test_validate_examples_env_class_conflicts_with_explicit_env(monkeypatch):
+    """env_class is mutually exclusive with explicit paths/bytes."""
+    client = RolloutClient(api_key="k")
+    # Stub so a missing-guard regression can't accidentally hit the network.
+    monkeypatch.setattr(client, "stream_rollout", lambda **kw: {"success": True})
+
+    with pytest.raises(ValueError, match="env_class OR"):
+        client.validate_examples(
+            [{"prompt": "hi"}],
+            env_class=_make_smoke_env(),
+            env_cls_path="a",
+            env_metadata_path="b",
+            verbose=False,
+        )

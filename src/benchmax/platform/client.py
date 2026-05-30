@@ -29,7 +29,9 @@ from .exceptions import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from types import ModuleType
+
+    from benchmax.envs.base_env import BaseEnv
 
 
 @dataclass(frozen=True)
@@ -945,6 +947,10 @@ class RolloutClient:
         env_metadata_path: str | None = None,
         n: int = 2,
         *,
+        env_class: type[BaseEnv] | None = None,
+        constructor_args: dict[str, Any] | None = None,
+        pip_dependencies: list[str] | None = None,
+        local_modules: list[ModuleType] | None = None,
         env_cls_bytes: bytes | None = None,
         env_metadata_bytes: bytes | None = None,
         llm_model: str = _VALIDATION_MODEL,
@@ -953,14 +959,22 @@ class RolloutClient:
     ) -> ValidationResult:
         """Run rollouts on the first *n* examples and report pass/fail.
 
-        The environment can be specified via **blob paths** or **raw bytes**
-        (mutually exclusive — see class docstring).
+        The environment can be specified three ways (mutually exclusive): an
+        **env class** (bundled to bytes here, so validation needs no prior
+        upload — preferred for a pre-launch smoke test), **blob paths** to an
+        already-uploaded env, or **raw bytes** (see class docstring).
 
         Args:
             examples:           Full dataset (list of raw dicts).
             env_cls_path:       Blob path to the uploaded env .pkl file.
             env_metadata_path:  Blob path to the uploaded env-meta .json file.
             n:                  Number of examples to validate (default 2).
+            env_class:          BaseEnv subclass to bundle and validate without
+                                uploading. Mutually exclusive with paths/bytes.
+            constructor_args:   kwargs baked into the env bundle (env_class only).
+            pip_dependencies:   Pip deps recorded in the bundle (env_class only).
+            local_modules:      Modules to pickle by-value (env_class only; for
+                                envs that import from local .py files).
             env_cls_bytes:      Raw bytes of the pickled env class (will be base64-encoded).
             env_metadata_bytes: Raw bytes of the env metadata JSON (will be base64-encoded).
             verbose:            Print colored progress to stdout (default True for
@@ -972,6 +986,27 @@ class RolloutClient:
             "did everything pass" check, with per-example detail in
             ``result.examples`` for richer reporting.
         """
+        # An env class is bundled to bytes here so validation can run a smoke
+        # test BEFORE uploading anything (the launch flow uploads only after
+        # validation passes). Mutually exclusive with explicit paths/bytes.
+        if env_class is not None:
+            if any(
+                (env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes)
+            ):
+                raise ValueError(
+                    "Provide env_class OR explicit env paths/bytes, not both."
+                )
+            from benchmax.bundle import dump_bundle
+
+            bundle = dump_bundle(
+                env_class,
+                constructor_args=constructor_args,
+                pip_dependencies=pip_dependencies,
+                local_modules=local_modules,
+            )
+            env_cls_bytes = bundle.pickled
+            env_metadata_bytes = bundle.metadata.to_json_bytes()
+
         # Validate env args early so we fail before running any rollouts.
         self._build_env(
             env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes
