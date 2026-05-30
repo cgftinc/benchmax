@@ -1,6 +1,6 @@
 [project]
 name = "benchmax"
-version = "0.1.2.dev26"
+version = "0.1.2.dev27"
 description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
 readme = "README.md"
 authors = [{ name = "castie@castform.com" }]
