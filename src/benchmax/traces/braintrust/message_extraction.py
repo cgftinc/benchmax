@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from benchmax.traces.adapter import ToolCall, TraceMessage
+from benchmax.traces.adapter import ToolCall, TraceMessage, normalize_message, _is_structured_content
 
 
 def extract_messages(trace: dict[str, Any]) -> list[TraceMessage]:
@@ -185,13 +185,15 @@ def _parse_output(output_data: Any) -> list[TraceMessage]:
 
 
 def _parse_msg(msg: dict[str, Any]) -> TraceMessage:
-    """Parse a single message dict, normalising tool_calls format variations.
+    """Parse a single message dict, handling both OpenAI and structured-content formats.
 
-    Braintrust tool_calls can appear as:
-    - ``msg["tool_calls"]`` — OpenAI format
-    - ``msg["function"]`` — older format
-    - ``msg["tool_calls"][i]["function"]`` — nested format
+    Delegates to ``normalize_message`` for structured-content messages
+    (openclaw / Anthropic style where ``content`` is a list of typed blocks).
+    Otherwise normalises tool_calls format variations directly.
     """
+    if _is_structured_content(msg):
+        return normalize_message(msg)
+
     role = msg.get("role", "assistant")
     content = msg.get("content", "")
     if content is None:
