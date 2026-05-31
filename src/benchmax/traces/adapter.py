@@ -90,7 +90,7 @@ def validate_provider_url(url: str) -> None:
         # temporarily unreachable or not yet provisioned.  We allow this
         # through — the actual HTTP request will fail with a clear error.
         # Note: this creates a small TOCTOU window where DNS rebinding
-        # could bypass validation, but practical risk is low in Modal.
+        # could bypass validation, but practical risk is low in sandboxed environments.
         return
     if addr.is_private or addr.is_reserved or addr.is_loopback or addr.is_link_local:
         raise ValueError(f"Provider URL resolves to private/reserved IP: {addr}")
@@ -135,9 +135,8 @@ class TraceMessage:
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-compatible dict with structured tool_calls.
 
-        Used by the web-app wizard preview, trace rendering, and
-        intermediate pipeline storage. All fields are always present
-        with type-safe defaults (empty list / empty string, never None).
+        All fields are always present with type-safe defaults (empty
+        list / empty string, never None) for Arrow serialization safety.
         """
         d: dict[str, Any] = {"role": self.role, "content": self.content}
         d["tool_calls"] = (
@@ -163,7 +162,7 @@ class NormalizedTrace:
     errors: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise for JSON transport (e.g. Modal ↔ wizard)."""
+        """Serialise for JSON transport."""
         d: dict[str, Any] = {
             "id": self.id,
             "messages": [m.to_dict() for m in self.messages],

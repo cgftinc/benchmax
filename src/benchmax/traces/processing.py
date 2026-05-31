@@ -40,7 +40,7 @@ def detect_system_prompt(
     """Scan *all* traces for ``role=="system"`` messages.
 
     Returns the most common system prompt.  If multiple distinct prompts are
-    found, ``variants`` contains the alternatives so the wizard can surface a
+    found, ``variants`` contains the alternatives so callers can surface a
     warning.
     """
     prompts: list[str] = []
@@ -117,9 +117,9 @@ class TrainingExample:
     - ``prompt_messages`` / ``completion_messages`` — structured
       ``TraceMessage`` lists.  These are the authoritative training data,
       used by ``to_jsonl_dict()`` and consumed by ``dataset_preprocess``.
-    - ``prompt`` / ``ground_truth`` — human-readable summaries for display
-      in the wizard preview.  These are lossy (tool call arguments are
-      flattened to text) and should NOT be used for training.
+    - ``prompt`` / ``ground_truth`` — human-readable summaries for display.
+      These are lossy (tool call arguments are flattened to text) and
+      should NOT be used for training.
     """
 
     prompt_messages: list[TraceMessage]
@@ -331,7 +331,7 @@ def apply_heuristic_filters(
     """Filter examples using deterministic heuristics.
 
     Returns ``FilterResult`` with both kept and dropped examples (with
-    reasons) so the wizard can show what was filtered and why.
+    reasons) so callers can show what was filtered and why.
     """
     kept: list[TrainingExample] = []
     dropped: list[tuple[TrainingExample, DropReason]] = []
