@@ -7,10 +7,9 @@ Converts raw Braintrust span trees into flat ``TraceMessage`` lists using a
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from benchmax.traces.adapter import ToolCall, TraceMessage, normalize_message, _is_structured_content
+from benchmax.traces.adapter import TraceMessage, normalize_message
 
 
 def extract_messages(trace: dict[str, Any]) -> list[TraceMessage]:
@@ -185,87 +184,13 @@ def _parse_output(output_data: Any) -> list[TraceMessage]:
 
 
 def _parse_msg(msg: dict[str, Any]) -> TraceMessage:
-    """Parse a single message dict, handling both OpenAI and structured-content formats.
+    """Parse a single message dict into a TraceMessage.
 
-    Delegates to ``normalize_message`` for structured-content messages
-    (openclaw / Anthropic style where ``content`` is a list of typed blocks).
-    Otherwise normalises tool_calls format variations directly.
+    Delegates entirely to ``normalize_message`` which handles all format
+    variations (structured content blocks, OpenAI flat/nested, legacy
+    function calls).
     """
-    if _is_structured_content(msg):
-        return normalize_message(msg)
-
-    role = msg.get("role", "assistant")
-    content = msg.get("content", "")
-    if content is None:
-        content = ""
-    content = str(content)
-
-    tool_calls = _normalize_tool_calls(msg)
-    tool_call_id = msg.get("tool_call_id")
-    name = msg.get("name")
-
-    return TraceMessage(
-        role=role,
-        content=content,
-        tool_calls=tool_calls if tool_calls else None,
-        tool_call_id=tool_call_id,
-        name=name,
-    )
-
-
-def _normalize_tool_calls(msg: dict[str, Any]) -> list[ToolCall]:
-    """Extract tool calls from a message, handling format variations."""
-    raw_calls = msg.get("tool_calls")
-    if not raw_calls:
-        # Try older "function" format
-        func = msg.get("function")
-        if func and isinstance(func, dict):
-            return [
-                ToolCall(
-                    name=func.get("name", ""),
-                    arguments=_ensure_json_string(func.get("arguments", "{}")),
-                    id=msg.get("id"),
-                )
-            ]
-        return []
-
-    if not isinstance(raw_calls, list):
-        return []
-
-    result: list[ToolCall] = []
-    for tc in raw_calls:
-        if not isinstance(tc, dict):
-            continue
-        # Handle nested function format: {"function": {"name": ..., "arguments": ...}}
-        func = tc.get("function", {})
-        if isinstance(func, dict) and "name" in func:
-            result.append(
-                ToolCall(
-                    name=func["name"],
-                    arguments=_ensure_json_string(func.get("arguments", "{}")),
-                    id=tc.get("id"),
-                )
-            )
-        elif "name" in tc:
-            # Direct format: {"name": ..., "arguments": ...}
-            result.append(
-                ToolCall(
-                    name=tc["name"],
-                    arguments=_ensure_json_string(tc.get("arguments", "{}")),
-                    id=tc.get("id"),
-                )
-            )
-
-    return result
-
-
-def _ensure_json_string(value: Any) -> str:
-    """Ensure *value* is a JSON string.  If it's a dict, serialise it."""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        return json.dumps(value)
-    return str(value)
+    return normalize_message(msg)
 
 
 def _extract_tool_response(child: dict[str, Any]) -> TraceMessage | None:

@@ -179,7 +179,7 @@ class NormalizedTrace:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> NormalizedTrace:
         """Reconstruct from a dict produced by ``to_dict``."""
-        messages = [_message_from_dict(m) for m in data.get("messages", [])]
+        messages = [normalize_message(m) for m in data.get("messages", [])]
         return cls(
             id=data["id"],
             messages=messages,
@@ -272,32 +272,8 @@ class TraceAdapter(Protocol):
 # ---------------------------------------------------------------------------
 
 
-def _message_from_dict(d: dict[str, Any]) -> TraceMessage:
-    tool_calls = None
-    if "tool_calls" in d and d["tool_calls"]:
-        tool_calls = [
-            ToolCall(
-                name=tc.get("name", ""),
-                arguments=tc.get("arguments", "{}"),
-                id=tc.get("id"),
-            )
-            for tc in d["tool_calls"]
-        ]
-    return TraceMessage(
-        role=d["role"],
-        content=d.get("content", ""),
-        tool_calls=tool_calls,
-        tool_call_id=d.get("tool_call_id"),
-        name=d.get("name"),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Message format normalizers
-# ---------------------------------------------------------------------------
-
-
 def _ensure_json_string(value: Any) -> str:
+    """Coerce to a JSON string. Dicts get serialised, strings pass through."""
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
@@ -305,42 +281,69 @@ def _ensure_json_string(value: Any) -> str:
     return str(value)
 
 
-def _is_structured_content(msg: dict[str, Any]) -> bool:
-    """True if ``content`` is a list of typed blocks (openclaw / Anthropic style)."""
-    content = msg.get("content")
-    return (
-        isinstance(content, list)
-        and len(content) > 0
-        and isinstance(content[0], dict)
-        and "type" in content[0]
-    )
+def _extract_tool_calls(msg: dict[str, Any]) -> list[ToolCall]:
+    """Extract tool calls from any format.
 
-
-def normalize_structured_message(msg: dict[str, Any]) -> TraceMessage:
-    """Normalize a message with structured content blocks to ``TraceMessage``.
-
-    Handles the format used by openclaw and Anthropic-style agents where
-    ``content`` is a list of typed blocks::
-
-        {type: "text", text: "..."}
-        {type: "toolCall", name: "...", arguments: "...", id: "..."}
-        {type: "toolResult", ...}
-
-    And ``role`` may be ``"toolResult"`` (normalized to ``"tool"``).
-
-    Any provider adapter can call this when it encounters structured-content
-    messages — it's not tied to a specific provider.
+    Handles:
+      - OpenAI flat: ``tool_calls: [{name, arguments, id}]``
+      - OpenAI nested: ``tool_calls: [{id, type, function: {name, arguments}}]``
+      - Legacy single: ``function: {name, arguments}``
     """
-    role = msg.get("role", "")
-    content = msg.get("content", "")
+    raw = msg.get("tool_calls")
+    if raw and isinstance(raw, list):
+        calls = []
+        for tc in raw:
+            if not isinstance(tc, dict):
+                continue
+            func = tc.get("function")
+            if isinstance(func, dict) and "name" in func:
+                calls.append(ToolCall(
+                    name=func["name"],
+                    arguments=_ensure_json_string(func.get("arguments", "{}")),
+                    id=tc.get("id"),
+                ))
+            elif "name" in tc:
+                calls.append(ToolCall(
+                    name=tc["name"],
+                    arguments=_ensure_json_string(tc.get("arguments", "{}")),
+                    id=tc.get("id"),
+                ))
+        if calls:
+            return calls
 
+    func = msg.get("function")
+    if isinstance(func, dict) and "name" in func:
+        return [ToolCall(
+            name=func["name"],
+            arguments=_ensure_json_string(func.get("arguments", "{}")),
+            id=msg.get("id"),
+        )]
+
+    return []
+
+
+def normalize_message(msg: dict[str, Any]) -> TraceMessage:
+    """Normalize any message dict into a ``TraceMessage``.
+
+    Auto-detects and handles:
+      - Structured content blocks (openclaw / Anthropic): ``content``
+        is a list of ``{type: "text"}``, ``{type: "toolCall"}`` dicts
+      - Flat OpenAI format: ``content`` is a string, ``tool_calls`` field
+      - Nested OpenAI format: ``tool_calls[].function.{name, arguments}``
+      - Legacy format: ``function: {name, arguments}``
+      - Role aliases: ``toolResult`` → ``tool``
+      - Field aliases: ``toolCallId`` → ``tool_call_id``,
+        ``toolName`` → ``name``
+    """
+    role = msg.get("role") or "assistant"
     if role == "toolResult":
         role = "tool"
 
-    text_parts: list[str] = []
+    content = msg.get("content", "")
     tool_calls: list[ToolCall] = []
 
-    if isinstance(content, list):
+    if isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
+        text_parts: list[str] = []
         for block in content:
             if not isinstance(block, dict):
                 continue
@@ -355,7 +358,11 @@ def normalize_structured_message(msg: dict[str, Any]) -> TraceMessage:
                 ))
         content = "\n".join(text_parts) if text_parts else ""
     else:
-        content = str(content) if content else ""
+        if content is None:
+            content = ""
+        elif not isinstance(content, str):
+            content = str(content)
+        tool_calls = _extract_tool_calls(msg)
 
     return TraceMessage(
         role=role,
@@ -364,15 +371,3 @@ def normalize_structured_message(msg: dict[str, Any]) -> TraceMessage:
         tool_call_id=msg.get("toolCallId") or msg.get("tool_call_id"),
         name=msg.get("toolName") or msg.get("name"),
     )
-
-
-def normalize_message(msg: dict[str, Any]) -> TraceMessage:
-    """Auto-detect message format and normalize to ``TraceMessage``.
-
-    Handles both structured-content (openclaw / Anthropic) and flat
-    (OpenAI) message formats. Provider adapters can call this instead
-    of implementing format detection themselves.
-    """
-    if _is_structured_content(msg):
-        return normalize_structured_message(msg)
-    return _message_from_dict(msg)
