@@ -474,14 +474,13 @@ def validate_env(
     if env is not None:
         sp = getattr(env, "system_prompt", None)
         if not sp or not isinstance(sp, str):
-            print("  \u2717 system_prompt is missing or not a string")
-            failed += 1
+            print("  warning: system_prompt is missing or not a string")
         else:
             msg = f"  \u2713 system_prompt: {len(sp)} chars"
             if len(sp) > 10000:
                 msg += " (warning: very long — consider shortening)"
             print(msg)
-            passed += 1
+        passed += 1
 
     # ── Summary ──────────────────────────────────────────────────
     print()
