@@ -11,7 +11,9 @@ from .cache import (
     load_rubric_cache,
 )
 from .prompts import INSTANCE_WISE_RUBRIC_GENERATION_PROMPT
-from .rubric import _cache_dict_to_rubric, _resolve_judge_key, evaluate_single_rubric
+from benchmax.platform.credentials import resolve_judge_key
+
+from .rubric import _cache_dict_to_rubric, evaluate_single_rubric
 
 
 async def generate_instance_wise_adaptive_rubrics(
@@ -54,7 +56,7 @@ async def generate_instance_wise_adaptive_rubrics(
     # self-serve) — the same surface the search clients use. Falls back to None
     # (→ OPENAI_API_KEY) when no platform credential is present, for direct use.
     client = AsyncOpenAI(
-        base_url=base_url, api_key=_resolve_judge_key(api_key, base_url), max_retries=3
+        base_url=base_url, api_key=resolve_judge_key(api_key, base_url), max_retries=3
     )
 
     try:

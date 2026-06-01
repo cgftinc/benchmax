@@ -6,8 +6,9 @@ import json_repair
 
 
 def _extract_json(s: str) -> dict:
-    """Extract JSON from a response string, handling markdown code blocks."""
-    s = s.strip()
+    """Extract JSON from a response string, handling markdown code blocks and thinking tags."""
+    # Strip <think>...</think> tags that some models emit before JSON.
+    s = re.sub(r"<think>.*?</think>", "", s, flags=re.DOTALL).strip()
     if s.startswith("```") and s.endswith("```"):
         s = "\n".join(s.splitlines()[1:-1]).strip()
     try:

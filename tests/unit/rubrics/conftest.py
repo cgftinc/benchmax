@@ -50,11 +50,12 @@ def stub_openai(monkeypatch):
         factory = _stub_client_factory(responses)
         monkeypatch.setattr("benchmax.rubrics.rubric.AsyncOpenAI", factory)
         monkeypatch.setattr("benchmax.rubrics.adaptive.AsyncOpenAI", factory)
-        # The judge clients resolve their bearer through the platform credential
-        # seam (_resolve_judge_key -> platform_bearer). With no platform env that
-        # raises by design; stub it so these logic tests don't need credentials.
-        # The stubbed AsyncOpenAI ignores the api_key value anyway.
-        monkeypatch.setattr("benchmax.rubrics.rubric.platform_bearer", lambda: "test-token")
+        # The judge clients resolve their bearer through resolve_judge_key ->
+        # platform_bearer. With no platform env that raises by design; stub it
+        # so these logic tests don't need credentials.
+        monkeypatch.setattr(
+            "benchmax.platform.credentials.platform_bearer", lambda: "test-token"
+        )
         return factory
 
     return install
