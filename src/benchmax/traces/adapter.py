@@ -90,7 +90,7 @@ def validate_provider_url(url: str) -> None:
         # temporarily unreachable or not yet provisioned.  We allow this
         # through — the actual HTTP request will fail with a clear error.
         # Note: this creates a small TOCTOU window where DNS rebinding
-        # could bypass validation, but practical risk is low in Modal.
+        # could bypass validation, but practical risk is low in sandboxed environments.
         return
     if addr.is_private or addr.is_reserved or addr.is_loopback or addr.is_link_local:
         raise ValueError(f"Provider URL resolves to private/reserved IP: {addr}")
@@ -133,21 +133,21 @@ class TraceMessage:
     name: str | None = None  # tool name for role="tool"
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise to a JSON-compatible dict.
+        """Serialise to a JSON-compatible dict with structured tool_calls.
 
-        Always includes all fields (even when None) so that JSONL output
-        has a consistent schema — HuggingFace ``load_dataset`` fails on
-        rows with inconsistent keys.
+        All fields are always present with type-safe defaults (empty
+        list / empty string, never None) for Arrow serialization safety.
         """
         d: dict[str, Any] = {"role": self.role, "content": self.content}
         d["tool_calls"] = (
-            [{"name": tc.name, "arguments": tc.arguments, "id": tc.id} for tc in self.tool_calls]
+            [{"name": tc.name, "arguments": tc.arguments, "id": tc.id or ""} for tc in self.tool_calls]
             if self.tool_calls
-            else None
+            else []
         )
-        d["tool_call_id"] = self.tool_call_id
-        d["name"] = self.name
+        d["tool_call_id"] = self.tool_call_id or ""
+        d["name"] = self.name or ""
         return d
+
 
 
 @dataclass(frozen=True)
@@ -162,7 +162,7 @@ class NormalizedTrace:
     errors: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise for JSON transport (e.g. Modal ↔ wizard)."""
+        """Serialise for JSON transport."""
         d: dict[str, Any] = {
             "id": self.id,
             "messages": [m.to_dict() for m in self.messages],
@@ -178,7 +178,7 @@ class NormalizedTrace:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> NormalizedTrace:
         """Reconstruct from a dict produced by ``to_dict``."""
-        messages = [_message_from_dict(m) for m in data.get("messages", [])]
+        messages = [normalize_message(m) for m in data.get("messages", [])]
         return cls(
             id=data["id"],
             messages=messages,
@@ -271,21 +271,102 @@ class TraceAdapter(Protocol):
 # ---------------------------------------------------------------------------
 
 
-def _message_from_dict(d: dict[str, Any]) -> TraceMessage:
-    tool_calls = None
-    if "tool_calls" in d and d["tool_calls"]:
-        tool_calls = [
-            ToolCall(
-                name=tc.get("name", ""),
-                arguments=tc.get("arguments", "{}"),
-                id=tc.get("id"),
-            )
-            for tc in d["tool_calls"]
-        ]
+def _ensure_json_string(value: Any) -> str:
+    """Coerce to a JSON string. Dicts get serialised, strings pass through."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return json.dumps(value)
+    return str(value)
+
+
+def _extract_tool_calls(msg: dict[str, Any]) -> list[ToolCall]:
+    """Extract tool calls from any format.
+
+    Handles:
+      - OpenAI flat: ``tool_calls: [{name, arguments, id}]``
+      - OpenAI nested: ``tool_calls: [{id, type, function: {name, arguments}}]``
+      - Legacy single: ``function: {name, arguments}``
+    """
+    raw = msg.get("tool_calls")
+    if raw and isinstance(raw, list):
+        calls = []
+        for tc in raw:
+            if not isinstance(tc, dict):
+                continue
+            func = tc.get("function")
+            if isinstance(func, dict) and "name" in func:
+                calls.append(ToolCall(
+                    name=func["name"],
+                    arguments=_ensure_json_string(func.get("arguments", "{}")),
+                    id=tc.get("id"),
+                ))
+            elif "name" in tc:
+                calls.append(ToolCall(
+                    name=tc["name"],
+                    arguments=_ensure_json_string(tc.get("arguments", "{}")),
+                    id=tc.get("id"),
+                ))
+        if calls:
+            return calls
+
+    func = msg.get("function")
+    if isinstance(func, dict) and "name" in func:
+        return [ToolCall(
+            name=func["name"],
+            arguments=_ensure_json_string(func.get("arguments", "{}")),
+            id=msg.get("id"),
+        )]
+
+    return []
+
+
+def normalize_message(msg: dict[str, Any]) -> TraceMessage:
+    """Normalize any message dict into a ``TraceMessage``.
+
+    Auto-detects and handles:
+      - Structured content blocks (openclaw / Anthropic): ``content``
+        is a list of ``{type: "text"}``, ``{type: "toolCall"}`` dicts
+      - Flat OpenAI format: ``content`` is a string, ``tool_calls`` field
+      - Nested OpenAI format: ``tool_calls[].function.{name, arguments}``
+      - Legacy format: ``function: {name, arguments}``
+      - Role aliases: ``toolResult`` → ``tool``
+      - Field aliases: ``toolCallId`` → ``tool_call_id``,
+        ``toolName`` → ``name``
+    """
+    role = msg.get("role") or "assistant"
+    if role == "toolResult":
+        role = "tool"
+
+    content = msg.get("content", "")
+    tool_calls: list[ToolCall] = []
+
+    if isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
+        text_parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type", "")
+            if btype == "text":
+                text_parts.append(block.get("text", ""))
+            elif btype == "toolCall":
+                tool_calls.append(ToolCall(
+                    name=block.get("name", ""),
+                    arguments=_ensure_json_string(block.get("arguments", "{}")),
+                    id=block.get("id"),
+                ))
+        content = "\n".join(text_parts) if text_parts else ""
+    else:
+        if content is None:
+            content = ""
+        elif not isinstance(content, str):
+            content = str(content)
+        tool_calls = _extract_tool_calls(msg)
+
     return TraceMessage(
-        role=d["role"],
-        content=d.get("content", ""),
-        tool_calls=tool_calls,
-        tool_call_id=d.get("tool_call_id"),
-        name=d.get("name"),
+        role=role,
+        content=content,
+        tool_calls=tool_calls if tool_calls else None,
+        tool_call_id=msg.get("toolCallId") or msg.get("tool_call_id"),
+        name=msg.get("toolName") or msg.get("name"),
     )
