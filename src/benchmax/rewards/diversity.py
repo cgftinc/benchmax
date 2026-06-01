@@ -263,7 +263,10 @@ async def cluster_texts(
         # silently producing un-scaled rewards for an entire run.
         raise
     except Exception as e:
-        logger.warning("Clustering failed (%s: %s), using fallback=%s", type(e).__name__, e, config.fallback_on_error)
+        logger.warning(
+            "Clustering failed (%s: %s), using fallback=%s",
+            type(e).__name__, e, config.fallback_on_error,
+        )
         return _fallback_result(len(texts), config.fallback_on_error)
 
 

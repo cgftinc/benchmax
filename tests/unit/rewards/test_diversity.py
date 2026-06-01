@@ -338,39 +338,4 @@ class TestPickleRoundTrip:
         assert restored.method == "ngram"
         assert restored.ngram_n == 3
 
-    def test_env_with_diversity_survives_pickle(self):
-        import cloudpickle
-        import pickle
-        from typing import List
-
-        from benchmax.envs.base_env import BaseEnv
-        from benchmax.envs.types import ToolDefinition
-
-        class DiversityEnv(BaseEnv):
-            system_prompt = "You are a helpful assistant."
-
-            async def list_tools(self) -> List[ToolDefinition]:
-                return [ToolDefinition(
-                    name="echo", description="Echo input",
-                    input_schema={"type": "object", "properties": {
-                        "text": {"type": "string"}
-                    }},
-                )]
-
-            async def run_tool(self, rollout_id, tool_name, **tool_args):
-                return tool_args.get("text", "")
-
-            async def compute_reward(self, rollout_id, messages, task, **kw):
-                return {"quality": 1.0}
-
-            async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
-                raw = [{"quality": 1.0} for _ in rollout_ids]
-                texts = [m[-1]["content"] if m else "" for m in messages_list]
-                cfg = DiversityConfig(method="ngram", ngram_n=3, similarity_threshold=0.5)
-                scaled, _ = scale_by_diversity(raw, texts, cfg)  # noqa: F841 — would be awaited in real use
-                return raw  # can't await in sync pickle test; just prove it pickles
-
-        # Pickle the class, restore, and instantiate
-        restored_cls = pickle.loads(cloudpickle.dumps(DiversityEnv))
-        env = restored_cls()
-        assert env.system_prompt == "You are a helpful assistant."
+    # Full env pickle + compute_group_reward test lives in test_diversity_env.py
