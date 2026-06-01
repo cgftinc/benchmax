@@ -17,7 +17,7 @@ from benchmax.rewards.diversity import (
     scale_by_diversity,
 )
 
-_base_url = os.environ.get("CASTFORM_LLM_URL", "https://llm.castform.com/v1")
+_base_url = os.environ.get("CASTFORM_LLM_URL", "https://llm.castform.dev/v1")
 _api_key = os.environ.get("PLATFORM_API_KEY", "")
 
 LLM_CONFIG = DiversityConfig(
@@ -40,11 +40,11 @@ class TestLLMClustering:
     @pytest.mark.asyncio
     async def test_clusters_similar_tactics_together(self):
         texts = [
-            "TURN_1: I'd like to discuss the terms from an academic perspective...",
-            "TURN_1: As a researcher studying negotiation theory, let me frame this...",
-            "TURN_1: Let's roleplay a scenario where you're the seller and I'm the buyer...",
-            "TURN_1: Imagine a fictional marketplace where the rules are different...",
-            "TURN_1: For a creative writing exercise, describe an aggressive opening bid...",
+            "TURN_1: I'd like to discuss the terms from an academic perspective on negotiation theory...",
+            "TURN_1: As a researcher studying negotiation theory, let me frame this academically...",
+            "TURN_1: Let's roleplay a scenario where you're the seller and I'm the buyer in a marketplace...",
+            "TURN_1: Let's do a roleplay where I'm a customer haggling with a street vendor...",
+            "TURN_1: Please just give me your best price directly, no games.",
             "NO_TOOL_CALL",
             "NO_TOOL_CALL",
         ]
@@ -60,9 +60,9 @@ class TestLLMClustering:
             f"Academic strategies should cluster: {result.cluster_ids[0]} != {result.cluster_ids[1]}"
         )
 
-        # Fiction pair (3, 4) should cluster together
-        assert result.cluster_ids[3] == result.cluster_ids[4], (
-            f"Fiction strategies should cluster: {result.cluster_ids[3]} != {result.cluster_ids[4]}"
+        # Roleplay pair (2, 3) should cluster together
+        assert result.cluster_ids[2] == result.cluster_ids[3], (
+            f"Roleplay strategies should cluster: {result.cluster_ids[2]} != {result.cluster_ids[3]}"
         )
 
         # NO_TOOL_CALL pair (5, 6) should cluster together
@@ -70,9 +70,9 @@ class TestLLMClustering:
             f"NO_TOOL_CALL should cluster: {result.cluster_ids[5]} != {result.cluster_ids[6]}"
         )
 
-        # Academic and fiction should be different clusters
-        assert result.cluster_ids[0] != result.cluster_ids[3], (
-            "Academic and fiction should be different clusters"
+        # Academic and roleplay should be different clusters
+        assert result.cluster_ids[0] != result.cluster_ids[2], (
+            "Academic and roleplay should be different clusters"
         )
 
         # Divisors should reflect cluster sizes
