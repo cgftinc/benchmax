@@ -34,6 +34,41 @@ _API_KEY_ENV = "PLATFORM_API_KEY"
 TokenProvider = Callable[[], str]
 
 
+def resolve_judge_key(api_key: str, base_url: str | None = None) -> str | None:
+    """Resolve the bearer for an LLM-judge / LLM-clustering call.
+
+    Explicit ``api_key`` wins. Otherwise fall back to the Castform platform
+    credential seam (``ACT_AS_TOKEN_PATH`` in training, ``PLATFORM_API_KEY`` in
+    playground / self-serve) — the same surface the search clients resolve
+    through ``platform_bearer``.
+
+    Failure modes are deliberately *loud*:
+
+    - No platform credential **and** ``OPENAI_API_KEY`` set → return ``None`` so
+      the OpenAI SDK picks it up (legitimate direct-customer use).
+    - No platform credential and no ``OPENAI_API_KEY`` → re-raise
+      ``platform_bearer``'s ``RuntimeError``.
+    - Platform credential resolved but ``base_url`` unset → raise. The platform
+      token is only valid against our llm-proxy; handing it to api.openai.com
+      would leak it off-platform.
+    """
+    if api_key:
+        return api_key
+    try:
+        token = platform_bearer()
+    except RuntimeError:
+        if os.environ.get("OPENAI_API_KEY"):
+            return None
+        raise
+    if not base_url:
+        raise RuntimeError(
+            "Refusing to send the Castform platform credential to the OpenAI "
+            "SDK default endpoint: judge base_url is unset. Set base_url to the "
+            "llm-proxy, or pass an explicit api_key for direct OpenAI use."
+        )
+    return token
+
+
 def platform_bearer() -> str:
     """Resolve the Castform platform bearer token. Call once per request.
 

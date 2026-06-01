@@ -14,24 +14,29 @@ Usage::
 
     from benchmax.rewards.diversity import DiversityConfig, scale_by_diversity
 
-    async def compute_group_reward(self, rollout_ids, completions, ground_truths, **kw):
-        raw_rewards = [await self._score_one(rid, c) for rid, c in zip(...)]
-        return await scale_by_diversity(
+    async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kwargs):
+        raw_rewards = [self.compute_reward(rid, m, t) for rid, m, t in
+                       zip(rollout_ids, messages_list, tasks)]
+        texts = [m[-1]["content"] for m in messages_list]  # or extract strategy
+        scaled, cluster_info = await scale_by_diversity(
             rewards=raw_rewards,
-            texts=[extract_strategy(c) for c in completions],
+            texts=texts,
             config=DiversityConfig(method="llm", model="...", base_url="..."),
-            context=ground_truths[0],
+            context=tasks[0].get("behavior", "") if tasks[0] else "",
         )
+        return scaled
 """
 
 from __future__ import annotations
 
-import re
+import logging
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional
 
 from benchmax.rubrics._utils import _extract_json
+
+logger = logging.getLogger(__name__)
 
 # AsyncOpenAI imported lazily inside _cluster_by_llm to avoid pulling in
 # unpicklable context vars at module level (breaks cloudpickle bundling).
@@ -109,11 +114,6 @@ class ClusterResult:
 # ---------------------------------------------------------------------------
 
 
-def _strip_thinking_tags(text: str) -> str:
-    """Strip <think>...</think> tags that some models emit before JSON."""
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-
-
 def _ngram_set(text: str, n: int) -> set[str]:
     """Return the set of character n-grams for a text."""
     text = text.lower().strip()
@@ -165,7 +165,7 @@ async def _cluster_by_llm(
     """Cluster texts by sending them to an LLM."""
     from openai import AsyncOpenAI
 
-    from benchmax.rubrics.rubric import _resolve_judge_key
+    from benchmax.platform.credentials import resolve_judge_key
 
     items = "\n\n".join(f"[{i}]\n{t}" for i, t in enumerate(texts))
     prompt = config.prompt_template.format(
@@ -177,7 +177,7 @@ async def _cluster_by_llm(
 
     client = AsyncOpenAI(
         base_url=config.base_url,
-        api_key=_resolve_judge_key(config.api_key, config.base_url),
+        api_key=resolve_judge_key(config.api_key, config.base_url),
         max_retries=config.max_retries,
     )
     resp = await client.chat.completions.create(
@@ -188,7 +188,7 @@ async def _cluster_by_llm(
         timeout=config.timeout,
     )
 
-    raw = _strip_thinking_tags((resp.choices[0].message.content or ""))
+    raw = (resp.choices[0].message.content or "").strip()
     parsed = _extract_json(raw)
     assignments = parsed.get("assignments", [])
 
@@ -246,17 +246,19 @@ async def cluster_texts(
     if len(texts) == 1:
         return ClusterResult(cluster_ids=["0"], divisors=[1.0])
 
+    # Validate config up front — these are caller bugs, not transient failures.
+    if config.method == "llm":
+        if not config.model or not config.base_url:
+            raise ValueError("LLM clustering requires 'model' and 'base_url' in DiversityConfig")
+    elif config.method != "ngram":
+        raise ValueError(f"Unknown clustering method: {config.method!r}")
+
     try:
         if config.method == "ngram":
             return _cluster_by_ngram(texts, config.ngram_n, config.similarity_threshold)
-        elif config.method == "llm":
-            if not config.model or not config.base_url:
-                raise ValueError("LLM clustering requires 'model' and 'base_url' in DiversityConfig")
-            return await _cluster_by_llm(texts, config, context)
-        else:
-            raise ValueError(f"Unknown clustering method: {config.method!r}")
+        return await _cluster_by_llm(texts, config, context)
     except Exception as e:
-        print(f"[diversity] Clustering failed ({type(e).__name__}: {e}), using fallback")
+        logger.warning("Clustering failed (%s: %s), using fallback=%s", type(e).__name__, e, config.fallback_on_error)
         return _fallback_result(len(texts), config.fallback_on_error)
 
 

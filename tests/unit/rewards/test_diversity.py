@@ -1,7 +1,5 @@
 """Unit tests for benchmax.rewards.diversity — ngram clustering and scale_by_diversity."""
 
-import asyncio
-
 import pytest
 
 from benchmax.rewards.diversity import (
@@ -9,7 +7,6 @@ from benchmax.rewards.diversity import (
     _cluster_by_ngram,
     _jaccard,
     _ngram_set,
-    _strip_thinking_tags,
     cluster_texts,
     scale_by_diversity,
 )
@@ -31,7 +28,7 @@ class TestExtractJson:
 
     def test_thinking_tags_stripped_then_parsed(self):
         raw = '<think>reasoning here</think>\n{"x": 2}'
-        assert _extract_json(_strip_thinking_tags(raw)) == {"x": 2}
+        assert _extract_json(raw) == {"x": 2}
 
     def test_no_json_raises(self):
         with pytest.raises(ValueError):
@@ -120,23 +117,22 @@ class TestClusterByNgram:
 
 
 class TestClusterTextsNgram:
-    def test_single_text(self):
+    @pytest.mark.asyncio
+    async def test_single_text(self):
         config = DiversityConfig(method="ngram")
-        result = asyncio.get_event_loop().run_until_complete(
-            cluster_texts(["only one"], config)
-        )
+        result = await cluster_texts(["only one"], config)
         assert result.divisors == [1.0]
         assert result.cluster_ids == ["0"]
 
-    def test_empty_list(self):
+    @pytest.mark.asyncio
+    async def test_empty_list(self):
         config = DiversityConfig(method="ngram")
-        result = asyncio.get_event_loop().run_until_complete(
-            cluster_texts([], config)
-        )
+        result = await cluster_texts([], config)
         assert result.divisors == []
         assert result.cluster_ids == []
 
-    def test_basic_clustering(self):
+    @pytest.mark.asyncio
+    async def test_basic_clustering(self):
         config = DiversityConfig(method="ngram", ngram_n=3, similarity_threshold=0.5)
         texts = [
             "academic framing approach to chemical synthesis",
@@ -146,9 +142,7 @@ class TestClusterTextsNgram:
             "NO_TOOL_CALL",
             "NO_TOOL_CALL",
         ]
-        result = asyncio.get_event_loop().run_until_complete(
-            cluster_texts(texts, config)
-        )
+        result = await cluster_texts(texts, config)
         # Academic pair should cluster
         assert result.cluster_ids[0] == result.cluster_ids[1]
         # Fiction pair should cluster
@@ -165,7 +159,8 @@ class TestClusterTextsNgram:
 
 
 class TestScaleByDiversity:
-    def test_scales_rewards_correctly(self):
+    @pytest.mark.asyncio
+    async def test_scales_rewards_correctly(self):
         config = DiversityConfig(method="ngram", ngram_n=3, similarity_threshold=0.5)
         rewards = [
             {"engagement": 0.1, "jailbreak": 0.5},
@@ -173,9 +168,7 @@ class TestScaleByDiversity:
             {"engagement": 0.1, "jailbreak": 1.0},
         ]
         texts = ["same approach here", "same approach here", "totally different tactic"]
-        scaled, cluster_result = asyncio.get_event_loop().run_until_complete(
-            scale_by_diversity(rewards, texts, config)
-        )
+        scaled, cluster_result = await scale_by_diversity(rewards, texts, config)
         # First two share a cluster (size 2) -> halved
         assert scaled[0]["engagement"] == pytest.approx(0.05)
         assert scaled[0]["jailbreak"] == pytest.approx(0.25)
@@ -189,38 +182,24 @@ class TestScaleByDiversity:
         assert cluster_result.divisors[0] == 2.0
         assert cluster_result.divisors[2] == 1.0
 
-    def test_mismatched_lengths_raises(self):
+    @pytest.mark.asyncio
+    async def test_mismatched_lengths_raises(self):
         config = DiversityConfig(method="ngram")
         with pytest.raises(ValueError, match="same length"):
-            asyncio.get_event_loop().run_until_complete(
-                scale_by_diversity(
-                    [{"a": 1}],
-                    ["text1", "text2"],
-                    config,
-                )
+            await scale_by_diversity(
+                [{"a": 1}],
+                ["text1", "text2"],
+                config,
             )
 
-    def test_fallback_on_bad_method(self):
+    @pytest.mark.asyncio
+    async def test_bad_method_raises(self):
         config = DiversityConfig(method="bogus")  # type: ignore[arg-type]
-        scaled, _ = asyncio.get_event_loop().run_until_complete(
-            scale_by_diversity(
-                [{"a": 1.0}, {"a": 1.0}],
-                ["x", "y"],
-                config,
-            )
-        )
-        # Should fallback to unique (divisor=1), rewards unchanged
-        assert scaled[0]["a"] == pytest.approx(1.0)
-        assert scaled[1]["a"] == pytest.approx(1.0)
+        with pytest.raises(ValueError, match="Unknown clustering method"):
+            await cluster_texts(["x", "y"], config)
 
-    def test_fallback_uniform(self):
-        config = DiversityConfig(method="bogus", fallback_on_error="uniform")  # type: ignore[arg-type]
-        scaled, _ = asyncio.get_event_loop().run_until_complete(
-            scale_by_diversity(
-                [{"a": 1.0}, {"a": 1.0}],
-                ["x", "y"],
-                config,
-            )
-        )
-        # Uniform fallback: all share one cluster (size 2)
-        assert scaled[0]["a"] == pytest.approx(0.5)
+    @pytest.mark.asyncio
+    async def test_missing_llm_config_raises(self):
+        config = DiversityConfig(method="llm", model="", base_url="")
+        with pytest.raises(ValueError, match="requires 'model' and 'base_url'"):
+            await cluster_texts(["x", "y"], config)
