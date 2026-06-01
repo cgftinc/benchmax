@@ -78,9 +78,6 @@ def _normalize(v: Any) -> Any:
                     f"dict keys must be str for canonical hashing; got {type(k).__name__}"
                 )
             nx = _normalize(x)
-            # Drop null-valued keys (v:3): Arrow fills schema-unified columns
-            # with null where a row omits a key, json.loads omits it entirely;
-            # stripping makes both loaders agree. List nulls are kept (above).
             if nx is None:
                 continue
             out[k] = nx
