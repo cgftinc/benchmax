@@ -40,6 +40,7 @@ skypilot = [
 excel = ["openpyxl>=3.1.5"]
 excel-mac-windows = ["openpyxl>=3.1.5", "xlwings>=0.33.16"]
 crm = ["python-dateutil>=2.9.0.post0"]
+telestich = ["english_words", "pronouncing", "wordfreq"]
 rag = [
     "keybert>=0.8",
     "langchain-text-splitters>=0.3.0",
