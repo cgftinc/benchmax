@@ -257,6 +257,11 @@ async def cluster_texts(
         if config.method == "ngram":
             return _cluster_by_ngram(texts, config.ngram_n, config.similarity_threshold)
         return await _cluster_by_llm(texts, config, context)
+    except RuntimeError:
+        # Auth/credential errors (resolve_judge_key) are not transient —
+        # propagate so the caller (and training) fails loudly rather than
+        # silently producing un-scaled rewards for an entire run.
+        raise
     except Exception as e:
         logger.warning("Clustering failed (%s: %s), using fallback=%s", type(e).__name__, e, config.fallback_on_error)
         return _fallback_result(len(texts), config.fallback_on_error)

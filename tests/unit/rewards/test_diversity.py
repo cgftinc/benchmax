@@ -1,9 +1,13 @@
 """Unit tests for benchmax.rewards.diversity — ngram clustering and scale_by_diversity."""
 
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from benchmax.rewards.diversity import (
     DiversityConfig,
+    _cluster_by_llm,
     _cluster_by_ngram,
     _jaccard,
     _ngram_set,
@@ -203,3 +207,170 @@ class TestScaleByDiversity:
         config = DiversityConfig(method="llm", model="", base_url="")
         with pytest.raises(ValueError, match="requires 'model' and 'base_url'"):
             await cluster_texts(["x", "y"], config)
+
+
+# ---------------------------------------------------------------------------
+# Partial LLM assignments (mock)
+# ---------------------------------------------------------------------------
+
+
+def _mk_llm_response(content: str) -> MagicMock:
+    choice = MagicMock()
+    choice.message.content = content
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+
+
+class TestPartialLLMAssignments:
+    """Verify unmapped fallback when LLM returns fewer assignments than texts."""
+
+    @pytest.mark.asyncio
+    async def test_missing_indices_get_unmapped_ids(self):
+        # LLM returns assignments for indices 0, 1, 4 only (missing 2, 3)
+        llm_response = json.dumps({
+            "assignments": [
+                {"index": 0, "cluster_id": "academic", "label": "academic framing"},
+                {"index": 1, "cluster_id": "academic", "label": "academic framing"},
+                {"index": 4, "cluster_id": "null", "label": "refusal"},
+            ]
+        })
+        config = DiversityConfig(
+            method="llm", model="test", base_url="http://fake/v1", api_key="test-key"
+        )
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mk_llm_response(llm_response)
+        )
+
+        with patch("openai.AsyncOpenAI", return_value=mock_client):
+            result = await _cluster_by_llm(
+                ["a", "b", "c", "d", "e"], config, context="test"
+            )
+
+        assert len(result.cluster_ids) == 5
+        # Mapped indices
+        assert result.cluster_ids[0] == "academic"
+        assert result.cluster_ids[1] == "academic"
+        assert result.cluster_ids[4] == "null"
+        # Unmapped indices get unique fallback IDs
+        assert result.cluster_ids[2] == "unmapped_2"
+        assert result.cluster_ids[3] == "unmapped_3"
+        # Divisors: academic=2, unmapped_2=1, unmapped_3=1, null=1
+        assert result.divisors[0] == 2.0
+        assert result.divisors[1] == 2.0
+        assert result.divisors[2] == 1.0
+        assert result.divisors[3] == 1.0
+        assert result.divisors[4] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_empty_assignments_all_unmapped(self):
+        llm_response = json.dumps({"assignments": []})
+        config = DiversityConfig(
+            method="llm", model="test", base_url="http://fake/v1", api_key="test-key"
+        )
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mk_llm_response(llm_response)
+        )
+
+        with patch("openai.AsyncOpenAI", return_value=mock_client):
+            result = await _cluster_by_llm(["x", "y", "z"], config, context="test")
+
+        assert result.cluster_ids == ["unmapped_0", "unmapped_1", "unmapped_2"]
+        assert all(d == 1.0 for d in result.divisors)
+
+
+# ---------------------------------------------------------------------------
+# Auth failure propagation
+# ---------------------------------------------------------------------------
+
+
+class TestAuthFailurePropagation:
+    """RuntimeError from resolve_judge_key must propagate, not fall back."""
+
+    @pytest.mark.asyncio
+    async def test_runtime_error_propagates_not_caught(self):
+        config = DiversityConfig(
+            method="llm", model="test", base_url="http://fake/v1"
+        )
+        with patch(
+            "benchmax.platform.credentials.platform_bearer",
+            side_effect=RuntimeError("No Castform platform credential available"),
+        ), patch.dict("os.environ", {}, clear=True):
+            with pytest.raises(RuntimeError, match="No Castform platform credential"):
+                await cluster_texts(["x", "y"], config)
+
+    @pytest.mark.asyncio
+    async def test_non_runtime_errors_fall_back(self):
+        """Non-auth errors (network, parse) should fall back gracefully."""
+        config = DiversityConfig(
+            method="llm", model="test", base_url="http://fake/v1", api_key="k"
+        )
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=ConnectionError("network down")
+        )
+        with patch("openai.AsyncOpenAI", return_value=mock_client):
+            result = await cluster_texts(["x", "y"], config)
+
+        # Should get fallback, not raise
+        assert result.cluster_ids[0].startswith("fallback_")
+        assert all(d == 1.0 for d in result.divisors)
+
+
+# ---------------------------------------------------------------------------
+# Pickle round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestPickleRoundTrip:
+    """Verify that envs using diversity survive cloudpickle."""
+
+    def test_diversity_config_pickles(self):
+        import cloudpickle
+        import pickle
+
+        config = DiversityConfig(
+            method="ngram", ngram_n=3, similarity_threshold=0.5
+        )
+        restored = pickle.loads(cloudpickle.dumps(config))
+        assert restored.method == "ngram"
+        assert restored.ngram_n == 3
+
+    def test_env_with_diversity_survives_pickle(self):
+        import cloudpickle
+        import pickle
+        from typing import List
+
+        from benchmax.envs.base_env import BaseEnv
+        from benchmax.envs.types import ToolDefinition
+
+        class DiversityEnv(BaseEnv):
+            system_prompt = "You are a helpful assistant."
+
+            async def list_tools(self) -> List[ToolDefinition]:
+                return [ToolDefinition(
+                    name="echo", description="Echo input",
+                    input_schema={"type": "object", "properties": {
+                        "text": {"type": "string"}
+                    }},
+                )]
+
+            async def run_tool(self, rollout_id, tool_name, **tool_args):
+                return tool_args.get("text", "")
+
+            async def compute_reward(self, rollout_id, messages, task, **kw):
+                return {"quality": 1.0}
+
+            async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
+                raw = [{"quality": 1.0} for _ in rollout_ids]
+                texts = [m[-1]["content"] if m else "" for m in messages_list]
+                cfg = DiversityConfig(method="ngram", ngram_n=3, similarity_threshold=0.5)
+                scaled, _ = scale_by_diversity(raw, texts, cfg)  # noqa: F841 — would be awaited in real use
+                return raw  # can't await in sync pickle test; just prove it pickles
+
+        # Pickle the class, restore, and instantiate
+        restored_cls = pickle.loads(cloudpickle.dumps(DiversityEnv))
+        env = restored_cls()
+        assert env.system_prompt == "You are a helpful assistant."
