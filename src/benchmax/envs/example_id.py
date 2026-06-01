@@ -1,24 +1,23 @@
 """Canonical example identity.
 
 ``canonical_example_id(prompt_messages, task)`` returns a SHA-256 hex digest
-that is stable across processes and languages: a TypeScript port lives in
-``platform-service/src/lib/canonical-example-id.ts`` and is exercised by a
-parity test.
+stable across processes. Identity is computed only here, in Python — both the
+trainer and rollout-service hash via this module.
 
-Determinism is achieved by:
-- normalizing numeric values so JSON output matches between Python and JS
-  (JS has no int/float distinction; integer-valued floats are coerced to int,
-  -0.0 to 0; NaN/Inf are rejected).
-- rejecting values whose JSON serialization diverges between Python and JS:
-  non-string dict keys, integers outside JS ``Number.MAX_SAFE_INTEGER``,
-  byte strings, lone surrogates, and unknown types.
-- emitting canonical JSON with sorted keys, no whitespace, and no ASCII
-  escaping (modern JSON.stringify also preserves non-ASCII).
+Normalization keeps the digest loader-independent:
+- integer-valued floats → int, -0.0 → 0; NaN/Inf rejected.
+- dict keys whose value is ``None`` are dropped, so a key absent in one loader
+  and present-but-null in another (Arrow schema-unification) hashes the same;
+  nulls *inside lists* are kept (length/order are identity).
+- ambiguous values rejected: non-str dict keys, ints beyond
+  ``Number.MAX_SAFE_INTEGER``, byte strings, lone surrogates, unknown types.
+- canonical JSON: sorted keys, no whitespace, no ASCII escaping.
 
-The hash is computed over ``{"v": 2, "prompt_messages": ..., "task": ...}``.
-v:2 bump went together with the ``seed_messages`` → ``prompt_messages``
-field rename in 2026-05; v:1 hashes are obsolete.
+Payload tag ``v:3``. History: v:1→v:2 = the 2026-05 ``seed_messages`` →
+``prompt_messages`` rename; v:2→v:3 = drop null-valued dict keys (loader skew).
+Older hashes are obsolete.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -78,7 +77,13 @@ def _normalize(v: Any) -> Any:
                 raise ValueError(
                     f"dict keys must be str for canonical hashing; got {type(k).__name__}"
                 )
-            out[k] = _normalize(x)
+            nx = _normalize(x)
+            # Drop null-valued keys (v:3): Arrow fills schema-unified columns
+            # with null where a row omits a key, json.loads omits it entirely;
+            # stripping makes both loaders agree. List nulls are kept (above).
+            if nx is None:
+                continue
+            out[k] = nx
         return out
     raise ValueError(
         f"type {type(v).__name__} is not JSON-canonicalizable; "
@@ -90,7 +95,7 @@ def canonical_example_id(
     prompt_messages: Messages,
     task: dict[str, Any] | None,
 ) -> str:
-    payload = {"v": 2, "prompt_messages": prompt_messages, "task": task}
+    payload = {"v": 3, "prompt_messages": prompt_messages, "task": task}
     serialized = json.dumps(
         _normalize(payload),
         sort_keys=True,
