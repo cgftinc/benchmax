@@ -25,31 +25,48 @@ from benchmax.envs.telestich.telestich_env import TelestichEnv
 env = TelestichEnv(judge_base_url=..., judge_api_key=...)
 ```
 
-Each dataset example is `{"prompt": str, "ground_truth": <hidden word>}`.
+Each dataset example is
+`{"prompt": str, "ground_truth": <hidden word>, "acceptable_refs": [poem, ...],
+"great_refs": [poem, ...]}`. The two reference sets are the quality **anchors**
+the judge ranks against (generated offline; see below).
 
 ## Tools
 
-- **`word_bank(letter)`** — returns 30 common English words ending in `letter`
-  (frequency-weighted). Capped at 2 calls per rollout; not offered for Chinese.
+- **`word_bank(letter)`** — returns ~30 real, poem-usable English words ending
+  in `letter` (≥3 letters, frequency-weighted; function words / single letters
+  filtered out). Capped at 2 calls per rollout; not offered for Chinese.
 
 ## Reward
 
-`compute_group_reward` scores each rollout and applies group-relative
-adjustments:
+`compute_group_reward` scores the whole GRPO group in three stages. The reward
+is the sum of the logged components (`quality + form + conciseness −
+reuse_penalty`):
 
-- **quality** = acrostic *correctness* × *judge score*. Correctness checks
-  every line's last letter against the target and that each ending is a real
-  word. The judge (`gpt-5.4`) classifies problems (broken/nonsense/repetition/
-  template/alignment) and rates specificity + coherence; Python computes the
-  score deterministically. Writing the hidden word in the poem body zeros
-  quality (constraint gaming).
-- **rhyme** — form bonus, gated on perfect correctness. English: CMU
-  perfect-rhyme density. Chinese: CJK char-count uniformity.
-- **conciseness** — group-relative efficiency bonus anchored on the winning
-  rollouts' length and tool-call counts.
+1. **Hard rules** (deterministic, no LLM). A rollout must be a valid telestich
+   — acrostic spells the target, every line ends on a real word, exact line
+   count — and must not write the hidden word in the body. Fail → reward 0,
+   the judge is never called.
+2. **Quality** — one `gpt-5.4` **listwise** call per group ranks the valid
+   poems together with the example's `acceptable_refs` + `great_refs` anchors.
+   A poem's rank *relative to the anchors* maps to a banded score:
+   below-acceptable `[0.05, 0.30]` · mid `[0.30, 0.80]` · above-great
+   `[0.80, 1.00]`. (Anchors as band boundaries, so judging is relative, not
+   absolute.)
+3. **Adjustments** (deterministic):
+   - **reuse_penalty** — discounts quality for line-ending words shared with
+     sibling rollouts (per ending word, within the group); fights ending-word
+     mode collapse (e.g. every rollout ending an `i`-line on "ski").
+   - **form** — small bonus: English CMU rhyme density / Chinese line-length
+     uniformity.
+   - **conciseness** — winner-anchored efficiency: only "top performers"
+     (within `WINNER_EPS` of the group's best quality and above `WINNER_BAR`)
+     earn it; among them, shorter output and fewer tool calls score higher.
+     The quality threshold keeps short degenerate outputs from gaming length.
+   Near-duplicate whole poems within a group are also divided down.
 
-Near-duplicate rollouts within a group (by full-poem text or by shared
-line-ending sequence) are divided down to discourage mode collapse.
+The `acceptable` (competent-but-plain) and `great` (excellent) reference poems
+are generated offline and cached per example. Examples missing an anchor fall
+back to default band positions.
 
 ## Example
 

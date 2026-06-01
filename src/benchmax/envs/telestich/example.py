@@ -124,7 +124,10 @@ WORD_FORMATS = [
 ]
 
 VOICES = [
-    "gen Z slang (like rizz, no cap), casual internet speak",
+    # Internet-voice slot is split ~50/50: half gen Z, half gen-alpha brainrot.
+    "gen Z slang (like rizz, no cap, bussin, lowkey), casual internet speak",
+    "gen alpha brainrot (skibidi, 6-7, gyatt, Ohio, sigma, mewing, fanum tax, "
+    "only in Ohio), chaotic meme-speak",
     "political speech, rhetorical and rallying",
     "chinese internet dissident — coded language, oblique references, 谐音梗",
     "corporate speak — professional, buzzwordy",
