@@ -287,7 +287,10 @@ def check_hard_rules(poem: str | None, target: str) -> dict:
 # ══════════════════════════════════════════════════════════════════════
 # FORM  (rhyme density for EN, line-length uniformity for ZH)
 # ══════════════════════════════════════════════════════════════════════
-def _english_rhyme_density(lines: list[str]) -> float:
+def _rhyme_analysis(lines: list[str]) -> tuple[float, list[list[int]], list[str], list[int]]:
+    """(density, clusters, endings, idx). density = largest rhyme cluster size /
+    #lines-with-pronunciations. clusters = connected groups of mutually-rhyming
+    line indices; endings = ending word per line; idx = lines with pronunciations."""
     endings = [_MARKUP_WRAPPER_RE.sub("", last_word(line)) for line in lines]
     parts, idx = {}, []
     for i, w in enumerate(endings):
@@ -296,7 +299,7 @@ def _english_rhyme_density(lines: list[str]) -> float:
             parts[i] = [pronouncing.rhyming_part(p) for p in phones]
             idx.append(i)
     if len(idx) < 2:
-        return 0.0
+        return 0.0, [], endings, idx
     adj = {i: set() for i in idx}
     for a in range(len(idx)):
         for b in range(a + 1, len(idx)):
@@ -316,9 +319,13 @@ def _english_rhyme_density(lines: list[str]) -> float:
             visited.add(x)
             comp.append(x)
             stack.extend(adj[x])
-        clusters.append(comp)
+        clusters.append(sorted(comp))
     largest = max((len(c) for c in clusters if len(c) >= 2), default=0)
-    return largest / len(idx)
+    return largest / len(idx), clusters, endings, idx
+
+
+def _english_rhyme_density(lines: list[str]) -> float:
+    return _rhyme_analysis(lines)[0]
 
 
 def _mandarin_length_uniformity(lines: list[str]) -> float:
@@ -334,15 +341,35 @@ def form_score(lines: list[str], language: str) -> float:
     return _mandarin_length_uniformity(lines) if language == "zh" else _english_rhyme_density(lines)
 
 
+def form_detail(lines: list[str], language: str) -> str:
+    """Human-readable explanation of the form score — which lines rhyme (en) or
+    the line-length profile (zh)."""
+    if language == "zh":
+        lengths = [len(_CJK_RE.findall(line)) for line in lines]
+        nz = [n for n in lengths if n > 0]
+        modal = Counter(nz).most_common(1)[0][0] if nz else 0
+        match = sum(1 for n in nz if n == modal)
+        return f"CJK lengths {lengths}, modal {modal} → {match}/{len(nz)} lines uniform"
+    density, clusters, endings, idx = _rhyme_analysis(lines)
+    rhyming = [c for c in clusters if len(c) >= 2]
+    groups = "; ".join(
+        "+".join(f"L{i + 1}:{endings[i]}" for i in c) for c in rhyming
+    ) or "no rhyming pairs"
+    unmatched = [f"L{i + 1}:{endings[i]}" for i in idx
+                 if not any(i in c for c in rhyming)]
+    largest = max((len(c) for c in rhyming), default=0)
+    tail = f"; unmatched {unmatched}" if unmatched else ""
+    return f"largest rhyme {largest}/{len(idx)} → {density:.2f} | {groups}{tail}"
+
+
 # ══════════════════════════════════════════════════════════════════════
 # DIVERSITY
 # ══════════════════════════════════════════════════════════════════════
-def ending_reuse_scores(poems: list[str]) -> list[float]:
-    """Per-poem reuse score in [0,1]: mean over the poem's ending words of the
-    fraction of *other* poems that also use that word. 0 = all endings unique
-    to this poem; 1 = every ending it uses is shared by every sibling.
-    Discourages the whole group leaning on the same crutch words (ski/hi/free).
-    """
+def ending_reuse_detail(poems: list[str]) -> tuple[list[float], list[list[tuple[str, int]]]]:
+    """(scores, details). Per-poem reuse score in [0,1]: mean over the poem's
+    ending words of the fraction of *other* poems that also use that word. 0 =
+    all endings unique to this poem; 1 = every ending shared by every sibling.
+    details[i] = [(ending_word, n_other_poems_sharing_it)] for logging."""
     n = len(poems)
     endings = []
     for p in poems:
@@ -357,13 +384,18 @@ def ending_reuse_scores(poems: list[str]) -> list[float]:
     for ews in endings:
         for w in set(ews):
             doc_freq[w] += 1
-    scores = []
+    scores, details = [], []
     for ews in endings:
+        details.append([(w, doc_freq[w] - 1) for w in ews])
         if not ews or n < 2:
             scores.append(0.0)
         else:
             scores.append(sum((doc_freq[w] - 1) / (n - 1) for w in ews) / len(ews))
-    return scores
+    return scores, details
+
+
+def ending_reuse_scores(poems: list[str]) -> list[float]:
+    return ending_reuse_detail(poems)[0]
 
 
 def duplicate_divisors(poems: list[str], threshold: float = 0.85) -> list[float]:
@@ -402,6 +434,7 @@ class _Rollout:
     q: float = 0.0               # quality after the duplicate divisor (used everywhere)
     bucket: str = "gated"        # gated | below | mid | above
     reuse: float = 0.0           # ending-word reuse vs siblings (0=unique, 1=all shared)
+    ending_detail: str = ""      # per-ending share counts, for the breakdown log
     len_pen: float = 0.0         # the three conciseness sub-penalties (>= 0, logged)
     tool_pen: float = 0.0
     tie_pen: float = 0.0
@@ -605,9 +638,13 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         """Compute every rollout's reward components onto its record:
         form + diversity (quality-scaled bonuses, valid poems) and conciseness
         (a hard penalty on every rollout)."""
-        reuse = ending_reuse_scores([r.poem for r in valid]) if valid else []
-        for local, r in enumerate(valid):
-            r.reuse = reuse[local]
+        if valid:
+            reuse, reuse_detail = ending_reuse_detail([r.poem for r in valid])
+            for local, r in enumerate(valid):
+                r.reuse = reuse[local]
+                r.ending_detail = ", ".join(
+                    f"{w}(shared×{c})" if c else f"{w}(unique)" for w, c in reuse_detail[local]
+                )
 
         # brevity tiebreak applies only within the TOP occupied bucket (>=2 poems);
         # below the quality gate there is no top bucket worth tie-breaking.
@@ -655,6 +692,34 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
                 f"q={r.quality:.3f}->{r.q:.3f} reuse={r.reuse:.2f} | {meta} "
                 f"| {r.components} {sub}")
 
+    def _explain_rollout(self, r: _Rollout, budget: int) -> str:
+        """Multi-line WHY-breakdown for a poem that passed correctness — spells
+        out how each component reached its value (which lines rhyme, which
+        endings are shared, why conciseness was charged)."""
+        c = r.components
+        allowed = 0 if r.language == "zh" else self._max_tool_calls
+        if r.q >= QUALITY_GATE:
+            div_line = (f"  diversity = {c['diversity']:+.4f} = W_DIVERSITY({W_DIVERSITY}) × "
+                        f"q({r.q:.3f}) × (1 − reuse {r.reuse:.2f}); endings: {r.ending_detail}")
+        else:
+            div_line = (f"  diversity = {c['diversity']:+.4f} (none — q {r.q:.3f} below the "
+                        f"{QUALITY_GATE} floor, bucket={r.bucket})")
+        tie = (f"poem_len {r.poem_len} > shortest-in-bucket → −{r.tie_pen:.4f}"
+               if r.tie_pen else "not top-bucket or shortest → 0")
+        return (
+            f"[TelestichEnv][why] poem {r.rollout_id} — {r.bucket.upper()} bucket, "
+            f"reward={sum(c.values()):+.3f}\n"
+            f"  quality   = {c['quality']:+.4f}  (judge band {r.quality:.3f}"
+            f"{f', ÷dup→{r.q:.3f}' if abs(r.q - r.quality) > 1e-9 else ''})\n"
+            f"  form      = {c['form']:+.4f} = W_FORM({W_FORM}) × q({r.q:.3f}) × "
+            f"form_score({form_score(r.lines, r.language):.2f}) | {form_detail(r.lines, r.language)}\n"
+            f"{div_line}\n"
+            f"  conciseness = {c['conciseness']:+.4f}: "
+            f"length {r.completion_len}/{budget} → −{r.len_pen:.4f}; "
+            f"tools {r.n_tool_calls}/allow {allowed} → −{r.tool_pen:.4f}; "
+            f"tiebreak {tie}"
+        )
+
     async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kwargs):
         task = tasks[0] or {}
         target = str(task.get("ground_truth") or "")
@@ -684,11 +749,15 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         # ── Stage 3: secondary terms (form, diversity, conciseness) onto records ──
         self._apply_secondary(rolls, valid, budget)
 
-        # ── Stage 4: assemble + per-rollout log ──
+        # ── Stage 4: assemble + log ──
+        # Path A (flow): one summary line per rollout (gated + valid alike).
+        # Path B (why): a full component breakdown for poems that passed the gate.
         out = []
         for r in rolls:
             with rollout_context(r.rollout_id):
                 logger.info(self._fmt_rollout(r, budget))
+                if r.valid:
+                    logger.info(self._explain_rollout(r, budget))
             out.append(r.components)
         return out
 
