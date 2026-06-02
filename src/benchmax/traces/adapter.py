@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
+from benchmax.envs.types import ChatMessage, ToolCall  # noqa: F401 — re-export ToolCall
+
 # ---------------------------------------------------------------------------
 # Credentials
 # ---------------------------------------------------------------------------
@@ -102,27 +104,6 @@ def validate_provider_url(url: str) -> None:
 
 
 @dataclass(frozen=True)
-class ToolCall:
-    """A tool invocation within an assistant message.
-
-    ``arguments`` is stored as a raw JSON string (matching OpenAI format)
-    to guarantee JSON-serializability and preserve the original format.
-    """
-
-    name: str
-    arguments: str = "{}"
-    id: str | None = None
-
-    def arguments_dict(self) -> dict[str, Any]:
-        """Parse *arguments* back to a dict.  Returns ``{}`` on failure."""
-        try:
-            val = json.loads(self.arguments)
-            return val if isinstance(val, dict) else {}
-        except (json.JSONDecodeError, TypeError):
-            return {}
-
-
-@dataclass(frozen=True)
 class TraceMessage:
     """Single message in a normalised conversation."""
 
@@ -132,21 +113,19 @@ class TraceMessage:
     tool_call_id: str | None = None
     name: str | None = None  # tool name for role="tool"
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialise to a JSON-compatible dict with structured tool_calls.
+    def to_dict(self) -> ChatMessage:
+        """Serialise to a :class:`ChatMessage` dict.
 
         All fields are always present with type-safe defaults (empty
         list / empty string, never None) for Arrow serialization safety.
         """
-        d: dict[str, Any] = {"role": self.role, "content": self.content}
-        d["tool_calls"] = (
-            [{"name": tc.name, "arguments": tc.arguments, "id": tc.id or ""} for tc in self.tool_calls]
-            if self.tool_calls
-            else []
+        return ChatMessage(
+            role=self.role,
+            content=self.content,
+            tool_calls=[tc.to_dict() for tc in self.tool_calls] if self.tool_calls else [],
+            tool_call_id=self.tool_call_id or "",
+            name=self.name or "",
         )
-        d["tool_call_id"] = self.tool_call_id or ""
-        d["name"] = self.name or ""
-        return d
 
 
 
@@ -367,6 +346,6 @@ def normalize_message(msg: dict[str, Any]) -> TraceMessage:
         role=role,
         content=content,
         tool_calls=tool_calls if tool_calls else None,
-        tool_call_id=msg.get("toolCallId") or msg.get("tool_call_id"),
-        name=msg.get("toolName") or msg.get("name"),
+        tool_call_id=msg.get("toolCallId") or msg.get("tool_call_id") or None,
+        name=msg.get("toolName") or msg.get("name") or None,
     )
