@@ -7,10 +7,11 @@ each line. Reward, per rollout in a GRPO group (see ``compute_group_reward``):
      acrostic spells the target, every line ends on a real word, right line
      count — and must NOT write the hidden word in the body. Fail → reward 0,
      no judge called.
-  2. QUALITY (one gpt-listwise call per group): gpt ranks the group's valid
-     poems together with the example's `acceptable` + `great` reference poems.
-     A poem's rank relative to those two anchors maps to a banded score:
-        below-acceptable [.05,.30] | mid [.30,.80] | above-great [.80,1.0].
+  2. QUALITY (one judge call per group, via benchmax.rubrics): the shared
+     `evaluate_rubric_ranking` ranks the group's valid poems with the example's
+     GREAT reference poem inserted blind as `ground_truth`; each poem's score in
+     [0,1] is anchored to that reference's rank — above the great bar -> [0.5,1],
+     below -> [0,0.3]. (Single anchor for now; multi-anchor is a future TODO.)
   3. ADJUSTMENTS (deterministic): discount reused ending words (anti
      mode-collapse), add a rhyme/length form bonus, and add a winner-anchored
      conciseness bonus (only top performers; shorter/fewer-tool-calls scores
@@ -20,7 +21,6 @@ The final reward = quality + form + conciseness − reuse_penalty
 (the component values sum to it).
 """
 
-import json
 import logging
 import math
 import random
@@ -31,7 +31,6 @@ from typing import Any
 
 import pronouncing
 from english_words import get_english_words_set
-from openai import AsyncOpenAI
 from wordfreq import word_frequency
 
 from benchmax.envs.base_env import BaseEnv
@@ -39,6 +38,7 @@ from benchmax.envs.example_id import make_example
 from benchmax.envs.logging import rollout_context
 from benchmax.envs.reward_helpers import extract_completion_text
 from benchmax.envs.types import Example, Messages, ToolDefinition
+from benchmax.rubrics.rubric import Rubric, evaluate_rubric_ranking
 
 logger = logging.getLogger(__name__)
 
@@ -46,21 +46,30 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # ══════════════════════════════════════════════════════════════════════
 JUDGE_MODEL = "gpt-5.4"
-JUDGE_MAX_TOKENS = 2500
 
-# Score bands (non-overlapping, ascending). A poem's gpt-listwise rank relative
-# to the acceptable/great anchors places it in one band; position within the
-# band is set by the rank.
-BAND_BELOW = (0.05, 0.30)   # ranked below the acceptable anchor
-BAND_MID = (0.30, 0.80)     # between acceptable and great anchors
-BAND_ABOVE = (0.80, 1.00)   # above the great anchor
+# Quality is scored by the shared rubric-ranking judge (benchmax.rubrics): one
+# judge call ranks the group's poems with a reference poem inserted blind as
+# `ground_truth`; each poem's score in [0,1] is anchored to the reference's rank
+# (above it -> [0.5,1.0], tied -> 0.5, below -> [0,0.3]). We anchor on the
+# example's GREAT poem — the bar we ultimately want the model to reach.
+ANCHOR_KIND = "great_refs"   # which reference set is the ground_truth anchor
+                             # (flip to "acceptable_refs" to put the bar mid-distribution)
+QUALITY_RUBRIC = Rubric(
+    title="poetic quality",
+    description=(
+        "Judge the poem's craft only (the acrostic is already verified): coherence "
+        "(reads as one deliberate poem, not interchangeable lines), concrete vivid "
+        "imagery, faithfulness to the requested theme/voice/tone, natural un-forced "
+        "line endings (not bent just to hit a letter), no nonsense lines, no template lock."
+    ),
+    type="positive",
+)
 
 W_REUSE = 0.50   # weight of the ending-word reuse discount
 W_FORM = 0.15    # weight of the rhyme/length form bonus
 W_CONCISE = 0.15   # conciseness bonus — small + quality-scaled, so it only breaks
                    # ties among similar-quality top performers, never lifts a weak poem
-WINNER_BAR = 0.50  # min band-quality to count as a "top performer"
-WINNER_EPS = 0.15  # ...and within this of the group's best quality
+WINNER_EPS = 0.15  # "top performers" = within this of the group's best quality
 
 _TOOL_CALL_RE = re.compile(r"<tool_call\b", re.IGNORECASE)
 
@@ -330,64 +339,9 @@ def duplicate_divisors(poems: list[str], threshold: float = 0.85) -> list[float]
     return [float(counts[c]) for c in cluster_of]
 
 
-# ══════════════════════════════════════════════════════════════════════
-# JUDGE  (gpt-listwise over the group + reference anchors -> banded score)
-# ══════════════════════════════════════════════════════════════════════
-_LISTWISE_PROMPT = """\
-A user requested a poem:
-{prompt}
-
-Here are {n} candidate poems (all already valid telestichs — judge ONLY poetic
-quality and faithfulness to the request, not the acrostic):
-{block}
-
-Rank them best-to-worst on coherence, concrete imagery, theme/voice match, and
-natural (un-forced) line endings. Output strict JSON only:
-{{"order": ["<id best>", ..., "<id worst>"]}}"""
-
-
-def _parse_order(raw: str, ids: list[str]) -> list[str]:
-    m = re.search(r"\{.*\}", raw or "", re.DOTALL)
-    raw_order = []
-    if m:
-        try:
-            raw_order = [x for x in (json.loads(m.group()).get("order") or []) if x in ids]
-        except Exception:
-            raw_order = []
-    seen, order = set(), []
-    for x in raw_order:  # dedup (judge may repeat an id), keep first occurrence
-        if x not in seen:
-            seen.add(x)
-            order.append(x)
-    return order + [i for i in ids if i not in seen]  # append any missing
-
-
-def bands_from_ranking(order: list[str], acc_ids: list[str], great_ids: list[str],
-                       cand_ids: list[str]) -> dict[str, float]:
-    """Map each candidate's listwise rank to a banded score, using the mean
-    rank-position of the acceptable / great anchors as band boundaries."""
-    n = len(order)
-    q = {pid: 1 - i / (n - 1) for i, pid in enumerate(order)} if n > 1 else {pid: 0.5 for pid in order}
-    qa = sum(q[i] for i in acc_ids) / len(acc_ids) if acc_ids else 0.40
-    qg = sum(q[i] for i in great_ids) / len(great_ids) if great_ids else 0.80
-    # Keep anchors ordered and off the extremes so all three bands stay
-    # reachable even if the judge ranks an anchor at the very top/bottom.
-    qa = min(qa, 0.80)
-    qg = min(max(qg, qa + 0.10), 0.95)
-    out = {}
-    for c in cand_ids:
-        qc = q[c]
-        if qc >= qg:
-            f = (qc - qg) / (1 - qg) if qg < 1 else 1.0
-            lo, hi = BAND_ABOVE
-        elif qc >= qa:
-            f = (qc - qa) / (qg - qa)
-            lo, hi = BAND_MID
-        else:
-            f = qc / qa if qa > 0 else 0.0
-            lo, hi = BAND_BELOW
-        out[c] = round(lo + (hi - lo) * max(0.0, min(1.0, f)), 4)
-    return out
+# Quality scoring lives in the shared rubric-ranking judge — see QUALITY_RUBRIC
+# / ANCHOR_KIND above and TelestichEnv._quality (uses benchmax.rubrics.
+# evaluate_rubric_ranking). No custom judge prompt / band math here anymore.
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -474,7 +428,8 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
                  judge_timeout: float = 90.0, max_tool_calls: int = 2,
                  **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._judge = AsyncOpenAI(base_url=judge_base_url, api_key=judge_api_key, max_retries=3)
+        self._judge_base_url = judge_base_url
+        self._judge_api_key = judge_api_key
         self._judge_timeout = judge_timeout
         self._max_tool_calls = max_tool_calls
         self._tool_calls: dict[str, int] = {}
@@ -518,39 +473,28 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
     async def compute_reward(self, rollout_id, messages, task, **kwargs) -> dict[str, float]:
         return {}  # all logic is group-level (compute_group_reward)
 
-    async def _listwise_quality(self, prompt, poems, acc_refs, great_refs) -> dict[int, float]:
-        """One gpt call: rank poems + anchors, map to banded quality per poem idx."""
-        items = [(f"c{i}", p) for i, p in enumerate(poems)]
-        acc_ids = [f"a{i}" for i in range(len(acc_refs))]
-        great_ids = [f"g{i}" for i in range(len(great_refs))]
-        items += list(zip(acc_ids, acc_refs)) + list(zip(great_ids, great_refs))
-        random.shuffle(items)
-        block = "\n\n".join(f"[{pid}]\n{poem}" for pid, poem in items)
-        ids = [pid for pid, _ in items]
-        try:
-            resp = await self._judge.chat.completions.create(
-                model=JUDGE_MODEL,
-                messages=[{"role": "user", "content": _LISTWISE_PROMPT.format(
-                    prompt=prompt, n=len(items), block=block)}],
-                temperature=0, max_tokens=JUDGE_MAX_TOKENS, timeout=self._judge_timeout,
-            )
-        except Exception as e:
-            # On judge failure give every valid poem the SAME neutral quality
-            # (no free high reward, no shuffle-derived noise). The group's
-            # gradient that step comes from reuse/form only.
-            logger.info(f"[TelestichEnv] judge error: {e}; neutral fallback")
-            return {i: BAND_BELOW[1] for i in range(len(poems))}
-        order = _parse_order(resp.choices[0].message.content or "", ids)
-        cand_ids = [f"c{i}" for i in range(len(poems))]
-        banded = bands_from_ranking(order, acc_ids, great_ids, cand_ids)
-        return {i: banded[f"c{i}"] for i in range(len(poems))}
+    async def _quality(self, prompt: str, poems: list[str], anchor: str | None) -> list[float]:
+        """Quality via the shared rubric-ranking judge: one call ranks `poems`
+        with `anchor` inserted blind as ground_truth; returns scores in [0,1]
+        (aligned with `poems`) anchored to the anchor's rank — above it
+        -> [0.5,1.0], below -> [0,0.3]. On judge error the rubric returns 0s."""
+        res = await evaluate_rubric_ranking(
+            rubric=QUALITY_RUBRIC,
+            question=prompt,
+            responses=poems,
+            model_name=JUDGE_MODEL,
+            base_url=self._judge_base_url,
+            api_key=self._judge_api_key,
+            ground_truth=anchor,
+            timeout=self._judge_timeout,
+        )
+        return res["scores"]
 
     async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kwargs):
         task = tasks[0] or {}
         target = str(task.get("ground_truth") or "")
         prompt = str(task.get("prompt") or "")
-        acc_refs = list(task.get("acceptable_refs") or [])
-        great_refs = list(task.get("great_refs") or [])
+        anchor = (list(task.get(ANCHOR_KIND) or []) or [None])[0]  # great poem (blind ground_truth)
         n = len(rollout_ids)
 
         # ── Stage 1: hard rules (deterministic) ──
@@ -564,13 +508,13 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
 
         valid = [i for i in range(n) if gate[i]]
 
-        # ── Stage 2: quality via one gpt-listwise call over valid poems + anchors ──
+        # ── Stage 2: quality via the shared rubric-ranking judge, anchored to
+        # the example's GREAT poem (the bar to cross) ──
         quality = [0.0] * n
         if valid:
-            q_by_local = await self._listwise_quality(
-                prompt, [poems[i] for i in valid], acc_refs, great_refs)
+            scores = await self._quality(prompt, [poems[i] for i in valid], anchor)
             for local, i in enumerate(valid):
-                quality[i] = q_by_local[local]
+                quality[i] = scores[local]
 
         # ── Stage 3: adjustments (deterministic) ──
         reuse = [0.0] * n
@@ -584,15 +528,14 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
             for local, i in enumerate(valid):
                 dup[i] = d[local]
 
-        # Winner-anchored conciseness: only "top performers" — within WINNER_EPS
-        # of the group's best quality AND above WINNER_BAR — earn it; among them,
-        # shorter output / fewer tool calls scores higher. The threshold stops a
-        # short degenerate poem from gaming length (non-winners get 0).
+        # Conciseness for the group's "top performers" only (relative: within
+        # WINNER_EPS of the best quality, at any anchor scale). Among them,
+        # shorter output / fewer tool calls scores higher. Scaled by quality
+        # below, so a low-quality top-of-a-bad-group earns almost nothing.
         lengths = [len(extract_completion_text(m) or "") for m in messages_list]
         tool_counts = [_count_tool_calls(extract_completion_text(m)) for m in messages_list]
         qmax = max((quality[i] for i in valid), default=0.0)
-        bar = max(WINNER_BAR, qmax - WINNER_EPS)
-        winners = [i for i in valid if quality[i] >= bar]
+        winners = [i for i in valid if quality[i] > 0 and quality[i] >= qmax - WINNER_EPS]
         conciseness = [0.0] * n
         if winners:
             len_anchor = sum(lengths[i] for i in winners) / len(winners)

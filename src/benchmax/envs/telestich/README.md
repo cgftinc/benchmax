@@ -46,12 +46,13 @@ reuse_penalty`):
    — acrostic spells the target, every line ends on a real word, exact line
    count — and must not write the hidden word in the body. Fail → reward 0,
    the judge is never called.
-2. **Quality** — one `gpt-5.4` **listwise** call per group ranks the valid
-   poems together with the example's `acceptable_refs` + `great_refs` anchors.
-   A poem's rank *relative to the anchors* maps to a banded score:
-   below-acceptable `[0.05, 0.30]` · mid `[0.30, 0.80]` · above-great
-   `[0.80, 1.00]`. (Anchors as band boundaries, so judging is relative, not
-   absolute.)
+2. **Quality** — the shared rubric judge (`benchmax.rubrics.evaluate_rubric_ranking`)
+   ranks the group's valid poems in one call, with the example's **great** poem
+   inserted blind as `ground_truth`. Each poem's score in `[0,1]` is anchored to
+   that reference's rank: above the great bar → `[0.5, 1.0]`, below → `[0, 0.3]`.
+   Judging is relative, not absolute. (Single great anchor today; the
+   `acceptable_refs` are kept in the dataset for a future multi-anchor mode —
+   set `ANCHOR_KIND` to switch which reference is the bar.)
 3. **Adjustments** (deterministic):
    - **reuse_penalty** — discounts quality for line-ending words shared with
      sibling rollouts (per ending word, within the group); fights ending-word
