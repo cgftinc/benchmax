@@ -660,7 +660,8 @@ if __name__ == "__main__":
             train_dataset_path=uploaded.train_dataset_path,
             eval_dataset_path=uploaded.eval_dataset_path,
             name=run_name,
-            launcher_args={"max_response_len": 4000},
+            # num_epochs: passes over the train set (platform default is 5).
+            launcher_args={"max_response_len": 4000, "num_epochs": 10},
         )
 
     print(f"\n✓ Launched run_id={run_id}")
