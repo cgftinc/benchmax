@@ -449,3 +449,32 @@ def test_validate_examples_env_class_conflicts_with_explicit_env(monkeypatch):
             env_metadata_path="b",
             verbose=False,
         )
+
+
+def test_validate_examples_forwards_llm_base_url_and_key(monkeypatch):
+    """Regression for the URL-wiring bug: validate_examples must thread
+    llm_base_url/llm_api_key into each stream_rollout call, otherwise the
+    rollout's LLM leg silently falls back to the default-domain host."""
+    client = RolloutClient(api_key="k")
+
+    captured: list[dict[str, Any]] = []
+
+    def _fake_stream_rollout(**kwargs):
+        captured.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(client, "stream_rollout", _fake_stream_rollout)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}],
+        env_class=_make_smoke_env(),
+        n=1,
+        llm_base_url="https://llm.castform.dev/v1",
+        llm_api_key="dev-key",
+        verbose=False,
+    )
+
+    assert result.ok
+    assert len(captured) == 1
+    assert captured[0]["llm_base_url"] == "https://llm.castform.dev/v1"
+    assert captured[0]["llm_api_key"] == "dev-key"

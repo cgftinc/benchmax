@@ -205,4 +205,7 @@ class TestValidateEnv:
             train_dataset=dataset,
             local_modules=[this_module],
         )
-        assert result is True
+        # Local-only report (no api_key) — bool-castable, ok when no check failed.
+        assert result.ok
+        assert result.local_failed == 0
+        assert result.remote is None

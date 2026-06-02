@@ -956,6 +956,8 @@ class RolloutClient:
         local_modules: list[ModuleType] | None = None,
         env_cls_bytes: bytes | None = None,
         env_metadata_bytes: bytes | None = None,
+        llm_base_url: str | None = None,
+        llm_api_key: str = "",
         llm_model: str = _VALIDATION_MODEL,
         max_turns: int = 4,
         verbose: bool = True,
@@ -980,6 +982,15 @@ class RolloutClient:
                                 envs that import from local .py files).
             env_cls_bytes:      Raw bytes of the pickled env class (will be base64-encoded).
             env_metadata_bytes: Raw bytes of the env metadata JSON (will be base64-encoded).
+            llm_base_url:       Base URL for the rollout's LLM leg. Defaults to
+                                ``config.llm_url()``. Pass explicitly when the
+                                script's environment differs from the SDK default
+                                (otherwise the rollout LLM silently hits the
+                                default-domain host — see stream_rollout).
+            llm_api_key:        API key for the LLM leg. Required when
+                                ``llm_base_url`` points outside the platform LLM
+                                endpoint (stream_rollout refuses to forward the
+                                platform key to a third-party host).
             verbose:            Print colored progress to stdout (default True for
                                 interactive/notebook UX). Set False for programmatic
                                 callers that consume the returned ValidationResult.
@@ -1035,6 +1046,8 @@ class RolloutClient:
                     env_cls_bytes=env_cls_bytes,
                     env_metadata_bytes=env_metadata_bytes,
                     example_index=i,
+                    llm_base_url=llm_base_url,
+                    llm_api_key=llm_api_key,
                     llm_model=llm_model,
                     max_turns=max_turns,
                 )

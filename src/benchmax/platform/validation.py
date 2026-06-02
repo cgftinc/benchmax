@@ -10,11 +10,15 @@ import asyncio
 import json
 import math
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cloudpickle
+
+if TYPE_CHECKING:
+    from .client import ValidationResult
 
 _TOOL_TIMEOUT = 30.0
 
@@ -93,40 +97,22 @@ def _ensure_nest_asyncio() -> None:
         pass
 
 
-def validate_env(
+def _run_local_checks(
     env_class: type,
     env_args: dict[str, Any],
     train_dataset: list[dict[str, Any]],
     eval_dataset: list[dict[str, Any]] | None = None,
     local_modules: list[ModuleType] | None = None,
-) -> bool:
-    """Validate an environment class against the trainer's calling conventions.
+) -> tuple[int, int]:
+    """Run the local (no-network) contract checks for ``validate_env``.
 
-    Runs a comprehensive set of checks that mirror how the trainer actually
-    calls env methods, including a simulated rollout with real tool calls
-    and reward computation.
-
-    Can be called standalone before ``train()`` or is called automatically
-    by ``train(validate_env=True)`` (the default).
-
-    Warning:
-        This function calls your env's tools with dummy arguments
-        against real backends. If your tools have side effects
-        (writes, deletes, sends), use a test backend.
-
-    Args:
-        env_class: The environment class (e.g., SearchEnv).
-        env_args: Constructor kwargs for the env (same as train(env_args=...)).
-        train_dataset: Training examples (list of dicts with question/answer).
-        eval_dataset: Optional eval examples. Uses train_dataset[:2] if not given.
-        local_modules: Modules to pickle by value during the pickle round-trip
-            check. Pass the same list you'd pass to ``upload_training_run`` /
-            ``dump_bundle`` when the env imports from sibling .py files;
-            otherwise the local-modules guard will (correctly) flag them as
-            risky.
+    Mirrors how the trainer calls env methods — dataset_preprocess,
+    load_dataset, list_tools/run_tool, compute_reward, a simulated rollout,
+    and pickle round-trips. Prints colored progress as it goes.
 
     Returns:
-        True if all checks pass, False otherwise.
+        ``(passed, failed)`` check counts. The caller owns the shared event
+        loop lifecycle (``_shutdown_shared_loop``) and the summary line.
     """
     _ensure_nest_asyncio()
 
@@ -140,8 +126,7 @@ def validate_env(
 
     if not train_dataset:
         print("  \u2717 train_dataset is empty")
-        _shutdown_shared_loop()
-        return False
+        return (0, 1)
 
     examples = train_dataset[:5]
     passed = 0
@@ -176,14 +161,20 @@ def validate_env(
             )
             failed += 1
         else:
-            print("  \u2713 dataset_preprocess returns Example with id + prompt_messages")
+            print(
+                "  \u2713 dataset_preprocess returns Example with id + prompt_messages"
+            )
             passed += 1
     except Exception as exc:
         print(f"  \u2717 dataset_preprocess raised {type(exc).__name__}: {exc}")
         failed += 1
 
     # ── 2. prompt_messages shape ───────────────────────────────────
-    if preprocessed and isinstance(preprocessed, dict) and "prompt_messages" in preprocessed:
+    if (
+        preprocessed
+        and isinstance(preprocessed, dict)
+        and "prompt_messages" in preprocessed
+    ):
         seed = preprocessed["prompt_messages"]
         if not isinstance(seed, list) or not all(
             isinstance(mm, dict) and "role" in mm and "content" in mm for mm in seed
@@ -228,7 +219,9 @@ def validate_env(
         Path(tmp_path).unlink(missing_ok=True)
     except Exception as exc:
         print(f"  \u2717 load_dataset raised {type(exc).__name__}: {exc}")
-        print('    Fix: load_dataset must accept ("json", data_files=path, split="train").')
+        print(
+            '    Fix: load_dataset must accept ("json", data_files=path, split="train").'
+        )
         failed += 1
 
     # ── 4. Instantiate env + list_tools + run_tool ───────────────
@@ -251,7 +244,9 @@ def validate_env(
 
                 try:
                     result = _run_async(
-                        env.run_tool(rollout_id="test", tool_name=tool.name, **dummy_args)
+                        env.run_tool(
+                            rollout_id="test", tool_name=tool.name, **dummy_args
+                        )
                     )
                     if isinstance(result, str):
                         print(f"  \u2713 run_tool returns string (tested: {tool.name})")
@@ -263,7 +258,9 @@ def validate_env(
                         failed += 1
                 except Exception as exc:
                     print(f"  \u2717 run_tool raised {type(exc).__name__}: {exc}")
-                    print("    Fix: run_tool must return a string. If tools need a real backend,")
+                    print(
+                        "    Fix: run_tool must return a string. If tools need a real backend,"
+                    )
                     print(
                         "    the training loop calls run_tool when the model generates tool_calls."
                     )
@@ -275,7 +272,11 @@ def validate_env(
             failed += 1
 
     # ── 5. compute_reward with trainer-style args ────────────────
-    if env is not None and isinstance(preprocessed, dict) and "prompt_messages" in preprocessed:
+    if (
+        env is not None
+        and isinstance(preprocessed, dict)
+        and "prompt_messages" in preprocessed
+    ):
         try:
             task = preprocessed.get("task")
             init_args = preprocessed.get("init_rollout_args") or {}
@@ -284,7 +285,10 @@ def validate_env(
             # the seed plus a stub assistant turn. compute_reward receives
             # task verbatim and runtime kwargs (init_rollout_args fields).
             messages = list(preprocessed["prompt_messages"]) + [
-                {"role": "assistant", "content": "I found the answer based on the search results."}
+                {
+                    "role": "assistant",
+                    "content": "I found the answer based on the search results.",
+                }
             ]
 
             reward = _run_async(
@@ -312,25 +316,37 @@ def validate_env(
                     print(f"  \u2717 compute_reward has non-float values: {bad_values}")
                     failed += 1
                 else:
-                    non_finite = {k: v for k, v in reward.items() if not math.isfinite(v)}
+                    non_finite = {
+                        k: v for k, v in reward.items() if not math.isfinite(v)
+                    }
                     if non_finite:
-                        print(f"  \u2717 compute_reward has NaN/Inf values: {non_finite}")
+                        print(
+                            f"  \u2717 compute_reward has NaN/Inf values: {non_finite}"
+                        )
                         print(
                             "    Fix: reward values must be finite."
                             " NaN/Inf break training gradients."
                         )
                         failed += 1
                     else:
-                        print(f"  \u2713 compute_reward returns dict[str, float]: {reward}")
+                        print(
+                            f"  \u2713 compute_reward returns dict[str, float]: {reward}"
+                        )
                         passed += 1
         except Exception as exc:
             print(f"  \u2717 compute_reward raised {type(exc).__name__}: {exc}")
-            print("    Fix: compute_reward signature is (rollout_id, messages, task, **kwargs).")
+            print(
+                "    Fix: compute_reward signature is (rollout_id, messages, task, **kwargs)."
+            )
             print("    Read example data from `task`, runtime fields from `kwargs`.")
             failed += 1
 
     # ── 5b. Simulated rollout (E2E) ──────────────────────────────
-    if env is not None and isinstance(preprocessed, dict) and "prompt_messages" in preprocessed:
+    if (
+        env is not None
+        and isinstance(preprocessed, dict)
+        and "prompt_messages" in preprocessed
+    ):
         try:
             prompt_messages = preprocessed["prompt_messages"]
             task = preprocessed.get("task")
@@ -364,7 +380,9 @@ def validate_env(
 
             # Final assistant message echoing ground truth if available.
             gt = (task or {}).get("ground_truth")
-            transcript.append({"role": "assistant", "content": str(gt or "test answer")})
+            transcript.append(
+                {"role": "assistant", "content": str(gt or "test answer")}
+            )
 
             reward = _run_async(
                 env.compute_reward(
@@ -390,8 +408,14 @@ def validate_env(
                     print(f"  \u2717 simulated rollout: bad reward values: {bad}")
                     failed += 1
                 else:
-                    tools_desc = f"{tool_call_count} tool calls" if tool_call_count else "no tools"
-                    print(f"  \u2713 simulated rollout OK ({tools_desc}, reward={reward})")
+                    tools_desc = (
+                        f"{tool_call_count} tool calls"
+                        if tool_call_count
+                        else "no tools"
+                    )
+                    print(
+                        f"  \u2713 simulated rollout OK ({tools_desc}, reward={reward})"
+                    )
                     passed += 1
 
         except Exception as exc:
@@ -416,18 +440,20 @@ def validate_env(
             restored_cls = cloudpickle.loads(data)
             restored_env = restored_cls(**env_args)
             tools = _run_async(restored_env.list_tools())
-            print(f"  \u2713 pickle round-trip OK ({len(data)} bytes, {len(tools)} tools)")
+            print(
+                f"  \u2713 pickle round-trip OK ({len(data)} bytes, {len(tools)} tools)"
+            )
             passed += 1
         except Exception as exc:
             print(f"  \u2717 pickle round-trip failed: {type(exc).__name__}: {exc}")
             failed += 1
 
-    # \u2500\u2500 6a. Local-modules guard \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    # Same-process round-trip above succeeds even when local_modules are
-    # forgotten, because the user's working module is already in sys.modules
-    # so cloudpickle's by-reference resolves via cache. On a fresh worker
-    # process there's no cache and the import fails. Inspect the pickle's
-    # find_class refs to catch this pre-upload.
+        # \u2500\u2500 6a. Local-modules guard \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        # Same-process round-trip above succeeds even when local_modules are
+        # forgotten, because the user's working module is already in sys.modules
+        # so cloudpickle's by-reference resolves via cache. On a fresh worker
+        # process there's no cache and the import fails. Inspect the pickle's
+        # find_class refs to catch this pre-upload.
         try:
             from benchmax.bundle import unregistered_local_refs
 
@@ -482,12 +508,200 @@ def validate_env(
             print(msg)
         passed += 1
 
-    # ── Summary ──────────────────────────────────────────────────
-    print()
-    if failed == 0:
-        print(f"All {passed} checks passed. Safe to call train().")
-    else:
-        print(f"{failed} check(s) failed. Fix before calling train().")
+    return (passed, failed)
 
-    _shutdown_shared_loop()
-    return failed == 0
+
+@dataclass(frozen=True)
+class ValidationReport:
+    """Combined outcome of :func:`validate_env` — local contract checks plus an
+    optional remote smoke rollout.
+
+    Bool-castable so the common gate keeps working::
+
+        if not validate_env(env_class=Env, env_args={}, train_dataset=rows):
+            raise SystemExit("Fix the env before launching.")
+
+    Attributes:
+        local_passed/local_failed: per-check counts from the local contract
+            pass. Both 0 when ``local=False``.
+        remote: the remote ``ValidationResult``, or ``None`` when no ``api_key``
+            was given (remote smoke skipped).
+        local_ran/remote_ran: which layers actually executed.
+    """
+
+    local_passed: int
+    local_failed: int
+    remote: ValidationResult | None
+    local_ran: bool
+    remote_ran: bool
+
+    @property
+    def local_ok(self) -> bool:
+        return self.local_failed == 0
+
+    @property
+    def remote_ok(self) -> bool:
+        return self.remote is None or self.remote.ok
+
+    @property
+    def ok(self) -> bool:
+        # A report where nothing ran is NOT a pass — there was nothing to
+        # validate, so refuse to green-light a launch (fail loudly).
+        return (self.local_ran or self.remote_ran) and self.local_ok and self.remote_ok
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+def _print_report_summary(report: ValidationReport) -> None:
+    """Print the one-line roll-up across whichever layers ran."""
+    print()
+    if not (report.local_ran or report.remote_ran):
+        print(
+            "  warning: validate_env ran no checks (local=False and no "
+            "api_key) — nothing was validated."
+        )
+        return
+
+    parts: list[str] = []
+    if report.local_ran:
+        total = report.local_passed + report.local_failed
+        suffix = "" if report.local_ok else " — FAILED"
+        parts.append(f"local {report.local_passed}/{total} checks{suffix}")
+    if report.remote_ran and report.remote is not None:
+        n = len(report.remote.examples)
+        n_ok = sum(1 for ex in report.remote.examples if ex.ok)
+        suffix = "" if report.remote_ok else " — FAILED"
+        parts.append(f"remote {n_ok}/{n} rollouts{suffix}")
+
+    status = "passed" if report.ok else "FAILED"
+    print(f"validate_env {status}: " + "; ".join(parts))
+    if not report.ok:
+        print("  Fix the issues above before launching a training run.")
+
+
+def validate_env(
+    env_class: type,
+    env_args: dict[str, Any],
+    train_dataset: list[dict[str, Any]],
+    eval_dataset: list[dict[str, Any]] | None = None,
+    *,
+    local_modules: list[ModuleType] | None = None,
+    pip_dependencies: list[str] | None = None,
+    local: bool = True,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    llm_base_url: str | None = None,
+    llm_api_key: str | None = None,
+    remote_examples: int = 2,
+    llm_model: str | None = None,
+    max_turns: int = 4,
+    verbose: bool = True,
+) -> ValidationReport:
+    """Validate an environment before launching a training run.
+
+    A single entry point that folds together the two validation layers:
+
+    1. **Local contract checks** (``local=True``, the default) — run in-process
+       with no network, mirroring how the trainer calls env methods
+       (dataset_preprocess, load_dataset, list_tools/run_tool, compute_reward,
+       a simulated rollout, pickle round-trips).
+    2. **Remote smoke rollout** (runs when ``api_key`` is given) — bundles the
+       env inline and runs ``remote_examples`` real rollouts on the platform,
+       exactly as :meth:`RolloutClient.validate_examples` does, but without you
+       having to construct a client.
+
+    Pass nothing but the env + dataset for a fast offline check; add
+    ``api_key`` (and, if your script's environment differs from the SDK
+    defaults, ``base_url``/``llm_base_url``) to also smoke-test against the
+    platform::
+
+        validate_env(env_class=Env, env_args={...}, train_dataset=rows)          # local only
+        validate_env(env_class=Env, env_args={...}, train_dataset=rows,           # local + remote
+                     api_key=API_KEY, base_url=BASE_URL, llm_base_url=LLM_URL)
+
+    Generated launch scripts pass ``local=False`` because the trainer-image
+    ``pip_dependencies`` may not be installed in the script's own environment;
+    the remote rollout exercises the env on the trainer image instead.
+
+    Warning:
+        The local pass calls your env's tools with dummy arguments against real
+        backends. If your tools have side effects (writes, deletes, sends), use
+        a test backend.
+
+    Args:
+        env_class: The environment class (e.g. SearchEnv).
+        env_args: Constructor kwargs for the env (bundled for the remote pass).
+        train_dataset: Training examples (list of dicts). The remote pass
+            smoke-tests the first ``remote_examples`` of these.
+        eval_dataset: Optional eval examples (accepted for symmetry with the
+            launch helpers; the local checks sample from ``train_dataset``).
+        local_modules: Modules to pickle by value — pass the same list you give
+            ``upload_training_run`` / ``dump_bundle`` for envs that import from
+            sibling .py files.
+        pip_dependencies: Pip deps recorded in the remote bundle.
+        local: Run the local contract checks. Default True.
+        api_key: Platform API key (``sk_``). When given, also runs the remote
+            smoke rollout; when None, remote is skipped.
+        base_url: Platform base URL for the remote pass. Defaults to
+            ``config.platform_url()``.
+        llm_base_url: Base URL for the rollout's LLM leg. Defaults to the
+            platform LLM (``config.llm_url()``). Set it (together with
+            ``llm_api_key``) to bring your own LLM — e.g.
+            ``"https://api.openai.com/v1"``.
+        llm_api_key: API key for the LLM leg. Required when ``llm_base_url``
+            points outside the platform LLM endpoint (BYOK) — the platform key
+            is never forwarded to a third-party host.
+        remote_examples: Number of examples to smoke-test remotely (default 2).
+        llm_model: Override the validation model for the remote rollout.
+        max_turns: Max conversation turns per remote rollout.
+        verbose: Print progress + the roll-up summary (default True).
+
+    Returns:
+        A bool-castable :class:`ValidationReport` carrying both layers' outcomes.
+    """
+    local_passed = local_failed = 0
+    if local:
+        try:
+            local_passed, local_failed = _run_local_checks(
+                env_class, env_args, train_dataset, eval_dataset, local_modules
+            )
+        finally:
+            # _run_local_checks owns the shared validation loop; close it here
+            # so loop-bound user resources (judge httpx clients) drain cleanly.
+            _shutdown_shared_loop()
+
+    remote: ValidationResult | None = None
+    if api_key:
+        # Lazy import keeps the offline path free of httpx and avoids a
+        # client <-> validation import cycle.
+        from .client import RolloutClient
+
+        rollout = RolloutClient(api_key=api_key, server_url=base_url)
+        extra: dict[str, Any] = {}
+        if llm_model is not None:
+            extra["llm_model"] = llm_model
+        remote = rollout.validate_examples(
+            train_dataset,
+            env_class=env_class,
+            constructor_args=env_args,
+            pip_dependencies=pip_dependencies,
+            local_modules=local_modules,
+            n=remote_examples,
+            llm_base_url=llm_base_url,
+            llm_api_key=llm_api_key or "",
+            max_turns=max_turns,
+            verbose=verbose,
+            **extra,
+        )
+
+    report = ValidationReport(
+        local_passed=local_passed,
+        local_failed=local_failed,
+        remote=remote,
+        local_ran=local,
+        remote_ran=bool(api_key),
+    )
+    if verbose:
+        _print_report_summary(report)
+    return report
