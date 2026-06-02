@@ -522,7 +522,7 @@ coherence.
 line; aim for uniform 5- or 7-character lines, or whatever length fits the \
 hidden word naturally).
 
-English example:
+Example:
 
 User: breakup poem where the last letters spell brave
 
@@ -534,17 +534,6 @@ of mornings spent pretending not to remember
 that love like ours was never just an idea
 now I just sit alone and stare at the tv
 and wonder if you ever meant to keep your promise
-</answer>
-
-中文例子:
-
-User: 写一首关于思念的藏尾诗，尾字拼出"月光"
-
-月-光 = 2个字，2行。主题：思念。
-
-<answer>
-独坐窗前望明月
-故人远去似流光
 </answer>"""
 
     def __init__(self, *, judge_base_url: str, judge_api_key: str = "",
