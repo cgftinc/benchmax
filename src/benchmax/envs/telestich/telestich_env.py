@@ -62,6 +62,10 @@ ACCEPTABLE_EDGE = 0.1    # score earned by tying the acceptable (floor) anchor
 GREAT_EDGE = 0.5         # score earned by tying the great (bar) anchor
 QUALITY_GATE = ACCEPTABLE_EDGE   # secondary BONUSES require quality >= this
                                  # (i.e. mid/above buckets); below it earns no bonus
+QUALITY_FLOOR = 0.01     # clearing correctness is worth a hair more than being
+                         # gated: the worst-ranked valid poem still beats a
+                         # gated poem's 0, so the model always sees gradient for
+                         # producing a correct telestich at all
 QUALITY_RUBRIC = Rubric(
     title="poetic quality",
     description=(
@@ -282,6 +286,27 @@ def check_hard_rules(poem: str | None, target: str) -> dict:
     if cheated:
         return result(False, "hidden word written in the poem body")
     return result(True, "")
+
+
+def _gate_category(reason: str) -> str:
+    """Collapse a specific gate reason (e.g. "line 2 ends 'l', expected 'u'") into
+    a short bucket so the group log shows counts-by-kind, not one entry per line."""
+    r = reason.lower()
+    if "no poem" in r:
+        return "no-poem"
+    if "empty target" in r:
+        return "bad-target"
+    if "line count" in r:
+        return "wrong-line-count"
+    if "expected" in r:
+        return "wrong-ending-letter"
+    if "non-word" in r:
+        return "non-word-ending"
+    if "too short" in r:
+        return "line-too-short"
+    if "hidden word" in r:
+        return "cheated"
+    return "other"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -588,11 +613,13 @@ and wonder if you ever meant to keep your promise
         return {}  # all logic is group-level (compute_group_reward)
 
     async def _quality(self, prompt: str, poems: list[str],
-                       anchors: list[str], band_edges: list[float]) -> list[float]:
+                       anchors: list[str], band_edges: list[float],
+                       anchor_labels: list[str] | None = None) -> list[float]:
         """Quality via the shared MULTI-ANCHOR rubric judge: one call ranks `poems`
         with the anchors (acceptable floor + great bar) inserted blind, returning
         band scores in [0,1] aligned with `poems`. On judge error the rubric
-        returns 0s. With no anchors it degrades to pure relative ranking."""
+        returns 0s. With no anchors it degrades to pure relative ranking.
+        `anchor_labels` only name the anchors in the rubric's debug log."""
         res = await evaluate_rubric_ranking(
             rubric=QUALITY_RUBRIC,
             question=prompt,
@@ -603,6 +630,7 @@ and wonder if you ever meant to keep your promise
             timeout=self._judge_timeout,
             anchors=anchors or None,
             band_edges=band_edges or None,
+            anchor_labels=anchor_labels or None,
         )
         return res["scores"]
 
@@ -610,17 +638,21 @@ and wonder if you ever meant to keep your promise
                              acceptable: str | None, great: str | None) -> None:
         """Rank the valid poems against the acceptable + great anchors; write each
         record's band `quality`, duplicate-adjusted `q`, and `bucket`."""
-        anchors, edges = [], []
+        anchors, edges, labels = [], [], []
         if acceptable:
             anchors.append(acceptable)
             edges.append(ACCEPTABLE_EDGE)
+            labels.append("baseline")
         if great:
             anchors.append(great)
             edges.append(GREAT_EDGE)
-        scores = await self._quality(prompt, [r.poem for r in valid], anchors, edges)
+            labels.append("great")
+        scores = await self._quality(prompt, [r.poem for r in valid], anchors, edges, labels)
         dup = duplicate_divisors([r.poem for r in valid])
         for local, r in enumerate(valid):
-            r.quality = scores[local]
+            # floor at QUALITY_FLOOR: a correct poem ranked dead-last earns 0 from
+            # the band scorer, which is indistinguishable from a gated poem.
+            r.quality = max(QUALITY_FLOOR, scores[local])
             r.q = r.quality / dup[local]    # near-duplicate whole poems shared down
             r.bucket = _bucket(r.q)
 
@@ -721,11 +753,16 @@ and wonder if you ever meant to keep your promise
         rolls = [self._build_rollout(i, rollout_ids[i], messages_list[i], target)
                  for i in range(len(rollout_ids))]
         valid = [r for r in rolls if r.valid]
-        gated_reasons = Counter(r.reason for r in rolls if not r.valid)
+        n_gated = len(rolls) - len(valid)
         logger.info(
-            f"[TelestichEnv] group target={target!r} ({language}) n={len(rolls)} "
-            f"anchors=(acc={'Y' if acceptable else 'N'},great={'Y' if great else 'N'}) "
-            f"-> stage1 gate {len(valid)}/{len(rolls)} valid; gated={dict(gated_reasons)}")
+            f"[TelestichEnv] group target={target!r} ({language}) — "
+            f"{len(valid)}/{len(rolls)} passed correctness "
+            f"(anchors: baseline={'Y' if acceptable else 'N'}, great={'Y' if great else 'N'})")
+        if n_gated:
+            # counts-by-kind, worst-offender first, so failures read at a glance
+            cats = Counter(_gate_category(r.reason) for r in rolls if not r.valid)
+            breakdown = ", ".join(f"{cat} {ct}" for cat, ct in cats.most_common())
+            logger.info(f"[TelestichEnv]   stage1 gated {n_gated}: {breakdown}")
 
         # ── Stage 1+2: quality via the multi-anchor rubric → band score + bucket ──
         if valid:

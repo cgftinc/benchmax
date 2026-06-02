@@ -172,6 +172,7 @@ async def evaluate_rubric_ranking(
     below_gt_ceiling: float = 0.3,
     anchors: Optional[List[str]] = None,
     band_edges: Optional[List[float]] = None,
+    anchor_labels: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Rank N responses against a single rubric in one judge call and convert the
@@ -214,9 +215,14 @@ async def evaluate_rubric_ranking(
 
     if anchors and not band_edges:
         raise ValueError("anchors require band_edges (one score seam per anchor)")
-    clean_anchors = [
-        (str(a), float(e)) for a, e in zip(anchors or [], band_edges or []) if a and str(a).strip()
+    _alabels = anchor_labels or []
+    clean_pairs = [
+        (str(a), float(e), (_alabels[i] if i < len(_alabels) else None))
+        for i, (a, e) in enumerate(zip(anchors or [], band_edges or []))
+        if a and str(a).strip()
     ]
+    clean_anchors = [(a, e) for a, e, _ in clean_pairs]
+    clean_anchor_labels = [p[2] for p in clean_pairs]  # parallel to clean_anchors; for logging
     use_anchors = bool(clean_anchors)
     use_gt = bool(ground_truth and str(ground_truth).strip()) and not use_anchors
     m = len(nonempty)
@@ -323,26 +329,58 @@ async def evaluate_rubric_ranking(
             "llm_output": content,
         }
         if enable_logging:
-            scores_fmt = "  ".join(f"[{i}]={s:.3f}" for i, s in enumerate(scores))
+            # Label every judged item by its judge index (so the reasoning's
+            # "Response j" maps directly) plus its role: a model response, the
+            # blind ground truth, or a named anchor. Then print each poem under
+            # its label so a reader can see exactly what got ranked where.
+            seam_of = dict(anchor_local_edges)  # local item index -> seam edge
+            labels: List[str] = []
+            for j in range(len(items)):
+                if j < m:
+                    labels.append(f"resp{j} (model)")
+                elif use_gt and j == gt_local:
+                    labels.append(f"resp{j} (ground-truth)")
+                else:
+                    k = j - m - (1 if use_gt else 0)
+                    role = (clean_anchor_labels[k] if k < len(clean_anchor_labels)
+                            and clean_anchor_labels[k] else f"anchor@{seam_of.get(j, 0.0):g}")
+                    labels.append(f"resp{j} ({role})")
+
+            def _lab(j: int) -> str:
+                return labels[j] if 0 <= j < len(labels) else f"resp{j}"
+
             ranking_fmt = " > ".join(
-                f"[{', '.join(str(j) for j in tier)}]" if isinstance(tier, list) else str(tier)
+                "[" + ", ".join(_lab(j) for j in (tier if isinstance(tier, list) else [tier])) + "]"
                 for tier in ranking
-            )
+            ) or "(empty)"
+            scores_fmt = "  ".join(
+                f"{_lab(j)}={scores[nonempty[j][0]]:.3f}" for j in range(m)
+            ) or "(none)"
+
+            poem_blocks = []
+            for j, text in enumerate(items):
+                if j < m:
+                    head = f"{_lab(j)} · score {scores[nonempty[j][0]]:.3f}"
+                elif use_gt and j == gt_local:
+                    head = f"{_lab(j)} · reference"
+                else:
+                    head = f"{_lab(j)} · seam {seam_of.get(j, 0.0):.2f}"
+                body = "\n".join(f"│   {ln}" for ln in (str(text).splitlines() or [""]))
+                poem_blocks.append(f"│ ── {head} ──\n{body}")
+            poems_fmt = "\n│\n".join(poem_blocks)
+
             logger.info(
                 "\n┌─ ranked rubric: %s ────────────────────\n"
-                "│ ground_truth : %s\n"
-                "│ ranking      : %s\n"
-                "│ scores       : %s\n"
-                "│ reasoning    : %s\n"
-                "│ llm_output   :\n%s\n"
+                "│ ranking  : %s\n"
+                "│ scores   : %s\n"
+                "│ reasoning: %s\n"
+                "│\n%s\n"
                 "└──────────────────────────────────────────────────",
                 rubric.title,
-                (f"{len(clean_anchors)} anchors @ seams {[e for _, e in clean_anchors]}"
-                 if use_anchors else (str(ground_truth or "").strip() or "(none)")),
-                ranking_fmt or "(empty)",
+                ranking_fmt,
                 scores_fmt,
                 out["reasoning"],
-                content,
+                poems_fmt,
             )
         return out
     except Exception as e:
