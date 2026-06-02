@@ -16,6 +16,9 @@ env's word-list / rhyme dependencies):
         uv run --extra telestich python -m benchmax.envs.telestich.example
 
 (``CASTFORM_LLM_API_KEY`` is optional — it defaults to ``CASTFORM_API_KEY``.)
+
+By default this is a 2-example smoke run. Set ``TELESTICH_FULL_RUN=1`` to launch
+a real run on the full seed dataset (~90/10 train/eval split).
 """
 
 import asyncio
@@ -569,23 +572,32 @@ if __name__ == "__main__":
     print(f"Platform URL: {BASE_URL}")
     print(f"LLM URL:      {LLM_BASE_URL}\n")
 
-    # 1. Generate 2 fresh examples via the platform LLM.
-    with tempfile.TemporaryDirectory() as tmp:
-        gen_path = Path(tmp) / "gen.jsonl"
-        print(f"Generating 2 examples via {LLM_BASE_URL} ...")
-        asyncio.run(generate_dataset(n=2, path=str(gen_path), concurrency=2))
-        examples = load_dataset(str(gen_path))
-
-    if len(examples) < 2:
-        raise SystemExit(f"Needed 2 examples, only got {len(examples)}.")
-    train_data, eval_data = examples[:1], examples[1:2]
-    print(
-        f"Generated {len(examples)} examples — "
-        f"using 1 for train, 1 for eval.\n"
-    )
+    # 1. Build the dataset.
+    #    Full run (TELESTICH_FULL_RUN=1): the committed seed dataset, topped up
+    #    to NUM_EXAMPLES via the platform LLM if short, split ~90/10 train/eval.
+    #    Default: a 2-example smoke that just exercises gen -> bundle -> upload
+    #    -> launch (and the key-less judge path), not a real training job.
+    full_run = bool(os.environ.get("TELESTICH_FULL_RUN"))
+    if full_run:
+        examples = get_dataset()
+        if len(examples) < 2:
+            raise SystemExit(f"Need >=2 examples for a full run, got {len(examples)}.")
+        n_eval = max(1, len(examples) // 10)  # ~10% held out for eval
+        eval_data, train_data = examples[:n_eval], examples[n_eval:]
+        print(f"Full run: {len(train_data)} train / {len(eval_data)} eval.\n")
+    else:
+        with tempfile.TemporaryDirectory() as tmp:
+            gen_path = Path(tmp) / "gen.jsonl"
+            print(f"Generating 2 examples via {LLM_BASE_URL} ...")
+            asyncio.run(generate_dataset(n=2, path=str(gen_path), concurrency=2))
+            examples = load_dataset(str(gen_path))
+        if len(examples) < 2:
+            raise SystemExit(f"Needed 2 examples, only got {len(examples)}.")
+        train_data, eval_data = examples[:1], examples[1:2]
+        print(f"Smoke run: generated {len(examples)} examples — 1 train, 1 eval.\n")
 
     # 2. Bundle the env class and upload everything to platform storage.
-    run_name = f"telestich-example-{uuid.uuid4().hex[:8]}"
+    run_name = f"telestich-{'full' if full_run else 'example'}-{uuid.uuid4().hex[:8]}"
     print(f"Uploading bundle + datasets as {run_name!r} ...")
     uploaded = upload_training_run(
         env_class=TelestichEnv,
