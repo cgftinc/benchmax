@@ -12,8 +12,10 @@ Run it from the benchmax project root (the ``telestich`` extra pulls in the
 env's word-list / rhyme dependencies):
 
     cd core/benchmax
-    CASTFORM_API_KEY=sk_... CASTFORM_LLM_API_KEY=sk_... \
+    CASTFORM_API_KEY=sk_... \
         uv run --extra telestich python -m benchmax.envs.telestich.example
+
+(``CASTFORM_LLM_API_KEY`` is optional — it defaults to ``CASTFORM_API_KEY``.)
 """
 
 import asyncio
@@ -41,7 +43,10 @@ from benchmax.envs.telestich.telestich_env import TelestichEnv
 from benchmax import config
 
 API_KEY = os.environ.get("CASTFORM_API_KEY", "")
-LLM_API_KEY = os.environ.get("CASTFORM_LLM_API_KEY", "")
+# Defaults to the platform key — the same auth-service validates it at the LLM
+# proxy. Only used here for local dataset-gen; the in-training judge key is
+# overridden by the trainer's act-as JWT, so its literal value is ignored.
+LLM_API_KEY = os.environ.get("CASTFORM_LLM_API_KEY") or API_KEY
 LLM_BASE_URL = config.llm_url()
 BASE_URL = config.platform_url()
 EXPERIMENT_NAME = "telestich-2026-04-25"
@@ -56,8 +61,7 @@ CONCURRENCY = 15
 # - gpt-5.4-nano fails the exclusive-bullet and banned-list rules more than the
 #   other gpt-5.4 variants, so it's downweighted too.
 MODELS = [
-    ("grok-4-fast-non-reasoning", 0.10),
-    ("grok-4-1-fast-non-reasoning", 0.10),
+    ("grok-4-1-fast-non-reasoning", 0.20),
     ("gpt-5.4", 0.35),
     ("gpt-5.4-mini", 0.30),
     ("gpt-5.4-nano", 0.15),
@@ -561,8 +565,6 @@ if __name__ == "__main__":
 
     if not API_KEY:
         raise SystemExit("Set CASTFORM_API_KEY before running this example.")
-    if not LLM_API_KEY:
-        raise SystemExit("Set CASTFORM_LLM_API_KEY before running this example.")
 
     print(f"Platform URL: {BASE_URL}")
     print(f"LLM URL:      {LLM_BASE_URL}\n")
