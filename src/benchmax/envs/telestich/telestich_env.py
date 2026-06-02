@@ -494,18 +494,19 @@ phrase around it.
 4. Output the poem in <answer></answer> tags. Plain text only. Stop after \
 </answer>.
 
-Be concise. Total output length — your notes included — is penalized, and a \
-rollout that rambles until it runs out of room and never reaches <answer> \
-scores zero. So do NOT enumerate long candidate lists, do NOT second-guess or \
-re-derive, and do NOT restate the rules. Choose your ending words in a line or \
-two and write the poem.
+Be concise. Reaching a correct answer quickly is rewarded, and a rollout that \
+rambles until it runs out of room and never reaches <answer> earns nothing. So \
+do NOT enumerate long candidate lists, do NOT second-guess or re-derive, and do \
+NOT restate the rules. Choose your ending words in a line or two and write the \
+poem.
 
 Rules:
 1. Exactly as many lines as letters/characters in the target word.
 2. Every ending word must be a real word — no invented words, no standalone \
 letters tacked on.
-3. Each line is a complete, meaningful phrase. The poem should be coherent \
-and match the requested theme.
+3. Each line is a complete, meaningful phrase — keep lines tight and \
+image-dense (a poetic line, not a long prose sentence). The poem should be \
+coherent and match the requested theme.
 4. Write the poem in the same language as the request.
 5. Do NOT include the hidden target word anywhere in the poem itself — the \
 whole point is that it's hidden in the ending letters.
