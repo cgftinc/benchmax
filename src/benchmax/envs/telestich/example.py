@@ -46,9 +46,8 @@ from benchmax.envs.telestich.telestich_env import TelestichEnv
 from benchmax import config
 
 API_KEY = os.environ.get("CASTFORM_API_KEY", "")
-# Defaults to the platform key — the same auth-service validates it at the LLM
-# proxy. Only used here for local dataset-gen; the in-training judge key is
-# overridden by the trainer's act-as JWT, so its literal value is ignored.
+# Local dataset generation only — NOT passed to the env's judge (it resolves its
+# bearer via the platform act-as seam; see constructor_args below).
 LLM_API_KEY = os.environ.get("CASTFORM_LLM_API_KEY") or API_KEY
 LLM_BASE_URL = config.llm_url()
 BASE_URL = config.platform_url()
@@ -607,8 +606,9 @@ if __name__ == "__main__":
         api_key=API_KEY,
         base_url=BASE_URL,
         constructor_args={
+            # No judge_api_key: constructor_args land in the uploaded bundle, so a
+            # literal key would leak; the judge resolves its bearer at runtime.
             "judge_base_url": LLM_BASE_URL,
-            "judge_api_key": LLM_API_KEY,
         },
         pip_dependencies=["english_words", "openai", "pronouncing", "wordfreq"],
     )

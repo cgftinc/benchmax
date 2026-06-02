@@ -547,11 +547,13 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
 故人远去似流光
 </answer>"""
 
-    def __init__(self, *, judge_base_url: str, judge_api_key: str,
+    def __init__(self, *, judge_base_url: str, judge_api_key: str = "",
                  judge_timeout: float = 90.0, max_tool_calls: int = 2,
                  **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._judge_base_url = judge_base_url
+        # Empty → judge bearer resolves via the platform act-as seam
+        # (resolve_judge_key). Don't bake a literal key into constructor_args.
         self._judge_api_key = judge_api_key
         self._judge_timeout = judge_timeout
         self._max_tool_calls = max_tool_calls
