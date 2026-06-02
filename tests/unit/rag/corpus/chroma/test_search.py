@@ -23,6 +23,9 @@ def _make_search(modes=None, embed_fn=None) -> ChromaSearch:
     # Inject fake client
     client = ChromaClient.__new__(ChromaClient)
     client.collection_name = "test"
+    client.api_key = None
+    client.tenant = None
+    client.database = None
     client.host = "localhost"
     client.port = 8000
     client.path = None
@@ -114,7 +117,7 @@ class TestAvailableModes:
 
 
 class TestPickle:
-    def test_roundtrip_preserves_config(self):
+    def test_roundtrip_preserves_config_self_hosted(self):
         cs = ChromaSearch(collection_name="col", host="h", port=9000)
         data = cloudpickle.dumps(cs)
         restored = pickle.loads(data)
@@ -123,6 +126,20 @@ class TestPickle:
         assert restored._port == 9000
         assert restored._client is None
 
+    def test_roundtrip_preserves_config_cloud(self):
+        cs = ChromaSearch(
+            collection_name="col",
+            tenant="t",
+            database="d",
+            token_provider="ck-key",
+        )
+        data = cloudpickle.dumps(cs)
+        restored = pickle.loads(data)
+        assert restored._collection_name == "col"
+        assert restored._tenant == "t"
+        assert restored._database == "d"
+        assert restored._client is None
+
     def test_roundtrip_size(self):
         cs = ChromaSearch(collection_name="test", host="localhost")
-        assert len(cloudpickle.dumps(cs)) < 500
+        assert len(cloudpickle.dumps(cs)) < 1500

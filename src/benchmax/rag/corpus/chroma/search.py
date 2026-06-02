@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from benchmax.platform.credentials import TokenProvider, as_token_provider, env_token
+
 
 class ChromaSearch:
     """Pickle-safe Chroma search client for RL environments.
@@ -16,39 +18,85 @@ class ChromaSearch:
     Stores only serializable connection parameters.  The Chroma client
     is created lazily on first search call (including after unpickle).
 
+    Pass **either** Cloud credentials (``token_provider`` + ``tenant`` +
+    ``database``) **or** a self-hosted ``host``. Cloud takes precedence
+    if both are set; wizard-emitted env classes always use Cloud.
+
+    The Chroma Cloud key is resolved per request via ``token_provider``.
+    With the default (``env_token("CHROMA_API_KEY")``) the key is read
+    from the env at runtime and nothing is frozen — the self-serve /
+    hand-written-env path.  Platform-orchestrated training instead passes
+    an explicit ``token_provider`` that **bakes** the build-time key into
+    the pickled env, because the trainer runs this env in a Ray actor that
+    can't read the external secret from its environment at runtime.
+
     Args:
         collection_name: Name of the Chroma collection.
-        host: Chroma server hostname (required for training envs).
-        port: Chroma server port (default 8000).
+        tenant: Chroma Cloud tenant ID.
+        database: Chroma Cloud database name.
+        host: Self-hosted server hostname.
+        port: Self-hosted server port (default 8000).
         embed_fn: Custom embedding function. When ``None``, Chroma's
             built-in embeddings are used.
         enable_bm25: Enable BM25 for lexical/hybrid modes.
         content_attr: Metadata fields to treat as content.
+        token_provider: Optional override — a callable resolving the key
+            per call, or a literal key (string sugar). Defaults to reading
+            ``CHROMA_API_KEY``.
     """
 
     def __init__(
         self,
         collection_name: str,
-        host: str,
+        tenant: str | None = None,
+        database: str | None = None,
+        host: str | None = None,
         port: int = 8000,
         embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
         enable_bm25: bool = True,
         content_attr: list[str] | None = None,
+        token_provider: str | TokenProvider | None = None,
     ) -> None:
         self._collection_name = collection_name
+        self._tenant = tenant
+        self._database = database
         self._host = host
         self._port = port
         self._embed_fn = embed_fn
         self._enable_bm25 = enable_bm25
         self._content_attr = content_attr
+        self._token_provider = as_token_provider(
+            token_provider, env_token("CHROMA_API_KEY")
+        )
         self._client: Any = None
+
+    def _resolve_api_key(self) -> str | None:
+        """Resolve the API key, returning None for self-hosted mode.
+
+        When Cloud credentials (tenant+database) are set without a
+        fallback host, let RuntimeError propagate so the user sees a
+        clear "missing CHROMA_API_KEY" message instead of a confusing
+        downstream failure from ChromaClient getting api_key=None.
+        """
+        if self._host and not (self._tenant and self._database):
+            return None
+        try:
+            return self._token_provider()
+        except RuntimeError:
+            if not self._host:
+                raise
+            return None
 
     def _get_client(self) -> Any:
         if self._client is None:
             from .client import ChromaClient
 
+            api_key = self._resolve_api_key()
             self._client = ChromaClient(
                 collection_name=self._collection_name,
+                api_key=api_key,
+                tenant=self._tenant,
+                database=self._database,
                 host=self._host,
                 port=self._port,
                 embed_fn=self._embed_fn,
@@ -115,13 +163,22 @@ class ChromaSearch:
         return sorted(self._get_client().modes)
 
     def get_params(self) -> dict[str, Any]:
-        return {
+        params: dict[str, Any] = {
             "backend": "chroma",
             "collection_name": self._collection_name,
-            "host": self._host,
-            "port": self._port,
             "enable_bm25": self._enable_bm25,
         }
+        if self._tenant and self._database:
+            api_key = self._resolve_api_key()
+            params.update(
+                mode="cloud",
+                tenant=self._tenant,
+                database=self._database,
+                api_key=(api_key[:8] + "...") if api_key else None,
+            )
+        else:
+            params.update(mode="self_hosted", host=self._host, port=self._port)
+        return params
 
     def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()
