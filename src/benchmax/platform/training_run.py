@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,24 @@ class UploadedTrainingRun:
     env_metadata_path: str
     train_dataset_path: str
     eval_dataset_path: str
+
+
+# Mirrors the platform's blob-path guard (isSafeBlobPath): the upload endpoint
+# rejects keys whose segments fall outside this charset, since a stray
+# `?`/`#`/space breaks the trainer's SAS-URL parsing downstream. Fail loud here
+# with an actionable message instead of letting the user hit an opaque 400.
+_SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _validate_blob_path(path: str, *, source: str) -> None:
+    for seg in path.split("/"):
+        if not seg or seg in (".", "..") or not _SAFE_SEGMENT.fullmatch(seg):
+            raise ValueError(
+                f"Invalid storage path segment {seg!r} in {path!r} (from {source}). "
+                f"Path segments may contain only letters, digits, '.', '_', '-'. "
+                f"The platform rejects others (e.g. '?', '#', spaces) because they "
+                f"break blob-URL parsing. Use a run_name without such characters."
+            )
 
 
 def upload_training_run(
@@ -119,6 +138,11 @@ def upload_training_run(
             train_jsonl.encode() + eval_jsonl.encode()
         ).hexdigest()[:8]
         dataset_prefix = f"datasets/{run_name}/{dataset_hash}"
+
+    # Reject unsafe keys before uploading — covers both the run_name-derived
+    # defaults and any caller-supplied env_prefix/dataset_prefix override.
+    _validate_blob_path(env_prefix, source="env_prefix/run_name")
+    _validate_blob_path(dataset_prefix, source="dataset_prefix/run_name")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
