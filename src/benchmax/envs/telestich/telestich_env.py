@@ -224,7 +224,8 @@ def word_bank(letter: str, k: int = 30) -> list[str]:
 # HARD RULES
 # ══════════════════════════════════════════════════════════════════════
 def check_hard_rules(poem: str | None, target: str) -> dict:
-    """Deterministic gate. correct == True iff valid telestich AND not cheating."""
+    """Deterministic gate. correct == True iff valid telestich AND not cheating.
+    `reason` names the first rule that failed (empty string when correct)."""
     target = (target or "").strip()
     language = detect_language(target)
     lines = parse_poem_lines(poem or "")
@@ -232,14 +233,26 @@ def check_hard_rules(poem: str | None, target: str) -> dict:
     n = len(chars)
 
     cheated = contains_hidden_word(poem or "", target, language)
-    if not lines or n == 0 or len(lines) != n:
-        return {"correct": False, "cheated": cheated, "language": language, "lines": lines}
+
+    def result(correct: bool, reason: str) -> dict:
+        return {"correct": correct, "cheated": cheated, "language": language,
+                "lines": lines, "reason": reason}
+
+    if n == 0:
+        return result(False, "empty target word")
+    if not lines:
+        return result(False, "no poem found in completion")
+    if len(lines) != n:
+        return result(False, f"line count {len(lines)} != target length {n}")
     for i in range(n):
-        letter_ok = last_char(lines[i], language) == chars[i]
-        word_ok = language == "zh" or is_valid_word(last_word(lines[i]))
-        if not (letter_ok and word_ok):
-            return {"correct": False, "cheated": cheated, "language": language, "lines": lines}
-    return {"correct": not cheated, "cheated": cheated, "language": language, "lines": lines}
+        got = last_char(lines[i], language)
+        if got != chars[i]:
+            return result(False, f"line {i + 1} ends '{got}', expected '{chars[i]}'")
+        if language != "zh" and not is_valid_word(last_word(lines[i])):
+            return result(False, f"line {i + 1} ends on non-word '{last_word(lines[i])}'")
+    if cheated:
+        return result(False, "hidden word written in the poem body")
+    return result(True, "")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -498,23 +511,30 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         n = len(rollout_ids)
 
         # ── Stage 1: hard rules (deterministic) ──
-        poems, gate, form = [], [], []
+        poems, gate, form, reasons = [], [], [], []
         for messages in messages_list:
             poem = final_poem(messages) or ""
             chk = check_hard_rules(poem, target)
             poems.append(poem)
             gate.append(chk["correct"])
+            reasons.append(chk["reason"])
             form.append(form_score(chk["lines"], chk["language"]) if chk["correct"] else 0.0)
 
         valid = [i for i in range(n) if gate[i]]
+        logger.info(f"[TelestichEnv] group target={target!r} ({detect_language(target)}) "
+                    f"n={n}: stage 1 hard rules -> {len(valid)}/{n} valid")
 
         # ── Stage 2: quality via the shared rubric-ranking judge, anchored to
         # the example's GREAT poem (the bar to cross) ──
         quality = [0.0] * n
         if valid:
+            logger.info(f"[TelestichEnv] stage 2 judging {len(valid)} valid poems "
+                        f"(anchor={'great-poem' if anchor else 'none'})")
             scores = await self._quality(prompt, [poems[i] for i in valid], anchor)
             for local, i in enumerate(valid):
                 quality[i] = scores[local]
+            logger.info(f"[TelestichEnv] stage 2 quality scores: "
+                        f"{[round(quality[i], 3) for i in valid]}")
 
         # ── Stage 3: adjustments (deterministic) ──
         reuse = [0.0] * n
@@ -553,6 +573,8 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
         out = []
         for i in range(n):
             if not gate[i]:
+                with rollout_context(rollout_ids[i]):
+                    logger.info(f"[TelestichEnv] reward=0.000 gated out: {reasons[i]}")
                 out.append({"quality": 0.0, "reuse_penalty": 0.0, "form": 0.0, "conciseness": 0.0})
                 continue
             q = quality[i] / dup[i]                       # near-duplicate whole poems shared down
