@@ -122,7 +122,7 @@ async def evaluate_single_rubric(
                 "│ llm_output   :\n%s\n"
                 "└──────────────────────────────────────────────────",
                 rubric.title,
-                (ground_truth or "").strip() or "(none)",
+                str(ground_truth or "").strip() or "(none)",
                 out["score"],
                 out["reasoning"],
                 content,
@@ -172,7 +172,7 @@ async def evaluate_rubric_ranking(
     if not nonempty:
         return {"scores": scores, "ranking": [], "reasoning": "All responses empty", "llm_output": ""}
 
-    use_gt = bool(ground_truth and ground_truth.strip())
+    use_gt = bool(ground_truth and str(ground_truth).strip())
     m = len(nonempty)
 
     if m == 1 and not use_gt:
@@ -275,7 +275,7 @@ async def evaluate_rubric_ranking(
                 "│ llm_output   :\n%s\n"
                 "└──────────────────────────────────────────────────",
                 rubric.title,
-                (ground_truth or "").strip() or "(none)",
+                str(ground_truth or "").strip() or "(none)",
                 ranking_fmt or "(empty)",
                 scores_fmt,
                 out["reasoning"],
