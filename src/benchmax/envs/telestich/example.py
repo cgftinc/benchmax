@@ -30,7 +30,9 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
+from benchmax.envs.telestich import telestich_env as telestich_env_mod
 from benchmax.envs.telestich.telestich_env import TelestichEnv
+from benchmax.rubrics import rubric as rubric_mod
 
 # ══════════════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -605,10 +607,15 @@ if __name__ == "__main__":
         run_name=run_name,
         api_key=API_KEY,
         base_url=BASE_URL,
+        # Pickle the env + rubric by value: the platform's installed benchmax may
+        # not contain (this version of) these modules, so ship the source inline.
+        local_modules=[telestich_env_mod, rubric_mod],
         constructor_args={
-            # No judge_api_key: constructor_args land in the uploaded bundle, so a
-            # literal key would leak; the judge resolves its bearer at runtime.
+            # Empty judge_api_key (not a real key): satisfies the constructor while
+            # leaking nothing — the judge resolves its bearer at runtime via the
+            # platform act-as seam. constructor_args land in the uploaded bundle.
             "judge_base_url": LLM_BASE_URL,
+            "judge_api_key": "",
         },
         pip_dependencies=["english_words", "openai", "pronouncing", "wordfreq"],
     )
