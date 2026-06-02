@@ -8,17 +8,18 @@ each line. Reward, per rollout in a GRPO group (see ``compute_group_reward``):
      count — and must NOT write the hidden word in the body. Fail → reward 0,
      no judge called.
   2. QUALITY (one judge call per group, via benchmax.rubrics): the shared
-     `evaluate_rubric_ranking` ranks the group's valid poems with the example's
-     GREAT reference poem inserted blind as `ground_truth`; each poem's score in
-     [0,1] is anchored to that reference's rank — above the great bar -> [0.5,1],
-     below -> [0,0.3]. (Single anchor for now; multi-anchor is a future TODO.)
-  3. ADJUSTMENTS (deterministic): reward ending-word diversity (anti
-     mode-collapse), add a rhyme/length form bonus, and add a winner-anchored
-     conciseness bonus (only top performers; shorter/fewer-tool-calls scores
-     higher) — all logged as components.
+     multi-anchor `evaluate_rubric_ranking` ranks the group's valid poems with
+     BOTH reference poems inserted blind — acceptable as a floor, great as the
+     bar — placing each poem in a band: below acceptable -> [0,0.1) ("below"),
+     acceptable..great -> [0.1,0.5] ("mid"), above great -> [0.5,1.0] ("above").
+  3. BONUSES (deterministic, all POSITIVE and quality-scaled, so the total reward
+     is >= 0): ending-word diversity (anti mode-collapse, mid+above buckets), a
+     rhyme/length form bonus, and a conciseness bonus awarded only to the top
+     occupied band — rewarding a good poem that reached its answer quickly (short
+     overall rollout, plus a small tool-call-thrift part).
 
 The final reward = quality + diversity + form + conciseness
-(the component values sum to it).
+(the component values sum to it; every component is >= 0).
 """
 
 import logging
@@ -78,17 +79,16 @@ QUALITY_RUBRIC = Rubric(
 W_FORM = 0.15        # rhyme density (en) / line-length uniformity (zh)
 W_DIVERSITY = 0.50   # unique-ending bonus (anti mode-collapse); mid+above buckets only
 
-# Conciseness — a hard penalty (negative), summed from three parts:
-#  1. global completion-length penalty (every rollout, gated included): fights the
-#     runaway-scratchpad-until-truncation mode; budget scales with acrostic length.
-#  2. wasted-tool-call penalty: zh has no tool, en allows 2 — anything beyond is waste.
-#  3. brevity tiebreak among the TOP occupied bucket's poems (shorter poem wins).
-W_LEN = 0.15             # max global completion-length penalty (reached well above budget)
-LEN_BUDGET_BASE = 1500   # soft completion-char budget = BASE + PER_LINE * acrostic_len
-LEN_BUDGET_PER_LINE = 600
-W_TOOL = 0.05            # penalty per wasted tool call beyond the language's allowance
-TOOL_PENALTY_CAP = 0.15  # cap on the wasted-tool-call penalty
-W_TIEBREAK = 0.10        # max brevity tiebreak penalty within the top bucket
+# Conciseness — a POSITIVE bonus (like diversity: quality-scaled), awarded only
+# to the TOP occupied band (mid/above) so we reward a GOOD poem that also reached
+# its answer quickly. Two parts: overall rollout length (the bulk) and tool-call
+# thrift (a small part). A long-winded or tool-heavy top poem just earns less of
+# it; gated / below-bucket poems earn none — so every component stays >= 0.
+W_CONCISE = 0.15            # max conciseness bonus (quality-scaled)
+CONCISE_TOOL_WEIGHT = 0.2   # tool thrift is a small part; rollout length is the rest
+CALL_DECAY = 0.35           # tool efficiency = exp(-CALL_DECAY * n_tool_calls)
+LEN_BUDGET_BASE = 1500      # completion-char budget = BASE + PER_LINE * acrostic_len;
+LEN_BUDGET_PER_LINE = 600   # at/under budget = full length-efficiency, decaying above
 
 # ══════════════════════════════════════════════════════════════════════
 # PARSING
@@ -435,9 +435,8 @@ class _Rollout:
     bucket: str = "gated"        # gated | below | mid | above
     reuse: float = 0.0           # ending-word reuse vs siblings (0=unique, 1=all shared)
     ending_detail: str = ""      # per-ending share counts, for the breakdown log
-    len_pen: float = 0.0         # the three conciseness sub-penalties (>= 0, logged)
-    tool_pen: float = 0.0
-    tie_pen: float = 0.0
+    len_eff: float = 0.0         # conciseness efficiency factors in [0,1] (logged)
+    tool_eff: float = 0.0
     components: dict = field(default_factory=dict)
 
 
@@ -646,66 +645,66 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
                     f"{w}(shared×{c})" if c else f"{w}(unique)" for w, c in reuse_detail[local]
                 )
 
-        # brevity tiebreak applies only within the TOP occupied bucket (>=2 poems);
-        # below the quality gate there is no top bucket worth tie-breaking.
-        top: list[_Rollout] = []
-        for b in ("above", "mid"):
-            members = [r for r in valid if r.bucket == b]
-            if len(members) >= 2:
-                top = members
-                break
-        top_idx = {r.idx for r in top}
-        tie_anchor = min((r.poem_len for r in top), default=0)
+        # conciseness bonus targets only the TOP occupied band (above, else mid);
+        # if every poem is below the floor there is no band worth rewarding.
+        top_bucket = next((b for b in ("above", "mid")
+                           if any(r.bucket == b for r in valid)), None)
 
         for r in rolls:
-            # conciseness — three hard penalties, on every rollout
-            r.len_pen = W_LEN * (1.0 - math.exp(-max(0.0, r.completion_len / budget - 1.0)))
-            allowed = 0 if r.language == "zh" else self._max_tool_calls
-            r.tool_pen = min(TOOL_PENALTY_CAP, W_TOOL * max(0, r.n_tool_calls - allowed))
-            if r.idx in top_idx and tie_anchor > 0 and r.poem_len > tie_anchor:
-                r.tie_pen = W_TIEBREAK * (1.0 - math.exp(-(r.poem_len / tie_anchor - 1.0)))
-            conciseness = round(-(r.len_pen + r.tool_pen + r.tie_pen), 4)
+            # efficiency factors in [0,1]: 1 = answered within budget / no tools
+            r.len_eff = math.exp(-max(0.0, r.completion_len / budget - 1.0))
+            r.tool_eff = math.exp(-CALL_DECAY * r.n_tool_calls)
 
             if not r.valid:
                 r.components = {"quality": 0.0, "form": 0.0, "diversity": 0.0,
-                                "conciseness": conciseness}
+                                "conciseness": 0.0}
                 continue
             form_bonus = W_FORM * r.q * form_score(r.lines, r.language)
             # diversity is gated to the mid+above buckets (quality >= floor)
             div_bonus = (W_DIVERSITY * r.q * (1.0 - r.reuse)
                          if r.q >= QUALITY_GATE else 0.0)
+            # conciseness: top-band poems only, quality-scaled, reward reaching the
+            # answer quickly (short rollout, plus a small tool-thrift part)
+            if r.bucket == top_bucket:
+                eff = (1.0 - CONCISE_TOOL_WEIGHT) * r.len_eff + CONCISE_TOOL_WEIGHT * r.tool_eff
+                concise = W_CONCISE * r.q * eff
+            else:
+                concise = 0.0
             r.components = {"quality": round(r.q, 4),
                             "form": round(form_bonus, 4),
                             "diversity": round(div_bonus, 4),
-                            "conciseness": conciseness}
+                            "conciseness": round(concise, 4)}
 
     def _fmt_rollout(self, r: _Rollout, budget: int) -> str:
         """One path-revealing log line per rollout."""
         total = sum(r.components.values())
         meta = (f"completion_len={r.completion_len}/{budget} poem_len={r.poem_len} "
                 f"lines={len(r.lines)} tools={r.n_tool_calls}")
-        sub = f"(len={-r.len_pen:.3f} tool={-r.tool_pen:.3f} tie={-r.tie_pen:.3f})"
         if not r.valid:
-            return (f"[TelestichEnv] reward={total:+.3f} GATED ({r.reason}) | {meta} "
-                    f"| conciseness={r.components['conciseness']:+.3f} {sub}")
+            return f"[TelestichEnv] reward={total:+.3f} GATED ({r.reason}) | {meta}"
         return (f"[TelestichEnv] reward={total:+.3f} {r.bucket.upper()} "
-                f"q={r.quality:.3f}->{r.q:.3f} reuse={r.reuse:.2f} | {meta} "
-                f"| {r.components} {sub}")
+                f"q={r.quality:.3f}->{r.q:.3f} reuse={r.reuse:.2f} "
+                f"len_eff={r.len_eff:.2f} | {meta} | {r.components}")
 
     def _explain_rollout(self, r: _Rollout, budget: int) -> str:
         """Multi-line WHY-breakdown for a poem that passed correctness — spells
         out how each component reached its value (which lines rhyme, which
         endings are shared, why conciseness was charged)."""
         c = r.components
-        allowed = 0 if r.language == "zh" else self._max_tool_calls
         if r.q >= QUALITY_GATE:
             div_line = (f"  diversity = {c['diversity']:+.4f} = W_DIVERSITY({W_DIVERSITY}) × "
                         f"q({r.q:.3f}) × (1 − reuse {r.reuse:.2f}); endings: {r.ending_detail}")
         else:
             div_line = (f"  diversity = {c['diversity']:+.4f} (none — q {r.q:.3f} below the "
                         f"{QUALITY_GATE} floor, bucket={r.bucket})")
-        tie = (f"poem_len {r.poem_len} > shortest-in-bucket → −{r.tie_pen:.4f}"
-               if r.tie_pen else "not top-bucket or shortest → 0")
+        if c["conciseness"]:
+            conc_line = (f"  conciseness = {c['conciseness']:+.4f} = W_CONCISE({W_CONCISE}) × "
+                         f"q({r.q:.3f}) × [{1 - CONCISE_TOOL_WEIGHT:g}×len_eff({r.len_eff:.2f}) "
+                         f"+ {CONCISE_TOOL_WEIGHT:g}×tool_eff({r.tool_eff:.2f})]; "
+                         f"completion {r.completion_len}/{budget}, {r.n_tool_calls} tools")
+        else:
+            conc_line = (f"  conciseness = +0.0000 (none — not in the top band "
+                         f"'{r.bucket}', conciseness rewards only the best poems)")
         return (
             f"[TelestichEnv][why] poem {r.rollout_id} — {r.bucket.upper()} bucket, "
             f"reward={sum(c.values()):+.3f}\n"
@@ -714,10 +713,7 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
             f"  form      = {c['form']:+.4f} = W_FORM({W_FORM}) × q({r.q:.3f}) × "
             f"form_score({form_score(r.lines, r.language):.2f}) | {form_detail(r.lines, r.language)}\n"
             f"{div_line}\n"
-            f"  conciseness = {c['conciseness']:+.4f}: "
-            f"length {r.completion_len}/{budget} → −{r.len_pen:.4f}; "
-            f"tools {r.n_tool_calls}/allow {allowed} → −{r.tool_pen:.4f}; "
-            f"tiebreak {tie}"
+            f"{conc_line}"
         )
 
     async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kwargs):

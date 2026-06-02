@@ -69,13 +69,17 @@ logged components: `quality + form + diversity + conciseness`.
      *not* shared with sibling rollouts; fights ending-word mode collapse (every
      `i`-line on "ski"). Applied only to the **mid + above** buckets (quality ≥
      `QUALITY_GATE`).
-   - **conciseness** (a hard penalty, every rollout) = the sum of three parts:
-     (a) a **global completion-length** penalty — soft budget `LEN_BUDGET_BASE +
-     LEN_BUDGET_PER_LINE × acrostic_len`, ramping (exp) toward `−W_LEN` above it,
-     so a rollout that re-derives until truncation scores *below* a clean short
-     miss; (b) a **wasted-tool-call** penalty — Chinese has no tool (any call is
-     waste), English allows 2; (c) a **brevity tiebreak** among the poems in the
-     top occupied bucket (shorter poem wins).
+   - **conciseness** = `W_CONCISE · q · (0.8·len_eff + 0.2·tool_eff)` — a
+     **positive** bonus awarded only to the **top occupied band** (above, else
+     mid), rewarding a good poem that reached its answer quickly. `len_eff =
+     exp(−max(0, completion_len/budget − 1))` (1 at/under the budget
+     `LEN_BUDGET_BASE + LEN_BUDGET_PER_LINE × acrostic_len`, decaying above);
+     `tool_eff = exp(−CALL_DECAY · n_tool_calls)` (tool thrift, a small part). A
+     long-winded or tool-heavy top poem simply earns less of it.
+
+All four components are **≥ 0**, so every reward is non-negative: a gated or
+below-band rollout earns `0`, and the differences GRPO learns from come from the
+positive bonuses among the poems that clear the bar.
 
 The `acceptable` (competent-but-plain) and `great` (excellent) references are
 generated offline and cached per example; an example missing one anchor is
