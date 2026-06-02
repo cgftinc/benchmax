@@ -55,14 +55,39 @@ class TestChromaSearchConformance:
         cs = ChromaSearch(collection_name="test", host="localhost")
         assert "vector" in cs.available_modes
 
-    def test_get_params(self):
+    def test_get_params_self_hosted(self):
         from benchmax.rag.corpus.chroma.search import ChromaSearch
 
         cs = ChromaSearch(collection_name="test", host="h", port=9000)
         params = cs.get_params()
         assert params["backend"] == "chroma"
+        assert params["mode"] == "self_hosted"
         assert params["host"] == "h"
         assert params["port"] == 9000
+
+    def test_get_params_cloud(self):
+        from benchmax.rag.corpus.chroma.search import ChromaSearch
+
+        cs = ChromaSearch(
+            collection_name="test",
+            tenant="t",
+            database="d",
+            token_provider="ck-fake-key-123",
+        )
+        params = cs.get_params()
+        assert params["backend"] == "chroma"
+        assert params["mode"] == "cloud"
+        assert params["tenant"] == "t"
+        assert params["database"] == "d"
+        assert params["api_key"] == "ck-fake-..."
+
+    def test_pickle_carries_no_secret_default(self):
+        from benchmax.rag.corpus.chroma.search import ChromaSearch
+
+        cs = ChromaSearch(collection_name="test", host="localhost")
+        data = cloudpickle.dumps(cs)
+        assert len(data) < 1500
+        assert b"CHROMA_API_KEY" in data
 
     def test_pickle_roundtrip(self):
         from benchmax.rag.corpus.chroma.search import ChromaSearch
