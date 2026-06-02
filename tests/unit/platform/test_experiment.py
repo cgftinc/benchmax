@@ -215,6 +215,35 @@ def test_upload_training_run_requires_api_key_or_storage_client():
         )
 
 
+def test_upload_training_run_rejects_unsafe_run_name():
+    """A run_name with a URL-breaking char fails loud before any upload."""
+    storage = FakeStorageClient()
+    with pytest.raises(ValueError, match="Invalid storage path segment"):
+        upload_training_run(
+            env_class=MinimalEnv,
+            train_dataset=[{"a": 1}],
+            eval_dataset=[{"a": 1}],
+            run_name="rag-is-eval-fixed?",
+            storage_client=storage,  # type: ignore[arg-type]
+            local_modules=[_TEST_MODULE],
+        )
+    assert storage.uploads == []  # nothing uploaded
+
+
+def test_upload_training_run_rejects_unsafe_prefix_override():
+    storage = FakeStorageClient()
+    with pytest.raises(ValueError, match="Invalid storage path segment"):
+        upload_training_run(
+            env_class=MinimalEnv,
+            train_dataset=[],
+            eval_dataset=[],
+            run_name="ok",
+            env_prefix="custom/bad name/env",
+            storage_client=storage,  # type: ignore[arg-type]
+            local_modules=[_TEST_MODULE],
+        )
+
+
 def test_upload_training_run_passes_constructor_args_through_to_bundle():
     """constructor_args should reach the bundled metadata."""
     captured: dict[str, bytes] = {}
