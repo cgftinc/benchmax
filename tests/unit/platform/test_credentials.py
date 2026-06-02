@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pickle
 
 import cloudpickle
@@ -11,17 +12,22 @@ from benchmax.platform.credentials import (
     as_token_provider,
     env_token,
     platform_bearer,
+    read_castform_session,
     resolve_token_provider,
 )
 
 _TOKEN_PATH_ENV = "ACT_AS_TOKEN_PATH"
 _API_KEY_ENV = "PLATFORM_API_KEY"
+_CRED_PATH_ENV = "CASTFORM_CREDENTIALS_PATH"
 
 
 @pytest.fixture(autouse=True)
-def _clear_env(monkeypatch):
+def _clear_env(monkeypatch, tmp_path):
     monkeypatch.delenv(_TOKEN_PATH_ENV, raising=False)
     monkeypatch.delenv(_API_KEY_ENV, raising=False)
+    # Point the session cache at a non-existent file so a real ~/.castform on
+    # the dev machine can't leak into tests; cache tests override it.
+    monkeypatch.setenv(_CRED_PATH_ENV, str(tmp_path / "no-creds.json"))
 
 
 def test_reads_token_file_and_strips(tmp_path, monkeypatch):
@@ -71,6 +77,72 @@ def test_rotation_is_picked_up_per_call(tmp_path, monkeypatch):
     assert platform_bearer() == "token-1"
     f.write_text("token-2")
     assert platform_bearer() == "token-2"
+
+
+# ---- ~/.castform session cache (lowest precedence) ----
+
+
+def _write_session(tmp_path, monkeypatch, data, mode=0o600):
+    f = tmp_path / "credentials.json"
+    f.write_text(json.dumps(data))
+    f.chmod(mode)
+    monkeypatch.setenv(_CRED_PATH_ENV, str(f))
+    return f
+
+
+def test_platform_bearer_uses_cached_session_token(tmp_path, monkeypatch):
+    _write_session(tmp_path, monkeypatch, {"access_token": "sk_session"})
+    assert platform_bearer() == "sk_session"
+
+
+def test_env_key_takes_precedence_over_session(tmp_path, monkeypatch):
+    _write_session(tmp_path, monkeypatch, {"access_token": "sk_session"})
+    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
+    assert platform_bearer() == "sk_env"
+
+
+def test_token_path_takes_precedence_over_session(tmp_path, monkeypatch):
+    f = tmp_path / "act-as-token"
+    f.write_text("jwt-from-file")
+    monkeypatch.setenv(_TOKEN_PATH_ENV, str(f))
+    _write_session(tmp_path, monkeypatch, {"access_token": "sk_session"})
+    assert platform_bearer() == "jwt-from-file"
+
+
+def test_session_used_when_not_expired(tmp_path, monkeypatch):
+    _write_session(
+        tmp_path, monkeypatch, {"access_token": "sk_session", "expires_at": 9999999999}
+    )
+    assert platform_bearer() == "sk_session"
+
+
+def test_session_skipped_when_expired(tmp_path, monkeypatch):
+    _write_session(
+        tmp_path, monkeypatch, {"access_token": "sk_session", "expires_at": 1}
+    )
+    with pytest.raises(RuntimeError, match="No Castform platform credential"):
+        platform_bearer()
+
+
+def test_session_ignored_when_world_readable(tmp_path, monkeypatch):
+    _write_session(tmp_path, monkeypatch, {"access_token": "sk_session"}, mode=0o644)
+    with pytest.warns(UserWarning, match="looser than 0600"):
+        assert read_castform_session() is None
+
+
+def test_session_missing_file_is_noop():
+    # autouse fixture points _CRED_PATH_ENV at a non-existent file
+    assert read_castform_session() is None
+    with pytest.raises(RuntimeError, match="No Castform platform credential"):
+        platform_bearer()
+
+
+def test_read_castform_session_malformed_returns_none(tmp_path, monkeypatch):
+    f = tmp_path / "credentials.json"
+    f.write_text("{not valid json")
+    f.chmod(0o600)
+    monkeypatch.setenv(_CRED_PATH_ENV, str(f))
+    assert read_castform_session() is None
 
 
 # ---- resolve_token_provider (client bearer precedence) ----

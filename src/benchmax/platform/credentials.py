@@ -14,15 +14,20 @@ Precedence (per call):
    picked up. Mirrors ``trainer/auth/ray_auth.py``'s per-request read.
 2. ``PLATFORM_API_KEY`` — injected by the rollout worker (playground / eval) or
    set by the user (self-serve / benchmax lib).
+3. ``~/.castform/credentials.json`` — the device-auth session cached by
+   ``castform login`` (the human self-serve path). Lowest precedence so an
+   explicit key/token always wins. Re-read each call.
 
-Raises if neither is available — fail loudly rather than make an
+Raises if none is available — fail loudly rather than make an
 unauthenticated call.
 """
 
 from __future__ import annotations
 
 import functools
+import json
 import os
+import time
 import warnings
 from collections.abc import Callable
 from pathlib import Path
@@ -30,6 +35,11 @@ from pathlib import Path
 # Matches the trainer's token_refresher / ray_auth default.
 _TOKEN_PATH_ENV = "ACT_AS_TOKEN_PATH"
 _API_KEY_ENV = "PLATFORM_API_KEY"
+
+# Cached device-auth session written by `castform login` (Phase 4). Lowest
+# precedence in platform_bearer. Path overridable for tests.
+_CRED_PATH_ENV = "CASTFORM_CREDENTIALS_PATH"
+_DEFAULT_CRED_PATH = Path.home() / ".castform" / "credentials.json"
 
 TokenProvider = Callable[[], str]
 
@@ -88,11 +98,72 @@ def platform_bearer() -> str:
     if env_token:
         return env_token
 
+    session_token = _session_access_token()
+    if session_token:
+        return session_token
+
     raise RuntimeError(
-        f"No Castform platform credential available: set {_API_KEY_ENV}, or "
-        f"(in training) ensure {_TOKEN_PATH_ENV} points at the token_refresher "
-        f"output ({_TOKEN_PATH_ENV}={token_path!r})."
+        f"No Castform platform credential available: run `castform login`, set "
+        f"{_API_KEY_ENV}, or (in training) ensure {_TOKEN_PATH_ENV} points at the "
+        f"token_refresher output ({_TOKEN_PATH_ENV}={token_path!r})."
     )
+
+
+def _credentials_path() -> Path:
+    override = os.environ.get(_CRED_PATH_ENV)
+    return Path(override) if override else _DEFAULT_CRED_PATH
+
+
+def read_castform_session() -> dict | None:
+    """Read the cached device-auth session, or ``None`` if unusable.
+
+    Returns the parsed ``~/.castform/credentials.json`` dict, or ``None`` when the
+    file is absent, malformed, or (on POSIX) looser than ``0600`` — a
+    world/group-readable credential is not trusted. Written by ``castform
+    login`` (Phase 4); schema::
+
+        {"access_token": str, "refresh_token": str, "expires_at": int,
+         "env": "staging"}   # env omitted for prod (the default)
+
+    ``refresh_token`` is reserved for the per-process mint/refresh added with the
+    device flow (Phase 3/4); today only ``access_token`` / ``env`` are consumed.
+    """
+    path = _credentials_path()
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    if os.name == "posix" and (st.st_mode & 0o077):
+        warnings.warn(
+            f"Ignoring {path}: permissions {oct(st.st_mode & 0o777)} are looser "
+            f"than 0600. Run `chmod 600 {path}`.",
+            stacklevel=2,
+        )
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _session_access_token() -> str | None:
+    """The cached session's bearer, or ``None`` if absent/expired.
+
+    Expiry is checked but not refreshed here — an expired session falls through
+    to the ``castform login`` prompt. Refresh-on-expiry lands with the device
+    flow (Phase 3/4), which replaces this skip with a mint from ``refresh_token``.
+    """
+    session = read_castform_session()
+    if not session:
+        return None
+    token = session.get("access_token")
+    if not token:
+        return None
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, (int, float)) and expires_at <= time.time():
+        return None
+    return token
 
 
 def resolve_token_provider(
