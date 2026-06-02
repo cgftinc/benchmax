@@ -12,10 +12,10 @@ benchmax is the python sdk for running training jobs on castform. see the (onlin
 uv pip install benchmax
 ```
 
-Python 3.12 required.
+python 3.12 required.
 
 ---
 
 ## License
 
-Apache 2.0 © 2026 Castform
+apache 2.0 © 2026 cgft inc
