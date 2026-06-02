@@ -134,6 +134,31 @@ async def evaluate_single_rubric(
         return {"score": 0, "reasoning": f"Error: {e}", "llm_output": content}
 
 
+def _band_score(p: float, seams: List[tuple], max_pos: float) -> float:
+    """Score a ranked position `p` (0 = best) against anchor seam points.
+
+    `seams` = [(anchor_position, seam_score)] sorted by position ascending (so
+    seam scores descend). Interpolates linearly: above the best anchor →
+    (best_edge, 1.0]; between two anchors → their edges; below the worst anchor →
+    [0, worst_edge). Monotonically non-increasing in `p`. Empty seams → plain
+    positional score (the no-anchor formula).
+    """
+    if not seams:
+        return 1.0 - p / max_pos if max_pos > 0 else 1.0
+    g0, e0 = seams[0]    # best-ranked anchor → highest seam
+    gL, eL = seams[-1]   # worst-ranked anchor → lowest seam
+    if p <= g0:                                  # above the best anchor
+        return e0 + (1.0 - e0) * ((g0 - p) / g0 if g0 > 0 else 0.0)
+    if p >= gL:                                  # below the worst anchor
+        denom = max_pos - gL
+        return eL * ((max_pos - p) / denom if denom > 0 else 0.0)
+    for (ga, ea), (gb, eb) in zip(seams, seams[1:]):  # between two anchors
+        if ga <= p <= gb:
+            span = gb - ga
+            return eb + (ea - eb) * ((gb - p) / span if span > 0 else 0.0)
+    return eL
+
+
 async def evaluate_rubric_ranking(
     rubric: Rubric,
     question: str,
@@ -144,6 +169,9 @@ async def evaluate_rubric_ranking(
     timeout: Optional[float] = None,
     ground_truth: Optional[str] = None,
     enable_logging: bool = True,
+    below_gt_ceiling: float = 0.3,
+    anchors: Optional[List[str]] = None,
+    band_edges: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
     """
     Rank N responses against a single rubric in one judge call and convert the
@@ -159,11 +187,23 @@ async def evaluate_rubric_ranking(
     GT's tier midpoint `g`:
       - tier midpoint `p < g` → 0.5 + 0.5 * (g - p) / g          (above GT)
       - `p == g`              → 0.5                                (tied with GT)
-      - `p > g`               → 0.3 * (1 - (p - g) / (max_pos - g)) (below GT)
-    The below-GT branch is discontinuous with the tied score: the best-ranked
-    response below GT scores 0.3 (not ~0.5), making "worse than GT" notably
-    penalized.
+      - `p > g`               → C * (1 - (p - g) / (max_pos - g))  (below GT)
+    where `C = below_gt_ceiling` (default 0.3). The below-GT branch is
+    discontinuous with the tied score: the best-ranked response below GT scores
+    `C` (not ~0.5), making "worse than GT" notably penalized. Raise `C` (e.g.
+    0.5) to widen the below-GT band when GT is a hard bar few responses clear,
+    trading away that discontinuity for more resolution below the bar.
     The GT's own slot is not returned.
+
+    Multi-anchor mode (`anchors` + `band_edges`, supersedes `ground_truth`):
+    several reference responses are inserted blind, ordered worst→best, with
+    `band_edges[i]` the score a response earns when it ties anchor `i`
+    (ascending, e.g. acceptable→0.1, great→0.5). A response is then scored by
+    linear interpolation between the anchors' ranked positions: above the best
+    anchor → (best_edge, 1.0]; between two anchors → their edges; below the
+    worst anchor → [0, worst_edge). This gives the score an absolute zero-point
+    (a group of all-bad responses lands below the floor anchor → near 0), which
+    pure relative ranking cannot. Anchor slots are not returned.
     """
     n = len(responses)
     scores = [0.0] * n
@@ -172,10 +212,16 @@ async def evaluate_rubric_ranking(
     if not nonempty:
         return {"scores": scores, "ranking": [], "reasoning": "All responses empty", "llm_output": ""}
 
-    use_gt = bool(ground_truth and str(ground_truth).strip())
+    if anchors and not band_edges:
+        raise ValueError("anchors require band_edges (one score seam per anchor)")
+    clean_anchors = [
+        (str(a), float(e)) for a, e in zip(anchors or [], band_edges or []) if a and str(a).strip()
+    ]
+    use_anchors = bool(clean_anchors)
+    use_gt = bool(ground_truth and str(ground_truth).strip()) and not use_anchors
     m = len(nonempty)
 
-    if m == 1 and not use_gt:
+    if m == 1 and not use_gt and not use_anchors:
         scores[nonempty[0][0]] = 1.0
         return {"scores": scores, "ranking": [[nonempty[0][0]]], "reasoning": "Only one non-empty response", "llm_output": ""}
 
@@ -184,6 +230,11 @@ async def evaluate_rubric_ranking(
     if use_gt:
         assert ground_truth is not None
         items.append(ground_truth)
+    anchor_local_edges = []  # [(local_index_in_items, seam_edge)]
+    if use_anchors:
+        for a, e in clean_anchors:
+            anchor_local_edges.append((len(items), e))
+            items.append(a)
     max_local = len(items) - 1
     responses_block = "\n\n".join(f"--- Response {j} ---\n{r}" for j, r in enumerate(items))
     prompt = RUBRIC_RANKING_PROMPT.format(
@@ -231,7 +282,18 @@ async def evaluate_rubric_ranking(
             position += tier_size
 
         max_pos = max_local
-        if use_gt:
+        if use_anchors:
+            # seams: each present anchor's ranked position paired with its edge,
+            # sorted by position (best rank first). Responses score by interpolation.
+            seams = sorted(
+                ((pos_of[loc], e) for loc, e in anchor_local_edges if loc in pos_of),
+                key=lambda x: x[0],
+            )
+            for j, p in pos_of.items():
+                if j >= m:  # an anchor slot, not a returned response
+                    continue
+                scores[nonempty[j][0]] = _band_score(p, seams, max_pos)
+        elif use_gt:
             assert gt_local is not None
             gt_pos = pos_of.get(gt_local)
             if gt_pos is None:
@@ -246,7 +308,7 @@ async def evaluate_rubric_ranking(
                         sc = 0.5 + 0.5 * (gt_pos - p) / gt_pos if gt_pos > 0 else 0.5
                     elif p > gt_pos:
                         denom = max_pos - gt_pos
-                        sc = 0.3 * (1.0 - (p - gt_pos) / denom) if denom > 0 else 0.3
+                        sc = below_gt_ceiling * (1.0 - (p - gt_pos) / denom) if denom > 0 else below_gt_ceiling
                     else:
                         sc = 0.5
                     scores[nonempty[j][0]] = sc
@@ -275,7 +337,8 @@ async def evaluate_rubric_ranking(
                 "│ llm_output   :\n%s\n"
                 "└──────────────────────────────────────────────────",
                 rubric.title,
-                str(ground_truth or "").strip() or "(none)",
+                (f"{len(clean_anchors)} anchors @ seams {[e for _, e in clean_anchors]}"
+                 if use_anchors else (str(ground_truth or "").strip() or "(none)")),
                 ranking_fmt or "(empty)",
                 scores_fmt,
                 out["reasoning"],

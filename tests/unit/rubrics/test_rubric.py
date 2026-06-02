@@ -142,6 +142,83 @@ async def test_ranking_with_gt_anchors_scores(stub_openai):
 
 
 @pytest.mark.asyncio
+async def test_ranking_below_gt_ceiling_widens_band(stub_openai):
+    # 3 responses + GT appended as index 3; judge ranks [[0],[3],[1],[2]] ->
+    # positions 0=>0, 3=>1, 1=>2, 2=>3; max_pos=3; gt_pos=1.
+    # Response 1 (below GT): C * (1 - (2-1)/(3-1)) = 0.5 * C
+    # Response 2 (below GT, worst): C * (1 - (3-1)/(3-1)) = 0.0
+    # Default ceiling 0.3 -> 0.15; raising to 0.5 -> 0.25 (more room below the bar).
+    for ceiling, expected in ((0.3, 0.15), (0.5, 0.25)):
+        stub_openai(['{"ranking": [[0], [3], [1], [2]]}'])
+        out = await evaluate_rubric_ranking(
+            rubric=_r(),
+            question="q",
+            responses=["a", "b", "c"],
+            model_name="m",
+            base_url="u",
+            ground_truth="GT",
+            below_gt_ceiling=ceiling,
+        )
+        assert out["scores"][0] == pytest.approx(1.0)  # above GT, unaffected
+        assert out["scores"][1] == pytest.approx(expected)
+        assert out["scores"][2] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_ranking_multi_anchor_bands(stub_openai):
+    # 3 responses + 2 anchors appended at indices 3 (acceptable, edge 0.1) and
+    # 4 (great, edge 0.5). Judge ranks [[2],[4],[0],[3],[1]] ->
+    # positions: 2=>0, 4=>1(great), 0=>2, 3=>3(acceptable), 1=>4; max_pos=4.
+    # seams sorted by pos: [(1, 0.5), (3, 0.1)].
+    #   resp 2 (p=0, above great):  0.5 + 0.5*(1-0)/1            = 1.0
+    #   resp 0 (p=2, between):      0.1 + (0.5-0.1)*(3-2)/(3-1)  = 0.3
+    #   resp 1 (p=4, below floor):  0.1*(4-4)/(4-3)              = 0.0
+    stub_openai(['{"ranking": [[2], [4], [0], [3], [1]]}'])
+    out = await evaluate_rubric_ranking(
+        rubric=_r(),
+        question="q",
+        responses=["a", "b", "c"],
+        model_name="m",
+        base_url="u",
+        anchors=["ACCEPTABLE", "GREAT"],
+        band_edges=[0.1, 0.5],
+    )
+    assert out["scores"][2] == pytest.approx(1.0)
+    assert out["scores"][0] == pytest.approx(0.3)
+    assert out["scores"][1] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_ranking_anchors_supersede_ground_truth(stub_openai):
+    # When both are passed, anchors win and ground_truth is ignored: only the
+    # two anchors are appended (indices 1, 2), not a third gt slot.
+    factory = stub_openai(['{"ranking": [[0], [2], [1]]}'])
+    out = await evaluate_rubric_ranking(
+        rubric=_r(),
+        question="q",
+        responses=["a"],
+        model_name="m",
+        base_url="u",
+        ground_truth="IGNORED",
+        anchors=["ACC", "GREAT"],
+        band_edges=[0.1, 0.5],
+    )
+    prompt = factory.calls[0]["messages"][0]["content"]
+    assert "IGNORED" not in prompt and "ACC" in prompt and "GREAT" in prompt
+    # resp 0 ranked best (above great) -> > 0.5
+    assert out["scores"][0] > 0.5
+
+
+@pytest.mark.asyncio
+async def test_ranking_anchors_require_band_edges():
+    with pytest.raises(ValueError):
+        await evaluate_rubric_ranking(
+            rubric=_r(), question="q", responses=["a"], model_name="m", base_url="u",
+            anchors=["X"],
+        )
+
+
+@pytest.mark.asyncio
 async def test_ranking_tied_with_gt_scores_half(stub_openai):
     # ranking [[0, 1, 2]] -> all tied at mid=1; gt_pos==response_pos -> 0.5
     stub_openai(['{"ranking": [[0, 1, 2]]}'])
