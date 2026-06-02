@@ -95,6 +95,29 @@ def platform_bearer() -> str:
     )
 
 
+def resolve_token_provider(
+    api_key: str | None,
+    token_provider: TokenProvider | None = None,
+) -> TokenProvider:
+    """Pick the per-call bearer provider for a control-plane client.
+
+    Precedence:
+
+    1. explicit ``api_key`` — a fixed-value provider (the caller's override).
+    2. explicit ``token_provider`` — a custom per-call provider (tests / BYO).
+    3. :func:`platform_bearer` — the credential seam (``ACT_AS_TOKEN_PATH`` →
+       ``PLATFORM_API_KEY``; the ``~/.castform`` session slots in later).
+
+    The result is called **per request** by the client, so a rotating/expiring
+    token is picked up — never frozen at construction.
+    """
+    if api_key is not None:
+        return lambda: api_key
+    if token_provider is not None:
+        return token_provider
+    return platform_bearer
+
+
 def _read_env_token(env_var: str) -> str:
     value = os.environ.get(env_var)
     if not value:

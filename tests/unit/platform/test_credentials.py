@@ -11,6 +11,7 @@ from benchmax.platform.credentials import (
     as_token_provider,
     env_token,
     platform_bearer,
+    resolve_token_provider,
 )
 
 _TOKEN_PATH_ENV = "ACT_AS_TOKEN_PATH"
@@ -70,6 +71,38 @@ def test_rotation_is_picked_up_per_call(tmp_path, monkeypatch):
     assert platform_bearer() == "token-1"
     f.write_text("token-2")
     assert platform_bearer() == "token-2"
+
+
+# ---- resolve_token_provider (client bearer precedence) ----
+
+
+def test_resolve_explicit_api_key_wins(monkeypatch):
+    """An explicit api_key beats both a token_provider and the env seam."""
+    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
+    provider = resolve_token_provider("sk_explicit", token_provider=lambda: "sk_tp")
+    assert provider() == "sk_explicit"
+
+
+def test_resolve_token_provider_used_when_no_api_key():
+    provider = resolve_token_provider(None, token_provider=lambda: "sk_tp")
+    assert provider() == "sk_tp"
+
+
+def test_resolve_falls_back_to_platform_bearer(monkeypatch):
+    """No api_key and no token_provider → the platform_bearer seam."""
+    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
+    provider = resolve_token_provider(None)
+    assert provider is platform_bearer
+    assert provider() == "sk_env"
+
+
+def test_resolve_seam_is_per_call(monkeypatch):
+    """The fallback provider re-reads the env each call (rotation is seen)."""
+    provider = resolve_token_provider(None)
+    monkeypatch.setenv(_API_KEY_ENV, "sk_1")
+    assert provider() == "sk_1"
+    monkeypatch.setenv(_API_KEY_ENV, "sk_2")
+    assert provider() == "sk_2"
 
 
 # ---- env_token (external-provider keys) ----
