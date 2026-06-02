@@ -151,11 +151,11 @@ class TrainingExample:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrainingExample:
         """Reconstruct from a dict produced by ``to_dict()``."""
-        from benchmax.traces.adapter import _message_from_dict
+        from benchmax.traces.adapter import normalize_message
 
         return cls(
-            prompt_messages=[_message_from_dict(m) for m in data["prompt_messages"]],
-            completion_messages=[_message_from_dict(m) for m in data["completion_messages"]],
+            prompt_messages=[normalize_message(m) for m in data["prompt_messages"]],
+            completion_messages=[normalize_message(m) for m in data["completion_messages"]],
             prompt=data["prompt"],
             ground_truth=data["ground_truth"],
             trace_id=data["trace_id"],

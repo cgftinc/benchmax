@@ -126,7 +126,11 @@ class TestTraceMessage:
         )
         d = msg.to_dict()
         assert len(d["tool_calls"]) == 1
-        assert d["tool_calls"][0]["name"] == "search"
+        tc = d["tool_calls"][0]
+        assert tc["type"] == "function"
+        assert tc["function"]["name"] == "search"
+        assert tc["function"]["arguments"] == '{"q": "x"}'
+        assert tc["id"] == "tc1"
 
     def test_to_dict_with_tool_response_fields(self):
         msg = TraceMessage(
