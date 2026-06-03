@@ -2,23 +2,34 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import pickle
+import time
 
 import cloudpickle
 import pytest
 
+from benchmax.platform import credentials
 from benchmax.platform.credentials import (
     as_token_provider,
+    clear_castform_session,
     env_token,
     platform_bearer,
     read_castform_session,
     resolve_token_provider,
+    write_castform_session,
 )
 
 _TOKEN_PATH_ENV = "ACT_AS_TOKEN_PATH"
 _API_KEY_ENV = "PLATFORM_API_KEY"
 _CRED_PATH_ENV = "CASTFORM_CREDENTIALS_PATH"
+
+
+def _fake_jwt(exp: float) -> str:
+    """A JWT-shaped string carrying just an `exp` claim (enough for mint caching)."""
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).rstrip(b"=")
+    return f"header.{payload.decode()}.sig"
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +39,8 @@ def _clear_env(monkeypatch, tmp_path):
     # Point the session cache at a non-existent file so a real ~/.castform on
     # the dev machine can't leak into tests; cache tests override it.
     monkeypatch.setenv(_CRED_PATH_ENV, str(tmp_path / "no-creds.json"))
+    # Reset the per-process minted-JWT cache between tests.
+    credentials._SESSION_JWT_CACHE.update({"token": None, "exp": 0.0})
 
 
 def test_reads_token_file_and_strips(tmp_path, monkeypatch):
@@ -90,12 +103,16 @@ def _write_session(tmp_path, monkeypatch, data, mode=0o600):
     return f
 
 
-def test_platform_bearer_uses_cached_session_token(tmp_path, monkeypatch):
-    _write_session(tmp_path, monkeypatch, {"access_token": "sk_session"})
-    assert platform_bearer() == "sk_session"
+def test_platform_bearer_mints_jwt_from_cached_session(tmp_path, monkeypatch):
+    """No env/token-path credential → mint a short-lived JWT from the session."""
+    jwt = _fake_jwt(time.time() + 300)
+    monkeypatch.setattr(credentials, "_mint_session_jwt", lambda _t: jwt)
+    _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
+    assert platform_bearer() == jwt
 
 
 def test_env_key_takes_precedence_over_session(tmp_path, monkeypatch):
+    # env key wins → the session mint is never reached
     _write_session(tmp_path, monkeypatch, {"access_token": "sk_session"})
     monkeypatch.setenv(_API_KEY_ENV, "sk_env")
     assert platform_bearer() == "sk_env"
@@ -109,11 +126,39 @@ def test_token_path_takes_precedence_over_session(tmp_path, monkeypatch):
     assert platform_bearer() == "jwt-from-file"
 
 
-def test_session_used_when_not_expired(tmp_path, monkeypatch):
-    _write_session(
-        tmp_path, monkeypatch, {"access_token": "sk_session", "expires_at": 9999999999}
-    )
-    assert platform_bearer() == "sk_session"
+def test_session_jwt_is_cached_across_calls(tmp_path, monkeypatch):
+    """The minted JWT is reused until ~60s before expiry (per-process mint)."""
+    calls = {"n": 0}
+
+    def _mint(_token):
+        calls["n"] += 1
+        return _fake_jwt(time.time() + 300)
+
+    monkeypatch.setattr(credentials, "_mint_session_jwt", _mint)
+    _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
+    assert platform_bearer() == platform_bearer()
+    assert calls["n"] == 1  # minted once, then served from cache
+
+
+def test_session_jwt_remints_when_near_expiry(tmp_path, monkeypatch):
+    calls = {"n": 0}
+
+    def _mint(_token):
+        calls["n"] += 1
+        return _fake_jwt(time.time() + 10)  # inside the 60s refresh window
+
+    monkeypatch.setattr(credentials, "_mint_session_jwt", _mint)
+    _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
+    platform_bearer()
+    platform_bearer()
+    assert calls["n"] == 2  # cache stale (<60s left) → re-mint each call
+
+
+def test_raises_when_session_mint_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(credentials, "_mint_session_jwt", lambda _t: None)
+    _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
+    with pytest.raises(RuntimeError, match="No Castform platform credential"):
+        platform_bearer()
 
 
 def test_session_skipped_when_expired(tmp_path, monkeypatch):
@@ -143,6 +188,23 @@ def test_read_castform_session_malformed_returns_none(tmp_path, monkeypatch):
     f.chmod(0o600)
     monkeypatch.setenv(_CRED_PATH_ENV, str(f))
     assert read_castform_session() is None
+
+
+def test_write_session_creates_dir_and_0600(tmp_path, monkeypatch):
+    monkeypatch.setenv(_CRED_PATH_ENV, str(tmp_path / "sub" / "credentials.json"))
+    write_castform_session({"access_token": "sess_abc", "env": "staging"})
+    p = tmp_path / "sub" / "credentials.json"
+    assert oct(p.stat().st_mode & 0o777) == "0o600"
+    assert read_castform_session() == {"access_token": "sess_abc", "env": "staging"}
+
+
+def test_clear_session_removes_file_and_jwt_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv(_CRED_PATH_ENV, str(tmp_path / "credentials.json"))
+    write_castform_session({"access_token": "sess_abc"})
+    credentials._SESSION_JWT_CACHE.update({"token": "stale", "exp": time.time() + 300})
+    clear_castform_session()
+    assert read_castform_session() is None
+    assert credentials._SESSION_JWT_CACHE["token"] is None
 
 
 # ---- resolve_token_provider (client bearer precedence) ----

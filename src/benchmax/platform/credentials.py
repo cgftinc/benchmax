@@ -98,9 +98,9 @@ def platform_bearer() -> str:
     if env_token:
         return env_token
 
-    session_token = _session_access_token()
-    if session_token:
-        return session_token
+    session_jwt = _session_jwt()
+    if session_jwt:
+        return session_jwt
 
     raise RuntimeError(
         f"No Castform platform credential available: run `castform login`, set "
@@ -147,23 +147,103 @@ def read_castform_session() -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _session_access_token() -> str | None:
-    """The cached session's bearer, or ``None`` if absent/expired.
+def write_castform_session(session: dict) -> None:
+    """Write the device-auth session to ``~/.castform/credentials.json`` (0600).
 
-    Expiry is checked but not refreshed here — an expired session falls through
-    to the ``castform login`` prompt. Refresh-on-expiry lands with the device
-    flow (Phase 3/4), which replaces this skip with a mint from ``refresh_token``.
+    Called by ``castform login``. Creates the parent dir and writes the file with
+    owner-only permissions; an existing file is replaced atomically-enough for a
+    single-user CLI (truncate + write under a 0600 umask).
+    """
+    path = _credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Create with 0600 from the start (don't briefly expose a world-readable file).
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(session, fh)
+    os.chmod(path, 0o600)  # tighten even if the file pre-existed with looser bits
+
+
+def clear_castform_session() -> None:
+    """Delete the cached session (``castform logout``). No-op if absent."""
+    _SESSION_JWT_CACHE["token"] = None
+    _SESSION_JWT_CACHE["exp"] = 0.0
+    try:
+        _credentials_path().unlink()
+    except OSError:
+        pass
+
+
+# Per-process cache of the short-lived JWT minted from the cached session, so we
+# don't re-mint on every request. Mirrors web-app/src/lib/auth/jwt-fetcher.ts.
+_SESSION_JWT_CACHE: dict[str, object] = {"token": None, "exp": 0.0}
+
+
+def _jwt_exp(token: str) -> float:
+    """Read ``exp`` from a JWT payload without verifying (we only need timing)."""
+    import base64
+
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)  # pad base64url
+        return float(json.loads(base64.urlsafe_b64decode(payload))["exp"])
+    except Exception:
+        return 0.0
+
+
+def _mint_session_jwt(access_token: str) -> str | None:
+    """Exchange the cached session for a short-lived auth-service JWT.
+
+    Hits the jwt plugin's ``GET /api/auth/token`` with the session as Bearer —
+    the same endpoint the web-app uses over a cookie. Returns ``None`` on any
+    failure (network, or the session no longer valid → caller re-prompts login).
+    """
+    import httpx
+
+    from benchmax import config
+
+    try:
+        resp = httpx.get(
+            f"{config.auth_url()}/api/auth/token",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10.0,
+        )
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None
+    token = resp.json().get("token")
+    return token if isinstance(token, str) and token else None
+
+
+def _session_jwt() -> str | None:
+    """Resolve a short-lived JWT from the cached device-auth session.
+
+    Reads ``~/.castform``; if the session is present and unexpired, returns a
+    cached JWT (re-minting ~60s before it expires — the per-process mint from
+    D2). Returns ``None`` if there's no usable session (caller falls through to
+    the ``castform login`` prompt). Refresh from ``refresh_token`` when the
+    *session* itself expires is a future addition; today an expired session just
+    prompts re-login.
     """
     session = read_castform_session()
     if not session:
         return None
-    token = session.get("access_token")
-    if not token:
+    access_token = session.get("access_token")
+    if not access_token:
         return None
     expires_at = session.get("expires_at")
     if isinstance(expires_at, (int, float)) and expires_at <= time.time():
         return None
-    return token
+
+    cached = _SESSION_JWT_CACHE["token"]
+    if cached and time.time() < float(_SESSION_JWT_CACHE["exp"]) - 60:
+        return cached  # type: ignore[return-value]
+
+    jwt = _mint_session_jwt(access_token)
+    if jwt:
+        _SESSION_JWT_CACHE["token"] = jwt
+        _SESSION_JWT_CACHE["exp"] = _jwt_exp(jwt)
+    return jwt
 
 
 def resolve_token_provider(

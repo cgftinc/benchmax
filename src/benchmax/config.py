@@ -69,3 +69,13 @@ def web_app_url() -> str:
 def llm_url() -> str:
     """OpenAI-compatible LLM endpoint hosted by the platform."""
     return os.environ.get("CASTFORM_LLM_URL") or f"https://llm.{base_domain()}/v1"
+
+
+def auth_url() -> str:
+    """Auth-service base URL (device-authorization + JWT mint endpoints).
+
+    Used by ``castform login`` and the per-process session→JWT mint. Derives from
+    the same base domain as everything else, so a session minted against ``staging``
+    talks to ``auth.castform.dev`` and a ``prod`` session to ``auth.castform.com``.
+    """
+    return os.environ.get("CASTFORM_AUTH_URL") or f"https://auth.{base_domain()}"
