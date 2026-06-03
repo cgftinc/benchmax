@@ -230,6 +230,15 @@ def test_resolve_falls_back_to_platform_bearer(monkeypatch):
     assert provider() == "sk_env"
 
 
+def test_resolve_empty_api_key_falls_back_to_seam(monkeypatch):
+    """An empty key (config layers default an unset key to "") is treated as
+    not-provided → the seam, not a fixed empty bearer."""
+    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
+    provider = resolve_token_provider("")
+    assert provider is platform_bearer
+    assert provider() == "sk_env"
+
+
 def test_resolve_seam_is_per_call(monkeypatch):
     """The fallback provider re-reads the env each call (rotation is seen)."""
     provider = resolve_token_provider(None)

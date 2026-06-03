@@ -254,15 +254,17 @@ def resolve_token_provider(
 
     Precedence:
 
-    1. explicit ``api_key`` — a fixed-value provider (the caller's override).
+    1. a **non-empty** ``api_key`` — a fixed-value provider (the caller's
+       override). Empty string / ``None`` count as "not provided" (config layers
+       commonly default an unset key to ``""``), so they fall through to:
     2. explicit ``token_provider`` — a custom per-call provider (tests / BYO).
     3. :func:`platform_bearer` — the credential seam (``ACT_AS_TOKEN_PATH`` →
-       ``PLATFORM_API_KEY``; the ``~/.castform`` session slots in later).
+       ``PLATFORM_API_KEY`` → cached ``~/.castform`` session).
 
     The result is called **per request** by the client, so a rotating/expiring
     token is picked up — never frozen at construction.
     """
-    if api_key is not None:
+    if api_key:
         return lambda: api_key
     if token_provider is not None:
         return token_provider

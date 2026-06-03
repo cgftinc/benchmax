@@ -816,9 +816,9 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         )
 
     platform_raw = raw.get("platform", {}) or {}
+    # api_key is optional: an empty key resolves per request via the credential
+    # seam (cached device-auth session / ACT_AS_TOKEN_PATH / PLATFORM_API_KEY).
     api_key = str(platform_raw.get("api_key", "")).strip()
-    if not api_key:
-        raise ValueError("Missing required config value: platform.api_key")
     platform = PlatformConfig(
         api_key=api_key,
         base_url=str(platform_raw.get("base_url", config.platform_url())).strip(),

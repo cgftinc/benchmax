@@ -76,6 +76,7 @@ from benchmax.rag.qa_generation.scoring import (
 from benchmax.rag.qa_generation.transformers import BaseQuestionTransformer
 from benchmax.rag.qa_generation.transformers.dedup import IncrementalDeduplicator
 from benchmax.platform.client import RolloutClient
+from benchmax.platform.credentials import resolve_token_provider
 
 logger = logging.getLogger(__name__)
 
@@ -255,12 +256,12 @@ def _build_linker(
         metadata_linker = _build_metadata_linker(
             cfg, source, profile, wiki_index=wiki_index
         )
-        _pf_api_key = cfg.platform.api_key
         search_client = PostgresSearch(
             corpus_name=cfg.corpus.corpus_name,
             base_url=cfg.platform.base_url,
             corpus_id=cfg.corpus.corpus_id or None,
-            token_provider=lambda: _pf_api_key,
+            # Explicit key wins; empty → the credential seam (cached session).
+            token_provider=resolve_token_provider(cfg.platform.api_key),
         )
         llm_cfg = cfg.generation.llm_direct
         return SearchAgentLinker(
