@@ -9,7 +9,7 @@ import json
 import pytest
 
 from benchmax import cli
-from benchmax.platform import credentials
+from benchmax.platform import credentials, login
 from benchmax.platform.device_auth import DeviceAuthError
 
 
@@ -26,8 +26,10 @@ def stub_flow(monkeypatch):
     """Stub the device flow + capture what login would persist."""
     captured: dict = {}
     monkeypatch.setenv("CASTFORM_AUTH_URL", "http://localhost:4300")
+    # _login (which _cmd_login calls) lives in benchmax.platform.login and uses
+    # request_device_code / poll_for_token imported there.
     monkeypatch.setattr(
-        cli,
+        login,
         "request_device_code",
         lambda _auth, **_k: {
             "device_code": "dc",
@@ -38,7 +40,7 @@ def stub_flow(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        cli,
+        login,
         "poll_for_token",
         lambda _auth, _dc, **_k: {"access_token": "sess_abc", "expires_in": 604800},
     )
@@ -63,7 +65,7 @@ def test_login_staging_sets_env(stub_flow):
 
 def test_login_failure_returns_1(monkeypatch):
     monkeypatch.setenv("CASTFORM_AUTH_URL", "http://localhost:4300")
-    monkeypatch.setattr(cli, "request_device_code", _raise_device_auth)
+    monkeypatch.setattr(login, "request_device_code", _raise_device_auth)
     assert cli._cmd_login(argparse.Namespace(env="prod")) == 1
 
 
@@ -94,8 +96,8 @@ def test_whoami_logged_in_shows_email(monkeypatch, capsys):
 def test_ensure_session_noop_when_credential_resolves(monkeypatch):
     monkeypatch.setattr(credentials, "platform_bearer", lambda: "tok")
     called = {}
-    monkeypatch.setattr(cli, "_login", lambda env=None: called.setdefault("login", True))
-    cli.ensure_session()
+    monkeypatch.setattr(login, "_login", lambda env=None: called.setdefault("login", True))
+    login.ensure_session()
     assert "login" not in called
 
 
@@ -103,8 +105,8 @@ def test_ensure_session_skips_when_not_interactive(monkeypatch):
     monkeypatch.delenv("CASTFORM_NO_AUTO_LOGIN", raising=False)
     monkeypatch.setattr(credentials, "platform_bearer", _raise_runtime)
     called = {}
-    monkeypatch.setattr(cli, "_login", lambda env=None: called.setdefault("login", True))
-    cli.ensure_session(interactive=False)
+    monkeypatch.setattr(login, "_login", lambda env=None: called.setdefault("login", True))
+    login.ensure_session(interactive=False)
     assert "login" not in called
 
 
@@ -112,6 +114,6 @@ def test_ensure_session_logs_in_when_interactive(monkeypatch):
     monkeypatch.delenv("CASTFORM_NO_AUTO_LOGIN", raising=False)
     monkeypatch.setattr(credentials, "platform_bearer", _raise_runtime)
     called = {}
-    monkeypatch.setattr(cli, "_login", lambda env=None: called.setdefault("login", True))
-    cli.ensure_session(interactive=True)
+    monkeypatch.setattr(login, "_login", lambda env=None: called.setdefault("login", True))
+    login.ensure_session(interactive=True)
     assert called.get("login")

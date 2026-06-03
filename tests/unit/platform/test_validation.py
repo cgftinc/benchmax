@@ -36,14 +36,6 @@ def _install_fake_rollout(monkeypatch) -> dict[str, Any]:
     # validate_env does `from .client import RolloutClient` lazily, so patch
     # the attribute on the client module it resolves against.
     monkeypatch.setattr("benchmax.platform.client.RolloutClient", _FakeRolloutClient)
-    # ensure_session is lazy-imported from benchmax.cli; stub it so tests never
-    # attempt a real login (and record that the launch path invoked it).
-    seen["ensure_session_calls"] = 0
-
-    def _fake_ensure_session(*_a, **_k):
-        seen["ensure_session_calls"] += 1
-
-    monkeypatch.setattr("benchmax.cli.ensure_session", _fake_ensure_session)
     return seen
 
 
@@ -72,10 +64,11 @@ def test_report_remote_failure_fails_overall():
 # ---------------------------------------------------------------------------
 
 
-def test_local_false_runs_remote_via_session(monkeypatch):
-    """A keyless launch (local=False, no api_key) runs the remote smoke via the
-    cached device-auth session: ensure_session is invoked and RolloutClient gets
-    api_key=None so it resolves through the credential seam."""
+def test_local_false_runs_remote_via_seam(monkeypatch):
+    """A keyless launch (local=False, no api_key) runs the remote smoke with
+    RolloutClient(api_key=None), so it resolves through the credential seam /
+    cached session. (Interactive login is the script's up-front ensure_session,
+    not validate_env's job.)"""
     seen = _install_fake_rollout(monkeypatch)
 
     report = validate_env(
@@ -89,7 +82,6 @@ def test_local_false_runs_remote_via_session(monkeypatch):
     assert report.remote_ran is True
     assert report.remote_ok is True
     assert seen["api_key"] is None  # resolves via the seam, not an explicit key
-    assert seen["ensure_session_calls"] == 1
 
 
 def test_api_key_runs_remote_and_threads_urls(monkeypatch):
@@ -124,9 +116,8 @@ def test_api_key_runs_remote_and_threads_urls(monkeypatch):
     assert kw["pip_dependencies"] == ["openai"]
 
 
-def test_local_only_skips_remote_and_autologin(monkeypatch):
-    """Offline dev (local=True default, no api_key) runs no remote smoke and
-    never triggers auto-login."""
+def test_local_only_skips_remote(monkeypatch):
+    """Offline dev (local=True default, no api_key) runs no remote smoke."""
     seen = _install_fake_rollout(monkeypatch)
     # Skip the real local contract checks (they'd instantiate the placeholder env).
     monkeypatch.setattr(
@@ -146,5 +137,4 @@ def test_local_only_skips_remote_and_autologin(monkeypatch):
 
     assert report.remote_ran is False
     assert report.remote is None
-    assert seen["ensure_session_calls"] == 0
     assert "api_key" not in seen  # RolloutClient never constructed

@@ -675,14 +675,13 @@ def validate_env(
 
     remote: ValidationResult | None = None
     # Run the remote smoke when explicitly launching (local=False) or when an
-    # api_key is passed. A keyless launch authenticates via the cached
-    # device-auth session — auto-login here if interactive (no-op headless, where
-    # RolloutClient then resolves via the ACT_AS_TOKEN_PATH / PLATFORM_API_KEY seam).
+    # api_key is passed. Credential resolution is NOT this function's job: a
+    # keyless launch resolves via the cached device-auth session / the
+    # ACT_AS_TOKEN_PATH / PLATFORM_API_KEY seam. Interactive auto-login lives in
+    # the explicit ensure_session() the script calls up front — so by here a
+    # credential is present, or RolloutClient fails loudly ("run castform login").
     run_remote = (not local) or bool(api_key)
     if run_remote:
-        from benchmax.cli import ensure_session
-
-        ensure_session()
         # Lazy import keeps the offline path free of httpx and avoids a
         # client <-> validation import cycle.
         from .client import RolloutClient
