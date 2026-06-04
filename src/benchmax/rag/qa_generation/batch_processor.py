@@ -123,6 +123,50 @@ def _chat_completion_with_token_fallback(
         raise
 
 
+try:  # openai is a hard dependency; guard only against import-order surprises.
+    from openai import AsyncOpenAI as _AsyncOpenAI
+except Exception:  # noqa: BLE001
+    _AsyncOpenAI = None
+
+
+def _is_async_client(client: Any) -> bool:
+    """True for an ``AsyncOpenAI`` client (real ``await``), False for sync ``OpenAI``
+    (offloaded to a thread). Lets ``call_openai_async`` serve both."""
+    return _AsyncOpenAI is not None and isinstance(client, _AsyncOpenAI)
+
+
+async def _achat_completion_with_token_fallback(
+    client: Any,
+    *,
+    model: str,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    timeout: float,
+    temperature: float = 1.0,
+):
+    """Async twin of ``_chat_completion_with_token_fallback`` for an AsyncOpenAI
+    client — same dual token-param send + fallback, with ``await``."""
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
+        "timeout": timeout,
+        "temperature": temperature,
+    }
+    try:
+        return await client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "unsupported parameter" in msg and "max_tokens" in msg:
+            kwargs.pop("max_tokens", None)
+            return await client.chat.completions.create(**kwargs)
+        if "unsupported parameter" in msg and "max_completion_tokens" in msg:
+            kwargs.pop("max_completion_tokens", None)
+            return await client.chat.completions.create(**kwargs)
+        raise
+
+
 @dataclass
 class BatchResponse:
     """Response from a single LLM call.
@@ -214,33 +258,46 @@ async def call_openai_async(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    # Bound total in-flight LLM calls process-globally. The semaphore is acquired
-    # inside the worker thread (not on the event loop) so the blocking wait parks
-    # the worker, and ``latency_ms`` still times only the call itself, not the
-    # queue wait. ``None`` when the cap is disabled.
-    semaphore = _get_global_llm_semaphore()
+    if _is_async_client(client):
+        # Real async I/O. Concurrency is bounded by the caller's asyncio
+        # semaphore (the role-scoped one in batch_process_async), so no global
+        # threading cap here. ``latency_ms`` times only the call.
+        start_time = time.time()
+        completion = await _achat_completion_with_token_fallback(
+            client,
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            temperature=temperature,
+        )
+        latency_ms = (time.time() - start_time) * 1000
+    else:
+        # Sync client: offload the blocking call to a thread, bounded by the
+        # process-global cap (acquired in the worker so the wait parks there and
+        # ``latency_ms`` still times only the call). ``None`` when disabled.
+        semaphore = _get_global_llm_semaphore()
 
-    def _call_with_cap() -> tuple[Any, float]:
-        if semaphore is not None:
-            semaphore.acquire()
-        try:
-            start_time = time.time()
-            completion = _chat_completion_with_token_fallback(
-                client,
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                timeout=timeout,
-                temperature=temperature,
-            )
-            return completion, (time.time() - start_time) * 1000
-        finally:
+        def _call_with_cap() -> tuple[Any, float]:
             if semaphore is not None:
-                semaphore.release()
+                semaphore.acquire()
+            try:
+                start_time = time.time()
+                completion = _chat_completion_with_token_fallback(
+                    client,
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                    temperature=temperature,
+                )
+                return completion, (time.time() - start_time) * 1000
+            finally:
+                if semaphore is not None:
+                    semaphore.release()
 
-    # Run the synchronous OpenAI call in a thread pool
-    loop = asyncio.get_event_loop()
-    completion, latency_ms = await loop.run_in_executor(None, _call_with_cap)
+        loop = asyncio.get_event_loop()
+        completion, latency_ms = await loop.run_in_executor(None, _call_with_cap)
 
     # Extract response
     answer = completion.choices[0].message.content
@@ -265,8 +322,14 @@ async def batch_process_async(
     show_progress: bool = True,
     temperature: float = 1.0,
     desc: str = "Processing prompts",
+    semaphore: asyncio.Semaphore | None = None,
 ) -> BatchResult:
     """Process multiple prompts in parallel with rate limiting.
+
+    ``semaphore``: pass a shared ``asyncio.Semaphore`` (e.g. a role-scoped one
+    from ``PipelineContext``) to bound concurrency across *all* batches on the
+    event loop. When ``None``, a per-call ``Semaphore(max_concurrent)`` is minted
+    (the standalone / sync-wrapper behavior).
 
     Args:
         client: OpenAI client instance
@@ -302,14 +365,14 @@ async def batch_process_async(
         print(f"Total tokens: {result.total_tokens}")
         ```
     """
-    semaphore = asyncio.Semaphore(max_concurrent)
+    sem = semaphore if semaphore is not None else asyncio.Semaphore(max_concurrent)
     start_time = time.time()
 
     # Create progress bar if enabled
     pbar = tqdm(total=len(prompts), desc=desc, disable=not show_progress)
 
     async def process_with_semaphore(idx: int, prompt: str) -> BatchResponse:
-        async with semaphore:
+        async with sem:
             per_prompt_system = (
                 system_prompt[idx] if isinstance(system_prompt, list) else system_prompt
             )
