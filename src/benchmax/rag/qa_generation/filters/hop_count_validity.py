@@ -517,9 +517,9 @@ class HopCountValidityFilter:
     ) -> FilterVerdict | None:
         """Batched version of the subset-judging loop in _validate_item.
 
-        Sends all judge prompts through ``batch_process_sync`` so they
-        run concurrently, then processes the results with the same
-        logic as the sequential path.
+        Sends all judge prompts through ``batch_process_async`` (bounded by the
+        run's per-model semaphore) so they run concurrently, then processes the
+        results with the same logic as the sequential path.
         """
         # Build all prompts up-front.
         prompts: list[str] = []
