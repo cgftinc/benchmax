@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -53,6 +54,9 @@ class CorpusClient:
     max_retries: int = 5
     retry_backoff_seconds: float = 0.5
     token_provider: TokenProvider = platform_bearer
+    # Enable HTTP/2 multiplexing on the async client. Safe there (one client
+    # bound to one event loop), unlike the shared sync client across threads.
+    async_http2: bool = True
     # HTTP clients are created lazily, one per thread (see ``_http_client``).
     # httpx.Client's connection pool is not safe to share across threads at high
     # parallelism: the QA-gen work queue hits this client from every batch
@@ -71,6 +75,12 @@ class CorpusClient:
     _registry_lock: threading.Lock = field(
         init=False, repr=False, default_factory=threading.Lock
     )
+    # Single async client, lazily bound to the running event loop (rebuilt if the
+    # loop changes — asyncio.run() mints a fresh loop per Pipeline.run()).
+    _async_client: httpx.AsyncClient | None = field(
+        init=False, repr=False, default=None
+    )
+    _async_client_loop: Any = field(init=False, repr=False, default=None)
 
     def _build_http_client(self) -> httpx.Client:
         """Create a new HTTP client and register it for ``close()``.
@@ -193,6 +203,89 @@ class CorpusClient:
                 pass
         return self.retry_backoff_seconds * (2 ** (attempt - 1))
 
+    def _get_async_client(self) -> httpx.AsyncClient:
+        """The async client bound to the running event loop.
+
+        Rebuilt when the loop changes (``asyncio.run`` mints a fresh loop per
+        ``Pipeline.run``) or the client was closed. Creation does not ``await``,
+        so on a single event loop the check-then-build is race-free."""
+        loop = asyncio.get_running_loop()
+        client = self._async_client
+        if client is None or client.is_closed or self._async_client_loop is not loop:
+            timeout_config = httpx.Timeout(
+                timeout=self.timeout,
+                connect=self.timeout,
+                read=self.timeout,
+                write=self.timeout,
+                pool=self.timeout,
+            )
+            client = httpx.AsyncClient(
+                base_url=self.base_url,
+                headers={"Content-Type": "application/json"},
+                timeout=timeout_config,
+                http2=self.async_http2,
+            )
+            self._async_client = client
+            self._async_client_loop = loop
+        return client
+
+    async def _arequest(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Async twin of ``_request`` — same retry/backoff and 429 handling, with
+        ``await asyncio.sleep`` instead of ``time.sleep`` so the loop stays free."""
+        headers = {
+            **kwargs.pop("headers", {}),
+            "Authorization": f"Bearer {self.token_provider()}",
+        }
+        retries = max(1, int(self.max_retries))
+        client = self._get_async_client()
+        attempt = 1
+        while True:
+            try:
+                response = await client.request(method, path, headers=headers, **kwargs)
+            except (httpx.ConnectTimeout, httpx.ConnectError, httpx.ReadTimeout) as exc:
+                if attempt >= retries:
+                    raise CorpusAPIError(
+                        (
+                            "Corpora API request failed after retries due to a network timeout/error. "
+                            f"method={method} path={path} base_url={self.base_url} "
+                            f"attempts={retries} last_error={exc!s}"
+                        ),
+                        status_code=503,
+                    ) from exc
+                delay = self.retry_backoff_seconds * (2 ** (attempt - 1))
+                logger.warning(
+                    "Corpora API request attempt %s/%s failed (%s). Retrying in %.2fs. "
+                    "method=%s path=%s base_url=%s",
+                    attempt,
+                    retries,
+                    type(exc).__name__,
+                    delay,
+                    method,
+                    path,
+                    self.base_url,
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
+                continue
+
+            if response.status_code == 429 and attempt < retries:
+                delay = self._retry_after_delay(response, attempt)
+                logger.warning(
+                    "Corpora API rate-limited (429) on attempt %s/%s. Retrying in %.2fs. "
+                    "method=%s path=%s base_url=%s",
+                    attempt,
+                    retries,
+                    delay,
+                    method,
+                    path,
+                    self.base_url,
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
+                continue
+
+            return response
+
     def __enter__(self) -> "CorpusClient":
         return self
 
@@ -211,6 +304,17 @@ class CorpusClient:
                 client.close()
             except Exception:  # noqa: BLE001 — best-effort cleanup
                 logger.debug("Error closing corpus HTTP client", exc_info=True)
+
+    async def aclose(self) -> None:
+        """Close the async client. Call from within its event loop."""
+        client = self._async_client
+        self._async_client = None
+        self._async_client_loop = None
+        if client is not None and not client.is_closed:
+            try:
+                await client.aclose()
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                logger.debug("Error closing corpus async client", exc_info=True)
 
     def _handle_response_errors(self, response: httpx.Response) -> None:
         """Convert HTTP errors to appropriate exceptions."""
@@ -613,6 +717,66 @@ class CorpusClient:
         matched: list[tuple[Chunk, float]] = []
         for corpus_chunk in result.results:
             # The chunk ID is the hash, so we can look up directly
+            local_chunk = collection.get_chunk_by_hash(corpus_chunk.id)
+            if local_chunk:
+                matched.append((local_chunk, corpus_chunk.score or 0.0))
+
+        return matched
+
+    async def asearch(
+        self,
+        corpus_id: str,
+        query: str,
+        limit: int = 10,
+        offset: int = 0,
+        metadata: dict[str, Any] | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> SearchResult:
+        """Async twin of ``search``. Same payload + response shape, async I/O."""
+        payload: dict[str, Any] = {"query": query, "limit": limit, "offset": offset}
+        if metadata:
+            payload["metadata"] = metadata
+        if filters:
+            payload["filters"] = filters
+
+        response = await self._arequest(
+            "POST", f"/v1/corpora/{corpus_id}/search", json=payload
+        )
+        self._handle_response_errors(response)
+
+        data = response.json()
+        results = [
+            CorpusChunk(
+                id=r["id"],
+                content=r["content"],
+                metadata=r.get("metadata") or {},
+                score=r.get("score"),
+            )
+            for r in data.get("results", [])
+        ]
+
+        return SearchResult(results=results, total=data.get("total", 0), query=query)
+
+    async def asearch_with_chunks(
+        self,
+        corpus_id: str,
+        query: str,
+        collection: ChunkCollection,
+        limit: int = 10,
+        metadata: dict[str, Any] | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> list[tuple[Chunk, float]]:
+        """Async twin of ``search_with_chunks``."""
+        result = await self.asearch(
+            corpus_id=corpus_id,
+            query=query,
+            limit=limit,
+            metadata=metadata,
+            filters=filters,
+        )
+
+        matched: list[tuple[Chunk, float]] = []
+        for corpus_chunk in result.results:
             local_chunk = collection.get_chunk_by_hash(corpus_chunk.id)
             if local_chunk:
                 matched.append((local_chunk, corpus_chunk.score or 0.0))

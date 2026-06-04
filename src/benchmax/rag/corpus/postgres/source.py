@@ -309,36 +309,88 @@ class PostgresChunkSource:
                 collection=self.collection,
                 limit=top_k,
             )
+            self._accumulate_related(related_map, source, query, matched_chunks, top_k)
 
-            for result_chunk, score in matched_chunks[:top_k]:
-                if result_chunk.hash == source.hash:
+        return self._sorted_related(related_map)
+
+    async def asearch_related(
+        self,
+        source: Chunk,
+        queries: list[str],
+        top_k: int = 5,
+        mode: SearchMode | None = None,
+        hybrid: HybridOptions | None = None,
+    ) -> list[dict]:
+        """Async twin of ``search_related`` — identical dedup/neighbor-skip/scoring,
+        async corpus I/O. Queries run sequentially for parity with the sync path;
+        cross-batch search concurrency comes from the async work queue."""
+        if hybrid is not None:
+            warnings.warn(
+                "PostgresChunkSource does not support hybrid search; 'hybrid' parameter is ignored.",
+                stacklevel=2,
+            )
+        if mode is not None and mode != "lexical":
+            warnings.warn(
+                f"PostgresChunkSource only supports 'lexical' mode; '{mode}' will be ignored.",
+                stacklevel=2,
+            )
+        self._assert_ready()
+        related_map: dict[str, dict] = {}
+
+        for query in queries:
+            matched_chunks = await self._client.asearch_with_chunks(
+                corpus_id=self._corpus.id,
+                query=query,
+                collection=self.collection,
+                limit=top_k,
+            )
+            self._accumulate_related(related_map, source, query, matched_chunks, top_k)
+
+        return self._sorted_related(related_map)
+
+    @staticmethod
+    def _accumulate_related(
+        related_map: dict[str, dict],
+        source: Chunk,
+        query: str,
+        matched_chunks: list[tuple[Chunk, float]],
+        top_k: int,
+    ) -> None:
+        """Merge one query's results into ``related_map``: skip the source chunk
+        and its same-file neighbors, dedup by hash, aggregate queries + max score."""
+        for result_chunk, score in matched_chunks[:top_k]:
+            if result_chunk.hash == source.hash:
+                continue
+
+            is_same_file = result_chunk.get_metadata("file") == source.get_metadata(
+                "file"
+            )
+            if is_same_file:
+                index_diff = abs(
+                    result_chunk.get_metadata("index", 0)
+                    - source.get_metadata("index", 0)
+                )
+                if index_diff <= 1:
                     continue
 
-                is_same_file = result_chunk.get_metadata("file") == source.get_metadata(
-                    "file"
+            if result_chunk.hash not in related_map:
+                related_map[result_chunk.hash] = {
+                    "chunk": result_chunk,
+                    "queries": [],
+                    "same_file": is_same_file,
+                    "max_score": score,
+                }
+            else:
+                related_map[result_chunk.hash]["max_score"] = max(
+                    related_map[result_chunk.hash]["max_score"], score
                 )
-                if is_same_file:
-                    index_diff = abs(
-                        result_chunk.get_metadata("index", 0)
-                        - source.get_metadata("index", 0)
-                    )
-                    if index_diff <= 1:
-                        continue
 
-                if result_chunk.hash not in related_map:
-                    related_map[result_chunk.hash] = {
-                        "chunk": result_chunk,
-                        "queries": [],
-                        "same_file": is_same_file,
-                        "max_score": score,
-                    }
-                else:
-                    related_map[result_chunk.hash]["max_score"] = max(
-                        related_map[result_chunk.hash]["max_score"], score
-                    )
+            related_map[result_chunk.hash]["queries"].append(query)
 
-                related_map[result_chunk.hash]["queries"].append(query)
-
+    @staticmethod
+    def _sorted_related(related_map: dict[str, dict]) -> list[dict]:
+        """Sort related chunks: most matching queries first, cross-file before
+        same-file, then max BM25 score — all descending."""
         return sorted(
             related_map.values(),
             key=lambda x: (len(x["queries"]), not x["same_file"], x["max_score"]),
