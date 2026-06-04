@@ -1042,7 +1042,19 @@ def _build_regeneration_tasks(
     return tasks, item_by_task_id
 
 
-def _regenerate_with_generator(
+async def _run_stage(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Await *fn* if it's a coroutine function, else offload it to a worker thread.
+
+    Stages flip to ``async def`` one increment at a time during the async
+    migration; this adapter lets the async batch body call sync and async stages
+    uniformly. The ``to_thread`` branch goes away once every stage is async.
+    """
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args, **kwargs)
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+async def _regenerate_with_generator(
     items: list[GeneratedQA],
     *,
     generator: QuestionGenerator,
@@ -1052,7 +1064,7 @@ def _regenerate_with_generator(
     if not tasks:
         return [], []
 
-    regenerated_items = generator.generate(tasks, context)
+    regenerated_items = await _run_stage(generator.generate, tasks, context)
     regenerated_by_task_id: dict[str, GeneratedQA] = {}
     for regenerated in regenerated_items:
         task_id = str(regenerated.generation_metadata.get("task_id", "")).strip()
@@ -1749,168 +1761,6 @@ class Pipeline:
     # Micro-batch work queue
     # ------------------------------------------------------------------
 
-    def _process_batch(
-        self,
-        tasks: list[GenerationTask],
-        *,
-        generator: QuestionGenerator,
-        guard_filter: DeterministicGuardsFilter,
-        filter_stage_names: list[str],
-        filter_chain: list[EvaluatorFilter],
-        transformer: QuestionTransformer,
-        context: PipelineContext,
-        incremental_dedup: IncrementalDeduplicator | None = None,
-    ) -> tuple[list[GeneratedQA], list[GeneratedQA], list[GeneratedQA], int]:
-        """Run stages 5-7 on a single micro-batch.
-
-        Returns:
-            (passed, rejected, raw_items, regens_count)
-        """
-        cfg = self.cfg
-        metrics = context.metrics
-
-        # Stage 5: Generate QA candidates.
-        if metrics is not None:
-            with stage_timer(metrics, "generation", len(tasks)):
-                raw_items = generator.generate(tasks, context)
-        else:
-            raw_items = generator.generate(tasks, context)
-        _annotate_generated_items(raw_items)
-
-        # Stage 6: Filter + regeneration loop.
-        final_passed: list[GeneratedQA] = []
-        final_rejected: list[GeneratedQA] = []
-
-        # Early dedup: remove near-duplicates before expensive filtering.
-        if incremental_dedup is not None:
-            active_items, early_dups = incremental_dedup.check_batch(
-                raw_items,
-            )
-            if early_dups:
-                final_rejected.extend(early_dups)
-        else:
-            active_items = list(raw_items)
-        total_regens = 0
-
-        for round_idx in range(cfg.refinement.max_rounds + 1):
-            if not active_items:
-                break
-            for item in active_items:
-                item.filter_verdict = None
-
-            if metrics is not None:
-                with stage_timer(
-                    metrics, "deterministic_guards", len(active_items)
-                ) as guard_stage:
-                    active_items = guard_filter.evaluate(active_items, context)
-                    guard_stage.items_out_passed += sum(
-                        1 for i in active_items if i.is_passed
-                    )
-                    guard_stage.items_out_rejected += sum(
-                        1 for i in active_items if i.is_rejected
-                    )
-                    guard_stage.items_out_needs_refinement += sum(
-                        1 for i in active_items if i.needs_refinement
-                    )
-            else:
-                active_items = guard_filter.evaluate(active_items, context)
-
-            for _stage_name, stage_filter in zip(filter_stage_names, filter_chain):
-                if metrics is not None:
-                    with stage_timer(metrics, _stage_name, len(active_items)) as sm:
-                        active_items = stage_filter.evaluate(active_items, context)
-                        sm.items_out_passed += sum(
-                            1 for i in active_items if i.is_passed
-                        )
-                        sm.items_out_rejected += sum(
-                            1 for i in active_items if i.is_rejected
-                        )
-                        sm.items_out_needs_refinement += sum(
-                            1 for i in active_items if i.needs_refinement
-                        )
-                else:
-                    active_items = stage_filter.evaluate(active_items, context)
-                extract_filter_scores(active_items, _stage_name)
-
-            passed = [item for item in active_items if item.is_passed]
-            for item in passed:
-                item.qa["eval_scores"] = compute_eval_scores(item, cfg.scoring)
-            needs_refinement = [item for item in active_items if item.needs_refinement]
-            rejected = [item for item in active_items if item.is_rejected]
-            _record_filter_events(passed, event_type="filter_passed")
-            _record_filter_events(
-                needs_refinement, event_type="filter_needs_refinement"
-            )
-            _record_filter_events(rejected, event_type="filter_rejected")
-            final_passed.extend(passed)
-            final_rejected.extend(rejected)
-
-            if not needs_refinement:
-                active_items = []
-                break
-
-            if not cfg.refinement.enabled or round_idx >= cfg.refinement.max_rounds:
-                final_rejected.extend(
-                    _mark_rejected(
-                        needs_refinement,
-                        reason="max_rounds_reached",
-                        reason_code="max_rounds_reached",
-                    )
-                )
-                active_items = []
-                break
-
-            if metrics is not None:
-                with stage_timer(metrics, "regeneration", len(needs_refinement)):
-                    refined_items, regen_failures = _regenerate_with_generator(
-                        needs_refinement,
-                        generator=generator,
-                        context=context,
-                    )
-            else:
-                refined_items, regen_failures = _regenerate_with_generator(
-                    needs_refinement,
-                    generator=generator,
-                    context=context,
-                )
-            if regen_failures:
-                final_rejected.extend(
-                    _mark_rejected(
-                        regen_failures,
-                        reason="generator_regeneration_failed",
-                        reason_code="generator_regeneration_failed",
-                    )
-                )
-            total_regens += len(needs_refinement)
-
-            next_active: list[GeneratedQA] = []
-            for item in refined_items:
-                if item.filter_verdict is None:
-                    next_active.append(item)
-                elif item.is_rejected:
-                    final_rejected.append(item)
-                elif item.is_passed:
-                    final_passed.append(item)
-                else:
-                    item.filter_verdict = None
-                    next_active.append(item)
-            active_items = next_active
-
-        if active_items:
-            final_rejected.extend(
-                _mark_rejected(
-                    active_items,
-                    reason="pipeline_terminated_with_unresolved_items",
-                    reason_code="unresolved_items",
-                )
-            )
-
-        # Stage 7: Transform passed items.
-        final_passed = transformer.transform(final_passed, context)
-        _annotate_transformed_items(final_passed)
-
-        return final_passed, final_rejected, raw_items, total_regens
-
     def _run_work_queue(
         self,
         *,
@@ -1969,23 +1819,168 @@ class Pipeline:
         context: PipelineContext,
         incremental_dedup: IncrementalDeduplicator | None = None,
     ) -> tuple[list[GeneratedQA], list[GeneratedQA], list[GeneratedQA], int]:
-        """Async wrapper around :meth:`_process_batch`.
+        """Run stages 5-7 on a single micro-batch, on the event loop.
 
-        2c.0: delegates to the untouched sync ``_process_batch`` in a worker
-        thread for guaranteed parity. Later increments port the body to native
-        async and await each stage directly.
+        Each stage runs through ``_run_stage``: awaited directly once it is
+        ``async def`` (later increments), or offloaded to a worker thread while
+        still sync. Behavior matches the former sync ``_process_batch`` until the
+        stages themselves flip to async.
+
+        Returns:
+            (passed, rejected, raw_items, regens_count)
         """
-        return await asyncio.to_thread(
-            self._process_batch,
-            tasks,
-            generator=generator,
-            guard_filter=guard_filter,
-            filter_stage_names=filter_stage_names,
-            filter_chain=filter_chain,
-            transformer=transformer,
-            context=context,
-            incremental_dedup=incremental_dedup,
-        )
+        cfg = self.cfg
+        metrics = context.metrics
+
+        # Stage 5: Generate QA candidates.
+        if metrics is not None:
+            with stage_timer(metrics, "generation", len(tasks)):
+                raw_items = await _run_stage(generator.generate, tasks, context)
+        else:
+            raw_items = await _run_stage(generator.generate, tasks, context)
+        _annotate_generated_items(raw_items)
+
+        # Stage 6: Filter + regeneration loop.
+        final_passed: list[GeneratedQA] = []
+        final_rejected: list[GeneratedQA] = []
+
+        # Early dedup: remove near-duplicates before expensive filtering.
+        if incremental_dedup is not None:
+            active_items, early_dups = incremental_dedup.check_batch(
+                raw_items,
+            )
+            if early_dups:
+                final_rejected.extend(early_dups)
+        else:
+            active_items = list(raw_items)
+        total_regens = 0
+
+        for round_idx in range(cfg.refinement.max_rounds + 1):
+            if not active_items:
+                break
+            for item in active_items:
+                item.filter_verdict = None
+
+            if metrics is not None:
+                with stage_timer(
+                    metrics, "deterministic_guards", len(active_items)
+                ) as guard_stage:
+                    active_items = await _run_stage(
+                        guard_filter.evaluate, active_items, context
+                    )
+                    guard_stage.items_out_passed += sum(
+                        1 for i in active_items if i.is_passed
+                    )
+                    guard_stage.items_out_rejected += sum(
+                        1 for i in active_items if i.is_rejected
+                    )
+                    guard_stage.items_out_needs_refinement += sum(
+                        1 for i in active_items if i.needs_refinement
+                    )
+            else:
+                active_items = await _run_stage(
+                    guard_filter.evaluate, active_items, context
+                )
+
+            for _stage_name, stage_filter in zip(filter_stage_names, filter_chain):
+                if metrics is not None:
+                    with stage_timer(metrics, _stage_name, len(active_items)) as sm:
+                        active_items = await _run_stage(
+                            stage_filter.evaluate, active_items, context
+                        )
+                        sm.items_out_passed += sum(
+                            1 for i in active_items if i.is_passed
+                        )
+                        sm.items_out_rejected += sum(
+                            1 for i in active_items if i.is_rejected
+                        )
+                        sm.items_out_needs_refinement += sum(
+                            1 for i in active_items if i.needs_refinement
+                        )
+                else:
+                    active_items = await _run_stage(
+                        stage_filter.evaluate, active_items, context
+                    )
+                extract_filter_scores(active_items, _stage_name)
+
+            passed = [item for item in active_items if item.is_passed]
+            for item in passed:
+                item.qa["eval_scores"] = compute_eval_scores(item, cfg.scoring)
+            needs_refinement = [item for item in active_items if item.needs_refinement]
+            rejected = [item for item in active_items if item.is_rejected]
+            _record_filter_events(passed, event_type="filter_passed")
+            _record_filter_events(
+                needs_refinement, event_type="filter_needs_refinement"
+            )
+            _record_filter_events(rejected, event_type="filter_rejected")
+            final_passed.extend(passed)
+            final_rejected.extend(rejected)
+
+            if not needs_refinement:
+                active_items = []
+                break
+
+            if not cfg.refinement.enabled or round_idx >= cfg.refinement.max_rounds:
+                final_rejected.extend(
+                    _mark_rejected(
+                        needs_refinement,
+                        reason="max_rounds_reached",
+                        reason_code="max_rounds_reached",
+                    )
+                )
+                active_items = []
+                break
+
+            if metrics is not None:
+                with stage_timer(metrics, "regeneration", len(needs_refinement)):
+                    refined_items, regen_failures = await _regenerate_with_generator(
+                        needs_refinement,
+                        generator=generator,
+                        context=context,
+                    )
+            else:
+                refined_items, regen_failures = await _regenerate_with_generator(
+                    needs_refinement,
+                    generator=generator,
+                    context=context,
+                )
+            if regen_failures:
+                final_rejected.extend(
+                    _mark_rejected(
+                        regen_failures,
+                        reason="generator_regeneration_failed",
+                        reason_code="generator_regeneration_failed",
+                    )
+                )
+            total_regens += len(needs_refinement)
+
+            next_active: list[GeneratedQA] = []
+            for item in refined_items:
+                if item.filter_verdict is None:
+                    next_active.append(item)
+                elif item.is_rejected:
+                    final_rejected.append(item)
+                elif item.is_passed:
+                    final_passed.append(item)
+                else:
+                    item.filter_verdict = None
+                    next_active.append(item)
+            active_items = next_active
+
+        if active_items:
+            final_rejected.extend(
+                _mark_rejected(
+                    active_items,
+                    reason="pipeline_terminated_with_unresolved_items",
+                    reason_code="unresolved_items",
+                )
+            )
+
+        # Stage 7: Transform passed items.
+        final_passed = await _run_stage(transformer.transform, final_passed, context)
+        _annotate_transformed_items(final_passed)
+
+        return final_passed, final_rejected, raw_items, total_regens
 
     async def _arun_work_queue(
         self,
