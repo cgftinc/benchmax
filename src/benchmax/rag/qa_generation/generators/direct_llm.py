@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -9,11 +10,11 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 from tqdm.auto import tqdm
 
 from benchmax.rag.qa_generation.anchor_selector import AnchorBundle
-from benchmax.rag.qa_generation.batch_processor import BatchResult, batch_process_sync
+from benchmax.rag.qa_generation.batch_processor import BatchResult, batch_process_async
 from benchmax.rag.qa_generation.pipeline_config import (
     PipelineContext,
     GenerationTask,
@@ -232,9 +233,13 @@ def _render_template_safe(template: str, variables: dict[str, Any]) -> str:
     try:
         return render_template(template, variables)
     except KeyError:
-        protected = template.replace("{{", _ESCAPED_OPEN_BRACE).replace("}}", _ESCAPED_CLOSE_BRACE)
+        protected = template.replace("{{", _ESCAPED_OPEN_BRACE).replace(
+            "}}", _ESCAPED_CLOSE_BRACE
+        )
         required_fields = set(_TEMPLATE_FIELD_RE.findall(protected))
-        missing_fields = sorted(field for field in required_fields if field not in variables)
+        missing_fields = sorted(
+            field for field in required_fields if field not in variables
+        )
         if not missing_fields:
             raise
 
@@ -298,7 +303,8 @@ def _parse_qa_response(raw_text: str) -> tuple[str, str, list[int] | None]:
         if status == "cannot_generate":
             reason = str(payload.get("reason", "")).strip()
             logger.info(
-                "Generator signaled cannot_generate: %s", reason[:200] if reason else "no reason"
+                "Generator signaled cannot_generate: %s",
+                reason[:200] if reason else "no reason",
             )
             return "", "", None
 
@@ -308,7 +314,9 @@ def _parse_qa_response(raw_text: str) -> tuple[str, str, list[int] | None]:
             raw_chunks_used = payload.get("chunks_used")
             chunks_used: list[int] | None = None
             if isinstance(raw_chunks_used, list):
-                chunks_used = [int(i) for i in raw_chunks_used if isinstance(i, (int, float))]
+                chunks_used = [
+                    int(i) for i in raw_chunks_used if isinstance(i, (int, float))
+                ]
             return question, answer, chunks_used
 
     question_match = _QUESTION_RE.search(text)
@@ -386,19 +394,41 @@ class DirectLLMGenerator:
         self.client = client
         self.linker = linker
         self.cfg = cfg
+        # Lazily-built AsyncOpenAI clients keyed by running-loop id (an
+        # AsyncOpenAI binds its httpx pool to the loop it is first used on, and
+        # each Pipeline.run is one asyncio.run / one loop).
+        self._async_clients: dict[int, AsyncOpenAI] = {}
 
-    def generate(self, tasks: list[GenerationTask], context: PipelineContext) -> list[GeneratedQA]:
-        if not self.cfg.batch_enabled or len(tasks) <= 1:
-            return self._generate_sequential(tasks, context)
-        return self._generate_batched(tasks, context)
+    def _get_async_client(self) -> AsyncOpenAI:
+        """Return the per-loop ``AsyncOpenAI`` client, building it on first use."""
+        loop = asyncio.get_running_loop()
+        key = id(loop)
+        client = self._async_clients.get(key)
+        if client is None:
+            client = AsyncOpenAI(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+            self._async_clients[key] = client
+        return client
 
-    def _generate_sequential(
+    async def generate(
         self, tasks: list[GenerationTask], context: PipelineContext
     ) -> list[GeneratedQA]:
-        """Original sequential generation path."""
+        if not self.cfg.batch_enabled or len(tasks) <= 1:
+            return await self._generate_sequential(tasks, context)
+        return await self._generate_batched(tasks, context)
+
+    async def _generate_sequential(
+        self, tasks: list[GenerationTask], context: PipelineContext
+    ) -> list[GeneratedQA]:
+        """Original sequential generation path.
+
+        Used only for single-task / batch-disabled cases. The blocking sync
+        completion is offloaded to a worker thread to keep the event loop free;
+        behavior (sync client, token fallback) is unchanged.
+        """
         generated: list[GeneratedQA] = []
-        for pt in self._prepare_tasks(tasks, context):
-            completion = _create_chat_completion_with_fallback(
+        for pt in await self._prepare_tasks(tasks, context):
+            completion = await asyncio.to_thread(
+                _create_chat_completion_with_fallback,
                 self.client,
                 model=self.cfg.model,
                 messages=[
@@ -412,21 +442,25 @@ class DirectLLMGenerator:
             raw_text = completion.choices[0].message.content or ""
             question, answer, chunks_used = _parse_qa_response(raw_text)
             if not question or not answer:
-                logger.warning("Skipping task %s: failed to parse QA response.", pt.task.task_id)
+                logger.warning(
+                    "Skipping task %s: failed to parse QA response.", pt.task.task_id
+                )
                 continue
-            generated.append(self._build_generated_qa(pt, question, answer, chunks_used))
+            generated.append(
+                self._build_generated_qa(pt, question, answer, chunks_used)
+            )
         return generated
 
-    def _generate_batched(
+    async def _generate_batched(
         self, tasks: list[GenerationTask], context: PipelineContext
     ) -> list[GeneratedQA]:
-        """Parallel batch generation path."""
-        prepared = self._prepare_tasks(tasks, context)
+        """Parallel batch generation path (real async LLM I/O)."""
+        prepared = await self._prepare_tasks(tasks, context)
         if not prepared:
             return []
 
-        result = batch_process_sync(
-            client=self.client,
+        result = await batch_process_async(
+            client=self._get_async_client(),
             model=self.cfg.model,
             prompts=[pt.prompt for pt in prepared],
             system_prompt=[pt.system_prompt for pt in prepared],
@@ -436,10 +470,11 @@ class DirectLLMGenerator:
             show_progress=self.cfg.show_batch_progress,
             temperature=1.0,
             desc="Generating QA candidates",
+            semaphore=context.model_semaphore(self.cfg.model, self.cfg.base_url),
         )
         return self._process_batch_results(prepared, result)
 
-    def _prepare_tasks(
+    async def _prepare_tasks(
         self, tasks: list[GenerationTask], context: PipelineContext
     ) -> list[_PreparedTask]:
         """Resolve anchors and build prompts for all tasks."""
@@ -460,7 +495,9 @@ class DirectLLMGenerator:
                 context.rng.shuffle(seq)
                 style_sequences[qa_type_key] = seq
 
-        style_iters: dict[str, Iterator[str]] = {k: iter(v) for k, v in style_sequences.items()}
+        style_iters: dict[str, Iterator[str]] = {
+            k: iter(v) for k, v in style_sequences.items()
+        }
 
         prepared: list[_PreparedTask] = []
         show_prep_progress = self.cfg.show_batch_progress and len(tasks) > 1
@@ -469,14 +506,17 @@ class DirectLLMGenerator:
             if seed_chunk is None and corpus_pool:
                 seed_chunk = context.rng.choice(corpus_pool)
             if seed_chunk is None:
-                logger.warning("Skipping task %s: no seed chunk available.", task.task_id)
+                logger.warning(
+                    "Skipping task %s: no seed chunk available.", task.task_id
+                )
                 continue
 
-            anchor = self.linker.link(
+            anchor = await self.linker.alink(
                 seed_chunk,
                 target_hop_count=task.target_hop_count,
                 corpus_pool=corpus_pool,
                 reasoning_mode=task.reasoning_mode,
+                context=context,
             )
 
             # Re-anchor: if a multi-hop task got no secondaries, try other
@@ -484,14 +524,17 @@ class DirectLLMGenerator:
             needs_secondaries = (task.target_hop_count or 1) > 1
             if needs_secondaries and not anchor.secondary_chunks and corpus_pool:
                 tried = {getattr(seed_chunk, "hash", id(seed_chunk))}
-                candidates = [c for c in corpus_pool if getattr(c, "hash", id(c)) not in tried]
+                candidates = [
+                    c for c in corpus_pool if getattr(c, "hash", id(c)) not in tried
+                ]
                 context.rng.shuffle(candidates)
                 for alt_seed in candidates[:3]:
-                    anchor = self.linker.link(
+                    anchor = await self.linker.alink(
                         alt_seed,
                         target_hop_count=task.target_hop_count,
                         corpus_pool=corpus_pool,
                         reasoning_mode=task.reasoning_mode,
+                        context=context,
                     )
                     if anchor.secondary_chunks:
                         break
@@ -527,8 +570,12 @@ class DirectLLMGenerator:
             builtin_default = (
                 _LOOKUP_TEMPLATE if resolved_qa_type == "lookup" else _DEFAULT_TEMPLATE
             )
-            template = self.cfg.prompt_templates_by_qa_type.get(resolved_qa_type, builtin_default)
-            reasoning_mode_instruction = _REASONING_MODE_INSTRUCTIONS.get(task.reasoning_mode, "")
+            template = self.cfg.prompt_templates_by_qa_type.get(
+                resolved_qa_type, builtin_default
+            )
+            reasoning_mode_instruction = _REASONING_MODE_INSTRUCTIONS.get(
+                task.reasoning_mode, ""
+            )
             variables = {
                 "qa_type": resolved_qa_type,
                 "target_hop_count": resolved_hop_count,
@@ -599,13 +646,17 @@ class DirectLLMGenerator:
         for pt, response in zip(prepared, result.responses):
             if response is None:
                 n_api_fail += 1
-                logger.warning("Skipping task %s: batch LLM call failed.", pt.task.task_id)
+                logger.warning(
+                    "Skipping task %s: batch LLM call failed.", pt.task.task_id
+                )
                 continue
 
             raw = response.answer or ""
             if not raw.strip():
                 n_empty += 1
-                logger.warning("Skipping task %s: LLM returned empty response.", pt.task.task_id)
+                logger.warning(
+                    "Skipping task %s: LLM returned empty response.", pt.task.task_id
+                )
                 continue
 
             question, answer, chunks_used = _parse_qa_response(raw)
@@ -619,7 +670,9 @@ class DirectLLMGenerator:
                     raw[:300],
                 )
                 continue
-            generated.append(self._build_generated_qa(pt, question, answer, chunks_used))
+            generated.append(
+                self._build_generated_qa(pt, question, answer, chunks_used)
+            )
 
         total = len(prepared)
         n_ok = len(generated)
@@ -672,7 +725,9 @@ class DirectLLMGenerator:
                 "target_hop_count_requested": pt.requested_hop_count,
                 "reasoning_mode": pt.task.reasoning_mode,
                 "anchor_bundle": anchor,
-                "linking_hints": dict(anchor.structural_hints) if anchor.structural_hints else {},
+                "linking_hints": dict(anchor.structural_hints)
+                if anchor.structural_hints
+                else {},
                 "generation_mode": "llm_direct",
                 "refinement_count": 0,
                 "same_seed_refinement_count": 0,
