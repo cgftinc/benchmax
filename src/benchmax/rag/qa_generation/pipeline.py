@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import random
@@ -1921,12 +1922,87 @@ class Pipeline:
         transformer: QuestionTransformer,
         context: PipelineContext,
     ) -> tuple[list[GeneratedQA], list[GeneratedQA], int, list[GeneratedQA]]:
+        """Sync bridge into the async work queue (one event loop per run).
+
+        The work queue is the pipeline's single async region; ``_run_from_context``
+        (prepare) and the post-processing (dedup/format/stats) stay sync.
+        """
+        return self._run_coro(
+            self._arun_work_queue(
+                source=source,
+                generator=generator,
+                guard_filter=guard_filter,
+                filter_stage_names=filter_stage_names,
+                filter_chain=filter_chain,
+                transformer=transformer,
+                context=context,
+            )
+        )
+
+    @staticmethod
+    def _run_coro(coro: Any) -> Any:
+        """Run *coro* to completion from sync code.
+
+        ``asyncio.run`` normally; falls back to ``nest_asyncio`` when a loop is
+        already running (e.g. a Jupyter kernel).
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            return asyncio.run(coro)
+        import nest_asyncio
+
+        nest_asyncio.apply(loop)
+        return loop.run_until_complete(coro)
+
+    async def _aprocess_batch(
+        self,
+        tasks: list[GenerationTask],
+        *,
+        generator: QuestionGenerator,
+        guard_filter: DeterministicGuardsFilter,
+        filter_stage_names: list[str],
+        filter_chain: list[EvaluatorFilter],
+        transformer: QuestionTransformer,
+        context: PipelineContext,
+        incremental_dedup: IncrementalDeduplicator | None = None,
+    ) -> tuple[list[GeneratedQA], list[GeneratedQA], list[GeneratedQA], int]:
+        """Async wrapper around :meth:`_process_batch`.
+
+        2c.0: delegates to the untouched sync ``_process_batch`` in a worker
+        thread for guaranteed parity. Later increments port the body to native
+        async and await each stage directly.
+        """
+        return await asyncio.to_thread(
+            self._process_batch,
+            tasks,
+            generator=generator,
+            guard_filter=guard_filter,
+            filter_stage_names=filter_stage_names,
+            filter_chain=filter_chain,
+            transformer=transformer,
+            context=context,
+            incremental_dedup=incremental_dedup,
+        )
+
+    async def _arun_work_queue(
+        self,
+        *,
+        source: Any,
+        generator: QuestionGenerator,
+        guard_filter: DeterministicGuardsFilter,
+        filter_stage_names: list[str],
+        filter_chain: list[EvaluatorFilter],
+        transformer: QuestionTransformer,
+        context: PipelineContext,
+    ) -> tuple[list[GeneratedQA], list[GeneratedQA], int, list[GeneratedQA]]:
         """Run stages 5-7 in micro-batches with dynamic distribution.
 
         Returns:
             (all_passed, all_rejected, total_regens, all_raw_items)
         """
-        from concurrent.futures import ThreadPoolExecutor
         from pathlib import Path
 
         from benchmax.rag.qa_generation.pipeline_config import (
@@ -2045,7 +2121,7 @@ class Pipeline:
                 if not tasks or iteration_count >= max_iterations:
                     break
 
-                passed, rejected, raw, regens = self._process_batch(
+                passed, rejected, raw, regens = await self._aprocess_batch(
                     tasks,
                     generator=generator,
                     guard_filter=guard_filter,
@@ -2138,212 +2214,195 @@ class Pipeline:
                         )
                         break
         else:
-            # Parallel processing with ThreadPoolExecutor.
+            # Parallel processing with asyncio tasks on one event loop.
             import copy
             import threading
 
+            # The collect/submit critical sections below contain no awaits, so on
+            # a single event loop the lock never contends; kept to keep the
+            # shared-state mutations explicit (and to survive a future refactor).
             lock = threading.Lock()
 
-            def _run_one_batch(
-                batch_tasks: list[GenerationTask],
-                batch_context: PipelineContext,
-            ) -> tuple[
-                list[GeneratedQA],
-                list[GeneratedQA],
-                list[GeneratedQA],
-                int,
-            ]:
-                return self._process_batch(
-                    batch_tasks,
-                    generator=generator,
-                    guard_filter=guard_filter,
-                    filter_stage_names=filter_stage_names,
-                    filter_chain=filter_chain,
-                    transformer=transformer,
-                    context=batch_context,
-                    incremental_dedup=incremental_dedup,
-                )
+            # futures[task] = (batch_idx, batch_context, in_flight_types)
+            # in_flight_types lets us decrement the shared in-flight counters
+            # on collection without recomputing from the task list.
+            futures: dict[Any, tuple[int, PipelineContext, dict[str, int]]] = {}
+            in_flight_type_counts: dict[str, int] = {t: 0 for t in target_type_counts}
 
-            with ThreadPoolExecutor(max_workers=max_parallel) as pool:
-                # futures[fut] = (batch_idx, batch_context, in_flight_types)
-                # in_flight_types lets us decrement the shared in-flight counters
-                # on collection without recomputing from the task list.
-                futures: dict[Any, tuple[int, PipelineContext, dict[str, int]]] = {}
-                in_flight_type_counts: dict[str, int] = {
-                    t: 0 for t in target_type_counts
-                }
-
-                def _submit_next() -> None:
-                    nonlocal batch_idx, iteration_count
-                    while (
-                        len(futures) < max_parallel and iteration_count < max_iterations
-                    ):
-                        # Subtract in-flight work from remaining quota so concurrent
-                        # batches don't collectively overshoot a type's target.
-                        effective_accepted_types = {
-                            t: accepted_type_counts.get(t, 0)
-                            + in_flight_type_counts.get(t, 0)
-                            for t in target_type_counts
-                        }
-                        tasks = compute_next_batch(
-                            target_type_counts=target_type_counts,
-                            accepted_type_counts=effective_accepted_types,
-                            target_mode_counts=target_mode_counts,
-                            accepted_mode_counts=accepted_mode_counts,
-                            target_hop_counts=target_hop_counts,
-                            accepted_hop_counts=accepted_hop_counts,
-                            batch_size=batch_size,
-                            source=source,
-                            cfg=cfg,
-                            iteration_count=iteration_count,
-                            profile=profile,
-                        )
-                        if not tasks:
-                            break
-                        batch_in_flight: dict[str, int] = {}
-                        for t in tasks:
-                            batch_in_flight[t.qa_type] = (
-                                batch_in_flight.get(t.qa_type, 0) + 1
-                            )
-                        for k, v in batch_in_flight.items():
-                            in_flight_type_counts[k] = (
-                                in_flight_type_counts.get(k, 0) + v
-                            )
-                        batch_context = copy.copy(context)
-                        batch_context.state = dict(context.state)
-                        if context.metrics is not None:
-                            batch_context.metrics = PipelineMetrics()
-                        fut = pool.submit(_run_one_batch, tasks, batch_context)
-                        futures[fut] = (batch_idx, batch_context, batch_in_flight)
-                        batch_idx += 1
-                        iteration_count += 1
-
-                _submit_next()
-
-                while futures:
-                    done = [f for f in futures if f.done()]
-                    if not done:
-                        import concurrent.futures
-
-                        done_set, _ = concurrent.futures.wait(
-                            futures.keys(),
-                            return_when=(concurrent.futures.FIRST_COMPLETED),
-                        )
-                        done = list(done_set)
-
-                    def _collect_result(
-                        fut: Any, b_idx: int, batch_ctx: PipelineContext
-                    ) -> None:
-                        nonlocal consecutive_empty, total_regens
-                        passed, rejected, raw, regens = fut.result()
-
-                        with lock:
-                            accepted, quota_rejected = _accept_items_under_type_quota(
-                                passed,
-                                accepted_type_counts=(accepted_type_counts),
-                                target_type_counts=target_type_counts,
-                            )
-                            batch_rejected = [
-                                *rejected,
-                                *quota_rejected,
-                            ]
-
-                            if len(accepted) == 0:
-                                consecutive_empty += 1
-                            else:
-                                consecutive_empty = 0
-
-                            _update_subdistribution_counts(
-                                accepted,
-                                accepted_mode_counts=accepted_mode_counts,
-                                accepted_hop_counts=accepted_hop_counts,
-                            )
-
-                            all_passed.extend(accepted)
-                            incremental_dedup.register_accepted(accepted)
-                            all_rejected.extend(batch_rejected)
-                            all_raw.extend(raw)
-                            total_regens += regens
-                            pbar.update(len(accepted))
-                            ckpt_mgr.save_batch(
-                                b_idx,
-                                accepted,
-                                batch_rejected,
-                                regens,
-                                accepted_by_type=accepted_type_counts,
-                                accepted_by_reasoning_mode=(accepted_mode_counts),
-                                accepted_by_hop_count=(accepted_hop_counts),
-                                iteration_count=iteration_count,
-                            )
-
-                            p_metrics = context.metrics
-                            batch_metrics_obj = batch_ctx.metrics
-                            if p_metrics is not None and batch_metrics_obj is not None:
-                                p_metrics.merge_stage_metrics(batch_metrics_obj)
-                                c_gen = len(all_raw)
-                                c_acc = len(all_passed)
-                                batch_m = BatchMetrics(
-                                    batch_index=b_idx,
-                                    generated_count=len(raw),
-                                    accepted_count=len(accepted),
-                                    rejected_count=len(batch_rejected),
-                                    regeneration_count=regens,
-                                    acceptance_rate=(
-                                        len(accepted) / len(raw) if raw else 0.0
-                                    ),
-                                    cumulative_acceptance_rate=(
-                                        c_acc / c_gen if c_gen > 0 else 0.0
-                                    ),
-                                    cumulative_fill_rate=(
-                                        c_acc / target if target > 0 else 0.0
-                                    ),
-                                )
-                                p_metrics.batch_history.append(batch_m)
-
-                        _print_progress(
-                            f"  Batch {b_idx + 1}: {len(raw)} generated"
-                            f" → {len(accepted)} accepted,"
-                            f" {len(batch_rejected)} rejected,"
-                            f" {regens} regenerated",
-                            verbose=cfg.verbose,
-                        )
-
-                    for fut in done:
-                        b_idx, batch_ctx, in_flight_types = futures.pop(fut)
-                        with lock:
-                            for k, v in in_flight_types.items():
-                                in_flight_type_counts[k] = max(
-                                    0, in_flight_type_counts.get(k, 0) - v
-                                )
-                        _collect_result(fut, b_idx, batch_ctx)
-
-                    with lock:
-                        _should_stop = consecutive_empty >= 5
-                        remaining_count = target - len(all_passed)
-                        if (
-                            not _should_stop
-                            and remaining_count > batch_size
-                            and context.metrics is not None
-                            and should_early_stop(context.metrics.batch_history)
-                        ):
-                            _should_stop = True
-
-                    if _should_stop:
-                        # Drain remaining in-flight futures.
-                        for fut, (b_idx, batch_ctx, _in_flight) in list(
-                            futures.items()
-                        ):
-                            fut.result()  # wait
-                            _collect_result(fut, b_idx, batch_ctx)
-                        futures.clear()
-                        logger.warning(
-                            "Acceptance rate below threshold or no items "
-                            "accepted in consecutive batches, stopping early"
-                        )
+            def _submit_next() -> None:
+                nonlocal batch_idx, iteration_count
+                while len(futures) < max_parallel and iteration_count < max_iterations:
+                    # Subtract in-flight work from remaining quota so concurrent
+                    # batches don't collectively overshoot a type's target.
+                    effective_accepted_types = {
+                        t: accepted_type_counts.get(t, 0)
+                        + in_flight_type_counts.get(t, 0)
+                        for t in target_type_counts
+                    }
+                    tasks = compute_next_batch(
+                        target_type_counts=target_type_counts,
+                        accepted_type_counts=effective_accepted_types,
+                        target_mode_counts=target_mode_counts,
+                        accepted_mode_counts=accepted_mode_counts,
+                        target_hop_counts=target_hop_counts,
+                        accepted_hop_counts=accepted_hop_counts,
+                        batch_size=batch_size,
+                        source=source,
+                        cfg=cfg,
+                        iteration_count=iteration_count,
+                        profile=profile,
+                    )
+                    if not tasks:
                         break
+                    batch_in_flight: dict[str, int] = {}
+                    for t in tasks:
+                        batch_in_flight[t.qa_type] = (
+                            batch_in_flight.get(t.qa_type, 0) + 1
+                        )
+                    for k, v in batch_in_flight.items():
+                        in_flight_type_counts[k] = in_flight_type_counts.get(k, 0) + v
+                    batch_context = copy.copy(context)
+                    batch_context.state = dict(context.state)
+                    if context.metrics is not None:
+                        batch_context.metrics = PipelineMetrics()
+                    fut = asyncio.create_task(
+                        self._aprocess_batch(
+                            tasks,
+                            generator=generator,
+                            guard_filter=guard_filter,
+                            filter_stage_names=filter_stage_names,
+                            filter_chain=filter_chain,
+                            transformer=transformer,
+                            context=batch_context,
+                            incremental_dedup=incremental_dedup,
+                        )
+                    )
+                    futures[fut] = (batch_idx, batch_context, batch_in_flight)
+                    batch_idx += 1
+                    iteration_count += 1
+
+            _submit_next()
+
+            while futures:
+                done = [f for f in futures if f.done()]
+                if not done:
+                    done_set, _ = await asyncio.wait(
+                        futures.keys(),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    done = list(done_set)
+
+                def _collect_result(
+                    fut: Any, b_idx: int, batch_ctx: PipelineContext
+                ) -> None:
+                    nonlocal consecutive_empty, total_regens
+                    passed, rejected, raw, regens = fut.result()
 
                     with lock:
-                        _submit_next()
+                        accepted, quota_rejected = _accept_items_under_type_quota(
+                            passed,
+                            accepted_type_counts=(accepted_type_counts),
+                            target_type_counts=target_type_counts,
+                        )
+                        batch_rejected = [
+                            *rejected,
+                            *quota_rejected,
+                        ]
+
+                        if len(accepted) == 0:
+                            consecutive_empty += 1
+                        else:
+                            consecutive_empty = 0
+
+                        _update_subdistribution_counts(
+                            accepted,
+                            accepted_mode_counts=accepted_mode_counts,
+                            accepted_hop_counts=accepted_hop_counts,
+                        )
+
+                        all_passed.extend(accepted)
+                        incremental_dedup.register_accepted(accepted)
+                        all_rejected.extend(batch_rejected)
+                        all_raw.extend(raw)
+                        total_regens += regens
+                        pbar.update(len(accepted))
+                        ckpt_mgr.save_batch(
+                            b_idx,
+                            accepted,
+                            batch_rejected,
+                            regens,
+                            accepted_by_type=accepted_type_counts,
+                            accepted_by_reasoning_mode=(accepted_mode_counts),
+                            accepted_by_hop_count=(accepted_hop_counts),
+                            iteration_count=iteration_count,
+                        )
+
+                        p_metrics = context.metrics
+                        batch_metrics_obj = batch_ctx.metrics
+                        if p_metrics is not None and batch_metrics_obj is not None:
+                            p_metrics.merge_stage_metrics(batch_metrics_obj)
+                            c_gen = len(all_raw)
+                            c_acc = len(all_passed)
+                            batch_m = BatchMetrics(
+                                batch_index=b_idx,
+                                generated_count=len(raw),
+                                accepted_count=len(accepted),
+                                rejected_count=len(batch_rejected),
+                                regeneration_count=regens,
+                                acceptance_rate=(
+                                    len(accepted) / len(raw) if raw else 0.0
+                                ),
+                                cumulative_acceptance_rate=(
+                                    c_acc / c_gen if c_gen > 0 else 0.0
+                                ),
+                                cumulative_fill_rate=(
+                                    c_acc / target if target > 0 else 0.0
+                                ),
+                            )
+                            p_metrics.batch_history.append(batch_m)
+
+                    _print_progress(
+                        f"  Batch {b_idx + 1}: {len(raw)} generated"
+                        f" → {len(accepted)} accepted,"
+                        f" {len(batch_rejected)} rejected,"
+                        f" {regens} regenerated",
+                        verbose=cfg.verbose,
+                    )
+
+                for fut in done:
+                    b_idx, batch_ctx, in_flight_types = futures.pop(fut)
+                    with lock:
+                        for k, v in in_flight_types.items():
+                            in_flight_type_counts[k] = max(
+                                0, in_flight_type_counts.get(k, 0) - v
+                            )
+                    _collect_result(fut, b_idx, batch_ctx)
+
+                with lock:
+                    _should_stop = consecutive_empty >= 5
+                    remaining_count = target - len(all_passed)
+                    if (
+                        not _should_stop
+                        and remaining_count > batch_size
+                        and context.metrics is not None
+                        and should_early_stop(context.metrics.batch_history)
+                    ):
+                        _should_stop = True
+
+                if _should_stop:
+                    # Drain remaining in-flight tasks.
+                    for fut, (b_idx, batch_ctx, _in_flight) in list(futures.items()):
+                        await fut  # wait
+                        _collect_result(fut, b_idx, batch_ctx)
+                    futures.clear()
+                    logger.warning(
+                        "Acceptance rate below threshold or no items "
+                        "accepted in consecutive batches, stopping early"
+                    )
+                    break
+
+                with lock:
+                    _submit_next()
 
         pbar.close()
 
