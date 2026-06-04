@@ -9,13 +9,62 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
+from benchmax.envs.base_env import BaseEnv
 from benchmax.platform.client import ExampleValidation, ValidationResult
-from benchmax.platform.validation import ValidationReport, validate_env
+from benchmax.platform.validation import (
+    ValidationReport,
+    assert_group_reward_contract,
+    overrides_compute_group_reward,
+    validate_env,
+)
 
 
 class _DummyEnv:
     """Placeholder env class — never instantiated in these tests (remote path
     is faked, local path is skipped via local=False)."""
+
+
+# ---------------------------------------------------------------------------
+# Concrete envs for the local-layer group-reward checks. Module-level so
+# cloudpickle round-trips them by value (tests pass local_modules=[this]).
+# ---------------------------------------------------------------------------
+
+
+class _PlainEnv(BaseEnv):
+    """Passes every local check; does NOT override compute_group_reward."""
+
+    system_prompt = "sys"
+
+    async def list_tools(self):
+        return []
+
+    async def run_tool(self, rollout_id, tool_name, **tool_args):
+        return "ok"
+
+    async def compute_reward(self, rollout_id, messages, task, **kwargs):
+        return {"r": 1.0}
+
+
+class _GoodGroupEnv(_PlainEnv):
+    async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
+        return [{"r": 1.0} for _ in rollout_ids]
+
+
+class _NotListGroupEnv(_PlainEnv):
+    async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
+        return {"r": 1.0}  # not a list[dict]
+
+
+class _ShortGroupEnv(_PlainEnv):
+    async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
+        return [{"r": 1.0}]  # always length 1 → breaks 1:1 pairing
+
+
+class _NonFiniteGroupEnv(_PlainEnv):
+    async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
+        return [{"r": float("nan")} for _ in rollout_ids]
 
 
 def _install_fake_rollout(monkeypatch) -> dict[str, Any]:
@@ -128,3 +177,88 @@ def test_local_false_no_key_reports_nothing_ran(monkeypatch):
     assert report.local_ran is False
     assert report.remote_ran is False
     assert bool(report) is False
+
+
+# ---------------------------------------------------------------------------
+# Group-reward helpers
+# ---------------------------------------------------------------------------
+
+
+def test_overrides_compute_group_reward_predicate():
+    assert overrides_compute_group_reward(_GoodGroupEnv) is True
+    assert overrides_compute_group_reward(_GoodGroupEnv()) is True  # instance too
+    assert overrides_compute_group_reward(_PlainEnv) is False
+
+
+def test_contract_ok_returns_summary():
+    summary = assert_group_reward_contract(
+        _GoodGroupEnv(), ["a", "b"], [[], []], [None, None]
+    )
+    assert "2 dict" in summary
+
+
+def test_contract_raises_on_non_list():
+    with pytest.raises(ValueError, match="expected list"):
+        assert_group_reward_contract(_NotListGroupEnv(), ["a"], [[]], [None])
+
+
+def test_contract_raises_on_length_mismatch():
+    with pytest.raises(ValueError, match="one per rollout_id"):
+        assert_group_reward_contract(
+            _ShortGroupEnv(), ["a", "b"], [[], []], [None, None]
+        )
+
+
+def test_contract_raises_on_non_finite():
+    with pytest.raises(ValueError, match="non-finite"):
+        assert_group_reward_contract(_NonFiniteGroupEnv(), ["a"], [[]], [None])
+
+
+# ---------------------------------------------------------------------------
+# Local layer (5c) end-to-end through validate_env
+# ---------------------------------------------------------------------------
+
+_LOCAL_DATASET = [{"prompt": "hi"}, {"prompt": "yo"}]
+
+
+def _this_module():
+    import tests.unit.platform.test_validation as mod
+
+    return mod
+
+
+def test_local_group_reward_check_passes():
+    report = validate_env(
+        env_class=_GoodGroupEnv,
+        env_args={},
+        train_dataset=_LOCAL_DATASET,
+        local_modules=[_this_module()],
+        verbose=False,
+    )
+    assert report.local_ran is True
+    assert report.local_failed == 0
+    assert report.remote is None
+
+
+def test_local_group_reward_check_flags_bad_env(capsys):
+    report = validate_env(
+        env_class=_NotListGroupEnv,
+        env_args={},
+        train_dataset=_LOCAL_DATASET,
+        local_modules=[_this_module()],
+        verbose=False,
+    )
+    assert report.local_failed >= 1
+    assert "compute_group_reward failed" in capsys.readouterr().out
+
+
+def test_local_group_reward_skipped_when_not_overridden(capsys):
+    report = validate_env(
+        env_class=_PlainEnv,
+        env_args={},
+        train_dataset=_LOCAL_DATASET,
+        local_modules=[_this_module()],
+        verbose=False,
+    )
+    assert report.local_failed == 0
+    assert "compute_group_reward: skipped" in capsys.readouterr().out
