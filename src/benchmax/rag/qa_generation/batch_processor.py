@@ -46,11 +46,16 @@ from tqdm.auto import tqdm
 #
 # This single ``threading.Semaphore`` — acquired in the worker thread that runs
 # the blocking OpenAI call, so it bounds across every ephemeral loop — caps total
-# in-flight LLM calls near the knee regardless of batch/stage fan-out. Override
-# the cap with ``BENCHMAX_LLM_MAX_CONCURRENCY`` (<= 0 disables the cap, restoring
-# the old unbounded behavior for A/B comparison).
+# in-flight LLM calls regardless of batch/stage fan-out. The cap bounds in-flight
+# at ALL ``max_parallel`` levels, so it's what protects large/high-parallel jobs
+# from the 320–480 overshoot; the default is sized to the measured P=60 sweet spot
+# (cap=40 → ~51 q/min on the live cluster) rather than the latency-bound low-P
+# regime where the value barely moves throughput. The serving knee is highly
+# time-variable (collapse ~30 one day, tolerant of 120 the next), so this static
+# value is a stopgap — override with ``BENCHMAX_LLM_MAX_CONCURRENCY`` (<= 0
+# disables). An adaptive/latency-aware throttle is the durable fix (Step 3).
 _GLOBAL_LLM_CONCURRENCY_ENV = "BENCHMAX_LLM_MAX_CONCURRENCY"
-_DEFAULT_GLOBAL_LLM_CONCURRENCY = 10
+_DEFAULT_GLOBAL_LLM_CONCURRENCY = 40
 
 _global_sem_lock = threading.Lock()
 _global_sem: threading.Semaphore | None = None
