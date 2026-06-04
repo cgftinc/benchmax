@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
 from typing import Any, cast
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
-from benchmax.rag.qa_generation.batch_processor import batch_process_sync
+from benchmax.rag.qa_generation.batch_processor import batch_process_async
 from benchmax.rag.qa_generation.pipeline_config import (
     DEFAULT_GROUNDING_JUDGE_SYSTEM_PROMPT,
     DEFAULT_GROUNDING_JUDGE_USER_TEMPLATE,
@@ -56,8 +57,25 @@ class GroundingLLMFilter:
             api_key=cfg.judge_api_key,
             base_url=cfg.judge_base_url,
         )
+        # Lazily-built per-loop AsyncOpenAI judge clients (see _get_async_judge_client).
+        self._async_judge_clients: dict[int, AsyncOpenAI] = {}
 
-    def evaluate(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]:
+    def _get_async_judge_client(self) -> AsyncOpenAI:
+        """Per-loop AsyncOpenAI judge client, built on first use."""
+        loop = asyncio.get_running_loop()
+        key = id(loop)
+        client = self._async_judge_clients.get(key)
+        if client is None:
+            client = AsyncOpenAI(
+                api_key=self.cfg.judge_api_key,
+                base_url=self.cfg.judge_base_url,
+            )
+            self._async_judge_clients[key] = client
+        return client
+
+    async def evaluate(
+        self, items: list[GeneratedQA], context: PipelineContext
+    ) -> list[GeneratedQA]:
         if not self.cfg.enabled:
             return items
 
@@ -84,13 +102,16 @@ class GroundingLLMFilter:
                 if item.filter_verdict is not None and not item.is_passed:
                     continue
                 try:
-                    verdict = self._evaluate_item(
+                    verdict = await asyncio.to_thread(
+                        self._evaluate_item,
                         item,
                         max_refinements=max_refinements,
                     )
                 except Exception:
                     logger.exception("GroundingLLMFilter failed for one item")
-                    refinements = int(item.generation_metadata.get("refinement_count", 0))
+                    refinements = int(
+                        item.generation_metadata.get("refinement_count", 0)
+                    )
                     verdict = self._error_verdict(
                         str(item.qa.get("question", "")),
                         refinements=refinements,
@@ -101,16 +122,18 @@ class GroundingLLMFilter:
                 self._update_stats(stats, verdict)
             return items
 
-        return self._evaluate_batch(
+        return await self._evaluate_batch(
             items,
+            context=context,
             stats=stats,
             max_refinements=max_refinements,
         )
 
-    def _evaluate_batch(
+    async def _evaluate_batch(
         self,
         items: list[GeneratedQA],
         *,
+        context: PipelineContext,
         stats: dict[str, Any],
         max_refinements: int,
     ) -> list[GeneratedQA]:
@@ -163,15 +186,17 @@ class GroundingLLMFilter:
 
         judge_results: dict[int, dict[str, Any]] = {}
         if judge_prompts:
-            system_prompt = self.cfg.judge_system_prompt or DEFAULT_GROUNDING_JUDGE_SYSTEM_PROMPT
+            system_prompt = (
+                self.cfg.judge_system_prompt or DEFAULT_GROUNDING_JUDGE_SYSTEM_PROMPT
+            )
             corpus_language = getattr(self, "_corpus_language", "")
             if corpus_language:
                 system_prompt = (
                     f"NOTE: The question, answer, and evidence are in {corpus_language}. "
                     f"Evaluate them in {corpus_language}.\n\n{system_prompt}"
                 )
-            batch_result = batch_process_sync(
-                client=self.judge_client,
+            batch_result = await batch_process_async(
+                client=self._get_async_judge_client(),
                 model=self.cfg.judge_model,
                 prompts=judge_prompts,
                 system_prompt=system_prompt,
@@ -181,6 +206,9 @@ class GroundingLLMFilter:
                 show_progress=self.cfg.show_batch_progress,
                 temperature=0.0,
                 desc="Grounding filter",
+                semaphore=context.model_semaphore(
+                    self.cfg.judge_model, self.cfg.judge_base_url
+                ),
             )
             for j, i in enumerate(needs_judge_indices):
                 response = batch_result.responses[j]
@@ -191,7 +219,9 @@ class GroundingLLMFilter:
                         "reasoning": "batch_call_failed",
                     }
                 else:
-                    judge_results[i] = self._parse_judge_response(response.answer or "{}")
+                    judge_results[i] = self._parse_judge_response(
+                        response.answer or "{}"
+                    )
 
         # Phase 3: apply verdicts
         no_evidence_result = {
@@ -211,7 +241,9 @@ class GroundingLLMFilter:
                 )
             except Exception:
                 logger.exception("GroundingLLMFilter failed for one item")
-                refinements = int(data.item.generation_metadata.get("refinement_count", 0))
+                refinements = int(
+                    data.item.generation_metadata.get("refinement_count", 0)
+                )
                 verdict = self._error_verdict(
                     data.query,
                     refinements=refinements,
@@ -275,7 +307,9 @@ class GroundingLLMFilter:
             blocks.append(f"[{label}]\n{content}")
         return blocks
 
-    def _build_judge_prompt(self, item: GeneratedQA, evidence_blocks: list[str]) -> str | None:
+    def _build_judge_prompt(
+        self, item: GeneratedQA, evidence_blocks: list[str]
+    ) -> str | None:
         """Build judge user prompt. Returns None if no evidence (no judge call needed)."""
         if not evidence_blocks:
             return None
@@ -286,7 +320,8 @@ class GroundingLLMFilter:
             "chunks_text": chunks_text,
         }
         user_template = (
-            str(self.cfg.judge_user_template or "").strip() or DEFAULT_GROUNDING_JUDGE_USER_TEMPLATE
+            str(self.cfg.judge_user_template or "").strip()
+            or DEFAULT_GROUNDING_JUDGE_USER_TEMPLATE
         )
         try:
             return user_template.format(**prompt_vars)
@@ -308,7 +343,9 @@ class GroundingLLMFilter:
             logger.warning("Grounding judge response parse failure: %s", raw[:240])
             return {"answerable": False, "confidence": 0.0, "reasoning": "parse_error"}
 
-    def _run_judge(self, item: GeneratedQA, evidence_blocks: list[str]) -> dict[str, Any]:
+    def _run_judge(
+        self, item: GeneratedQA, evidence_blocks: list[str]
+    ) -> dict[str, Any]:
         prompt = self._build_judge_prompt(item, evidence_blocks)
         if prompt is None:
             return {
@@ -317,7 +354,9 @@ class GroundingLLMFilter:
                 "reasoning": "No evidence chunks available.",
             }
 
-        system_prompt = self.cfg.judge_system_prompt or DEFAULT_GROUNDING_JUDGE_SYSTEM_PROMPT
+        system_prompt = (
+            self.cfg.judge_system_prompt or DEFAULT_GROUNDING_JUDGE_SYSTEM_PROMPT
+        )
         corpus_language = getattr(self, "_corpus_language", "")
         if corpus_language:
             system_prompt = (
@@ -355,27 +394,43 @@ class GroundingLLMFilter:
         if isinstance(raw_supporting_ids, list):
             supporting_ids = {str(sid) for sid in raw_supporting_ids if sid}
         if answerable and supporting_ids:
-            verified_chunks = [c for c in ref_chunks if str(c.get("id", "")) in supporting_ids]
-            removed_chunks = [c for c in ref_chunks if str(c.get("id", "")) not in supporting_ids]
+            verified_chunks = [
+                c for c in ref_chunks if str(c.get("id", "")) in supporting_ids
+            ]
+            removed_chunks = [
+                c for c in ref_chunks if str(c.get("id", "")) not in supporting_ids
+            ]
             # Fall back to all ref_chunks if judge cited IDs we can't match
             if verified_chunks:
-                item.qa["reference_chunks"] = cast(list[ReferenceChunk], verified_chunks)
+                item.qa["reference_chunks"] = cast(
+                    list[ReferenceChunk], verified_chunks
+                )
                 if removed_chunks:
                     existing = list(item.qa.get("removed_reference_chunks", []))
                     existing.extend(
-                        {"chunk": c, "reason": "not_supporting", "filter": "grounding_llm"}
+                        {
+                            "chunk": c,
+                            "reason": "not_supporting",
+                            "filter": "grounding_llm",
+                        }
                         for c in removed_chunks
                     )
                     item.qa["removed_reference_chunks"] = existing
             else:
-                item.qa["reference_chunks"] = cast(list[ReferenceChunk], list(ref_chunks))
+                item.qa["reference_chunks"] = cast(
+                    list[ReferenceChunk], list(ref_chunks)
+                )
         elif answerable:
             # Judge said answerable but gave no IDs — keep all ref_chunks unchanged
             pass
 
         is_unsupported = not answerable
-        failure_type = _FAILURE_TYPE_UNSUPPORTED if is_unsupported else _FAILURE_TYPE_NONE
-        reason_code = "unsupported_or_unanswerable" if is_unsupported else "grounding_supported"
+        failure_type = (
+            _FAILURE_TYPE_UNSUPPORTED if is_unsupported else _FAILURE_TYPE_NONE
+        )
+        reason_code = (
+            "unsupported_or_unanswerable" if is_unsupported else "grounding_supported"
+        )
         feedback_type = "reanchor_feedback" if is_unsupported else None
         force_reanchor = bool(is_unsupported)
         refinement_hint = (
@@ -491,8 +546,12 @@ class GroundingLLMFilter:
         judge_answerable = metadata.get("judge_answerable")
         if isinstance(judge_answerable, bool):
             if judge_answerable:
-                stats["judge_answerable_true"] = int(stats.get("judge_answerable_true", 0)) + 1
+                stats["judge_answerable_true"] = (
+                    int(stats.get("judge_answerable_true", 0)) + 1
+                )
             else:
-                stats["judge_answerable_false"] = int(stats.get("judge_answerable_false", 0)) + 1
+                stats["judge_answerable_false"] = (
+                    int(stats.get("judge_answerable_false", 0)) + 1
+                )
         if str(metadata.get("failure_type", "")).strip() == _FAILURE_TYPE_UNSUPPORTED:
             stats["unsupported_total"] = int(stats.get("unsupported_total", 0)) + 1
