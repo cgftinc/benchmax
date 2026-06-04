@@ -1,38 +1,31 @@
 """TelestichEnv — reward env for telestich (last-letter acrostic) poems.
 
-A telestich hides a target word in the last letter (or Chinese character) of
-each line. Reward, per rollout in a GRPO group (see ``compute_group_reward``):
+A telestich hides a target word in the last letter of each line. Reward per
+rollout in a GRPO group (see ``compute_group_reward``):
 
-  1. HARD RULES (deterministic, no LLM): the poem must be a valid telestich —
-     acrostic spells the target, every line ends on a real word, right line
-     count — and must NOT write the hidden word in the body. Fail → reward 0,
-     no judge called.
-  2. QUALITY (one judge call per group, via benchmax.rubrics): the shared
-     multi-anchor `evaluate_rubric_ranking` ranks the group's valid poems with
-     BOTH reference poems inserted blind — acceptable as a floor, great as the
-     bar — placing each poem in a band: below acceptable -> [0,0.1) ("below"),
-     acceptable..great -> [0.1,0.5] ("mid"), above great -> [0.5,1.0] ("above").
-  3. BONUSES (deterministic, all POSITIVE and quality-scaled, so the total reward
-     is >= 0): ending-word diversity (anti mode-collapse, mid+above buckets), a
-     rhyme/length form bonus, and a conciseness bonus awarded only to the top
-     occupied band — rewarding a good poem that reached its answer quickly (short
-     overall rollout, plus a small tool-call-thrift part).
+  1. HARD RULES (no LLM): a perfect telestich is CORRECT and goes to the judge.
+     A near-miss (answer present, right line count, no cheat, >25% of lines
+     correct) is PARTIAL — a small graded reward so there's always a gradient.
+     Cheating / no answer / wrong line count / ≤25% correct → 0.
+  2. QUALITY (one judge call per group): the shared multi-anchor rubric judge
+     ranks the CORRECT poems against acceptable + great reference anchors.
+  3. BONUSES (positive, quality-scaled): rhyme (any correct poem), plus diversity
+     and conciseness (shorter generation + tool thrift) on the group's top band.
 
-The final reward = quality + diversity + form + conciseness
-(the component values sum to it; every component is >= 0).
+Final reward = quality + rhyme + diversity + conciseness (all components >= 0).
 """
 
 import logging
 import math
-import random
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
 import pronouncing
 from english_words import get_english_words_set
+from openai import AsyncOpenAI
 from wordfreq import word_frequency
 
 from benchmax.envs.base_env import BaseEnv
@@ -40,6 +33,7 @@ from benchmax.envs.example_id import make_example
 from benchmax.envs.logging import rollout_context
 from benchmax.envs.reward_helpers import extract_completion_text
 from benchmax.envs.types import Example, Messages, ToolDefinition
+from benchmax.platform.credentials import resolve_judge_key
 from benchmax.rubrics.rubric import Rubric, evaluate_rubric_ranking
 
 logger = logging.getLogger(__name__)
@@ -49,48 +43,48 @@ logger = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════════
 JUDGE_MODEL = "gpt-5.4"
 
-# Quality is scored by the shared MULTI-ANCHOR rubric judge (benchmax.rubrics):
-# one judge call ranks the group's valid poems with BOTH of the example's
-# reference poems inserted blind — `acceptable` as a floor, `great` as the bar.
-# A poem's score falls in one of three bands by where it ranks vs the anchors:
-#     below acceptable   -> [0, 0.1)    "below" bucket  (degenerate / sub-par)
-#     acceptable..great   -> [0.1, 0.5]  "mid" bucket
-#     above great         -> [0.5, 1.0]  "above" bucket
-# The floor anchor gives quality an absolute zero-point: an all-bad group ranks
-# below acceptable -> everyone near 0 (pure relative ranking can't do this).
-ACCEPTABLE_EDGE = 0.1    # score earned by tying the acceptable (floor) anchor
-GREAT_EDGE = 0.5         # score earned by tying the great (bar) anchor
-QUALITY_GATE = ACCEPTABLE_EDGE   # secondary BONUSES require quality >= this
-                                 # (i.e. mid/above buckets); below it earns no bonus
-QUALITY_FLOOR = 0.01     # clearing correctness is worth a hair more than being
-                         # gated: the worst-ranked valid poem still beats a
-                         # gated poem's 0, so the model always sees gradient for
-                         # producing a correct telestich at all
+# The `feedback` tool's craft critic — a cheap base model. FORMATIVE ONLY (never
+# sets reward), so its noise can't corrupt the signal. Same auth as the judge.
+FEEDBACK_MODEL = "qwen3.5-4b"
+
+# CORRECT poems are ranked by the multi-anchor rubric judge against `acceptable`
+# and `great` reference anchors; the band score maps onto a reward ladder
+# (_map_correct_score): below acceptable → [0.1,0.4) "below", acceptable..great →
+# [0.4,0.7] "mid", above great → (0.7,1.0] "above".
+ACCEPTABLE_EDGE = 0.4    # quality for tying the acceptable ("normal") anchor
+GREAT_EDGE = 0.7         # quality for tying the great anchor
+MIN_CORRECT = 0.1        # floor for a correct poem ranked dead-last
+# Partial credit for a near-miss (right line count, real poem lines, no cheat) with
+# >MIN_CORRECT_FRAC of lines correct. Reward scales PARTIAL_HI (1 miss) → PARTIAL_LO
+# (most misses still above the bar). Ordering: gated 0 < partial < worst correct 0.1.
+PARTIAL_HI = 0.05        # best partial (exactly one miss)
+PARTIAL_LO = 0.01        # worst partial (most misses still above the bar)
+MIN_CORRECT_FRAC = 0.25  # need MORE than 25% of lines correct to earn partial credit
 QUALITY_RUBRIC = Rubric(
     title="poetic quality",
     description=(
-        "Judge the poem's craft only (the acrostic is already verified): coherence "
+        "Judge the poem's craft only (the telestich is already verified): coherence "
         "(reads as one deliberate poem, not interchangeable lines), concrete vivid "
         "imagery, faithfulness to the requested theme/voice/tone, natural un-forced "
         "line endings (not bent just to hit a letter), no nonsense lines, no template "
-        "lock. Prefer economy — every line should earn its place; penalize padding, "
-        "filler, and prose run-on lines that read like an essay rather than a poem."
+        "lock. Ending words must be natural, common English words used in their real "
+        "sense; heavily penalize obscure, archaic, or truncated-sounding endings "
+        "(e.g. 'ret', 'dis', 'rev') jammed in only to land a letter. Prefer economy — "
+        "every line should earn its place; penalize padding, filler, and prose "
+        "run-on lines that read like an essay rather than a poem."
     ),
     type="positive",
 )
 
-# Secondary terms are all SCALED BY QUALITY, so a weak poem can't farm them.
-W_FORM = 0.15        # rhyme density (en) / line-length uniformity (zh)
-W_DIVERSITY = 0.50   # unique-ending bonus (anti mode-collapse); mid+above buckets only
-
-# Conciseness — a POSITIVE bonus (like diversity: quality-scaled), awarded only
-# to the TOP occupied band (mid/above) so we reward a GOOD poem that also reached
-# its answer quickly. Two parts: overall rollout length (the bulk) and tool-call
-# thrift (a small part). A long-winded or tool-heavy top poem just earns less of
-# it; gated / below-bucket poems earn none — so every component stays >= 0.
-W_CONCISE = 0.15            # max conciseness bonus (quality-scaled)
-CONCISE_TOOL_WEIGHT = 0.2   # tool thrift is a small part; rollout length is the rest
-CALL_DECAY = 0.35           # tool efficiency = exp(-CALL_DECAY * n_tool_calls)
+# Secondary bonuses are all quality-scaled (a weak poem can't farm them) and each
+# capped at 0.15, so quality stays dominant. Diversity + conciseness apply only to
+# the group's TOP occupied band, so even an all-"below" group keeps a gradient.
+W_RHYME = 0.15       # rhyme-density bonus (any correct poem)
+W_DIVERSITY = 0.15   # unique-ending bonus (anti mode-collapse)
+# Conciseness = shorter generation + tool thrift, contributing equally (0.075 each).
+# Tool-eff is graded (full at 0 calls → 0 at the cap), so the model weans off the tool.
+W_CONCISE = 0.075    # shorter-generation bonus
+W_TOOL_EFF = 0.075   # few-tool-calls bonus — the wean-off knob
 LEN_BUDGET_BASE = 1500      # completion-char budget = BASE + PER_LINE * acrostic_len;
 LEN_BUDGET_PER_LINE = 600   # at/under budget = full length-efficiency, decaying above
 
@@ -175,142 +169,141 @@ def final_poem(messages: Messages) -> str | None:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# WORD VALIDITY + WORD BANK
+# WORD VALIDITY
 # ══════════════════════════════════════════════════════════════════════
 _WEB2 = get_english_words_set(["web2"], lower=True)
-_FREQ_THRESHOLD = 1e-7
-_MIN_WORD_LEN = 2
+# Rejects only true gibberish — deliberately LENIENT, since no freq/dict rule cleanly
+# separates truncation-junk ("dis","tak") from rare real words ("origami"). The
+# "natural vs forced ending" call is left to the rubric judge + partial credit.
+# Length-aware validity:
+#  - len >= 3: (in web2 OR CMU dict) AND minimally attested; OR common on its own.
+#  - len == 2: dicts too noisy here, so require HIGH freq ("tv","iv","go" pass).
+#  - len < 2: never valid.
+_FREQ_THRESHOLD = 3e-6        # 3+ letters: common enough to pass without the dict
+_DICT_FREQ_FLOOR = 3e-7       # 3+ letters: min attestation for a dictionary word
+_SHORT_FREQ_THRESHOLD = 2e-5  # exactly 2 letters (dicts ignored — too noisy here)
+
+
+def _in_dictionary(w: str) -> bool:
+    return w in _WEB2 or bool(pronouncing.phones_for_word(w))
 
 
 def is_valid_word(word: str) -> bool:
     w = (word or "").lower()
-    if len(w) < _MIN_WORD_LEN:
+    n = len(w)
+    if n < 2:
         return False
-    return w in _WEB2 or word_frequency(w, "en") > _FREQ_THRESHOLD
-
-
-_ENDING_INDEX: dict[str, list[tuple[str, float]]] | None = None
-
-
-def _build_ending_index() -> dict[str, list[tuple[str, float]]]:
-    """letter -> [(word, freq)] for real, poem-usable words ending in that letter.
-
-    Filters out function words and proper-noun/abbreviation noise by keeping
-    only dictionary words >= 3 letters (so 'i'/'a' fillers and 'to'/'of'/'hi'
-    fillers don't dominate the bank — the source of the ski/hi crutch).
-    """
-    index: dict[str, list[tuple[str, float]]] = defaultdict(list)
-    bad = re.compile(r"[\s.\-]")
-    for w in _WEB2:
-        if len(w) < 3 or not w[-1].isalpha() or bad.search(w):
-            continue
-        freq = word_frequency(w, "en")
-        if freq > _FREQ_THRESHOLD:
-            index[w[-1].lower()].append((w, freq))
-    for letter in index:
-        seen, deduped = set(), []
-        for w, f in sorted(index[letter], key=lambda x: -x[1]):
-            if w not in seen:
-                seen.add(w)
-                deduped.append((w, f))
-        index[letter] = deduped
-    return dict(index)
-
-
-def word_bank(letter: str, k: int = 30) -> list[str]:
-    """k frequency-weighted real words ending in `letter` (a-z)."""
-    global _ENDING_INDEX
-    if _ENDING_INDEX is None:
-        _ENDING_INDEX = _build_ending_index()
-    letter = (letter or "").lower().strip()
-    if len(letter) != 1 or not letter.isalpha():
-        return []
-    pool = _ENDING_INDEX.get(letter, [])[:200]
-    if len(pool) <= k:
-        return [w for w, _ in pool]
-    words, weights = [w for w, _ in pool], [f for _, f in pool]
-    out: list[str] = []
-    while len(out) < k and words:
-        i = random.choices(range(len(words)), weights=weights, k=1)[0]
-        out.append(words.pop(i))
-        weights.pop(i)
-    return out
+    f = word_frequency(w, "en")
+    if n == 2:
+        return f > _SHORT_FREQ_THRESHOLD
+    return (_in_dictionary(w) and f > _DICT_FREQ_FLOOR) or f > _FREQ_THRESHOLD
 
 
 # ══════════════════════════════════════════════════════════════════════
 # HARD RULES
 # ══════════════════════════════════════════════════════════════════════
-# A telestich line must be an actual poetic line, not the bare acrostic spelled
-# vertically. These floors kill the degenerate "one char/word per line" hack
-# (e.g. 挚/友/如/镜) with a wide margin — in the great-ref poems the SHORTEST
-# real line is 11 CJK chars (zh) / 6 words (en), so legit poems never trip these.
+# Minimum line size — kills the degenerate "acrostic spelled one word/char per line"
+# hack. Legit poems clear these with wide margin.
 MIN_ZH_LINE_CHARS = 4
 MIN_EN_LINE_WORDS = 3
 
+# Filler/interjection words almost always bent in just to land a letter (e.g. "hi"
+# for 'i'). Valid words (the non-word check misses them), so the feedback layer flags
+# them to push the model toward a content word with the same letter.
+_FORCED_ENDINGS = frozenset({
+    "hi", "ah", "oh", "eh", "ho", "hm", "hmm", "um", "uh", "er", "ahh", "ohh",
+    "ooh", "aha", "hey", "yay", "lo", "ye", "ya", "huh", "aw", "ow", "hah", "ha",
+    "oi", "yo",
+})
+
+
+def _partial_reward(misses: int, allowed: int) -> float:
+    """Map a partial poem's miss count to a small graded reward: 1 miss → PARTIAL_HI,
+    the miss limit → PARTIAL_LO, linear between. (allowed == 1 → always PARTIAL_HI.)"""
+    if allowed <= 1:
+        return PARTIAL_HI
+    frac = (misses - 1) / (allowed - 1)          # 0 at 1 miss, 1 at the limit
+    return PARTIAL_HI - frac * (PARTIAL_HI - PARTIAL_LO)
+
 
 def check_hard_rules(poem: str | None, target: str) -> dict:
-    """Deterministic gate. correct == True iff valid telestich AND not cheating.
-    `reason` names the first rule that failed (empty string when correct)."""
+    """Graded gate. `correct` == True iff a perfect telestich. Otherwise, if the
+    answer is present, the line count is right, it doesn't cheat, and MORE than
+    MIN_CORRECT_FRAC of lines are correct (a correct line = a valid word ending in
+    the required letter), the poem is `partial` and earns a small graded
+    `partial_score` instead of being zeroed — this keeps a learning gradient.
+    Cheating, a missing answer, a wrong line count, or ≤25% correct → gated (0)."""
     target = (target or "").strip()
     language = detect_language(target)
     lines = parse_poem_lines(poem or "")
     chars = list(target.lower()) if language == "en" else list(target)
     n = len(chars)
-
     cheated = contains_hidden_word(poem or "", target, language)
 
-    def result(correct: bool, reason: str) -> dict:
-        return {"correct": correct, "cheated": cheated, "language": language,
+    def result(correct: bool, partial: bool, reason: str,
+               misses: int = 0, score: float = 0.0) -> dict:
+        return {"correct": correct, "partial": partial, "partial_score": score,
+                "misses": misses, "cheated": cheated, "language": language,
                 "lines": lines, "reason": reason}
 
+    # Hard preconditions for ANY credit: a target, an answer poem, no cheating,
+    # and the right number of lines.
     if n == 0:
-        return result(False, "empty target word")
+        return result(False, False, "empty target word")
     if not lines:
-        return result(False, "no poem found in completion")
-    if len(lines) != n:
-        return result(False, f"line count {len(lines)} != target length {n}")
-    for i in range(n):
-        got = last_char(lines[i], language)
-        if got != chars[i]:
-            return result(False, f"line {i + 1} ends '{got}', expected '{chars[i]}'")
-        if language == "zh":
-            # reject the acrostic spelled vertically (one char per line)
-            cjk = len(_CJK_RE.findall(lines[i]))
-            if cjk < MIN_ZH_LINE_CHARS:
-                return result(False, f"line {i + 1} too short ({cjk} chars) — not a poem line")
-        else:
-            if not is_valid_word(last_word(lines[i])):
-                return result(False, f"line {i + 1} ends on non-word '{last_word(lines[i])}'")
-            if len(lines[i].split()) < MIN_EN_LINE_WORDS:
-                return result(False, f"line {i + 1} too short — not a poem line")
+        return result(False, False, "no <answer> poem found in completion")
     if cheated:
-        return result(False, "hidden word written in the poem body")
-    return result(True, "")
+        return result(False, False, "hidden word written in the poem body")
+    if len(lines) != n:
+        return result(False, False, f"line count {len(lines)} != target length {n}")
+
+    # Count "misses": lines whose ending isn't a valid word in the required letter
+    # (or, for zh, a vertically-spelled one-char line / wrong char).
+    miss_idx = []
+    for i in range(n):
+        if language == "zh":
+            cjk = len(_CJK_RE.findall(lines[i]))
+            ok = cjk >= MIN_ZH_LINE_CHARS and last_char(lines[i], language) == chars[i]
+        else:
+            ok = (last_char(lines[i], language) == chars[i]
+                  and is_valid_word(last_word(lines[i]))
+                  and len(lines[i].split()) >= MIN_EN_LINE_WORDS)
+        if not ok:
+            miss_idx.append(i)
+
+    misses = len(miss_idx)
+    if misses == 0:
+        return result(True, False, "", 0)
+    good = n - misses
+    detail = "; ".join(f"line {i + 1} ('{last_word(lines[i]) or '∅'}'→needs '{chars[i]}')"
+                       for i in miss_idx)
+    if good / n > MIN_CORRECT_FRAC:   # more than 25% of lines correct → partial credit
+        max_partial = math.ceil((1 - MIN_CORRECT_FRAC) * n) - 1   # most misses still above the bar
+        return result(False, True, f"partial ({good}/{n} endings correct): {detail}",
+                      misses, _partial_reward(misses, max_partial))
+    return result(False, False,
+                  f"{misses}/{n} endings off (only {good}/{n} correct, ≤25%): {detail}", misses)
 
 
 def _gate_category(reason: str) -> str:
     """Collapse a specific gate reason (e.g. "line 2 ends 'l', expected 'u'") into
     a short bucket so the group log shows counts-by-kind, not one entry per line."""
     r = reason.lower()
-    if "no poem" in r:
-        return "no-poem"
+    if "no <answer>" in r or "no poem" in r:
+        return "no-answer"
     if "empty target" in r:
         return "bad-target"
     if "line count" in r:
         return "wrong-line-count"
-    if "expected" in r:
-        return "wrong-ending-letter"
-    if "non-word" in r:
-        return "non-word-ending"
-    if "too short" in r:
-        return "line-too-short"
     if "hidden word" in r:
         return "cheated"
+    if "endings off" in r:
+        return "too-many-misses"
     return "other"
 
 
 # ══════════════════════════════════════════════════════════════════════
-# FORM  (rhyme density for EN, line-length uniformity for ZH)
+# RHYME  (English rhyme density)
 # ══════════════════════════════════════════════════════════════════════
 def _rhyme_analysis(lines: list[str]) -> tuple[float, list[list[int]], list[str], list[int]]:
     """(density, clusters, endings, idx). density = largest rhyme cluster size /
@@ -349,32 +342,12 @@ def _rhyme_analysis(lines: list[str]) -> tuple[float, list[list[int]], list[str]
     return largest / len(idx), clusters, endings, idx
 
 
-def _english_rhyme_density(lines: list[str]) -> float:
+def rhyme_score(lines: list[str]) -> float:
     return _rhyme_analysis(lines)[0]
 
 
-def _mandarin_length_uniformity(lines: list[str]) -> float:
-    lengths = [len(_CJK_RE.findall(line)) for line in lines]
-    nz = [n for n in lengths if n > 0]
-    if len(nz) < 2:
-        return 0.0
-    modal = Counter(nz).most_common(1)[0][0]
-    return sum(1 for n in lengths if n == modal) / len(nz)
-
-
-def form_score(lines: list[str], language: str) -> float:
-    return _mandarin_length_uniformity(lines) if language == "zh" else _english_rhyme_density(lines)
-
-
-def form_detail(lines: list[str], language: str) -> str:
-    """Human-readable explanation of the form score — which lines rhyme (en) or
-    the line-length profile (zh)."""
-    if language == "zh":
-        lengths = [len(_CJK_RE.findall(line)) for line in lines]
-        nz = [n for n in lengths if n > 0]
-        modal = Counter(nz).most_common(1)[0][0] if nz else 0
-        match = sum(1 for n in nz if n == modal)
-        return f"CJK lengths {lengths}, modal {modal} → {match}/{len(nz)} lines uniform"
+def rhyme_detail(lines: list[str]) -> str:
+    """Human-readable explanation of the rhyme score — which lines rhyme."""
     density, clusters, endings, idx = _rhyme_analysis(lines)
     rhyming = [c for c in clusters if len(c) >= 2]
     groups = "; ".join(
@@ -385,6 +358,93 @@ def form_detail(lines: list[str], language: str) -> str:
     largest = max((len(c) for c in rhyming), default=0)
     tail = f"; unmatched {unmatched}" if unmatched else ""
     return f"largest rhyme {largest}/{len(idx)} → {density:.2f} | {groups}{tail}"
+
+
+def _share_rhyme(words: list[str]) -> bool:
+    """True if every word has a pronunciation and they all share one rhyming part
+    (i.e. they already mutually rhyme)."""
+    parts = []
+    for w in words:
+        phs = pronouncing.phones_for_word((w or "").lower())
+        if not phs:
+            return False
+        parts.append({pronouncing.rhyming_part(p) for p in phs})
+    return bool(set.intersection(*parts)) if parts else False
+
+
+def rhyme_suggestions(anchor: str, letter: str, k: int = 5, exclude: str = "") -> list[str]:
+    """Words that sound-rhyme with `anchor` AND end in `letter`, frequency-sorted.
+    Filler/function words and `exclude` (the hidden word) are dropped. Empty if the
+    anchor has no pronunciation / no fit."""
+    a = (anchor or "").lower()
+    letter = (letter or "").lower()
+    excl = (exclude or "").lower()
+    out = [w for w in pronouncing.rhymes(a)
+           if w.endswith(letter) and w != a and w != excl and len(w) >= 3
+           and w not in _FORCED_ENDINGS and is_valid_word(w)]
+    out.sort(key=lambda w: word_frequency(w, "en"), reverse=True)
+    return out[:k]
+
+
+def _rhyme_groups(poem: str, target: str, max_groups: int, k: int) -> list[dict]:
+    """Core rhyme-opportunity finder. Rhyme is only possible between lines whose
+    required letters MATCH, so this finds letters that REPEAT in the hidden word,
+    skips groups that already rhyme, and gathers letter-correct candidate endings
+    for the rest. Returns [{lines:[i...], letter, anchor, candidates:[...]}], empty
+    when there's no opportunity (all-distinct letters / already rhyming)."""
+    tgt = (target or "").strip().lower()
+    if detect_language(tgt) != "en":
+        return []
+    lines = parse_poem_lines(poem or "")
+    chars = list(tgt)
+    if not lines or len(lines) != len(chars):
+        return []
+    by_letter: dict[str, list[int]] = {}
+    for i, ch in enumerate(chars):
+        by_letter.setdefault(ch, []).append(i)
+    groups = []
+    for ch, idxs in by_letter.items():
+        if len(idxs) < 2:
+            continue
+        ends = [last_word(lines[i]) for i in idxs]
+        if _share_rhyme(ends):
+            continue  # these lines already rhyme — nothing to suggest
+        # anchor on the most CONTENTFUL ending (longest, freq tie-break) — its rhyme
+        # family is richer and more natural than a short word's (which yields fillers).
+        anchor = max(ends, key=lambda w: (len(w), word_frequency(w, "en")))
+        cands = rhyme_suggestions(anchor, ch, k, exclude=tgt)  # never offer the hidden word
+        if cands:
+            groups.append({"lines": idxs, "letter": ch, "anchor": anchor, "candidates": cands})
+        if len(groups) >= max_groups:
+            break
+    return groups
+
+
+def rhyme_options_block(poem: str, target: str, max_groups: int = 2, k: int = 6) -> str:
+    """Prompt-ready RHYME OPTIONS block for the craft critic: same-letter line pairs
+    that could rhyme, each with letter-correct candidate endings. The LLM picks the
+    contextually-fitting one (word generation stays programmatic so the letter is
+    always right). '' when there's no opportunity."""
+    groups = _rhyme_groups(poem, target, max_groups, k)
+    if not groups:
+        return ""
+    rows = []
+    for g in groups:
+        nums = " and ".join(f"line {i + 1}" for i in g["lines"])
+        rows.append(f"- {nums} both end in '{g['letter']}' but don't yet rhyme. "
+                    f"Candidates (all end in '{g['letter']}'): {', '.join(g['candidates'])}")
+    return "RHYME OPTIONS:\n" + "\n".join(rows)
+
+
+def rhyme_opportunities(poem: str, target: str, max_groups: int = 2, k: int = 4) -> str:
+    """Compact deterministic rhyme hint (used in tests / non-LLM contexts)."""
+    groups = _rhyme_groups(poem, target, max_groups, k)
+    if not groups:
+        return ""
+    hints = [f"{' & '.join('L' + str(i + 1) for i in g['lines'])} both end in "
+             f"'{g['letter']}' — rhyme them for bonus (e.g. {', '.join(g['candidates'])})"
+             for g in groups]
+    return "Rhyme bonus (correctness is already perfect): " + "; ".join(hints) + "."
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -453,15 +513,18 @@ class _Rollout:
     lines: list[str]
     language: str
     n_tool_calls: int
-    valid: bool                  # passed the hard-rules gate
-    reason: str                  # first failed rule ("" when valid)
+    correct: bool                # perfect telestich → quality-judged
+    reason: str                  # failure description ("" when correct)
+    partial: bool = False        # answer present, line count right, ≤ limit misses → graded
+    partial_score: float = 0.0   # small graded reward for a partial poem
+    misses: int = 0              # count of missed endings (wrong letter / non-word / short)
     quality: float = 0.0         # raw rubric band score
     q: float = 0.0               # quality after the duplicate divisor (used everywhere)
     bucket: str = "gated"        # gated | below | mid | above
     reuse: float = 0.0           # ending-word reuse vs siblings (0=unique, 1=all shared)
     ending_detail: str = ""      # per-ending share counts, for the breakdown log
-    len_eff: float = 0.0         # conciseness efficiency factors in [0,1] (logged)
-    tool_eff: float = 0.0
+    len_eff: float = 0.0         # length efficiency in [0,1] (1 = within budget; logged)
+    in_top_band: bool = False    # in the group's top occupied bucket → earns secondary bonuses
     components: dict = field(default_factory=dict)
 
 
@@ -472,6 +535,17 @@ def _bucket(q: float) -> str:
     if q < GREAT_EDGE:
         return "mid"
     return "above"
+
+
+def _map_correct_score(s: float) -> float:
+    """Remap a CORRECT poem's raw rubric band score onto the reward ladder. With
+    band_edges=[ACCEPTABLE_EDGE, GREAT_EDGE] the rubric already returns
+    normal..great as [0.4, 0.7] and above-great as (0.7, 1.0]; we only floor the
+    below-normal band [0, 0.4) up to [MIN_CORRECT, 0.4) so the worst correct poem
+    still scores MIN_CORRECT, not ~0."""
+    if s < ACCEPTABLE_EDGE:
+        return MIN_CORRECT + s * (ACCEPTABLE_EDGE - MIN_CORRECT) / ACCEPTABLE_EDGE
+    return s
 
 
 def _first_ref(refs: Any) -> str | None:
@@ -490,79 +564,203 @@ def _count_tool_calls(completion: str) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# FEEDBACK TOOL
+# ══════════════════════════════════════════════════════════════════════
+def _redact_word(text: str, target: str) -> str:
+    """Redact the hidden word from the critic's output — a backstop so it can never
+    leak the word back to the policy as a cheat suggestion."""
+    if not target:
+        return text or ""
+    return re.sub(rf"\b{re.escape(target)}\b", "▮", text or "", flags=re.IGNORECASE)
+
+
+def _normalize_word(word: str) -> str:
+    """Normalize the hidden word the model passes to the feedback tool: take the
+    first token, strip quotes/punctuation, lowercase. Returns "" if nothing usable
+    (English letters or CJK) remains — the caller then rejects the malformed call."""
+    w = (word or "").strip().split()[0] if (word or "").strip() else ""
+    w = w.strip("\"'“”‘’.,;:!?()[]{}").lower()
+    return w if re.fullmatch(r"[a-z]+|[一-鿿]+", w) else ""
+
+
+def _ending_letter_map(target: str) -> str:
+    """Per-line required last letters, so the critic's forced-ending suggestions land
+    the right letter (e.g. "line 1 → 's'; line 2 → 't'; ..."). Only called for a
+    structurally-correct poem, so line i necessarily ends in target[i]."""
+    chars = list((target or "").strip().lower())
+    return "; ".join(f"line {i + 1} → '{c}'" for i, c in enumerate(chars))
+
+
+def _draft_poem_text(raw: str) -> str:
+    """Pull the poem out of a draft the model passes to the feedback tool. It may
+    arrive wrapped in <answer>…</answer> (possibly with reasoning around it) or as
+    bare lines — normalize both so tag lines aren't counted as poem lines."""
+    m = re.search(r"<answer>(.*?)</answer>", raw or "", re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return re.sub(r"</?answer\s*>", "", raw or "", flags=re.IGNORECASE).strip()
+
+
+def _programmatic_feedback(poem: str, target: str) -> str | None:
+    """Layered deterministic feedback on a draft. Returns the highest-priority
+    UNRESOLVED layer as a message, or None when the poem is a correct telestich
+    (→ caller hands off to the LLM craft critic). Mirrors check_hard_rules but
+    surfaces guidance progressively: structure → endings → poem-line sanity."""
+    target = (target or "").strip()
+    language = detect_language(target)
+    chars = list(target.lower()) if language == "en" else list(target)
+    n = len(chars)
+    lines = parse_poem_lines(poem or "")
+    if n == 0:
+        return "No target word in context — cannot give feedback."
+    if not lines:
+        return "No poem found. Put the poem inside <answer>...</answer>, one line per letter."
+    if len(lines) != n:
+        return (f"Wrong line count: you wrote {len(lines)} line(s), but '{target}' has "
+                f"{n} letters, so the poem needs exactly {n} lines (one per letter).")
+    # endings — report ALL mismatches at once so one revision can fix them
+    mism = [f"line {i + 1} ends in '{last_char(lines[i], language) or '∅'}', needs '{chars[i]}'"
+            for i in range(n) if last_char(lines[i], language) != chars[i]]
+    if mism:
+        return "Fix these line endings: " + "; ".join(mism) + "."
+    # poem-line sanity (English): real ending words, not one-word lines
+    problems = []
+    if language == "en":
+        for i in range(n):
+            lw = last_word(lines[i])
+            if not is_valid_word(lw):
+                problems.append(f"line {i + 1} ends on non-word '{lw}'")
+            elif lw in _FORCED_ENDINGS:
+                problems.append(
+                    f"line {i + 1} ends on filler '{lw}' just to hit '{chars[i]}' — "
+                    f"replace it with a meaningful word ending in '{chars[i]}'")
+            elif len(lines[i].split()) < MIN_EN_LINE_WORDS:
+                problems.append(f"line {i + 1} is too short to read as a poem line")
+    if contains_hidden_word(poem or "", target, language):
+        problems.append(f"'{target}' appears in the poem body — it must stay hidden in the endings")
+    if problems:
+        return "Structure is close — fix: " + "; ".join(problems) + "."
+    return None  # correct telestich → quality critique
+
+
+FEEDBACK_PROMPT = """\
+You are a poetry critic for a telestich — a poem that hides a word in the LAST
+LETTER of each line, read top to bottom.
+
+This poem hides the word "{word}". Its lines are ALREADY VERIFIED to spell it
+correctly; the required last letter of each line is:
+{letters}
+Do NOT re-count lines or re-check the spelling — it is correct. CRITICAL: "{word}"
+must stay hidden in those last letters ONLY — it must NEVER appear as a word in the
+poem, and you must NEVER suggest writing it or ending a line on it.
+
+Judge the writing quality against the BRIEF. Be a DEMANDING critic — your job is
+to make the poem better, not to praise it. Most drafts have real room to improve;
+find the weakest lines and say concretely how to fix them. Do NOT rubber-stamp a
+thin or generic poem as strong. Look hard for:
+- Off-brief: ignores the requested subject, occasion, voice, or tone.
+- Forced ending: a line's final word is awkward/contorted, a throwaway filler
+  (e.g. "hi", "ah", "oh"), or doesn't fit the line's sense. Name the line and
+  suggest a more natural word that ENDS IN THAT LINE'S REQUIRED LETTER (listed
+  above) — never the hidden word "{word}".
+- Weak imagery: generic, abstract, or clichéd lines with no fresh concrete image;
+  telling-not-showing; predictable word choices.
+- Repetition / thinness: the same word or idea repeated (e.g. "glowing"/"gleam"),
+  padding, or lines too short/sparse to carry weight.
+- Incoherent: the lines don't connect into one poem; reads like a list.
+
+RHYME: if a RHYME OPTIONS block appears below, those lines share an ending letter
+but don't yet rhyme, with candidate words that all end in the right letter. If a
+rhyme would fit without forcing it, pick ONE line to reword using the single best
+candidate FROM THE LIST (quote the line, name the word) — never invent rhyme words.
+If it would hurt the poem, or no options appear, skip rhyme.
+
+Output, IN THIS ORDER (critique first, verdict last — judge from what you found):
+1. 1-4 short bullets, each quoting the weakest line and saying exactly how to
+   improve it (for a forced ending, name a replacement ending in that line's
+   required letter). Only a genuinely excellent poem may get a single bullet or none.
+2. If RHYME OPTIONS were given and a rhyme fits, one line: "RHYME: ...".
+3. A final line — VERDICT: STRONG | MIXED | WEAK — that follows from the bullets
+   above, calibrated honestly:
+   STRONG = vivid, fresh, fully on-brief, every line earns its place (RARE).
+   MIXED  = competent but has clear weak spots (the default for most drafts).
+   WEAK   = generic, thin, repetitive, off-brief, or full of filler.
+
+BRIEF:
+{request}
+
+POEM:
+{poem}
+{rhyme}"""
+
+
+# ══════════════════════════════════════════════════════════════════════
 # ENV CLASS
 # ══════════════════════════════════════════════════════════════════════
 class TelestichEnv(BaseEnv):
     system_prompt = """\
-A telestich is a poem where the last letter (or character, for Chinese) of \
-each line, read top to bottom, spells out a hidden word. The user will tell \
-you what word to hide.
+A telestich is a poem whose lines, read by their LAST letters top to bottom, \
+spell a hidden word the user gives you. Use the word the user names as a single \
+lowercase word, ignoring any quotes or capitalization.
 
-Extracting the target word from the request:
-- The target may appear plain (marry), in quotes ("marry" or 'marry'), in \
-ALL CAPS (MARRY), or Capitalized (Marry). Normalize it to lowercase \
-(English) or as-is (Chinese) before spelling it out.
-- Strip surrounding quotes and punctuation. The hidden word is always a \
-single word or short Chinese phrase — never a sentence.
-- Phrases like "X at the end of every line" refer to the last LETTER of \
-each line spelling X (a telestich), not to repeating the word X at each \
-line end.
+Example request:
+"a poem about stress, last letters spell stress".
 
-Process (keep your thinking SHORT — a few lines of notes, then the poem):
-1. Spell out the target word letter by letter (or character by character). \
-Count — that's how many lines.
-2. You have 2 tool calls total. Use word_bank only for the hardest letters \
-where you can't readily think of ending words. (For Chinese poems, the tool is \
-not available — rely on your own vocabulary.)
-3. Pick ONE ending word per line and commit. Build each line as a natural \
-phrase around it.
-4. Output the poem in <answer></answer> tags. Plain text only. Stop after \
-</answer>.
+Example output:
 
-Be concise. Reaching a correct answer quickly is rewarded, and a rollout that \
-rambles until it runs out of room and never reaches <answer> earns nothing. So \
-do NOT enumerate long candidate lists, do NOT second-guess or re-derive, and do \
-NOT restate the rules. Choose your ending words in a line or two and write the \
-poem.
-
-Rules:
-1. Exactly as many lines as letters/characters in the target word.
-2. Every ending word must be a real word — no invented words, no standalone \
-letters tacked on.
-3. Each line is a complete, meaningful phrase — keep lines tight and \
-image-dense (a poetic line, not a long prose sentence). The poem should be \
-coherent and match the requested theme.
-4. Write the poem in the same language as the request.
-5. Do NOT include the hidden target word anywhere in the poem itself — the \
-whole point is that it's hidden in the ending letters.
-6. Form preference (extra credit when correctness is perfect):
-   - English: rhyme line endings with each other. The score rewards every \
-line whose ending word rhymes with at least one other line — arrangement \
-doesn't matter. So you can pair them (line 1 with 2, 3 with 4), interleave \
-them (1 with 3, 2 with 4), have all lines share one rhyme, or any mix. \
-Pick ending words whose vowel sounds match, not just whose letters match \
-(`tree/free` rhymes, `tree/dry` doesn't). Don't force it if it breaks \
-coherence.
-   - Chinese: keep all lines the same length (count CJK characters per \
-line; aim for uniform 5- or 7-character lines, or whatever length fits the \
-hidden word naturally).
-
-Example:
-
-User: breakup poem where the last letters spell brave
-
-B-R-A-V-E = 5 letters, 5 lines. Topic: breakup.
+Letters: s, t, r, e, s, s → 6 lines, one per letter. 's' repeats on lines 1, 5, \
+6 — rhyme those three on one sound for a bonus; pick the hardest letters first.
+Draft endings: distress, taut, roar, sea, caress, excess (the s-lines \
+distress/caress/excess rhyme on "-ess"); never put "stress" in the poem itself.
+Quick checks pass — 6 lines, each ends in a real word — but rather than eyeball \
+every last letter, I send the draft to the `feedback` tool (passing the poem AND \
+word="stress" so it can check the endings). It replies: "line 4 ends in 'a', needs \
+'e'." I swap that ending to "tree" and finalize:
 
 <answer>
-My chest still holds the dull familiar throb
-of mornings spent pretending not to remember
-that love like ours was never just an idea
-now I just sit alone and stare at the tv
-and wonder if you ever meant to keep your promise
-</answer>"""
+The piling deadlines crush my chest, distress
+And every muscle in my neck pulls taut
+I watch the storm clouds gather, hear them roar
+And wish that I could rest beneath a tree
+I crave a quiet calm, a soft caress
+To free my racing mind from this excess
+</answer>
+
+Once you can reliably get every ending right on the first try, skip the tool and \
+one-shot it for the small efficiency bonus.
+
+How you're scored — a chain, each step gating the next:
+1. CORRECTNESS is the gate: the last letters must spell the word, every line must \
+end in a real word, and the line count must match. Miss this and you get nothing \
+(the hidden word written in the poem, a wrong line count, or no answer all score \
+zero) — except a near-complete attempt (right line count, only an ending or two \
+off) earns small partial credit.
+2. QUALITY scores correct poems and is the bulk of the reward: craft — vivid \
+concrete imagery, coherence, fit to the requested theme/voice — sets how high you go.
+3. QUALITY then unlocks SECONDARY bonuses (smaller, each up to ~15%): rhyme, \
+variety of ending words, and conciseness — which rewards a shorter, un-padded \
+answer AND fewer feedback calls EQUALLY, so don't ramble and wean off the tool \
+once you can nail the poem on your own.
+
+Tips:
+- Do the quick checks you can (right number of lines, every line ends in a real \
+word), then SEND your draft to the `feedback` tool — pass both your poem and the \
+hidden `word` it should spell — to confirm the endings and get craft notes; don't \
+try to verify every last letter in your head, that's error-prone. Revise from its \
+feedback, then finalize. Use it sparingly (≤3 calls — usually one verify pass is \
+enough); once you can reliably nail it first try, skip it for the efficiency bonus.
+- Rhyme only works between lines that share an ending letter, so rhyme the lines \
+whose letters REPEAT in the word; match vowel SOUNDS, not spelling, and don't force it.
+- Keep your thinking SHORT — a few notes, then the poem. Do NOT grind through \
+candidate words letter-by-letter in your head (e.g. listing "mule? -> e, pule? -> \
+e, ..."): it bloats the response, gets truncated, and is exactly what the \
+`feedback` tool does for you reliably. Draft, check endings with the tool (or your \
+own eye once you're good), revise, answer. Never write the hidden word in the \
+poem; write in English; output only the poem in <answer></answer>, plain text, \
+then stop."""
 
     def __init__(self, *, judge_base_url: str, judge_api_key: str = "",
-                 judge_timeout: float = 90.0, max_tool_calls: int = 2,
+                 judge_timeout: float = 90.0, max_tool_calls: int = 3,
                  **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._judge_base_url = judge_base_url
@@ -572,6 +770,9 @@ and wonder if you ever meant to keep your promise
         self._judge_timeout = judge_timeout
         self._max_tool_calls = max_tool_calls
         self._tool_calls: dict[str, int] = {}
+        # per-rollout {prompt} for craft-feedback context (run_tool gets no
+        # task/messages — see init_rollout).
+        self._rollout_ctx: dict[str, dict[str, str]] = {}
 
     @classmethod
     def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
@@ -584,30 +785,108 @@ and wonder if you ever meant to keep your promise
                 "acceptable_refs": example.get("acceptable_refs", []),
                 "great_refs": example.get("great_refs", []),
             },
+            # passed to init_rollout so the feedback tool has the request for craft
+            # context (the hidden word comes from the model's own tool-call arg).
+            init_rollout_args={"prompt": prompt},
             system_prompt=cls.system_prompt,
         )
 
     async def list_tools(self) -> list[ToolDefinition]:
         return [ToolDefinition(
-            name="word_bank",
-            description="Returns ~30 real English words ending in the given letter (a-z). Up to 2 calls.",
+            name="feedback",
+            description=(
+                "Feedback on a DRAFT telestich (up to 3 calls): pass your draft ('poem') "
+                "AND the hidden word it should spell ('word'); it checks every line ending "
+                "against that word — so you don't have to verify each last letter yourself "
+                "— and gives a short craft critique. Recommended flow: write a full draft, "
+                "send it here to check the endings and improve, then put your revised best "
+                "in <answer>. Use it sparingly (often one pass is enough); a correct poem "
+                "written with no calls earns a small efficiency bonus, so wean off once you "
+                "can reliably nail it on the first try."),
             input_schema={"type": "object",
-                          "properties": {"letter": {"type": "string", "description": "one letter a-z"}},
-                          "required": ["letter"]},
+                          "properties": {
+                              "poem": {"type": "string",
+                                       "description": "your full draft poem, one line per letter"},
+                              "word": {"type": "string",
+                                       "description": "the hidden word your poem should spell "
+                                                      "(the exact target word from the request)"}},
+                          "required": ["poem", "word"]},
         )]
 
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> Any:
-        if tool_name != "word_bank":
+        if tool_name != "feedback":
             return f"Error: unknown tool '{tool_name}'."
         used = self._tool_calls.get(rollout_id, 0)
         if used >= self._max_tool_calls:
-            return "No tool calls remaining."
+            return "No feedback calls remaining — submit your best poem in <answer>...</answer>."
+        raw = (tool_args.get("poem") or "").strip()
+        # The model supplies the hidden word to validate against (no extraction / no
+        # ground_truth dependency — works identically in training and the playground).
+        target = _normalize_word(tool_args.get("word") or "")
+        if not raw or not target:  # malformed call — don't spend a budgeted call on it
+            return ("Pass BOTH your full draft poem ('poem') and the hidden word it "
+                    "should spell ('word') to get feedback.")
         self._tool_calls[rollout_id] = used + 1
-        words = word_bank(tool_args.get("letter", ""))
-        return ", ".join(words) if words else "No common words found for that letter."
+        # If this used the last budgeted call, every feedback response below tells the
+        # model to stop and answer (mirrors the out-of-calls message above).
+        last_note = ("\n\nThat was your last feedback call — put your best poem in "
+                     "<answer>...</answer> now. (Both fewer calls AND a shorter, "
+                     "un-padded answer score higher on conciseness.)"
+                     if self._tool_calls[rollout_id] >= self._max_tool_calls else "")
+        poem = _draft_poem_text(raw)
+        prompt = self._rollout_ctx.get(rollout_id, {}).get("prompt", "")
+        prog = _programmatic_feedback(poem, target)
+        if prog is not None:
+            return prog + last_note  # structure not yet correct — fix this first
+        # letter-correct rhyme candidates are generated programmatically; the LLM
+        # selects a contextually-fitting one (see FEEDBACK_PROMPT's RHYME OPTIONS).
+        rhyme_block = rhyme_options_block(poem, target)
+        critique = await self._llm_feedback(prompt, poem, target, rhyme_block)
+        msg = "Structure is correct. Craft feedback:\n" + critique
+        # When the draft is already strong AND calls remain, nudge it to finalize
+        # rather than burn another call (graded _tool_eff). On the last call, last_note
+        # already says to stop, so don't double up.
+        if not last_note and re.search(r"\bVERDICT:\s*STRONG\b", critique, re.IGNORECASE):
+            msg += ("\n\nThis draft is already strong — put it in <answer> now rather "
+                    "than calling again: both fewer feedback calls and a shorter, "
+                    "un-padded answer score higher on conciseness.")
+        return msg + last_note
+
+    async def _llm_feedback(self, request: str, poem: str, target: str,
+                            rhyme_block: str = "") -> str:
+        """Formative craft critique from the cheap base model (same auth as the judge).
+        Given the word + per-line letters for accurate suggestions; its output is
+        redacted (see _redact_word). Any error degrades to a string, never raises."""
+        try:
+            client = AsyncOpenAI(
+                base_url=self._judge_base_url,
+                api_key=resolve_judge_key(self._judge_api_key, self._judge_base_url),
+                max_retries=3,
+            )
+            resp = await client.chat.completions.create(
+                model=FEEDBACK_MODEL,
+                messages=[{"role": "user",
+                           "content": FEEDBACK_PROMPT.format(
+                               request=request, word=target,
+                               letters=_ending_letter_map(target),
+                               poem=poem, rhyme=rhyme_block)}],
+                temperature=0.0,
+                timeout=self._judge_timeout,
+            )
+            out = (resp.choices[0].message.content or "").strip() if resp.choices else ""
+            return _redact_word(out, target) or "VERDICT: MIXED (no critique returned)."
+        except Exception as e:
+            return f"(craft feedback unavailable: {e})"
+
+    async def init_rollout(self, rollout_id: str, **rollout_args: Any) -> None:
+        # Only the request is stashed — for craft-feedback context. The hidden word
+        # is supplied by the model on each feedback tool call (no extraction needed),
+        # so no ground_truth plumbing here.
+        self._rollout_ctx[rollout_id] = {"prompt": str(rollout_args.get("prompt", ""))}
 
     async def release_rollout(self, rollout_id: str) -> None:
         self._tool_calls.pop(rollout_id, None)  # avoid unbounded growth over a run
+        self._rollout_ctx.pop(rollout_id, None)
 
     async def compute_reward(self, rollout_id, messages, task, **kwargs) -> dict[str, float]:
         return {}  # all logic is group-level (compute_group_reward)
@@ -634,10 +913,11 @@ and wonder if you ever meant to keep your promise
         )
         return res["scores"]
 
-    async def _score_quality(self, prompt: str, valid: list[_Rollout],
+    async def _score_quality(self, prompt: str, correct: list[_Rollout],
                              acceptable: str | None, great: str | None) -> None:
-        """Rank the valid poems against the acceptable + great anchors; write each
-        record's band `quality`, duplicate-adjusted `q`, and `bucket`."""
+        """Rank the CORRECT poems against the acceptable + great anchors; write each
+        record's quality (remapped onto the reward ladder), dup-adjusted `q`, and
+        `bucket`. Partial poems are handled separately (graded partial_score), not here."""
         anchors, edges, labels = [], [], []
         if acceptable:
             anchors.append(acceptable)
@@ -647,55 +927,63 @@ and wonder if you ever meant to keep your promise
             anchors.append(great)
             edges.append(GREAT_EDGE)
             labels.append("great")
-        scores = await self._quality(prompt, [r.poem for r in valid], anchors, edges, labels)
-        dup = duplicate_divisors([r.poem for r in valid])
-        for local, r in enumerate(valid):
-            # floor at QUALITY_FLOOR: a correct poem ranked dead-last earns 0 from
-            # the band scorer, which is indistinguishable from a gated poem.
-            r.quality = max(QUALITY_FLOOR, scores[local])
+        scores = await self._quality(prompt, [r.poem for r in correct], anchors, edges, labels)
+        dup = duplicate_divisors([r.poem for r in correct])
+        for local, r in enumerate(correct):
+            r.quality = _map_correct_score(scores[local])  # band → ladder (logged as-is)
             r.q = r.quality / dup[local]    # near-duplicate whole poems shared down
             r.bucket = _bucket(r.q)
 
-    def _apply_secondary(self, rolls: list[_Rollout], valid: list[_Rollout],
+    def _tool_eff(self, r: _Rollout) -> float:
+        """Graded few-tool-calls bonus: full W_TOOL_EFF·q at 0 calls, scaling linearly
+        to 0 at the call cap (so fewer calls → higher conciseness, and over-emitting
+        rejected calls floors at 0). Quality-scaled like the other secondaries."""
+        factor = max(0.0, 1.0 - r.n_tool_calls / self._max_tool_calls)
+        return W_TOOL_EFF * r.q * factor
+
+    def _apply_secondary(self, rolls: list[_Rollout], correct: list[_Rollout],
                          budget: int) -> None:
-        """Compute every rollout's reward components onto its record:
-        form + diversity (quality-scaled bonuses, valid poems) and conciseness
-        (a hard penalty on every rollout)."""
-        if valid:
-            reuse, reuse_detail = ending_reuse_detail([r.poem for r in valid])
-            for local, r in enumerate(valid):
+        """Compute every rollout's reward components onto its record. Gated poems →
+        all-zero. Partial poems → graded partial_score quality, no bonuses. Correct poems:
+        rhyme (any), plus diversity and conciseness (folds in the tool-efficiency
+        bonus) applied only to the group's TOP occupied band (anti-collapse)."""
+        if correct:
+            reuse, reuse_detail = ending_reuse_detail([r.poem for r in correct])
+            for local, r in enumerate(correct):
                 r.reuse = reuse[local]
                 r.ending_detail = ", ".join(
                     f"{w}(shared×{c})" if c else f"{w}(unique)" for w, c in reuse_detail[local]
                 )
 
-        # conciseness bonus targets only the TOP occupied band (above, else mid);
-        # if every poem is below the floor there is no band worth rewarding.
-        top_bucket = next((b for b in ("above", "mid")
-                           if any(r.bucket == b for r in valid)), None)
+        # the group's top occupied bucket among correct poems — secondary bonuses
+        # apply only here, so even an all-"below" group still gets a gradient.
+        top_band = next((b for b in ("above", "mid", "below")
+                         if any(r.bucket == b for r in correct)), None)
 
         for r in rolls:
-            # efficiency factors in [0,1]: 1 = answered within budget / no tools
+            # length efficiency in [0,1]: 1 = answered within budget, decaying above
             r.len_eff = math.exp(-max(0.0, r.completion_len / budget - 1.0))
-            r.tool_eff = math.exp(-CALL_DECAY * r.n_tool_calls)
 
-            if not r.valid:
-                r.components = {"quality": 0.0, "form": 0.0, "diversity": 0.0,
+            if not r.correct and not r.partial:
+                r.components = {"quality": 0.0, "rhyme": 0.0, "diversity": 0.0,
                                 "conciseness": 0.0}
                 continue
-            form_bonus = W_FORM * r.q * form_score(r.lines, r.language)
-            # diversity is gated to the mid+above buckets (quality >= floor)
-            div_bonus = (W_DIVERSITY * r.q * (1.0 - r.reuse)
-                         if r.q >= QUALITY_GATE else 0.0)
-            # conciseness: top-band poems only, quality-scaled, reward reaching the
-            # answer quickly (short rollout, plus a small tool-thrift part)
-            if r.bucket == top_bucket:
-                eff = (1.0 - CONCISE_TOOL_WEIGHT) * r.len_eff + CONCISE_TOOL_WEIGHT * r.tool_eff
-                concise = W_CONCISE * r.q * eff
+            if r.partial:  # small graded reward (r.q == partial_score); no judging/bonuses
+                r.components = {"quality": round(r.q, 4), "rhyme": 0.0,
+                                "diversity": 0.0, "conciseness": 0.0}
+                continue
+            rhyme_bonus = W_RHYME * r.q * rhyme_score(r.lines)
+            # rhyme applies to any correct poem; diversity + conciseness go to the
+            # group's top band only. Conciseness = shorter generation + a HEAVY
+            # tool-efficiency (no-tool) bonus, so the model weans off the tool.
+            r.in_top_band = r.bucket == top_band
+            if r.in_top_band:
+                div_bonus = W_DIVERSITY * r.q * (1.0 - r.reuse)
+                concise = W_CONCISE * r.q * r.len_eff + self._tool_eff(r)
             else:
-                concise = 0.0
+                div_bonus = concise = 0.0
             r.components = {"quality": round(r.q, 4),
-                            "form": round(form_bonus, 4),
+                            "rhyme": round(rhyme_bonus, 4),
                             "diversity": round(div_bonus, 4),
                             "conciseness": round(concise, 4)}
 
@@ -704,9 +992,10 @@ and wonder if you ever meant to keep your promise
         total = sum(r.components.values())
         meta = (f"completion_len={r.completion_len}/{budget} poem_len={r.poem_len} "
                 f"lines={len(r.lines)} tools={r.n_tool_calls}")
-        if not r.valid:
+        if not r.correct and not r.partial:
             return f"[TelestichEnv] reward={total:+.3f} GATED ({r.reason}) | {meta}"
-        return (f"[TelestichEnv] reward={total:+.3f} {r.bucket.upper()} "
+        tag = r.bucket.upper() + (f" PARTIAL({r.misses}miss)" if r.partial else "")
+        return (f"[TelestichEnv] reward={total:+.3f} {tag} "
                 f"q={r.quality:.3f}->{r.q:.3f} reuse={r.reuse:.2f} "
                 f"len_eff={r.len_eff:.2f} | {meta} | {r.components}")
 
@@ -715,27 +1004,29 @@ and wonder if you ever meant to keep your promise
         out how each component reached its value (which lines rhyme, which
         endings are shared, why conciseness was charged)."""
         c = r.components
-        if r.q >= QUALITY_GATE:
+        if r.in_top_band:
             div_line = (f"  diversity = {c['diversity']:+.4f} = W_DIVERSITY({W_DIVERSITY}) × "
                         f"q({r.q:.3f}) × (1 − reuse {r.reuse:.2f}); endings: {r.ending_detail}")
         else:
-            div_line = (f"  diversity = {c['diversity']:+.4f} (none — q {r.q:.3f} below the "
-                        f"{QUALITY_GATE} floor, bucket={r.bucket})")
-        if c["conciseness"]:
-            conc_line = (f"  conciseness = {c['conciseness']:+.4f} = W_CONCISE({W_CONCISE}) × "
-                         f"q({r.q:.3f}) × [{1 - CONCISE_TOOL_WEIGHT:g}×len_eff({r.len_eff:.2f}) "
-                         f"+ {CONCISE_TOOL_WEIGHT:g}×tool_eff({r.tool_eff:.2f})]; "
-                         f"completion {r.completion_len}/{budget}, {r.n_tool_calls} tools")
+            div_line = (f"  diversity = {c['diversity']:+.4f} (none — bucket '{r.bucket}' is "
+                        f"not the group's top band)")
+        if r.in_top_band:
+            len_part = W_CONCISE * r.q * r.len_eff
+            tool_eff = self._tool_eff(r)
+            conc_line = (
+                f"  conciseness = {c['conciseness']:+.4f} = length {len_part:+.4f} "
+                f"[W_CONCISE({W_CONCISE})×q({r.q:.3f})×len_eff({r.len_eff:.2f})] + tool-eff "
+                f"{tool_eff:+.4f} [W_TOOL_EFF({W_TOOL_EFF})×q×factor, "
+                f"{r.n_tool_calls}/{self._max_tool_calls} calls]")
         else:
-            conc_line = (f"  conciseness = +0.0000 (none — not in the top band "
-                         f"'{r.bucket}', conciseness rewards only the best poems)")
+            conc_line = (f"  conciseness = +0.0000 (none — bucket '{r.bucket}' is "
+                         f"not the group's top band)")
         return (
             f"[TelestichEnv][why] poem {r.rollout_id} — {r.bucket.upper()} bucket, "
             f"reward={sum(c.values()):+.3f}\n"
-            f"  quality   = {c['quality']:+.4f}  (judge band {r.quality:.3f}"
-            f"{f', ÷dup→{r.q:.3f}' if abs(r.q - r.quality) > 1e-9 else ''})\n"
-            f"  form      = {c['form']:+.4f} = W_FORM({W_FORM}) × q({r.q:.3f}) × "
-            f"form_score({form_score(r.lines, r.language):.2f}) | {form_detail(r.lines, r.language)}\n"
+            f"  quality   = {c['quality']:+.4f}  (ladder score {r.quality:.3f} → q {r.q:.3f})\n"
+            f"  rhyme     = {c['rhyme']:+.4f} = W_RHYME({W_RHYME}) × q({r.q:.3f}) × "
+            f"rhyme_score({rhyme_score(r.lines):.2f}) | {rhyme_detail(r.lines)}\n"
             f"{div_line}\n"
             f"{conc_line}"
         )
@@ -752,27 +1043,34 @@ and wonder if you ever meant to keep your promise
         # ── Stage 0: parse each rollout once into a record ──
         rolls = [self._build_rollout(i, rollout_ids[i], messages_list[i], target)
                  for i in range(len(rollout_ids))]
-        valid = [r for r in rolls if r.valid]
-        n_gated = len(rolls) - len(valid)
+        correct = [r for r in rolls if r.correct]
+        partial = [r for r in rolls if r.partial]
+        n_gated = len(rolls) - len(correct) - len(partial)
         logger.info(
             f"[TelestichEnv] group target={target!r} ({language}) — "
-            f"{len(valid)}/{len(rolls)} passed correctness "
-            f"(anchors: baseline={'Y' if acceptable else 'N'}, great={'Y' if great else 'N'})")
+            f"{len(correct)} correct, {len(partial)} partial, {n_gated} gated (of {len(rolls)}; "
+            f"anchors: baseline={'Y' if acceptable else 'N'}, great={'Y' if great else 'N'})")
         if n_gated:
             # counts-by-kind, worst-offender first, so failures read at a glance
-            cats = Counter(_gate_category(r.reason) for r in rolls if not r.valid)
+            cats = Counter(_gate_category(r.reason) for r in rolls
+                           if not r.correct and not r.partial)
             breakdown = ", ".join(f"{cat} {ct}" for cat, ct in cats.most_common())
             logger.info(f"[TelestichEnv]   stage1 gated {n_gated}: {breakdown}")
 
-        # ── Stage 1+2: quality via the multi-anchor rubric → band score + bucket ──
-        if valid:
-            await self._score_quality(prompt, valid, acceptable, great)
-            occ = Counter(r.bucket for r in valid)
-            logger.info(f"[TelestichEnv] stage2 quality: buckets "
+        # ── Stage 1+2: quality. Only CORRECT poems are judged/ranked; partial poems
+        #    get a small graded score (no judge call). ──
+        for r in partial:
+            r.quality = r.partial_score
+            r.q = r.partial_score
+            r.bucket = _bucket(r.q)
+        if correct:
+            await self._score_quality(prompt, correct, acceptable, great)
+            occ = Counter(r.bucket for r in correct)
+            logger.info(f"[TelestichEnv] stage2 quality (correct only): buckets "
                         f"below={occ['below']} mid={occ['mid']} above={occ['above']}")
 
-        # ── Stage 3: secondary terms (form, diversity, conciseness) onto records ──
-        self._apply_secondary(rolls, valid, budget)
+        # ── Stage 3: secondary terms (rhyme, diversity, conciseness) onto records ──
+        self._apply_secondary(rolls, correct, budget)
 
         # ── Stage 4: assemble + log ──
         # Path A (flow): one summary line per rollout (gated + valid alike).
@@ -781,7 +1079,7 @@ and wonder if you ever meant to keep your promise
         for r in rolls:
             with rollout_context(r.rollout_id):
                 logger.info(self._fmt_rollout(r, budget))
-                if r.valid:
+                if r.correct:   # full breakdown only for judged poems
                     logger.info(self._explain_rollout(r, budget))
             out.append(r.components)
         return out
@@ -801,6 +1099,9 @@ and wonder if you ever meant to keep your promise
             lines=chk["lines"],
             language=chk["language"],
             n_tool_calls=_count_tool_calls(completion),
-            valid=chk["correct"],
+            correct=chk["correct"],
             reason=chk["reason"],
+            partial=chk["partial"],
+            partial_score=chk["partial_score"],
+            misses=chk["misses"],
         )

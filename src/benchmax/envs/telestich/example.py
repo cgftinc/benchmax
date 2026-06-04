@@ -535,21 +535,12 @@ def load_dataset(path):
 
 # ── Dataset loading for the trainer ──
 def get_dataset():
-    """Load existing dataset, generate more if needed to reach NUM_EXAMPLES."""
+    """Load the curated English dataset IN ORDER. The file is already English-only
+    (no Mandarin filter needed) and ordered to favor simpler examples first, so we
+    do NOT shuffle — the order IS the curriculum — and do NOT generate; the
+    committed file is the source of truth."""
     existing = load_dataset(DATASET_PATH)
-    have = len(existing)
-    need = NUM_EXAMPLES - have
-
-    if need > 0:
-        print(f"Have {have}/{NUM_EXAMPLES} examples, generating {need} more...")
-        asyncio.run(generate_dataset(need, DATASET_PATH, concurrency=CONCURRENCY))
-        # Reload the full file (existing + newly appended)
-        existing = load_dataset(DATASET_PATH)
-        print(f"Dataset now has {len(existing)} examples")
-    else:
-        print(f"Dataset complete: {have} examples")
-
-    random.shuffle(existing)
+    print(f"Dataset: {len(existing)} examples (curriculum order preserved)")
     return existing
 
 
@@ -584,9 +575,13 @@ if __name__ == "__main__":
         examples = get_dataset()
         if len(examples) < 2:
             raise SystemExit(f"Need >=2 examples for a full run, got {len(examples)}.")
-        n_eval = max(1, len(examples) // 10)  # ~10% held out for eval
-        eval_data, train_data = examples[:n_eval], examples[n_eval:]
-        print(f"Full run: {len(train_data)} train / {len(eval_data)} eval.\n")
+        # Hold out a representative eval set at random; keep TRAIN in curriculum
+        # order (simpler first) so the difficulty ramp is preserved.
+        n_eval = max(1, len(examples) // 10)
+        eval_idx = set(random.sample(range(len(examples)), n_eval))
+        eval_data = [e for i, e in enumerate(examples) if i in eval_idx]
+        train_data = [e for i, e in enumerate(examples) if i not in eval_idx]
+        print(f"Full run: {len(train_data)} train (curriculum order) / {len(eval_data)} eval.\n")
     else:
         with tempfile.TemporaryDirectory() as tmp:
             gen_path = Path(tmp) / "gen.jsonl"
@@ -607,6 +602,8 @@ if __name__ == "__main__":
     #    judge resolves its bearer at runtime via the platform act-as seam.
     constructor_args = {"judge_base_url": LLM_BASE_URL, "judge_api_key": ""}
     local_modules = [telestich_env_mod, rubric_mod]
+    # All three are still required (is_valid_word → correctness; pronouncing →
+    # rhyme). Removing word_bank did NOT free any of them.
     pip_dependencies = ["english_words", "openai", "pronouncing", "wordfreq"]
 
     # 2. Pre-flight: validate locally + a remote smoke rollout before spending a
@@ -661,7 +658,10 @@ if __name__ == "__main__":
             eval_dataset_path=uploaded.eval_dataset_path,
             name=run_name,
             # num_epochs: passes over the train set (platform default is 5).
-            launcher_args={"max_response_len": 4000, "num_epochs": 10},
+            # max_response_len 3000: a brief reason + 1-2 tool rounds + poem fits well
+            # under this; lowered from 4000 to cut off in-head enumeration rambles
+            # sooner (they truncate to a 0-reward anyway).
+            launcher_args={"max_response_len": 3000, "num_epochs": 10},
         )
 
     print(f"\n✓ Launched run_id={run_id}")
