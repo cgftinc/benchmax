@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -52,11 +53,29 @@ class CorpusClient:
     max_retries: int = 5
     retry_backoff_seconds: float = 0.5
     token_provider: TokenProvider = platform_bearer
-    _http_client: httpx.Client = field(init=False, repr=False)
+    # HTTP clients are created lazily, one per thread (see ``_http_client``).
+    # httpx.Client's connection pool is not safe to share across threads at high
+    # parallelism: the QA-gen work queue hits this client from every batch
+    # thread, which raced the shared pool's sockets into
+    # ``ReadError: [Errno 9] Bad file descriptor``. A client-per-thread avoids
+    # the shared-pool race entirely.
+    _local: threading.local = field(
+        init=False, repr=False, default_factory=threading.local
+    )
+    _client_override: httpx.Client | None = field(
+        init=False, repr=False, default=None
+    )
+    _client_registry: list[httpx.Client] = field(
+        init=False, repr=False, default_factory=list
+    )
+    _registry_lock: threading.Lock = field(
+        init=False, repr=False, default_factory=threading.Lock
+    )
 
-    def __post_init__(self) -> None:
-        """Initialize the persistent HTTP client. Auth is attached per request
-        in ``_request`` — not baked here."""
+    def _build_http_client(self) -> httpx.Client:
+        """Create a new HTTP client and register it for ``close()``.
+
+        Auth is attached per request in ``_request`` — not baked here."""
         timeout_config = httpx.Timeout(
             timeout=self.timeout,
             connect=self.timeout,
@@ -64,11 +83,37 @@ class CorpusClient:
             write=self.timeout,
             pool=self.timeout,
         )
-        self._http_client = httpx.Client(
+        client = httpx.Client(
             base_url=self.base_url,
             headers={"Content-Type": "application/json"},
             timeout=timeout_config,
         )
+        with self._registry_lock:
+            self._client_registry.append(client)
+        return client
+
+    @property
+    def _http_client(self) -> httpx.Client:
+        """The HTTP client for the calling thread.
+
+        Returns an explicitly installed override if present (e.g. a profiling
+        harness swapping in an HTTP/2 client); otherwise a lazily-created
+        per-thread client so concurrent batch threads never share a pool."""
+        if self._client_override is not None:
+            return self._client_override
+        client = getattr(self._local, "client", None)
+        if client is None:
+            client = self._build_http_client()
+            self._local.client = client
+        return client
+
+    @_http_client.setter
+    def _http_client(self, value: httpx.Client) -> None:
+        """Install a single client shared across all threads. Intended for
+        single-threaded or multiplexed (HTTP/2) setups, not pool-per-thread."""
+        self._client_override = value
+        with self._registry_lock:
+            self._client_registry.append(value)
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         """Execute an HTTP request with retry/backoff for transient network failures.
@@ -155,8 +200,17 @@ class CorpusClient:
         self.close()
 
     def close(self) -> None:
-        """Close the HTTP client."""
-        self._http_client.close()
+        """Close every HTTP client this instance created (one per thread, plus
+        any installed override)."""
+        with self._registry_lock:
+            clients = list(self._client_registry)
+            self._client_registry.clear()
+        self._client_override = None
+        for client in clients:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                logger.debug("Error closing corpus HTTP client", exc_info=True)
 
     def _handle_response_errors(self, response: httpx.Response) -> None:
         """Convert HTTP errors to appropriate exceptions."""

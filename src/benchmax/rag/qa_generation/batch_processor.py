@@ -27,11 +27,59 @@ Example:
 """
 
 import asyncio
+import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
 
 from tqdm.auto import tqdm
+
+# --- Process-global LLM concurrency cap -------------------------------------
+#
+# QA-gen fans batches across an outer ThreadPoolExecutor, and each batch/stage
+# spins an ephemeral event loop with its OWN ``asyncio.Semaphore(max_concurrent)``
+# — so that per-stage limit bounds nothing globally and real in-flight LLM
+# concurrency is ``max_parallel_batches × max_concurrent`` (e.g. 40×8 = 320).
+# That overshoots the serving knee (~10) by ~30× and tips the LLM path into
+# congestion collapse.
+#
+# This single ``threading.Semaphore`` — acquired in the worker thread that runs
+# the blocking OpenAI call, so it bounds across every ephemeral loop — caps total
+# in-flight LLM calls near the knee regardless of batch/stage fan-out. Override
+# the cap with ``BENCHMAX_LLM_MAX_CONCURRENCY`` (<= 0 disables the cap, restoring
+# the old unbounded behavior for A/B comparison).
+_GLOBAL_LLM_CONCURRENCY_ENV = "BENCHMAX_LLM_MAX_CONCURRENCY"
+_DEFAULT_GLOBAL_LLM_CONCURRENCY = 10
+
+_global_sem_lock = threading.Lock()
+_global_sem: threading.Semaphore | None = None
+_global_sem_limit: int | None = None
+
+
+def _resolve_global_concurrency_limit() -> int:
+    """Cap from ``BENCHMAX_LLM_MAX_CONCURRENCY`` (unset/invalid → default)."""
+    raw = os.environ.get(_GLOBAL_LLM_CONCURRENCY_ENV)
+    if raw is None or not raw.strip():
+        return _DEFAULT_GLOBAL_LLM_CONCURRENCY
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_GLOBAL_LLM_CONCURRENCY
+
+
+def _get_global_llm_semaphore() -> threading.Semaphore | None:
+    """Return the process-global LLM concurrency semaphore, or ``None`` when the
+    cap is disabled (limit <= 0). Rebuilt if the configured limit changes."""
+    global _global_sem, _global_sem_limit
+    limit = _resolve_global_concurrency_limit()
+    if limit <= 0:
+        return None
+    with _global_sem_lock:
+        if _global_sem is None or _global_sem_limit != limit:
+            _global_sem = threading.Semaphore(limit)
+            _global_sem_limit = limit
+        return _global_sem
 
 
 def _chat_completion_with_token_fallback(
@@ -161,23 +209,33 @@ async def call_openai_async(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    start_time = time.time()
+    # Bound total in-flight LLM calls process-globally. The semaphore is acquired
+    # inside the worker thread (not on the event loop) so the blocking wait parks
+    # the worker, and ``latency_ms`` still times only the call itself, not the
+    # queue wait. ``None`` when the cap is disabled.
+    semaphore = _get_global_llm_semaphore()
+
+    def _call_with_cap() -> tuple[Any, float]:
+        if semaphore is not None:
+            semaphore.acquire()
+        try:
+            start_time = time.time()
+            completion = _chat_completion_with_token_fallback(
+                client,
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                temperature=temperature,
+            )
+            return completion, (time.time() - start_time) * 1000
+        finally:
+            if semaphore is not None:
+                semaphore.release()
 
     # Run the synchronous OpenAI call in a thread pool
     loop = asyncio.get_event_loop()
-    completion = await loop.run_in_executor(
-        None,
-        lambda: _chat_completion_with_token_fallback(
-            client,
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            temperature=temperature,
-        ),
-    )
-
-    latency_ms = (time.time() - start_time) * 1000
+    completion, latency_ms = await loop.run_in_executor(None, _call_with_cap)
 
     # Extract response
     answer = completion.choices[0].message.content
