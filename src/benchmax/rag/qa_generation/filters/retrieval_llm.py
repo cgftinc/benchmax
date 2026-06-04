@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 from benchmax.rag.chunkers.models import Chunk
-from benchmax.rag.qa_generation.batch_processor import batch_process_sync
+from benchmax.rag.qa_generation.batch_processor import batch_process_async
 from benchmax.rag.qa_generation.pipeline_config import (
     DEFAULT_RETRIEVAL_JUDGE_SYSTEM_PROMPT,
     DEFAULT_RETRIEVAL_JUDGE_USER_TEMPLATE,
@@ -75,6 +76,21 @@ class RetrievalLLMFilter:
             api_key=cfg.judge_api_key,
             base_url=cfg.judge_base_url,
         )
+        # Lazily-built per-loop AsyncOpenAI judge clients (see _get_async_judge_client).
+        self._async_judge_clients: dict[int, AsyncOpenAI] = {}
+
+    def _get_async_judge_client(self) -> AsyncOpenAI:
+        """Per-loop AsyncOpenAI judge client, built on first use."""
+        loop = asyncio.get_running_loop()
+        key = id(loop)
+        client = self._async_judge_clients.get(key)
+        if client is None:
+            client = AsyncOpenAI(
+                api_key=self.cfg.judge_api_key,
+                base_url=self.cfg.judge_base_url,
+            )
+            self._async_judge_clients[key] = client
+        return client
 
     def _resolve_search_mode(self, context: PipelineContext) -> str | None:
         """Use the best search mode available on the corpus backend."""
@@ -86,14 +102,18 @@ class RetrievalLLMFilter:
             return mode
         return None
 
-    def evaluate(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]:
+    async def evaluate(
+        self, items: list[GeneratedQA], context: PipelineContext
+    ) -> list[GeneratedQA]:
         if not self.cfg.enabled:
             return items
 
         self._corpus_language = str(context.get("corpus_language", "") or "").strip()
 
         max_refinements = context.config.refinement.max_refinements_per_item
-        stats_key = str(self.cfg.stats_key or "").strip() or "retrieval_too_easy_filter_stats"
+        stats_key = (
+            str(self.cfg.stats_key or "").strip() or "retrieval_too_easy_filter_stats"
+        )
         stats = context.setdefault(
             stats_key,
             {
@@ -126,7 +146,8 @@ class RetrievalLLMFilter:
                 if item.filter_verdict is not None and not item.is_passed:
                     continue
                 try:
-                    verdict = self._evaluate_item(
+                    verdict = await asyncio.to_thread(
+                        self._evaluate_item,
                         item,
                         max_refinements=max_refinements,
                         rewrite_cfg=rewrite_cfg,
@@ -135,7 +156,9 @@ class RetrievalLLMFilter:
                 except Exception:
                     logger.exception("RetrievalLLMFilter failed for one item")
                     query = resolve_retrieval_query(item.qa, rewrite_cfg=rewrite_cfg)
-                    refinements = int(item.generation_metadata.get("refinement_count", 0))
+                    refinements = int(
+                        item.generation_metadata.get("refinement_count", 0)
+                    )
                     verdict = self._error_verdict(
                         query,
                         refinements=refinements,
@@ -146,18 +169,20 @@ class RetrievalLLMFilter:
                 self._update_stats(stats, verdict)
             return items
 
-        return self._evaluate_batch(
+        return await self._evaluate_batch(
             items,
+            context=context,
             stats=stats,
             max_refinements=max_refinements,
             rewrite_cfg=rewrite_cfg,
             search_mode=search_mode,
         )
 
-    def _evaluate_batch(
+    async def _evaluate_batch(
         self,
         items: list[GeneratedQA],
         *,
+        context: PipelineContext,
         stats: dict[str, Any],
         max_refinements: int,
         rewrite_cfg: QueryRewriteConfig,
@@ -193,12 +218,13 @@ class RetrievalLLMFilter:
                 continue
 
             try:
-                search_results = self.chunk_source.search_related(
-                    source=_DUMMY_CHUNK,
-                    queries=[query],
-                    top_k=self.cfg.top_k,
-                    mode=search_mode,
-                )
+                async with context.search_semaphore():
+                    search_results = await self.chunk_source.asearch_related(
+                        source=_DUMMY_CHUNK,
+                        queries=[query],
+                        top_k=self.cfg.top_k,
+                        mode=search_mode,
+                    )
             except Exception:
                 logger.warning(
                     "RetrievalLLMFilter search failed for one item; routing to refinement/rejection.",
@@ -221,7 +247,9 @@ class RetrievalLLMFilter:
                 ref_chunks, retrieved_chunks
             )
             overlap_triggered = overlap_ratio >= self.cfg.overlap_threshold
-            too_easy_overlap_triggered = overlap_ratio >= self.cfg.too_easy_overlap_threshold
+            too_easy_overlap_triggered = (
+                overlap_ratio >= self.cfg.too_easy_overlap_threshold
+            )
             prepared.append(
                 _RetrievalItemData(
                     item=item,
@@ -259,8 +287,8 @@ class RetrievalLLMFilter:
                     f"NOTE: The question, answer, and chunks are in {corpus_language}. "
                     f"Evaluate them in {corpus_language}.\n\n{system_prompt}"
                 )
-            batch_result = batch_process_sync(
-                client=self.judge_client,
+            batch_result = await batch_process_async(
+                client=self._get_async_judge_client(),
                 model=self.cfg.judge_model,
                 prompts=judge_prompts,
                 system_prompt=system_prompt,
@@ -270,6 +298,9 @@ class RetrievalLLMFilter:
                 show_progress=self.cfg.show_batch_progress,
                 temperature=0.0,
                 desc="Retrieval filter",
+                semaphore=context.model_semaphore(
+                    self.cfg.judge_model, self.cfg.judge_base_url
+                ),
             )
             for j, i in enumerate(needs_judge_indices):
                 response = batch_result.responses[j]
@@ -281,7 +312,9 @@ class RetrievalLLMFilter:
                         "reason_tag": _JUDGE_TAG_UNKNOWN,
                     }
                 else:
-                    judge_results[i] = self._parse_judge_response(response.answer or "{}")
+                    judge_results[i] = self._parse_judge_response(
+                        response.answer or "{}"
+                    )
 
         # Phase 3: apply verdicts
         no_chunks_result: dict[str, Any] = {
@@ -292,7 +325,9 @@ class RetrievalLLMFilter:
         }
         for i, data in enumerate(prepared):
             try:
-                refinements = int(data.item.generation_metadata.get("refinement_count", 0))
+                refinements = int(
+                    data.item.generation_metadata.get("refinement_count", 0)
+                )
                 shared_metadata = {
                     "filter_mode": _FILTER_MODE,
                     "search_mode": search_mode or "default",
@@ -308,7 +343,9 @@ class RetrievalLLMFilter:
                     "matched_reference_chunks": len(data.matched_reference_ids),
                     "retrieved_chunk_count": len(data.retrieved_chunks),
                     "top_score": (
-                        data.search_results[0].get("max_score", 0.0) if data.search_results else 0.0
+                        data.search_results[0].get("max_score", 0.0)
+                        if data.search_results
+                        else 0.0
                     ),
                 }
 
@@ -344,7 +381,9 @@ class RetrievalLLMFilter:
                     )
             except Exception:
                 logger.exception("RetrievalLLMFilter failed for one item")
-                refinements = int(data.item.generation_metadata.get("refinement_count", 0))
+                refinements = int(
+                    data.item.generation_metadata.get("refinement_count", 0)
+                )
                 verdict = self._error_verdict(
                     data.query,
                     refinements=refinements,
@@ -390,11 +429,17 @@ class RetrievalLLMFilter:
             top_k=self.cfg.top_k,
             mode=search_mode,
         )
-        retrieved_chunks: list[Chunk] = [row["chunk"] for row in search_results if "chunk" in row]
+        retrieved_chunks: list[Chunk] = [
+            row["chunk"] for row in search_results if "chunk" in row
+        ]
         ref_chunks = list(item.qa.get("reference_chunks", []) or [])
-        overlap_ratio, matched_reference_ids = self._compute_overlap(ref_chunks, retrieved_chunks)
+        overlap_ratio, matched_reference_ids = self._compute_overlap(
+            ref_chunks, retrieved_chunks
+        )
         overlap_triggered = overlap_ratio >= self.cfg.overlap_threshold
-        too_easy_overlap_triggered = overlap_ratio >= self.cfg.too_easy_overlap_threshold
+        too_easy_overlap_triggered = (
+            overlap_ratio >= self.cfg.too_easy_overlap_threshold
+        )
         refinements = int(item.generation_metadata.get("refinement_count", 0))
 
         shared_metadata = {
@@ -411,7 +456,9 @@ class RetrievalLLMFilter:
             "matched_reference_ids": matched_reference_ids,
             "matched_reference_chunks": len(matched_reference_ids),
             "retrieved_chunk_count": len(retrieved_chunks),
-            "top_score": search_results[0].get("max_score", 0.0) if search_results else 0.0,
+            "top_score": search_results[0].get("max_score", 0.0)
+            if search_results
+            else 0.0,
         }
 
         if too_easy_overlap_triggered:
@@ -489,19 +536,24 @@ class RetrievalLLMFilter:
                 matched.append(ref_id)
         return len(matched) / max(1, len(ref_chunks)), matched
 
-    def _build_judge_prompt(self, item: GeneratedQA, retrieved_chunks: list[Chunk]) -> str | None:
+    def _build_judge_prompt(
+        self, item: GeneratedQA, retrieved_chunks: list[Chunk]
+    ) -> str | None:
         """Build judge user prompt. Returns None if no chunks (no judge call needed)."""
         if not retrieved_chunks:
             return None
         chunks_text = "\n---\n".join(
-            f"[Chunk {idx + 1}]\n{chunk.content}" for idx, chunk in enumerate(retrieved_chunks)
+            f"[Chunk {idx + 1}]\n{chunk.content}"
+            for idx, chunk in enumerate(retrieved_chunks)
         )
         prompt_vars = {
             "question": item.qa.get("question", ""),
             "answer": item.qa.get("answer", ""),
             "chunks_text": chunks_text,
         }
-        user_template = str(self.cfg.judge_user_template or "").strip() or _JUDGE_USER_TEMPLATE
+        user_template = (
+            str(self.cfg.judge_user_template or "").strip() or _JUDGE_USER_TEMPLATE
+        )
         try:
             return user_template.format(**prompt_vars)
         except KeyError:
@@ -537,7 +589,9 @@ class RetrievalLLMFilter:
                 "reason_tag": _JUDGE_TAG_UNKNOWN,
             }
 
-    def _run_judge(self, item: GeneratedQA, retrieved_chunks: list[Chunk]) -> dict[str, Any]:
+    def _run_judge(
+        self, item: GeneratedQA, retrieved_chunks: list[Chunk]
+    ) -> dict[str, Any]:
         prompt = self._build_judge_prompt(item, retrieved_chunks)
         if prompt is None:
             return {
@@ -587,7 +641,9 @@ class RetrievalLLMFilter:
             str(judge_result.get("lexical_anchor_evidence", "") or "").strip() or None
         )
         too_easy_high_confidence = confidence >= self.cfg.too_easy_confidence_threshold
-        too_easy_due_to_judge = judge_reason_tag == _JUDGE_TAG_TOO_EASY and too_easy_high_confidence
+        too_easy_due_to_judge = (
+            judge_reason_tag == _JUDGE_TAG_TOO_EASY and too_easy_high_confidence
+        )
 
         # Discount the judge verdict when reference chunks weren't retrieved.
         # If BM25 couldn't find the reference chunks (overlap=0), the question
@@ -763,7 +819,9 @@ class RetrievalLLMFilter:
             stats["overlap_threshold_triggered"] = (
                 int(stats.get("overlap_threshold_triggered", 0)) + 1
             )
-        too_easy_overlap_triggered = bool(metadata.get("too_easy_overlap_triggered", False))
+        too_easy_overlap_triggered = bool(
+            metadata.get("too_easy_overlap_triggered", False)
+        )
         if too_easy_overlap_triggered:
             stats["too_easy_overlap_threshold_triggered"] = (
                 int(stats.get("too_easy_overlap_threshold_triggered", 0)) + 1
@@ -775,14 +833,17 @@ class RetrievalLLMFilter:
             judge_answerable = metadata.get("judge_answerable")
             if isinstance(judge_answerable, bool):
                 if judge_answerable:
-                    stats["judge_answerable_true"] = int(stats.get("judge_answerable_true", 0)) + 1
+                    stats["judge_answerable_true"] = (
+                        int(stats.get("judge_answerable_true", 0)) + 1
+                    )
                 else:
                     stats["judge_answerable_false"] = (
                         int(stats.get("judge_answerable_false", 0)) + 1
                     )
 
             judge_reason_tag = (
-                str(metadata.get("judge_reason_tag", "")).strip().lower() or _JUDGE_TAG_UNKNOWN
+                str(metadata.get("judge_reason_tag", "")).strip().lower()
+                or _JUDGE_TAG_UNKNOWN
             )
             tags = stats.get("judge_reason_tags", {})
             if isinstance(tags, dict):
@@ -799,4 +860,6 @@ class RetrievalLLMFilter:
                     int(stats.get("too_easy_due_to_overlap_pre_gate", 0)) + 1
                 )
             elif source == "judge":
-                stats["too_easy_due_to_judge"] = int(stats.get("too_easy_due_to_judge", 0)) + 1
+                stats["too_easy_due_to_judge"] = (
+                    int(stats.get("too_easy_due_to_judge", 0)) + 1
+                )
