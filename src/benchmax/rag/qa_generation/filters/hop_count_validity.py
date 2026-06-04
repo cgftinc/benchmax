@@ -10,14 +10,15 @@ the ``retrieval_too_easy_llm`` filter with a unified, stronger approach.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
-from benchmax.rag.qa_generation.batch_processor import batch_process_sync
+from benchmax.rag.qa_generation.batch_processor import batch_process_async
 from benchmax.rag.qa_generation.pipeline_config import PipelineContext
 from benchmax.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 
@@ -34,7 +35,9 @@ _FAILURE_TYPE_NONE = "none"
 # suffices). A value of -1 is safe because ref_chunk indices are always >= 0.
 _PRIMARY_ONLY_SENTINEL = -1
 _PRIMARY_ONLY_OMITTED_ID = "all_non_primary"
-_MAX_CONSECUTIVE_ERRORS = 5  # circuit-breaker: abort filter after this many consecutive failures
+_MAX_CONSECUTIVE_ERRORS = (
+    5  # circuit-breaker: abort filter after this many consecutive failures
+)
 
 _HOP_COUNT_JUDGE_SYSTEM_PROMPT = """\
 You are an expert judge evaluating whether a question can be fully answered \
@@ -130,8 +133,25 @@ class HopCountValidityFilter:
             api_key=cfg.judge_api_key or "disabled",
             base_url=cfg.judge_base_url or None,
         )
+        # Lazily-built per-loop AsyncOpenAI judge clients (see _get_async_judge_client).
+        self._async_judge_clients: dict[int, AsyncOpenAI] = {}
 
-    def evaluate(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]:
+    def _get_async_judge_client(self) -> AsyncOpenAI:
+        """Per-loop AsyncOpenAI judge client, built on first use."""
+        loop = asyncio.get_running_loop()
+        key = id(loop)
+        client = self._async_judge_clients.get(key)
+        if client is None:
+            client = AsyncOpenAI(
+                api_key=self.cfg.judge_api_key or "disabled",
+                base_url=self.cfg.judge_base_url or None,
+            )
+            self._async_judge_clients[key] = client
+        return client
+
+    async def evaluate(
+        self, items: list[GeneratedQA], context: PipelineContext
+    ) -> list[GeneratedQA]:
         if not self.cfg.enabled:
             return items
 
@@ -169,7 +189,8 @@ class HopCountValidityFilter:
 
             qa_type = (
                 str(
-                    item.qa.get("qa_type", "") or item.generation_metadata.get("qa_type_target", "")
+                    item.qa.get("qa_type", "")
+                    or item.generation_metadata.get("qa_type_target", "")
                 )
                 .strip()
                 .lower()
@@ -186,11 +207,12 @@ class HopCountValidityFilter:
                 continue
 
             try:
-                verdict = self._validate_item(
+                verdict = await self._validate_item(
                     item,
                     ref_chunks=ref_chunks,
                     max_refinements=max_refinements,
                     stats=stats,
+                    context=context,
                 )
                 consecutive_errors = 0
             except Exception as exc:
@@ -211,13 +233,14 @@ class HopCountValidityFilter:
 
         return items
 
-    def _validate_item(
+    async def _validate_item(
         self,
         item: GeneratedQA,
         *,
         ref_chunks: list[dict[str, Any]],
         max_refinements: int,
         stats: dict[str, Any],
+        context: PipelineContext,
     ) -> FilterVerdict | None:
         """Run hop-count validation on a single item."""
         question = str(item.qa.get("question", ""))
@@ -241,7 +264,7 @@ class HopCountValidityFilter:
         subsets_to_test = self._build_subsets(ref_chunks, mode)
 
         if self.cfg.batch_enabled and len(subsets_to_test) > 1:
-            return self._validate_item_batched(
+            return await self._validate_item_batched(
                 item=item,
                 question=question,
                 answer=answer,
@@ -250,6 +273,7 @@ class HopCountValidityFilter:
                 refinements=refinements,
                 max_refinements=max_refinements,
                 stats=stats,
+                context=context,
             )
 
         per_subset_results: list[dict[str, Any]] = []
@@ -262,7 +286,9 @@ class HopCountValidityFilter:
                 # primary_only mode: testing whether the primary chunk alone suffices.
                 # If it does, this is a single-hop question — skip the multi-hop
                 # validator entirely and let it pass through to other filters.
-                result = self._judge_subset(question, answer, subset, stats)
+                result = await asyncio.to_thread(
+                    self._judge_subset, question, answer, subset, stats
+                )
                 if result["answerable"]:
                     logger.debug(
                         "hop_count_validity: question is single-hop (primary chunk alone "
@@ -285,11 +311,17 @@ class HopCountValidityFilter:
             omitted_chunk = ref_chunks[omitted_idx]
             omitted_id = str(omitted_chunk.get("id", f"chunk_{omitted_idx}"))
             omitted_file = str(
-                omitted_chunk.get("metadata", {}).get("file", omitted_chunk.get("file", omitted_id))
+                omitted_chunk.get("metadata", {}).get(
+                    "file", omitted_chunk.get("file", omitted_id)
+                )
             )
 
-            result = self._judge_subset(question, answer, subset, stats)
-            contribution_level = str(result.get("contribution_level", "")).lower().strip()
+            result = await asyncio.to_thread(
+                self._judge_subset, question, answer, subset, stats
+            )
+            contribution_level = (
+                str(result.get("contribution_level", "")).lower().strip()
+            )
             per_subset_results.append(
                 {
                     "omitted": omitted_id,
@@ -304,7 +336,9 @@ class HopCountValidityFilter:
                 redundant_chunks.append(omitted_id)
             elif contribution_level == "low":
                 # Chunk is technically essential but barely contributes — flag for refinement.
-                low_contribution_chunks.append({"chunk_id": omitted_id, "file": omitted_file})
+                low_contribution_chunks.append(
+                    {"chunk_id": omitted_id, "file": omitted_file}
+                )
 
         hop_count_claimed = len(ref_chunks)
         validated = len(redundant_chunks) == 0
@@ -347,7 +381,8 @@ class HopCountValidityFilter:
                     "failure_type": _FAILURE_TYPE_LOW_CONTRIBUTION,
                     "low_contribution_chunks": low_contribution_chunks,
                     "refinement_hint": (
-                        "Increase the question's dependence on all reference chunks. " + feedback
+                        "Increase the question's dependence on all reference chunks. "
+                        + feedback
                     ),
                 },
             )
@@ -381,8 +416,12 @@ class HopCountValidityFilter:
         essential_count = hop_count_claimed - len(redundant_chunks)
         if essential_count >= 2:
             redundant_set = set(redundant_chunks)
-            essential_chunks = [c for c in ref_chunks if str(c.get("id", "")) not in redundant_set]
-            removed_chunks = [c for c in ref_chunks if str(c.get("id", "")) in redundant_set]
+            essential_chunks = [
+                c for c in ref_chunks if str(c.get("id", "")) not in redundant_set
+            ]
+            removed_chunks = [
+                c for c in ref_chunks if str(c.get("id", "")) in redundant_set
+            ]
             item.qa["reference_chunks"] = essential_chunks
             if removed_chunks:
                 existing = list(item.qa.get("removed_reference_chunks", []))
@@ -463,7 +502,7 @@ class HopCountValidityFilter:
             },
         )
 
-    def _validate_item_batched(  # noqa: E501
+    async def _validate_item_batched(  # noqa: E501
         self,
         *,
         item: GeneratedQA,
@@ -474,6 +513,7 @@ class HopCountValidityFilter:
         refinements: int,
         max_refinements: int,
         stats: dict[str, Any],
+        context: PipelineContext,
     ) -> FilterVerdict | None:
         """Batched version of the subset-judging loop in _validate_item.
 
@@ -496,8 +536,8 @@ class HopCountValidityFilter:
                 f"Evaluate them in {corpus_language}.\n\n{system_prompt}"
             )
 
-        batch_result = batch_process_sync(
-            client=self.judge_client,
+        batch_result = await batch_process_async(
+            client=self._get_async_judge_client(),
             model=self.cfg.judge_model,
             prompts=prompts,
             system_prompt=system_prompt,
@@ -507,6 +547,9 @@ class HopCountValidityFilter:
             show_progress=self.cfg.show_batch_progress,
             temperature=0.0,
             desc="Hop-count validity",
+            semaphore=context.model_semaphore(
+                self.cfg.judge_model, self.cfg.judge_base_url
+            ),
         )
 
         # Process results — mirrors the sequential loop exactly.
@@ -549,7 +592,9 @@ class HopCountValidityFilter:
                 )
             )
 
-            contribution_level = str(result.get("contribution_level", "")).lower().strip()
+            contribution_level = (
+                str(result.get("contribution_level", "")).lower().strip()
+            )
             per_subset_results.append(
                 {
                     "omitted": omitted_id,
@@ -612,7 +657,8 @@ class HopCountValidityFilter:
                     "failure_type": (_FAILURE_TYPE_LOW_CONTRIBUTION),
                     "low_contribution_chunks": (low_contribution_chunks),
                     "refinement_hint": (
-                        "Increase the question's dependence on all reference chunks. " + feedback
+                        "Increase the question's dependence on all reference chunks. "
+                        + feedback
                     ),
                 },
             )
@@ -644,8 +690,12 @@ class HopCountValidityFilter:
         essential_count = hop_count_claimed - len(redundant_chunks)
         if essential_count >= 2:
             redundant_set = set(redundant_chunks)
-            essential_chunks = [c for c in ref_chunks if str(c.get("id", "")) not in redundant_set]
-            removed_chunks = [c for c in ref_chunks if str(c.get("id", "")) in redundant_set]
+            essential_chunks = [
+                c for c in ref_chunks if str(c.get("id", "")) not in redundant_set
+            ]
+            removed_chunks = [
+                c for c in ref_chunks if str(c.get("id", "")) in redundant_set
+            ]
             item.qa["reference_chunks"] = essential_chunks
             if removed_chunks:
                 existing = list(item.qa.get("removed_reference_chunks", []))
@@ -746,7 +796,9 @@ class HopCountValidityFilter:
         overlaps: list[tuple[str, str, float]] = []  # (chunk_id, file, overlap_ratio)
         for chunk in ref_chunks:
             chunk_id = str(chunk.get("id", "unknown"))
-            chunk_file = str(chunk.get("metadata", {}).get("file", chunk.get("file", chunk_id)))
+            chunk_file = str(
+                chunk.get("metadata", {}).get("file", chunk.get("file", chunk_id))
+            )
             chunk_words = set(str(chunk.get("content", "")).lower().split())
             if not chunk_words:
                 overlap = 0.0
@@ -771,10 +823,12 @@ class HopCountValidityFilter:
         )
 
         over_info = [
-            {"chunk_id": cid, "file": f, "overlap": round(r, 4)} for cid, f, r in over_represented
+            {"chunk_id": cid, "file": f, "overlap": round(r, 4)}
+            for cid, f, r in over_represented
         ]
         under_info = [
-            {"chunk_id": cid, "file": f, "overlap": round(r, 4)} for cid, f, r in under_represented
+            {"chunk_id": cid, "file": f, "overlap": round(r, 4)}
+            for cid, f, r in under_represented
         ]
         feedback = (
             "lopsided_chunk_contribution: "
@@ -890,7 +944,9 @@ class HopCountValidityFilter:
             "confidence": float(data.get("confidence", 0.0)),
             "reasoning": str(data.get("reasoning", "")),
             "missing_facts": list(data.get("missing_facts", [])),
-            "contribution_level": str(data.get("contribution_level", "")).lower().strip(),
+            "contribution_level": str(data.get("contribution_level", ""))
+            .lower()
+            .strip(),
         }
 
     def _judge_subset(
@@ -935,7 +991,9 @@ class HopCountValidityFilter:
     ) -> dict[str, Any]:
         return {
             "filter_mode": _FILTER_MODE,
-            "reason_code": ("hop_count_valid" if validated else "redundant_chunk_found"),
+            "reason_code": (
+                "hop_count_valid" if validated else "redundant_chunk_found"
+            ),
             "confidence": 1.0 if validated else 0.5,
             "hop_count_claimed": hop_count_claimed,
             "hop_count_validated": validated,
