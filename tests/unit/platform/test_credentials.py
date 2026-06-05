@@ -40,7 +40,7 @@ def _clear_env(monkeypatch, tmp_path):
     # the dev machine can't leak into tests; cache tests override it.
     monkeypatch.setenv(_CRED_PATH_ENV, str(tmp_path / "no-creds.json"))
     # Reset the per-process minted-JWT cache between tests.
-    credentials._SESSION_JWT_CACHE.update({"token": None, "exp": 0.0})
+    credentials._SESSION_JWT_CACHE.update({"token": None, "src": None, "exp": 0.0})
 
 
 def test_reads_token_file_and_strips(tmp_path, monkeypatch):
@@ -205,6 +205,73 @@ def test_clear_session_removes_file_and_jwt_cache(tmp_path, monkeypatch):
     clear_castform_session()
     assert read_castform_session() is None
     assert credentials._SESSION_JWT_CACHE["token"] is None
+
+
+def test_session_skipped_when_expires_at_non_numeric(tmp_path, monkeypatch):
+    """A malformed (non-numeric) expires_at fails closed — the session is unusable
+    rather than slipping past the numeric-only guard."""
+    monkeypatch.setattr(credentials, "_mint_session_jwt", lambda _t: "must-not-mint")
+    _write_session(
+        tmp_path, monkeypatch, {"access_token": "sk_session", "expires_at": "tomorrow"}
+    )
+    with pytest.raises(RuntimeError, match="No Castform platform credential"):
+        platform_bearer()
+
+
+def test_mint_handles_non_json_200(monkeypatch):
+    """A 200 with a non-JSON body returns None, not an uncaught JSONDecodeError."""
+    import httpx
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            raise ValueError("Expecting value")  # what resp.json() raises on non-JSON
+
+    monkeypatch.setattr(httpx, "get", lambda *_a, **_k: _Resp())
+    assert credentials._mint_session_jwt("sess_abc") is None
+
+
+def test_session_jwt_falls_back_to_cached_on_transient_mint_failure(tmp_path, monkeypatch):
+    """A transient mint failure reuses a still-valid cached JWT instead of failing."""
+    good = _fake_jwt(time.time() + 300)
+    minted = {"v": good}
+    monkeypatch.setattr(credentials, "_mint_session_jwt", lambda _t: minted["v"])
+    _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
+    assert platform_bearer() == good  # mints + caches
+
+    # Force the cache into the <60s refresh window (still valid) and fail the mint.
+    credentials._SESSION_JWT_CACHE["exp"] = time.time() + 30
+    minted["v"] = None
+    assert platform_bearer() == good  # falls back to the still-valid cached token
+
+
+def test_session_jwt_floors_ttl_when_exp_unparseable(tmp_path, monkeypatch):
+    """A minted token with no parseable exp is cached (floor TTL), not re-minted per call."""
+    calls = {"n": 0}
+
+    def _mint(_t):
+        calls["n"] += 1
+        return "opaque-token-without-exp"  # _jwt_exp -> 0.0
+
+    monkeypatch.setattr(credentials, "_mint_session_jwt", _mint)
+    _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
+    assert platform_bearer() == "opaque-token-without-exp"
+    assert platform_bearer() == "opaque-token-without-exp"
+    assert calls["n"] == 1  # floored TTL keeps it cached instead of re-minting each call
+
+
+def test_session_jwt_remints_on_session_change(tmp_path, monkeypatch):
+    """A re-login (new access_token in the same process) doesn't serve the prior
+    identity's cached JWT."""
+    tokens = {"sess_a": _fake_jwt(time.time() + 300), "sess_b": _fake_jwt(time.time() + 300)}
+    monkeypatch.setattr(credentials, "_mint_session_jwt", lambda t: tokens[t])
+    f = _write_session(tmp_path, monkeypatch, {"access_token": "sess_a"})
+    assert platform_bearer() == tokens["sess_a"]
+
+    f.write_text(json.dumps({"access_token": "sess_b"}))
+    f.chmod(0o600)
+    assert platform_bearer() == tokens["sess_b"]  # not the cached sess_a JWT
 
 
 # ---- resolve_token_provider (client bearer precedence) ----

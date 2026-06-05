@@ -75,9 +75,17 @@ class CorpusClient:
 
         Resolves the bearer per request via ``token_provider`` so a rotating
         act-as token stays valid across a long run."""
+        try:
+            bearer = self.token_provider()
+        except RuntimeError as exc:
+            # The seam (platform_bearer) raises when no credential resolves; surface
+            # it as an auth error so callers catch it like any other Corpora failure.
+            raise AuthenticationError(
+                f"No Castform platform credential available for the Corpora API: {exc}"
+            ) from exc
         headers = {
             **kwargs.pop("headers", {}),
-            "Authorization": f"Bearer {self.token_provider()}",
+            "Authorization": f"Bearer {bearer}",
         }
         retries = max(1, int(self.max_retries))
         attempt = 1

@@ -9,8 +9,6 @@ resolves its bearer from ``~/.castform`` automatically — no API key or URL.
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 import sys
 
 from benchmax.platform import credentials
@@ -41,21 +39,17 @@ def _cmd_whoami(_args: argparse.Namespace) -> int:
         print("Not logged in. Run `castform login`.", file=sys.stderr)
         return 1
     env = session.get("env", "prod")
-    jwt = credentials._session_jwt()  # mints from the session; None if invalid/expired
+    jwt = credentials._session_jwt()  # mints from the session; None if invalid/expired/offline
     if not jwt:
         print(
-            f"Session present (env: {env}) but could not be verified — "
-            "run `castform login` again.",
+            f"Session present (env: {env}), but couldn't reach auth-service to "
+            "verify it (offline, or the session expired). If this persists, run "
+            "`castform login` again.",
             file=sys.stderr,
         )
         return 1
-    try:
-        payload = jwt.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(payload))
-        who = claims.get("email") or claims.get("sub", "<unknown>")
-    except Exception:
-        who = "<unknown>"
+    claims = credentials._jwt_claims(jwt)
+    who = claims.get("email") or claims.get("sub", "<unknown>")
     print(f"Logged in as {who} (env: {env}).")
     return 0
 

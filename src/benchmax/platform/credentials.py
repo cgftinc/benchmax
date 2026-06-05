@@ -27,6 +27,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import threading
 import time
 import warnings
 from collections.abc import Callable
@@ -165,8 +166,8 @@ def write_castform_session(session: dict) -> None:
 
 def clear_castform_session() -> None:
     """Delete the cached session (``castform logout``). No-op if absent."""
-    _SESSION_JWT_CACHE["token"] = None
-    _SESSION_JWT_CACHE["exp"] = 0.0
+    with _SESSION_JWT_LOCK:
+        _SESSION_JWT_CACHE.update({"token": None, "src": None, "exp": 0.0})
     try:
         _credentials_path().unlink()
     except OSError:
@@ -175,19 +176,37 @@ def clear_castform_session() -> None:
 
 # Per-process cache of the short-lived JWT minted from the cached session, so we
 # don't re-mint on every request. Mirrors web-app/src/lib/auth/jwt-fetcher.ts.
-_SESSION_JWT_CACHE: dict[str, object] = {"token": None, "exp": 0.0}
+# ``src`` is the session access_token the JWT was minted from, so a re-login (or
+# any session swap) within a live process can't keep serving a JWT for the old
+# identity. Guarded by ``_SESSION_JWT_LOCK`` (rollouts resolve concurrently).
+_SESSION_JWT_LOCK = threading.Lock()
+_SESSION_JWT_CACHE: dict[str, object] = {"token": None, "src": None, "exp": 0.0}
+
+# When a minted token carries no parseable ``exp``, cache it for this long rather
+# than re-minting on every request (auth-service mints ~5-minute JWTs).
+_MINT_FALLBACK_TTL = 240.0
 
 
-def _jwt_exp(token: str) -> float:
-    """Read ``exp`` from a JWT payload without verifying (we only need timing)."""
+def _jwt_claims(token: str) -> dict:
+    """Decode a JWT payload without verifying — for timing/identity display only.
+
+    Returns the claims dict, or ``{}`` if the token isn't a parseable JWT.
+    """
     import base64
 
     try:
         payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)  # pad base64url
-        return float(json.loads(base64.urlsafe_b64decode(payload))["exp"])
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        return claims if isinstance(claims, dict) else {}
     except Exception:
-        return 0.0
+        return {}
+
+
+def _jwt_exp(token: str) -> float:
+    """Read ``exp`` from a JWT payload without verifying; 0.0 if absent/unparseable."""
+    exp = _jwt_claims(token).get("exp")
+    return float(exp) if isinstance(exp, (int, float)) else 0.0
 
 
 def _mint_session_jwt(access_token: str) -> str | None:
@@ -195,7 +214,7 @@ def _mint_session_jwt(access_token: str) -> str | None:
 
     Hits the jwt plugin's ``GET /api/auth/token`` with the session as Bearer —
     the same endpoint the web-app uses over a cookie. Returns ``None`` on any
-    failure (network, or the session no longer valid → caller re-prompts login).
+    failure (network, non-200, or a non-JSON body → caller re-prompts login).
     """
     import httpx
 
@@ -207,11 +226,11 @@ def _mint_session_jwt(access_token: str) -> str | None:
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=10.0,
         )
-    except httpx.HTTPError:
+        if resp.status_code != 200:
+            return None
+        token = resp.json().get("token")  # ValueError on a non-JSON 200 body
+    except (httpx.HTTPError, ValueError):
         return None
-    if resp.status_code != 200:
-        return None
-    token = resp.json().get("token")
     return token if isinstance(token, str) and token else None
 
 
@@ -220,30 +239,55 @@ def _session_jwt() -> str | None:
 
     Reads ``~/.castform``; if the session is present and unexpired, returns a
     cached JWT (re-minting ~60s before it expires — the per-process mint from
-    D2). Returns ``None`` if there's no usable session (caller falls through to
-    the ``castform login`` prompt). Refresh from ``refresh_token`` when the
-    *session* itself expires is a future addition; today an expired session just
-    prompts re-login.
+    D2). On a transient mint failure, a still-valid cached JWT is reused rather
+    than failing the in-flight request. Returns ``None`` if there's no usable
+    session (caller falls through to the ``castform login`` prompt). Refresh from
+    ``refresh_token`` when the *session* itself expires is a future addition;
+    today an expired session just prompts re-login.
     """
     session = read_castform_session()
     if not session:
         return None
     access_token = session.get("access_token")
-    if not access_token:
+    if not isinstance(access_token, str) or not access_token:
         return None
+    # Fail closed on a malformed expiry (non-numeric) as well as a past one, so a
+    # hand-edited/legacy file can't slip an expired session past the guard.
     expires_at = session.get("expires_at")
-    if isinstance(expires_at, (int, float)) and expires_at <= time.time():
+    if expires_at is not None and (
+        not isinstance(expires_at, (int, float)) or expires_at <= time.time()
+    ):
         return None
 
-    cached = _SESSION_JWT_CACHE["token"]
-    if cached and time.time() < float(_SESSION_JWT_CACHE["exp"]) - 60:
-        return cached  # type: ignore[return-value]
+    with _SESSION_JWT_LOCK:
+        cached = _SESSION_JWT_CACHE["token"]
+        if (
+            cached
+            and _SESSION_JWT_CACHE["src"] == access_token
+            and time.time() < float(_SESSION_JWT_CACHE["exp"]) - 60
+        ):
+            return cached  # type: ignore[return-value]
 
     jwt = _mint_session_jwt(access_token)
     if jwt:
-        _SESSION_JWT_CACHE["token"] = jwt
-        _SESSION_JWT_CACHE["exp"] = _jwt_exp(jwt)
-    return jwt
+        exp = _jwt_exp(jwt)
+        if exp <= time.time():
+            exp = time.time() + _MINT_FALLBACK_TTL  # no parseable exp → don't re-mint per call
+        with _SESSION_JWT_LOCK:
+            _SESSION_JWT_CACHE.update({"token": jwt, "src": access_token, "exp": exp})
+        return jwt
+
+    # Mint failed (transient): reuse a cached JWT for this same session that is
+    # still actually valid, rather than failing a request that had a usable token.
+    with _SESSION_JWT_LOCK:
+        cached = _SESSION_JWT_CACHE["token"]
+        if (
+            cached
+            and _SESSION_JWT_CACHE["src"] == access_token
+            and time.time() < float(_SESSION_JWT_CACHE["exp"])
+        ):
+            return cached  # type: ignore[return-value]
+    return None
 
 
 def resolve_token_provider(

@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from openai import OpenAI
 
+from benchmax.platform.credentials import resolve_judge_key
 from benchmax.rag.qa_generation.batch_processor import batch_process_sync
 from benchmax.rag.qa_generation.pipeline_config import (
     DEFAULT_GROUNDING_JUDGE_SYSTEM_PROMPT,
@@ -52,8 +53,15 @@ class GroundingLLMFilter:
     ) -> None:
         self.chunk_source = chunk_source
         self.cfg = cfg
+        # An empty judge_api_key resolves the platform bearer via the credential
+        # seam; gated on `enabled` so a listed-but-disabled filter with no
+        # credential still constructs (the client is never called when disabled).
         self.judge_client = OpenAI(
-            api_key=cfg.judge_api_key,
+            api_key=(
+                resolve_judge_key(cfg.judge_api_key, cfg.judge_base_url)
+                if cfg.enabled
+                else (cfg.judge_api_key or "disabled")
+            ),
             base_url=cfg.judge_base_url,
         )
 
