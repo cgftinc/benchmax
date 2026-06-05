@@ -97,6 +97,74 @@ def _ensure_nest_asyncio() -> None:
         pass
 
 
+def overrides_compute_group_reward(env_or_cls: type | Any) -> bool:
+    """True if the env (class or instance) overrides ``compute_group_reward``.
+
+    The ``BaseEnv`` default is a no-op returning one empty dict per rollout, so
+    there's nothing to validate unless the env supplies its own group-relative
+    scoring. Guard the group-reward checks with this to skip the common case.
+    """
+    from benchmax.envs.base_env import BaseEnv
+
+    cls = env_or_cls if isinstance(env_or_cls, type) else type(env_or_cls)
+    return cls.compute_group_reward is not BaseEnv.compute_group_reward
+
+
+def assert_group_reward_contract(
+    env: Any,
+    rollout_ids: list[str],
+    messages_list: list[list[dict[str, Any]]],
+    tasks: list[dict[str, Any] | None],
+    init_args: dict[str, Any] | None = None,
+) -> str:
+    """Call ``compute_group_reward`` on one group and assert the trainer contract.
+
+    The trainer's RewardWorker hands a whole rollout group to
+    ``compute_group_reward`` and expects one ``dict[str, float]`` back per
+    rollout, paired by index. This runs that call and checks the return shape +
+    finiteness — the group-level counterpart to the per-rollout ``compute_reward``
+    checks, which never exercise this path.
+
+    Returns a short success summary. Raises ``ValueError`` on a contract
+    violation; lets whatever ``compute_group_reward`` itself raises propagate
+    (e.g. ``ImportError`` for a reward dep missing locally) so callers can decide
+    skip-vs-fail. Guard with :func:`overrides_compute_group_reward` first — a
+    non-overriding env would trivially pass against the no-op default.
+    """
+    init_args = init_args or {}
+    rewards = _run_async(
+        env.compute_group_reward(
+            rollout_ids=rollout_ids,
+            messages_list=messages_list,
+            tasks=tasks,
+            **init_args,
+        )
+    )
+
+    if not isinstance(rewards, list):
+        raise ValueError(
+            f"returned {type(rewards).__name__}, expected list[dict[str, float]]"
+        )
+    if len(rewards) != len(rollout_ids):
+        raise ValueError(
+            f"returned {len(rewards)} dict(s) for {len(rollout_ids)} rollout(s) — "
+            "must be one per rollout_id, paired by index"
+        )
+    for idx, r in enumerate(rewards):
+        if not isinstance(r, dict):
+            raise ValueError(
+                f"element {idx} is {type(r).__name__}, expected dict[str, float]"
+            )
+        bad = {
+            k: v
+            for k, v in r.items()
+            if not isinstance(v, (int, float)) or not math.isfinite(v)
+        }
+        if bad:
+            raise ValueError(f"element {idx} has non-finite/non-float values: {bad}")
+    return f"{len(rewards)} dict(s): {rewards}"
+
+
 def _run_local_checks(
     env_class: type,
     env_args: dict[str, Any],
@@ -108,7 +176,8 @@ def _run_local_checks(
 
     Mirrors how the trainer calls env methods — dataset_preprocess,
     load_dataset, list_tools/run_tool, compute_reward, a simulated rollout,
-    and pickle round-trips. Prints colored progress as it goes.
+    compute_group_reward (when overridden), and pickle round-trips. Prints
+    colored progress as it goes.
 
     Returns:
         ``(passed, failed)`` check counts. The caller owns the shared event
@@ -422,6 +491,57 @@ def _run_local_checks(
             print(f"  \u2717 simulated rollout failed: {type(exc).__name__}: {exc}")
             failed += 1
 
+    # 5c. compute_group_reward (group-relative scoring) ----------------------
+    # Only envs that override the BaseEnv no-op have group logic to check. The
+    # trainer batches a whole rollout GROUP into this call, so feed it a small
+    # group: the same example sampled twice, with distinct answers so any
+    # diversity/ranking logic has something to compare.
+    if (
+        env is not None
+        and isinstance(preprocessed, dict)
+        and "prompt_messages" in preprocessed
+    ):
+        if not overrides_compute_group_reward(env):
+            print(
+                "  - compute_group_reward: skipped"
+                " (not overridden \u2014 per-rollout rewards only)"
+            )
+        else:
+            try:
+                task = preprocessed.get("task")
+                init_args = preprocessed.get("init_rollout_args") or {}
+                seed = list(preprocessed["prompt_messages"])
+                group = [
+                    seed
+                    + [{"role": "assistant", "content": "First candidate answer."}],
+                    seed
+                    + [{"role": "assistant", "content": "A different second answer."}],
+                ]
+                summary = assert_group_reward_contract(
+                    env,
+                    rollout_ids=["grp-0", "grp-1"],
+                    messages_list=group,
+                    tasks=[task, task],
+                    init_args=init_args,
+                )
+                print(
+                    "  \u2713 compute_group_reward returns"
+                    f" list[dict[str, float]] ({summary})"
+                )
+                passed += 1
+            except Exception as exc:
+                print(
+                    f"  \u2717 compute_group_reward failed: {type(exc).__name__}: {exc}"
+                )
+                print(
+                    "    Fix: compute_group_reward(rollout_ids, messages_list,"
+                    " tasks, **kwargs) must return"
+                )
+                print(
+                    "    one finite dict[str, float] per rollout_id, paired by index."
+                )
+                failed += 1
+
     # ── 6. Pickle round-trip ─────────────────────────────────────
     # Use cloudpickle on both sides so envs that import from local modules
     # (registered via local_modules in dump_bundle) round-trip the same way
@@ -594,6 +714,7 @@ def validate_env(
     llm_base_url: str | None = None,
     llm_api_key: str | None = None,
     remote_examples: int = 2,
+    group_reward_samples: int = 2,
     llm_model: str | None = None,
     max_turns: int = 4,
     verbose: bool = True,
@@ -605,11 +726,15 @@ def validate_env(
     1. **Local contract checks** (``local=True``, the default) — run in-process
        with no network, mirroring how the trainer calls env methods
        (dataset_preprocess, load_dataset, list_tools/run_tool, compute_reward,
-       a simulated rollout, pickle round-trips).
+       a simulated rollout, compute_group_reward, pickle round-trips).
     2. **Remote smoke rollout** (runs when ``api_key`` is given) — bundles the
        env inline and runs ``remote_examples`` real rollouts on the platform,
        exactly as :meth:`RolloutClient.validate_examples` does, but without you
-       having to construct a client.
+       having to construct a client. It also runs a real same-example *group*
+       through rollout-service (one example, ``samples_per_example=N``) so the
+       env's ``compute_group_reward`` executes server-side in the trainer image,
+       over co-located siblings — the trainer/external-eval path. A server-side
+       failure comes back as ``group_reward_error`` and fails the report.
 
     Pass nothing but the env + dataset for a fast offline check; add
     ``api_key`` (and, if your script's environment differs from the SDK
@@ -655,6 +780,10 @@ def validate_env(
             points outside the platform LLM endpoint (BYOK) — the platform key
             is never forwarded to a third-party host.
         remote_examples: Number of examples to smoke-test remotely (default 2).
+        group_reward_samples: Size of the same-example sibling group used to
+            validate ``compute_group_reward`` server-side on the remote pass
+            (``samples_per_example`` for a one-example batch). Default 2; costs
+            that many extra rollouts, only when the env overrides group reward.
         llm_model: Override the validation model for the remote rollout.
         max_turns: Max conversation turns per remote rollout.
         verbose: Print progress + the roll-up summary (default True).
@@ -700,6 +829,12 @@ def validate_env(
             llm_base_url=llm_base_url,
             llm_api_key=llm_api_key or "",
             max_turns=max_turns,
+            # The group-reward check runs server-side (a real group through
+            # rollout-service), so it needs no local env deps — run it whenever
+            # the remote pass runs, including launch scripts (local=False),
+            # which is exactly the expensive run we want to guard.
+            check_group_reward=True,
+            group_reward_samples=group_reward_samples,
             verbose=verbose,
             **extra,
         )

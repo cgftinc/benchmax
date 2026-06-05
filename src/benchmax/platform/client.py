@@ -75,10 +75,17 @@ class ValidationResult:
     """
 
     examples: list[ExampleValidation]
+    # Outcome of the compute_group_reward contract check, run on the real
+    # smoke-rollout transcripts. None when the env has no group reward, the
+    # env class wasn't supplied, or the check was skipped (deps not installed
+    # locally — it runs on the trainer instead). Its index is -1.
+    group_reward: ExampleValidation | None = None
 
     @property
     def ok(self) -> bool:
-        return all(ex.ok for ex in self.examples)
+        rollouts_ok = all(ex.ok for ex in self.examples)
+        group_ok = self.group_reward is None or self.group_reward.ok
+        return rollouts_ok and group_ok
 
     def __bool__(self) -> bool:
         return self.ok
@@ -1006,6 +1013,8 @@ class RolloutClient:
         llm_api_key: str = "",
         llm_model: str = _VALIDATION_MODEL,
         max_turns: int = 4,
+        check_group_reward: bool = True,
+        group_reward_samples: int = 2,
         verbose: bool = True,
     ) -> ValidationResult:
         """Run rollouts on the first *n* examples and report pass/fail.
@@ -1037,6 +1046,19 @@ class RolloutClient:
                                 ``llm_base_url`` points outside the platform LLM
                                 endpoint (stream_rollout refuses to forward the
                                 platform key to a third-party host).
+            check_group_reward: After the rollouts, run a REAL same-example
+                                group through rollout-service (one example,
+                                samples_per_example=N) so the env's
+                                ``compute_group_reward`` executes server-side in
+                                the trainer image, over co-located siblings —
+                                the trainer/external-eval path. A server-side
+                                failure (raise or contract violation) comes back
+                                as ``group_reward_error`` and fails validation.
+                                Only fires when ``env_class`` is given and the
+                                env overrides the method.
+            group_reward_samples: Size of that group (the batch's
+                                ``samples_per_example``). Costs this many extra
+                                rollouts; ignored unless the group check runs.
             verbose:            Print colored progress to stdout (default True for
                                 interactive/notebook UX). Set False for programmatic
                                 callers that consume the returned ValidationResult.
@@ -1071,6 +1093,18 @@ class RolloutClient:
         self._build_env(
             env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes
         )
+
+        # compute_group_reward runs on a whole rollout GROUP, which the
+        # per-example smoke above never forms (each is a group of 1). Run a real
+        # same-example group server-side (run_group, below) so the env method
+        # executes on the trainer's path; the server reports any failure as
+        # group_reward_error. Needs the env_class, and is pointless unless the
+        # env overrides the no-op default.
+        want_group = False
+        if check_group_reward and env_class is not None:
+            from .validation import overrides_compute_group_reward
+
+            want_group = overrides_compute_group_reward(env_class)
 
         sample = examples[:n]
         if verbose:
@@ -1112,7 +1146,55 @@ class RolloutClient:
                     print(_err(f"  Example {i} failed: {exc}"))
                 per_example.append(ExampleValidation(index=i, ok=False, error=str(exc)))
 
-        result = ValidationResult(examples=per_example)
+        group_reward: ExampleValidation | None = None
+        if want_group and sample and group_reward_samples >= 1:
+            # Faithful check: run a REAL same-example group through
+            # rollout-service (one example, samples_per_example=N) so the env's
+            # compute_group_reward runs server-side in the trainer image, over
+            # co-located siblings — exactly the trainer/external-eval path. A
+            # server-side failure comes back as group_reward_error per rollout.
+            if verbose:
+                print(
+                    _info(
+                        f"\n  Group reward — {group_reward_samples} server-side "
+                        "sibling(s) of example 0"
+                    )
+                )
+            try:
+                events = self.run_group(
+                    sample[0],
+                    samples=group_reward_samples,
+                    env_cls_path=env_cls_path,
+                    env_metadata_path=env_metadata_path,
+                    env_cls_bytes=env_cls_bytes,
+                    env_metadata_bytes=env_metadata_bytes,
+                    llm_base_url=llm_base_url,
+                    llm_api_key=llm_api_key,
+                    llm_model=llm_model,
+                    max_turns=max_turns,
+                    verbose=verbose,
+                )
+                group_reward = self._assess_group_events(
+                    events, group_reward_samples, verbose
+                )
+            except RolloutNotFound:
+                # The batch proxy (/v1/rollout/batch/stream) isn't deployed on
+                # this server yet — skip rather than fail, so the SDK can land
+                # ahead of platform-service. group_reward stays None; the offline
+                # local check still covered shape.
+                if verbose:
+                    print(
+                        _info(
+                            "  compute_group_reward: skipped — server has no "
+                            "/rollout/batch/stream yet"
+                        )
+                    )
+            except (RolloutError, RuntimeError) as exc:
+                if verbose:
+                    print(_err(f"  group reward check failed: {exc}"))
+                group_reward = ExampleValidation(index=-1, ok=False, error=str(exc))
+
+        result = ValidationResult(examples=per_example, group_reward=group_reward)
         if verbose:
             print()
             if result.ok:
@@ -1125,3 +1207,162 @@ class RolloutClient:
                 )
 
         return result
+
+    def run_group(
+        self,
+        example: dict[str, Any],
+        *,
+        samples: int,
+        env_cls_path: str | None = None,
+        env_metadata_path: str | None = None,
+        env_cls_bytes: bytes | None = None,
+        env_metadata_bytes: bytes | None = None,
+        llm_base_url: str | None = None,
+        llm_api_key: str = "",
+        llm_model: str = _VALIDATION_MODEL,
+        max_turns: int = 4,
+        verbose: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Run ONE example as a real ``samples``-member group; return its
+        ``rollout_completed`` events.
+
+        Submits a one-row batch with ``samples_per_example=samples`` to
+        ``/v1/rollout/batch/stream``. rollout-service co-locates the siblings on
+        one worker and runs ``env.compute_group_reward`` over them — the same
+        path the trainer/external-eval use, in the trainer image. Each event
+        carries ``success``, ``rewards`` and (on a server new enough to report
+        it) ``group_reward_error``. Raises the same typed errors as
+        ``stream_rollout`` on a non-200.
+        """
+        env = self._build_env(
+            env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes
+        )
+        # Resolve the platform bearer once, per request (never frozen at
+        # construction) — used for the request header below AND, when the LLM leg
+        # hits the platform's own endpoint, as that leg's key. Mirrors stream_rollout.
+        bearer = self._token_provider()
+
+        # The platform key is only auto-forwarded to the platform's own LLM host
+        # (see stream_rollout for the no-leak rationale).
+        platform_llm_url = config.llm_url()
+        resolved_llm_url = llm_base_url or platform_llm_url
+        if not llm_api_key:
+            if resolved_llm_url == platform_llm_url:
+                llm_api_key = bearer
+            else:
+                raise ValueError(
+                    "llm_api_key is required when llm_base_url points outside the "
+                    f"platform LLM endpoint ({platform_llm_url}). Refusing to "
+                    "forward the platform API key to a third-party host."
+                )
+
+        payload = {
+            "dataset_bytes": base64.b64encode(json.dumps(example).encode()).decode(),
+            "is_dataset_standardized": False,
+            # One example → one group; compute_group_reward needs all siblings
+            # co-located on a single worker anyway. Pin to 1 so rollout-service
+            # doesn't spin up extra workers that get an empty partition and crash.
+            "concurrent_workers": 1,
+            "env": env,
+            "llm": {
+                "base_url": resolved_llm_url,
+                "api_key": llm_api_key,
+                "model": llm_model,
+            },
+            "options": {"max_turns": max_turns, "samples_per_example": samples},
+        }
+        # platform-service mounts the batch proxy at /v1/rollout/batch/stream; it
+        # validates the platform key and forwards to rollout-service with an
+        # act_as JWT, same as the single /v1/rollout/stream proxy.
+        url = f"{self._server_url}/v1/rollout/batch/stream"
+        headers = {"Authorization": f"Bearer {bearer}"}
+
+        completed: list[dict[str, Any]] = []
+        with httpx.stream(
+            "POST", url, json=payload, headers=headers, timeout=self._timeout
+        ) as response:
+            if response.status_code != 200:
+                body = response.read().decode()
+                if response.status_code in (401, 403):
+                    raise AuthenticationError(body[:300], response.status_code)
+                if response.status_code == 404:
+                    raise RolloutNotFound(body[:300], response.status_code)
+                if 500 <= response.status_code < 600:
+                    raise RolloutServerError(body[:300], response.status_code)
+                raise RolloutError(body[:300], response.status_code)
+
+            for event in _iter_sse(response):
+                etype = event.get("event")
+                if etype == "batch_started":
+                    if verbose:
+                        print(
+                            _info(
+                                f"  group batch started ({event.get('total')} rollouts)"
+                            )
+                        )
+                elif etype == "rollout_completed":
+                    completed.append(event)
+                elif etype == "worker_error":
+                    # A sandbox process crashed. Non-fatal to the group on its
+                    # own — the verdict comes from the rollout_completed events
+                    # (_assess_group_events fails if none succeeded). Surfaced
+                    # for visibility, not raised.
+                    if verbose:
+                        print(_err(f"  worker_error: {str(event.get('error'))[:200]}"))
+                elif etype == "error":
+                    raise RolloutError(str(event.get("error"))[:300], 500)
+                elif etype in ("batch_completed", "cancelled"):
+                    break
+        return completed
+
+    def _assess_group_events(
+        self,
+        events: list[dict[str, Any]],
+        samples: int,
+        verbose: bool,
+    ) -> ExampleValidation:
+        """Turn a group's ``rollout_completed`` events into a pass/fail verdict.
+
+        Fails when the server reported a ``group_reward_error`` for any sibling
+        — compute_group_reward raised or violated its contract (see
+        rollout-service's ``_compute_group_rewards_safe``). Also fails if every
+        group rollout failed (nothing to assess). Index -1.
+
+        Note: a server that predates ``group_reward_error`` can't report a
+        failure, so a green verdict there means "no failure observed", not
+        "verified" — the offline local check still covers shape regardless.
+        """
+        errors = [
+            e["group_reward_error"] for e in events if e.get("group_reward_error")
+        ]
+        if errors:
+            msg = str(errors[0])
+            if verbose:
+                print(_err(f"  compute_group_reward FAILED server-side: {msg}"))
+            return ExampleValidation(index=-1, ok=False, error=msg)
+
+        succeeded = [e for e in events if e.get("success")]
+        if not succeeded:
+            first = next(
+                (e.get("error") for e in events if e.get("error")),
+                "no successful group rollouts",
+            )
+            if verbose:
+                print(
+                    _err(
+                        "  group reward not validated — all group rollouts "
+                        f"failed: {first}"
+                    )
+                )
+            return ExampleValidation(
+                index=-1, ok=False, error=f"all group rollouts failed: {first}"
+            )
+
+        if verbose:
+            print(
+                _ok(
+                    "  compute_group_reward OK server-side on a group of "
+                    f"{len(succeeded)}"
+                )
+            )
+        return ExampleValidation(index=-1, ok=True)

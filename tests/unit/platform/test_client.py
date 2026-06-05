@@ -585,3 +585,319 @@ def test_validate_examples_forwards_llm_base_url_and_key(monkeypatch):
     assert len(captured) == 1
     assert captured[0]["llm_base_url"] == "https://llm.castform.dev/v1"
     assert captured[0]["llm_api_key"] == "dev-key"
+
+
+# ---------------------------------------------------------------------------
+# validate_examples — faithful server-side compute_group_reward check
+#
+# The group reward runs SERVER-SIDE: validate_examples submits a one-example
+# batch with samples_per_example=N to rollout-service (run_group), which forms a
+# real co-located sibling group and runs compute_group_reward in the trainer
+# image. A failure comes back as group_reward_error per rollout. These tests
+# fake stream_rollout (per-example smoke) and run_group (the group batch).
+# ---------------------------------------------------------------------------
+
+
+def _make_group_env():
+    """A concrete BaseEnv that OVERRIDES compute_group_reward so the group check
+    fires. The body never runs here — the group reward executes server-side,
+    which run_group mocks away."""
+    from benchmax.envs.base_env import BaseEnv
+
+    class _GroupEnv(BaseEnv):
+        async def list_tools(self):
+            return []
+
+        async def run_tool(self, rollout_id, tool_name, **tool_args):
+            raise NotImplementedError
+
+        async def compute_reward(self, rollout_id, messages, task, **kwargs):
+            return {"r": 1.0}
+
+        async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
+            return [{"r": 1.0} for _ in rollout_ids]
+
+    return _GroupEnv
+
+
+def _completed(success=True, group_reward_error=None):
+    """A rollout_completed event in the shape run_group returns."""
+    e: dict[str, Any] = {"event": "rollout_completed", "success": success}
+    if group_reward_error is not None:
+        e["group_reward_error"] = group_reward_error
+    return e
+
+
+def test_validate_examples_runs_server_side_group(monkeypatch):
+    """Override + clean group → group reward validated server-side, result ok.
+    The group is examples[0] run as samples_per_example=N via run_group."""
+    client = RolloutClient(api_key="k")
+    monkeypatch.setattr(client, "stream_rollout", lambda **kw: {"success": True})
+    seen: dict[str, Any] = {}
+
+    def fake_run_group(example, *, samples, **kw):
+        seen["example"] = example
+        seen["samples"] = samples
+        return [_completed(), _completed()]
+
+    monkeypatch.setattr(client, "run_group", fake_run_group)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}],
+        env_class=_make_group_env(),
+        n=1,
+        group_reward_samples=2,
+        verbose=False,
+    )
+
+    assert result.ok
+    assert result.group_reward is not None and result.group_reward.ok
+    assert result.group_reward.index == -1
+    assert seen["example"] == {"prompt": "hi"}
+    assert seen["samples"] == 2
+
+
+def test_validate_examples_server_side_group_error_fails(monkeypatch):
+    """A server-reported group_reward_error fails the whole result."""
+    client = RolloutClient(api_key="k")
+    monkeypatch.setattr(client, "stream_rollout", lambda **kw: {"success": True})
+    monkeypatch.setattr(
+        client,
+        "run_group",
+        lambda example, *, samples, **kw: [
+            _completed(),
+            _completed(group_reward_error="ValueError: boom"),
+        ],
+    )
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}],
+        env_class=_make_group_env(),
+        n=1,
+        verbose=False,
+    )
+
+    assert result.group_reward is not None
+    assert result.group_reward.ok is False
+    assert "boom" in (result.group_reward.error or "")
+    assert result.ok is False
+
+
+def test_validate_examples_skips_group_when_proxy_missing(monkeypatch):
+    """If the batch proxy isn't deployed yet (404), the group check is SKIPPED,
+    not failed — so the SDK can land ahead of platform-service's proxy."""
+    client = RolloutClient(api_key="k")
+    monkeypatch.setattr(client, "stream_rollout", lambda **kw: {"success": True})
+
+    def _not_found(*a, **k):
+        raise RolloutNotFound("no such endpoint", 404)
+
+    monkeypatch.setattr(client, "run_group", _not_found)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}],
+        env_class=_make_group_env(),
+        n=1,
+        verbose=False,
+    )
+
+    assert result.group_reward is None
+    assert result.ok is True
+
+
+def _counting_run_group(counter: dict[str, int]):
+    def _stub(*a, **k):
+        counter["n"] += 1
+        return []
+
+    return _stub
+
+
+def test_validate_examples_check_group_reward_false_skips_group(monkeypatch):
+    """check_group_reward=False → run_group is never called."""
+    client = RolloutClient(api_key="k")
+    monkeypatch.setattr(client, "stream_rollout", lambda **kw: {"success": True})
+    called = {"n": 0}
+    monkeypatch.setattr(client, "run_group", _counting_run_group(called))
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}],
+        env_class=_make_group_env(),
+        n=1,
+        check_group_reward=False,
+        verbose=False,
+    )
+
+    assert result.group_reward is None
+    assert result.ok is True
+    assert called["n"] == 0
+
+
+def test_validate_examples_no_override_skips_group(monkeypatch):
+    """An env that doesn't override compute_group_reward → run_group not called."""
+    client = RolloutClient(api_key="k")
+    monkeypatch.setattr(client, "stream_rollout", lambda **kw: {"success": True})
+    called = {"n": 0}
+    monkeypatch.setattr(client, "run_group", _counting_run_group(called))
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}],
+        env_class=_make_smoke_env(),  # no compute_group_reward override
+        n=1,
+        verbose=False,
+    )
+
+    assert result.group_reward is None
+    assert result.ok is True
+    assert called["n"] == 0
+
+
+# _assess_group_events — verdict logic over a group's rollout_completed events
+
+
+def test_assess_group_events_ok():
+    client = RolloutClient(api_key="k")
+    v = client._assess_group_events([_completed(), _completed()], 2, verbose=False)
+    assert v.ok is True and v.index == -1
+
+
+def test_assess_group_events_surfaces_error():
+    client = RolloutClient(api_key="k")
+    v = client._assess_group_events(
+        [_completed(), _completed(group_reward_error="TypeError: x")], 2, verbose=False
+    )
+    assert v.ok is False and "TypeError" in (v.error or "")
+
+
+def test_assess_group_events_all_failed():
+    client = RolloutClient(api_key="k")
+    events = [_completed(success=False), _completed(success=False)]
+    events[0]["error"] = "rollout blew up"
+    v = client._assess_group_events(events, 2, verbose=False)
+    assert v.ok is False and "blew up" in (v.error or "")
+
+
+# run_group — one-example batch + batch-SSE consumption
+
+
+def test_run_group_parses_batch_sse(monkeypatch):
+    """run_group POSTs a one-example batch (samples_per_example=N) to
+    /v1/rollout/batch/stream and collects the rollout_completed events."""
+    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
+    import httpx as httpx_mod
+
+    captured: dict[str, Any] = {}
+    lines = [
+        'data: {"event": "batch_started", "total": 2}',
+        "",
+        'data: {"event": "rollout_completed", "success": true}',
+        "",
+        'data: {"event": "rollout_completed", "success": true, '
+        '"group_reward_error": "ValueError: boom"}',
+        "",
+        'data: {"event": "batch_completed", "total": 2, "succeeded": 2, "failed": 0}',
+        "",
+    ]
+
+    class _FakeResp:
+        status_code = 200
+
+        def iter_lines(self):
+            return iter(lines)
+
+        def read(self):
+            return b""
+
+    class _CM:
+        def __enter__(self):
+            return _FakeResp()
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake_stream(method, url, **kw):
+        captured["url"] = url
+        captured["json"] = kw.get("json")
+        return _CM()
+
+    monkeypatch.setattr(httpx_mod, "stream", _fake_stream)
+
+    client = RolloutClient(api_key="k")
+    events = client.run_group(
+        {"prompt": "hi"},
+        samples=2,
+        env_cls_bytes=b"x",
+        env_metadata_bytes=b"y",
+        verbose=False,
+    )
+
+    assert captured["url"] == "https://api.castform.com/v1/rollout/batch/stream"
+    assert captured["json"]["options"]["samples_per_example"] == 2
+    # One group → one worker (siblings co-locate); pinning this avoids an empty
+    # second worker crashing on a no-example partition.
+    assert captured["json"]["concurrent_workers"] == 1
+    assert len(events) == 2
+    assert events[1]["group_reward_error"] == "ValueError: boom"
+
+
+def test_run_group_ignores_worker_error(monkeypatch):
+    """A worker_error event (e.g. a stray empty-partition worker) is non-fatal:
+    run_group keeps the rollout_completed events instead of raising."""
+    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
+    import httpx as httpx_mod
+
+    lines = [
+        'data: {"event": "batch_started", "total": 2}',
+        "",
+        'data: {"event": "worker_error", "exit_code": 1, "error": "empty partition"}',
+        "",
+        'data: {"event": "rollout_completed", "success": true}',
+        "",
+        'data: {"event": "rollout_completed", "success": true}',
+        "",
+        'data: {"event": "batch_completed", "total": 2, "succeeded": 2, "failed": 0}',
+        "",
+    ]
+
+    class _FakeResp:
+        status_code = 200
+
+        def iter_lines(self):
+            return iter(lines)
+
+        def read(self):
+            return b""
+
+    class _CM:
+        def __enter__(self):
+            return _FakeResp()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(httpx_mod, "stream", lambda *a, **k: _CM())
+
+    client = RolloutClient(api_key="k")
+    events = client.run_group(
+        {"prompt": "hi"},
+        samples=2,
+        env_cls_bytes=b"x",
+        env_metadata_bytes=b"y",
+        verbose=False,
+    )
+    # worker_error didn't raise; both real rollouts came through.
+    assert len(events) == 2
+    assert all(e["success"] for e in events)
+
+
+def test_validation_result_group_reward_folds_into_ok():
+    """A failed group_reward makes the aggregate result falsey even when every
+    per-example rollout passed."""
+    passing = [ExampleValidation(0, True), ExampleValidation(1, True)]
+    assert ValidationResult(examples=passing).ok is True
+    good = ValidationResult(examples=passing, group_reward=ExampleValidation(-1, True))
+    assert good.ok is True
+    bad = ValidationResult(
+        examples=passing, group_reward=ExampleValidation(-1, False, "boom")
+    )
+    assert bad.ok is False

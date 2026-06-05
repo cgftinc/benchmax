@@ -1,8 +1,8 @@
 # Telestich Environment
 
-`TelestichEnv` rewards a model for writing **telestich** poems — poems where
-the last letter (or character, for Chinese) of each line, read top to bottom,
-spells out a hidden target word given in the prompt.
+`TelestichEnv` rewards a model for writing **telestich** poems — poems where the
+last letter of each line, read top to bottom, spells out a hidden target word
+given in the prompt. English-only.
 
 ## Installation
 
@@ -11,11 +11,10 @@ pip install "benchmax[telestich]"
 ```
 
 Includes:
-- `english_words`, `wordfreq` — real-word validity checks and the per-letter
-  ending-word bank
-- `pronouncing` — CMU rhyme scoring for the English form bonus
+- `english_words`, `wordfreq` — real-word validity checks
+- `pronouncing` — CMU rhyme scoring for the rhyme bonus and rhyme suggestions
 
-The judge uses an OpenAI-compatible endpoint (`openai`, a core dependency).
+The judge and the feedback critic use an OpenAI-compatible endpoint (`openai`).
 
 ## Usage
 
@@ -28,64 +27,60 @@ env = TelestichEnv(judge_base_url=..., judge_api_key=...)
 Each dataset example is
 `{"prompt": str, "ground_truth": <hidden word>, "acceptable_refs": [poem, ...],
 "great_refs": [poem, ...]}`. The two reference sets are the quality **anchors**
-the judge ranks against (generated offline; see below).
+the judge ranks against (generated offline).
 
 ## Tools
 
-- **`word_bank(letter)`** — returns ~30 real, poem-usable English words ending
-  in `letter` (≥3 letters, frequency-weighted; function words / single letters
-  filtered out). Capped at 2 calls per rollout; not offered for Chinese.
+- **`feedback(poem, word)`** — formative feedback on a draft (≤3 calls/rollout).
+  The model passes its draft **and** the hidden word it should spell; the tool
+  checks every line ending against that word (so the model needn't verify letters
+  by hand) and, once the structure is correct, returns a craft critique from a
+  cheap base model. The critique is **formative only** — it never sets reward —
+  and the hidden word is redacted from its output so it can't leak as a cheat.
 
 ## Reward
 
-`compute_group_reward` scores the whole GRPO group through four stages, writing
-each rollout's components onto a `_Rollout` record. The reward is the sum of the
-logged components: `quality + form + diversity + conciseness`.
+`compute_group_reward` scores the whole GRPO group, writing each rollout's
+components onto a `_Rollout` record. Reward = the sum of the logged components:
+`quality + rhyme + diversity + conciseness` (every component ≥ 0).
 
-0. **Parse** each rollout once into a record: completion length, the `<answer>`
-   poem, poem length, lines, language, tool-call count.
-1. **Hard rules** (deterministic, no LLM). A rollout must be a valid telestich —
-   acrostic spells the target, exact line count, every line ends on a real word
-   (en), and **each line is a real poem line** (≥ `MIN_EN_LINE_WORDS` words /
-   ≥ `MIN_ZH_LINE_CHARS` CJK chars, which kills the "acrostic spelled vertically"
-   hack) — and must not write the hidden word in the body. Fail → `quality = 0`,
-   the judge is never called (it still receives the conciseness penalty).
+0. **Parse** each rollout once: completion length, the `<answer>` poem, lines,
+   tool-call count.
+1. **Hard rules** (deterministic, no LLM). A perfect telestich — acrostic spells
+   the target, exact line count, every line ends on a real word, each line is a
+   real poem line (≥ `MIN_EN_LINE_WORDS` words), no hidden word in the body — is
+   **CORRECT** and goes to the judge. A near-miss (answer present, right line
+   count, no cheat, **>`MIN_CORRECT_FRAC`** of lines correct) is **PARTIAL** — a
+   small graded reward (`PARTIAL_HI`→`PARTIAL_LO`) so there's always a gradient.
+   Cheating / no answer / wrong line count / ≤25% correct → **0**.
 2. **Quality** — the shared **multi-anchor** rubric judge
-   (`benchmax.rubrics.evaluate_rubric_ranking` with `anchors` + `band_edges`)
-   ranks the group's valid poems in one call with **both** references inserted
-   blind: `acceptable` as a floor, `great` as the bar. A poem's band score:
-   - below acceptable → `[0, 0.1)` — the **below** bucket (degenerate / sub-par)
-   - acceptable…great → `[0.1, 0.5]` — the **mid** bucket
-   - above great → `[0.5, 1.0]` — the **above** bucket
+   (`benchmax.rubrics.evaluate_rubric_ranking`) ranks the group's CORRECT poems in
+   one call with **both** references inserted blind: `acceptable` as a floor,
+   `great` as the bar. The band score maps onto a reward ladder:
+   - below acceptable → `[0.1, 0.4)` — **below** bucket (floored at `MIN_CORRECT`)
+   - acceptable…great → `[0.4, 0.7]` — **mid** bucket
+   - above great → `(0.7, 1.0]` — **above** bucket
 
-   The floor anchor gives quality an **absolute zero-point**: an all-bad group
-   ranks below acceptable → everyone near 0 (pure relative ranking can't do
-   that). Near-duplicate whole poems are divided down before bucketing.
-3. **Secondary terms** (deterministic; all bonuses are **quality-scaled** so a
-   weak poem can't farm them):
-   - **form** = `W_FORM · q · form_score` — English CMU rhyme density / Chinese
-     line-length uniformity.
+   Near-duplicate whole poems are divided down before bucketing.
+3. **Secondary bonuses** (deterministic, all **quality-scaled** so a weak poem
+   can't farm them):
+   - **rhyme** = `W_RHYME · q · rhyme_score` — CMU rhyme density; awarded to any
+     correct poem.
    - **diversity** = `W_DIVERSITY · q · (1 − reuse)` — rewards line-ending words
-     *not* shared with sibling rollouts; fights ending-word mode collapse (every
-     `i`-line on "ski"). Applied only to the **mid + above** buckets (quality ≥
-     `QUALITY_GATE`).
-   - **conciseness** = `W_CONCISE · q · (0.8·len_eff + 0.2·tool_eff)` — a
-     **positive** bonus awarded only to the **top occupied band** (above, else
-     mid), rewarding a good poem that reached its answer quickly. `len_eff =
-     exp(−max(0, completion_len/budget − 1))` (1 at/under the budget
-     `LEN_BUDGET_BASE + LEN_BUDGET_PER_LINE × acrostic_len`, decaying above);
-     `tool_eff = exp(−CALL_DECAY · n_tool_calls)` (tool thrift, a small part). A
-     long-winded or tool-heavy top poem simply earns less of it.
+     *not* shared with sibling rollouts; fights ending-word mode collapse.
+   - **conciseness** = `W_CONCISE · q · len_eff + W_TOOL_EFF · q · tool_eff` —
+     shorter generation **and** fewer feedback calls, contributing equally.
+     `len_eff = exp(−max(0, completion_len/budget − 1))`;
+     `tool_eff` is graded (full at 0 calls → 0 at the call cap), so the model
+     weans off the tool as it gets reliable.
 
-All four components are **≥ 0**, so every reward is non-negative: a gated or
-below-band rollout earns `0`, and the differences GRPO learns from come from the
-positive bonuses among the poems that clear the bar.
+   Diversity and conciseness apply only to the group's **top occupied band**, so
+   even an all-`below` group keeps a gradient (anti-collapse).
 
 The `acceptable` (competent-but-plain) and `great` (excellent) references are
-generated offline and cached per example; an example missing one anchor is
-scored against whichever remain, and against none it degrades to relative
-ranking. Every rollout logs one path-revealing line (bucket, lengths, tool
-count, and each component).
+generated offline and cached per example; missing anchors degrade gracefully
+(against none it's pure relative ranking). Every rollout logs one path-revealing
+line, and correct poems get a full per-component breakdown.
 
 ## Example
 
@@ -97,5 +92,7 @@ CASTFORM_API_KEY=sk_... CASTFORM_LLM_API_KEY=sk_... \
     uv run --extra telestich python -m benchmax.envs.telestich.example
 ```
 
-`telestich_dataset.jsonl` (next to the script) is the seed dataset; the script
-generates more via the platform LLM to reach the target example count.
+`telestich_dataset.jsonl` (next to the script) is the curated English seed dataset
+(curriculum-ordered). Set `TELESTICH_FULL_RUN=1` for a real run on the full set;
+the default is a 2-example smoke that exercises generate → bundle → upload →
+launch.
