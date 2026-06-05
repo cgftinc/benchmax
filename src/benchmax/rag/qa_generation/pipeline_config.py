@@ -196,7 +196,11 @@ class EnvBundleConfig:
 class PlatformConfig:
     """Top-level credentials."""
 
-    api_key: str
+    # Default to the credential seam (empty key → platform_bearer), matching
+    # every sibling config here and the keyless clients: pipeline.py threads this
+    # through resolve_token_provider / the now-keyless PostgresChunkSource +
+    # RolloutClient, so PlatformConfig() works without a baked key.
+    api_key: str = ""
     base_url: str = config.platform_url()
     llm_api_key: str = ""
     llm_base_url: str = field(default_factory=config.llm_url)
