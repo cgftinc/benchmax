@@ -12,6 +12,7 @@ from openai import OpenAI
 from benchmax.rag.qa_generation.pipeline_config import PipelineContext, LLMEnvFilterConfig
 from benchmax.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 from benchmax.platform.client import RolloutClient
+from benchmax.platform.credentials import resolve_judge_key
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +66,15 @@ class EnvRolloutFilter:
     ) -> None:
         self.rollout_client = rollout_client
         self.cfg = cfg
+        # Empty judge_api_key → credential seam (the rollout leg already resolves
+        # the seam in stream_rollout); gated on `enabled` so a listed-but-disabled
+        # filter without a credential still constructs.
         self.judge_client = OpenAI(
-            api_key=cfg.judge_api_key,
+            api_key=(
+                resolve_judge_key(cfg.judge_api_key, cfg.judge_base_url)
+                if cfg.enabled
+                else (cfg.judge_api_key or "disabled")
+            ),
             base_url=cfg.judge_base_url,
         )
 

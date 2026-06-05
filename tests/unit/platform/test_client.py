@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
@@ -12,15 +11,15 @@ from benchmax.platform.client import (
     ExampleValidation,
     LaunchArgSpec,
     RolloutClient,
+    StorageClient,
     TrainerClient,
     ValidationResult,
+    _BearerAuth,
 )
 from benchmax.platform.exceptions import (
     AuthenticationError,
-    RolloutError,
     RolloutNotFound,
     RolloutServerError,
-    RolloutStreamError,
 )
 
 
@@ -290,6 +289,114 @@ def test_stream_rollout_allows_platform_key_for_platform_llm_endpoint(monkeypatc
 
     assert captured["payload"]["llm"]["api_key"] == "platform-key"
     assert captured["payload"]["llm"]["base_url"].endswith("/v1")
+
+
+# ---------------------------------------------------------------------------
+# Per-request credential resolution (api_key optional → resolves via the seam)
+# ---------------------------------------------------------------------------
+
+
+def test_bearer_auth_resolves_per_request():
+    """_BearerAuth calls token_provider on every request — never frozen."""
+    tokens = iter(["tok-1", "tok-2"])
+    auth = _BearerAuth(lambda: next(tokens))
+
+    req1 = httpx.Request("GET", "https://x/")
+    list(auth.auth_flow(req1))
+    assert req1.headers["authorization"] == "Bearer tok-1"
+
+    req2 = httpx.Request("GET", "https://x/")
+    list(auth.auth_flow(req2))
+    assert req2.headers["authorization"] == "Bearer tok-2"
+
+
+def test_storage_client_optional_api_key_resolves_via_seam(monkeypatch):
+    """No api_key → StorageClient resolves the bearer from PLATFORM_API_KEY."""
+    monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
+    monkeypatch.setenv("PLATFORM_API_KEY", "sk_seam")
+    client = StorageClient(base_url="https://example.invalid")
+    assert client._token_provider() == "sk_seam"
+
+
+def test_trainer_client_resolves_bearer_per_request():
+    """A rotating token_provider is re-resolved on each request, not frozen at
+    construction (regression guard for the StorageClient/TrainerClient bake)."""
+    seen: list[str] = []
+    tokens = iter(["tok-1", "tok-2"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["authorization"])
+        return httpx.Response(200, json={"args": []})
+
+    client = TrainerClient(
+        base_url="https://example.invalid",
+        token_provider=lambda: next(tokens),
+    )
+    # Keep the real auth flow; only swap in a MockTransport.
+    client._http_client = httpx.Client(
+        base_url="https://example.invalid",
+        auth=_BearerAuth(client._token_provider),
+        transport=httpx.MockTransport(handler),
+    )
+
+    client.list_launch_args()
+    client.list_launch_args()
+    assert seen == ["Bearer tok-1", "Bearer tok-2"]
+
+
+def test_stream_rollout_resolves_bearer_and_llm_key_via_seam(monkeypatch):
+    """api_key unset → BOTH the platform-service header and the platform-LLM
+    leg key resolve via the seam (PLATFORM_API_KEY here). Guards the LLM-leg
+    fix: the rollout's own completion call must not go out with an empty key."""
+    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
+    monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
+    monkeypatch.setenv("PLATFORM_API_KEY", "sk_seam")
+
+    import httpx as httpx_mod
+
+    captured: dict[str, Any] = {}
+
+    class _StubCM:
+        def __init__(self, payload, headers):
+            captured["payload"] = payload
+            captured["headers"] = headers
+
+        def __enter__(self):
+            raise RuntimeError("stub: skipping SSE loop")
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        httpx_mod,
+        "stream",
+        lambda method, url, json=None, headers=None, **kw: _StubCM(json, headers),
+    )
+
+    client = RolloutClient(server_url="https://rollout.example")
+    with pytest.raises(RuntimeError, match="stub"):
+        client.stream_rollout(
+            raw_example={"prompt": "hi"},
+            env_cls_path="a",
+            env_metadata_path="b",
+        )
+
+    assert captured["headers"]["Authorization"] == "Bearer sk_seam"
+    assert captured["payload"]["llm"]["api_key"] == "sk_seam"
+
+
+def test_stream_rollout_raises_without_any_credential(monkeypatch):
+    """No explicit key and no seam credential → fail loudly before the network."""
+    monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
+    monkeypatch.delenv("PLATFORM_API_KEY", raising=False)
+
+    client = RolloutClient(server_url="https://rollout.example")
+    with pytest.raises(RuntimeError, match="No Castform platform credential"):
+        client.stream_rollout(
+            raw_example={"prompt": "hi"},
+            env_cls_path="a",
+            env_metadata_path="b",
+        )
 
 
 # ---------------------------------------------------------------------------

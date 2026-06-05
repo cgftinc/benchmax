@@ -94,7 +94,9 @@ def upload_training_run(
         train_dataset: Training examples (list of dicts).
         eval_dataset: Eval examples (list of dicts).
         run_name: Training run identifier; used as the storage path segment.
-        api_key: Platform API key. Required if ``storage_client`` not provided.
+        api_key: Platform API key. Optional — when omitted (and no
+            ``storage_client`` is passed) the bearer resolves per request via
+            the credential seam (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``).
         base_url: Platform base URL. Defaults to ``config.platform_url()``.
         constructor_args: Optional kwargs to bake into the env bundle.
         pip_dependencies: Pip deps to install on the trainer before unpickling.
@@ -112,8 +114,8 @@ def upload_training_run(
         UploadedTrainingRun containing the four blob paths.
     """
     if storage_client is None:
-        if api_key is None:
-            raise ValueError("Provide either api_key or storage_client")
+        # api_key optional: StorageClient resolves the bearer per request via
+        # the credential seam (ACT_AS_TOKEN_PATH / PLATFORM_API_KEY) when unset.
         storage_client = StorageClient(
             api_key=api_key,
             base_url=base_url or config.platform_url(),

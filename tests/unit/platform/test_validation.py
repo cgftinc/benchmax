@@ -113,8 +113,11 @@ def test_report_remote_failure_fails_overall():
 # ---------------------------------------------------------------------------
 
 
-def test_no_api_key_skips_remote(monkeypatch):
-    """Without an api_key, the remote smoke is skipped entirely."""
+def test_local_false_runs_remote_via_seam(monkeypatch):
+    """A keyless launch (local=False, no api_key) runs the remote smoke with
+    RolloutClient(api_key=None), so it resolves through the credential seam /
+    cached session. (Interactive login is the script's up-front ensure_session,
+    not validate_env's job.)"""
     seen = _install_fake_rollout(monkeypatch)
 
     report = validate_env(
@@ -125,9 +128,9 @@ def test_no_api_key_skips_remote(monkeypatch):
         verbose=False,
     )
 
-    assert report.remote is None
-    assert report.remote_ran is False
-    assert "api_key" not in seen  # FakeRolloutClient never constructed
+    assert report.remote_ran is True
+    assert report.remote_ok is True
+    assert seen["api_key"] is None  # resolves via the seam, not an explicit key
 
 
 def test_api_key_runs_remote_and_threads_urls(monkeypatch):
@@ -162,21 +165,28 @@ def test_api_key_runs_remote_and_threads_urls(monkeypatch):
     assert kw["pip_dependencies"] == ["openai"]
 
 
-def test_local_false_no_key_reports_nothing_ran(monkeypatch):
-    """local=False with no api_key validates nothing → report is falsey."""
-    _install_fake_rollout(monkeypatch)
+def test_local_only_skips_remote(monkeypatch):
+    """Offline dev (local=True default, no api_key) runs no remote smoke."""
+    seen = _install_fake_rollout(monkeypatch)
+    # Skip the real local contract checks (they'd instantiate the placeholder env).
+    monkeypatch.setattr(
+        "benchmax.platform.validation._run_local_checks", lambda *a, **k: (1, 0)
+    )
+    monkeypatch.setattr(
+        "benchmax.platform.validation._shutdown_shared_loop", lambda: None
+    )
 
     report = validate_env(
         env_class=_DummyEnv,
         env_args={},
         train_dataset=[{"prompt": "hi"}],
-        local=False,
+        local=True,
         verbose=False,
     )
 
-    assert report.local_ran is False
     assert report.remote_ran is False
-    assert bool(report) is False
+    assert report.remote is None
+    assert "api_key" not in seen  # RolloutClient never constructed
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,20 @@ import httpx
 import pytest
 
 from benchmax.rag.corpus.postgres.client import CorpusClient
-from benchmax.rag.corpus.postgres.exceptions import CorpusAPIError
+from benchmax.rag.corpus.postgres.exceptions import AuthenticationError, CorpusAPIError
+
+
+def test_missing_credential_surfaces_as_auth_error():
+    """A seam token_provider that raises (no credential) is wrapped as an
+    AuthenticationError, not a raw RuntimeError, so callers catch it like any
+    other Corpora failure."""
+
+    def _no_cred() -> str:
+        raise RuntimeError("No Castform platform credential available")
+
+    client = CorpusClient(base_url="https://corpora.invalid", token_provider=_no_cred)
+    with pytest.raises(AuthenticationError, match="No Castform platform credential"):
+        client._request("GET", "/health")
 
 
 def _resp(status: int, headers: dict | None = None) -> httpx.Response:

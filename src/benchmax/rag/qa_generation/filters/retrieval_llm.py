@@ -9,6 +9,7 @@ from typing import Any
 
 from openai import OpenAI
 
+from benchmax.platform.credentials import resolve_judge_key
 from benchmax.rag.chunkers.models import Chunk
 from benchmax.rag.qa_generation.batch_processor import batch_process_sync
 from benchmax.rag.qa_generation.pipeline_config import (
@@ -71,8 +72,14 @@ class RetrievalLLMFilter:
     ) -> None:
         self.chunk_source = chunk_source
         self.cfg = cfg
+        # Empty judge_api_key → credential seam; gated on `enabled` so a
+        # listed-but-disabled filter without a credential still constructs.
         self.judge_client = OpenAI(
-            api_key=cfg.judge_api_key,
+            api_key=(
+                resolve_judge_key(cfg.judge_api_key, cfg.judge_base_url)
+                if cfg.enabled
+                else (cfg.judge_api_key or "disabled")
+            ),
             base_url=cfg.judge_base_url,
         )
 

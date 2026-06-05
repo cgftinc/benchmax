@@ -6,6 +6,8 @@ import random
 import warnings
 from typing import TYPE_CHECKING
 
+from benchmax import config
+from benchmax.platform.credentials import resolve_token_provider
 from benchmax.rag.chunkers.models import Chunk, ChunkCollection
 from benchmax.rag.corpus.search_schema.search_exceptions import (
     InvalidSearchSpecError,
@@ -35,24 +37,32 @@ class PostgresChunkSource:
     for advanced users who want to leverage file-structure awareness directly.
 
     Args:
-        api_key: Corpora API key
         corpus_name: Name of the corpus to create or reuse
-        base_url: Corpora API base URL
+        api_key: Corpora API key. Optional — an empty string (the default)
+            resolves the bearer per request via the credential seam (cached
+            device-auth session / ACT_AS_TOKEN_PATH / PLATFORM_API_KEY).
+        base_url: Corpora API base URL. Optional — defaults to the
+            session-derived platform URL (``config.platform_url()``).
 
     Example:
-        >>> source = PostgresChunkSource(
-        ...     api_key="sk_...",
-        ...     corpus_name="my-docs",
-        ...     base_url=config.platform_url(),
-        ... )
+        >>> source = PostgresChunkSource(corpus_name="my-docs")
         >>> source.populate_from_folder("./docs")
         >>> chunks = source.sample_chunks(n=10, min_chars=400)
     """
 
-    def __init__(self, api_key: str, corpus_name: str, base_url: str) -> None:
-        # Indexing client: an explicit user key, injected as the per-request
-        # token provider (CorpusClient no longer bakes a static key).
-        self._client = CorpusClient(base_url=base_url, token_provider=lambda: api_key)
+    def __init__(
+        self,
+        corpus_name: str,
+        api_key: str = "",
+        base_url: str | None = None,
+    ) -> None:
+        # Per-request bearer: an explicit key wins; an empty key resolves via the
+        # platform credential seam (CorpusClient no longer bakes a static key).
+        # base_url defaults to the session-derived platform URL.
+        self._client = CorpusClient(
+            base_url=base_url if base_url is not None else config.platform_url(),
+            token_provider=resolve_token_provider(api_key),
+        )
         self._corpus_name = corpus_name
         self._corpus: Corpus | None = None
         self.collection: ChunkCollection | None = (

@@ -14,10 +14,9 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-logger = logging.getLogger(__name__)
-
 from benchmax import config
 
+from .credentials import TokenProvider, resolve_token_provider
 from .exceptions import (
     AuthenticationError,
     JobLaunchError,
@@ -27,6 +26,8 @@ from .exceptions import (
     RolloutStreamError,
     TrainerError,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -117,12 +118,32 @@ def _file_hash(content: bytes, length: int = 8) -> str:
     return hashlib.sha256(content).hexdigest()[:length]
 
 
+class _BearerAuth(httpx.Auth):
+    """Resolve the platform bearer per request via ``token_provider``.
+
+    Built once but called on every request, so the auth header is never frozen
+    at construction — a rotating/expiring device or act-as token is picked up
+    each call (the "token expires mid-run" bug ``credentials.py`` warns about).
+    """
+
+    def __init__(self, token_provider: TokenProvider) -> None:
+        self._token_provider = token_provider
+
+    def auth_flow(self, request: httpx.Request):
+        request.headers["Authorization"] = f"Bearer {self._token_provider()}"
+        yield request
+
+
 @dataclass
 class StorageClient:
     """Client for uploading files to storage via pre-signed URLs.
 
     Uses the ``GET /api/storage/upload-url`` endpoint to obtain a pre-signed
     upload URL, then PUTs the file content directly to that URL.
+
+    ``api_key`` is optional: when omitted the bearer resolves per request via
+    the credential seam (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``). Pass
+    ``api_key`` to override, or ``token_provider`` for a custom per-call source.
 
     Example:
         client = StorageClient(api_key="sk_...", base_url="http://localhost:3000")
@@ -134,19 +155,22 @@ class StorageClient:
         print(f"Uploaded to {result['blobPath']}")
     """
 
-    api_key: str
+    api_key: str | None = None
     base_url: str = field(default_factory=config.platform_url)
     timeout: float = 60.0
     # SAS-URL PUTs are bounded by file size, not API latency. Default to
     # 30 minutes so multi-GB datasets don't time out at the platform-API timeout.
     upload_timeout: float = 1800.0
+    token_provider: TokenProvider | None = None
+    _token_provider: TokenProvider = field(init=False, repr=False)
     _http_client: httpx.Client = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Initialize HTTP client with auth headers."""
+        """Initialize HTTP client; auth resolves per request, never baked here."""
+        self._token_provider = resolve_token_provider(self.api_key, self.token_provider)
         self._http_client = httpx.Client(
             base_url=self.base_url,
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            auth=_BearerAuth(self._token_provider),
             timeout=self.timeout,
         )
 
@@ -301,6 +325,10 @@ class StorageClient:
 class TrainerClient:
     """Client for launching and managing training runs.
 
+    ``api_key`` is optional: when omitted the bearer resolves per request via
+    the credential seam (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``). Pass
+    ``api_key`` to override, or ``token_provider`` for a custom per-call source.
+
     Example:
         client = TrainerClient(api_key="sk_...", base_url="http://localhost:3000")
         run_id = client.launch_training_run(
@@ -313,16 +341,19 @@ class TrainerClient:
         print(f"Launched: {run_id}")
     """
 
-    api_key: str
+    api_key: str | None = None
     base_url: str = field(default_factory=config.platform_url)
     timeout: float = 30.0
+    token_provider: TokenProvider | None = None
+    _token_provider: TokenProvider = field(init=False, repr=False)
     _http_client: httpx.Client = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Initialize HTTP client with auth headers."""
+        """Initialize HTTP client; auth resolves per request, never baked here."""
+        self._token_provider = resolve_token_provider(self.api_key, self.token_provider)
         self._http_client = httpx.Client(
             base_url=self.base_url,
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            auth=_BearerAuth(self._token_provider),
             timeout=self.timeout,
         )
 
@@ -723,23 +754,32 @@ class RolloutClient:
        raw file contents; they will be base64-encoded and sent inline.
 
     Args:
-        api_key:    Platform API key (``sk_``); forwarded as the Bearer token
-                    platform-service validates.
+        api_key:    Platform API key forwarded as the Bearer token
+                    platform-service validates. Optional — when omitted the
+                    bearer resolves per request via the credential seam
+                    (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``).
         server_url: Base URL of platform-service. Defaults to
                     ``config.platform_url()``; the ``/v1/rollout/stream`` path is
                     appended per request.
         timeout:    Per-request timeout in seconds (default 300 — rollouts can be slow).
+        token_provider: Custom per-call bearer source; overrides the seam when
+                    ``api_key`` is unset.
     """
 
     _TERMINAL = {"rollout_completed", "worker_error", "cancelled", "error"}
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str | None = None,
         server_url: str | None = None,
         timeout: float = 300.0,
+        *,
+        token_provider: TokenProvider | None = None,
     ) -> None:
-        self._api_key = api_key
+        # Bearer resolves per request (see stream_rollout): explicit api_key →
+        # token_provider → platform_bearer seam. Optional so a logged-in/CI
+        # caller need not pass one.
+        self._token_provider = resolve_token_provider(api_key, token_provider)
         # Resolve at construction time, not import time, so env-var changes
         # take effect (mirrors StorageClient/TrainerClient default_factory pattern).
         # Target platform-service (the API-key gate), not the rollout-service
@@ -841,6 +881,12 @@ class RolloutClient:
             env_metadata_bytes,
         )
 
+        # Resolve the platform bearer once, per request (never frozen at
+        # construction): a rotating/expiring device or act-as token is picked
+        # up each call. Used for the platform-service header below AND, when the
+        # LLM leg hits the platform's own endpoint, as that leg's key.
+        bearer = self._token_provider()
+
         # Resolve LLM URL lazily. The platform key is only auto-forwarded when
         # the LLM endpoint is the platform's own LLM service — pointing at a
         # third-party host (Azure OpenAI, Anthropic) requires an explicit
@@ -849,7 +895,7 @@ class RolloutClient:
         resolved_llm_url = llm_base_url or platform_llm_url
         if not llm_api_key:
             if resolved_llm_url == platform_llm_url:
-                llm_api_key = self._api_key
+                llm_api_key = bearer
             else:
                 raise ValueError(
                     "llm_api_key is required when llm_base_url points outside the "
@@ -877,7 +923,7 @@ class RolloutClient:
         # platform-service mounts the proxy at /v1/rollout/stream; it validates
         # the platform key and forwards to rollout-service with an act_as JWT.
         url = f"{self._server_url}/v1/rollout/stream"
-        headers = {"Authorization": f"Bearer {self._api_key}"}
+        headers = {"Authorization": f"Bearer {bearer}"}
 
         with httpx.stream(
             "POST",
@@ -1191,13 +1237,18 @@ class RolloutClient:
         env = self._build_env(
             env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes
         )
-        # Resolve the LLM key exactly as stream_rollout does (see there for why
-        # the platform key is only auto-forwarded to the platform LLM host).
+        # Resolve the platform bearer once, per request (never frozen at
+        # construction) — used for the request header below AND, when the LLM leg
+        # hits the platform's own endpoint, as that leg's key. Mirrors stream_rollout.
+        bearer = self._token_provider()
+
+        # The platform key is only auto-forwarded to the platform's own LLM host
+        # (see stream_rollout for the no-leak rationale).
         platform_llm_url = config.llm_url()
         resolved_llm_url = llm_base_url or platform_llm_url
         if not llm_api_key:
             if resolved_llm_url == platform_llm_url:
-                llm_api_key = self._api_key
+                llm_api_key = bearer
             else:
                 raise ValueError(
                     "llm_api_key is required when llm_base_url points outside the "
@@ -1224,7 +1275,7 @@ class RolloutClient:
         # validates the platform key and forwards to rollout-service with an
         # act_as JWT, same as the single /v1/rollout/stream proxy.
         url = f"{self._server_url}/v1/rollout/batch/stream"
-        headers = {"Authorization": f"Bearer {self._api_key}"}
+        headers = {"Authorization": f"Bearer {bearer}"}
 
         completed: list[dict[str, Any]] = []
         with httpx.stream(

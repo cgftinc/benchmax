@@ -1,6 +1,6 @@
 [project]
 name = "benchmax"
-version = "0.1.2.dev29"
+version = "0.1.2.dev30"
 description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
 readme = "README.md"
 authors = [{ name = "castie@castform.com" }]
@@ -19,6 +19,9 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
+
+[project.scripts]
+castform = "benchmax.cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

@@ -766,8 +766,10 @@ def validate_env(
             sibling .py files.
         pip_dependencies: Pip deps recorded in the remote bundle.
         local: Run the local contract checks. Default True.
-        api_key: Platform API key (``sk_``). When given, also runs the remote
-            smoke rollout; when None, remote is skipped.
+        api_key: Platform API key. Optional. The remote smoke runs whenever
+            ``local=False`` (a launch) or an ``api_key`` is given; the credential
+            then resolves from the key, or — when omitted — via the cached
+            device-auth session (auto-login if interactive) / the ambient seam.
         base_url: Platform base URL for the remote pass. Defaults to
             ``config.platform_url()``.
         llm_base_url: Base URL for the rollout's LLM leg. Defaults to the
@@ -801,7 +803,14 @@ def validate_env(
             _shutdown_shared_loop()
 
     remote: ValidationResult | None = None
-    if api_key:
+    # Run the remote smoke when explicitly launching (local=False) or when an
+    # api_key is passed. Credential resolution is NOT this function's job: a
+    # keyless launch resolves via the cached device-auth session / the
+    # ACT_AS_TOKEN_PATH / PLATFORM_API_KEY seam. Interactive auto-login lives in
+    # the explicit ensure_session() the script calls up front — so by here a
+    # credential is present, or RolloutClient fails loudly ("run castform login").
+    run_remote = (not local) or bool(api_key)
+    if run_remote:
         # Lazy import keeps the offline path free of httpx and avoids a
         # client <-> validation import cycle.
         from .client import RolloutClient
@@ -835,7 +844,7 @@ def validate_env(
         local_failed=local_failed,
         remote=remote,
         local_ran=local,
-        remote_ran=bool(api_key),
+        remote_ran=run_remote,
     )
     if verbose:
         _print_report_summary(report)
