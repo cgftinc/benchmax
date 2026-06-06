@@ -12,9 +12,10 @@ pip install "benchmax[telestich]"
 
 Includes:
 - `english_words`, `wordfreq` — real-word validity checks
-- `pronouncing` — CMU rhyme scoring for the rhyme bonus and rhyme suggestions
+- `pronouncing` — CMU rhyme scoring for the rhyme bonus
 
-The judge and the feedback critic use an OpenAI-compatible endpoint (`openai`).
+The judge uses an OpenAI-compatible endpoint (`openai`). The `feedback` tool is
+fully deterministic — no LLM.
 
 ## Usage
 
@@ -31,12 +32,13 @@ the judge ranks against (generated offline).
 
 ## Tools
 
-- **`feedback(poem, word)`** — formative feedback on a draft (≤3 calls/rollout).
-  The model passes its draft **and** the hidden word it should spell; the tool
-  checks every line ending against that word (so the model needn't verify letters
-  by hand) and, once the structure is correct, returns a craft critique from a
-  cheap base model. The critique is **formative only** — it never sets reward —
-  and the hidden word is redacted from its output so it can't leak as a cheat.
+- **`feedback(poem, word)`** — deterministic formative feedback on a draft (≤3
+  calls/rollout). The model passes its draft **and** the hidden word it should
+  spell; the tool **stacks every issue in one pass** — line count, per-line wrong
+  letters (over the shared range even when the count is off), filler/blacklisted
+  endings, non-word / too-short endings, **prose run-on lines** (over `LINE_CHAR_CAP`
+  chars), and the hidden word leaked into a line — so the model can fix them all in
+  one revision. It never sets reward and never reveals the hidden word.
 
 ## Reward
 
@@ -54,13 +56,21 @@ components onto a `_Rollout` record. Reward = the sum of the logged components:
    small graded reward (`PARTIAL_HI`→`PARTIAL_LO`) so there's always a gradient.
    Cheating / no answer / wrong line count / ≤25% correct → **0**.
 2. **Quality** — the shared **multi-anchor** rubric judge
-   (`benchmax.rubrics.evaluate_rubric_ranking`) ranks the group's CORRECT poems in
-   one call with **both** references inserted blind: `acceptable` as a floor,
-   `great` as the bar. The band score maps onto a reward ladder:
+   (`benchmax.rubrics.evaluate_rubric_ranking`) ranks the CORRECT poems against
+   **both** references inserted blind (`acceptable` as a floor, `great` as the bar),
+   in **batches of ≤`JUDGE_BATCH` poems** per call (ranking the whole group at once
+   lets near-identical siblings contaminate each other's placement and the judge
+   over-rates them — see the run-0ec8e2dc audit). The band score maps onto a reward
+   ladder:
    - below acceptable → `[0.1, 0.4)` — **below** bucket (floored at `MIN_CORRECT`)
    - acceptable…great → `[0.4, 0.7]` — **mid** bucket
    - above great → `(0.7, 1.0]` — **above** bucket
 
+   The judged score is then scaled down by two **deterministic** quality penalties
+   the judge under-charges: `_line_length_penalty` (lines past `LINE_CHAR_CAP` ≈ 90
+   chars — the prose-run-on degeneracy) and `_ending_penalty` (blacklisted line
+   endings — `_HARD_FORCED_ENDINGS` interjections/fillers scaled by `W_HARD_ENDING`,
+   `_SOFT_FORCED_ENDINGS` mode-collapse nouns scaled less by `W_SOFT_ENDING`).
    Near-duplicate whole poems are divided down before bucketing.
 3. **Secondary bonuses** (deterministic, all **quality-scaled** so a weak poem
    can't farm them):

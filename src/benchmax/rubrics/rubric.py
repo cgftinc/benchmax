@@ -24,7 +24,9 @@ class Rubric:
     score_map: Optional[Dict[float, str]] = None
 
 
-def _cache_dict_to_rubric(d: Dict, rubric_type: Literal["positive", "negative"]) -> "Rubric":
+def _cache_dict_to_rubric(
+    d: Dict, rubric_type: Literal["positive", "negative"]
+) -> "Rubric":
     return Rubric(title=d["title"], description=d["description"], type=rubric_type)
 
 
@@ -59,12 +61,15 @@ async def evaluate_single_rubric(
     """
     ground_truth_text = str(ground_truth or "").strip()
     ground_truth_block = (
-        f"**Ground Truth (Optional)**: {ground_truth_text}\n" if ground_truth_text else ""
+        f"**Ground Truth (Optional)**: {ground_truth_text}\n"
+        if ground_truth_text
+        else ""
     )
     if rubric.score_map:
         allowed_scores = ", ".join(str(score) for score in rubric.score_map.keys())
         score_rubric = "\n".join(
-            f"- {score}: {description}" for score, description in rubric.score_map.items()
+            f"- {score}: {description}"
+            for score, description in rubric.score_map.items()
         )
         prompt = RUBRIC_RANGED_EVALUATION_PROMPT.format(
             rubric_type=rubric.type,
@@ -130,8 +135,31 @@ async def evaluate_single_rubric(
         return out
 
     except Exception as e:
-        print(f"Error evaluating rubric '{rubric.title}': {e}\njudge output:\n{content}")
+        print(
+            f"Error evaluating rubric '{rubric.title}': {e}\njudge output:\n{content}"
+        )
         return {"score": 0, "reasoning": f"Error: {e}", "llm_output": content}
+
+
+def _monotonic_seams(seams: List[tuple]) -> List[tuple]:
+    """Collapse anchor-ranking inversions so a higher-edge anchor is never ranked
+    below a lower-edge one. `seams` = [(position, edge)] sorted by position ascending;
+    edges are expected to DESCEND (the best-ranked anchor carries the highest edge).
+    When the judge inverts two anchors (e.g. ranks the `great` reference below the
+    `acceptable` one), the offending anchors are merged into a single seam at the
+    better (smaller) position carrying the higher edge — i.e. the better-ranked
+    reference is treated as the higher band, and the two references collapse to the
+    same bar. A no-op when anchors are already in monotonic order.
+    """
+    out: List[tuple] = []
+    for pos, edge in seams:
+        # an edge higher than a better-positioned anchor's edge is an inversion: fold
+        # them together (keep the better position, the higher edge), then re-check.
+        while out and edge > out[-1][1]:
+            ppos, pedge = out.pop()
+            pos, edge = ppos, max(pedge, edge)
+        out.append((pos, edge))
+    return out
 
 
 def _band_score(p: float, seams: List[tuple], max_pos: float) -> float:
@@ -145,11 +173,11 @@ def _band_score(p: float, seams: List[tuple], max_pos: float) -> float:
     """
     if not seams:
         return 1.0 - p / max_pos if max_pos > 0 else 1.0
-    g0, e0 = seams[0]    # best-ranked anchor → highest seam
-    gL, eL = seams[-1]   # worst-ranked anchor → lowest seam
-    if p <= g0:                                  # above the best anchor
+    g0, e0 = seams[0]  # best-ranked anchor → highest seam
+    gL, eL = seams[-1]  # worst-ranked anchor → lowest seam
+    if p <= g0:  # above the best anchor
         return e0 + (1.0 - e0) * ((g0 - p) / g0 if g0 > 0 else 0.0)
-    if p >= gL:                                  # below the worst anchor
+    if p >= gL:  # below the worst anchor
         denom = max_pos - gL
         return eL * ((max_pos - p) / denom if denom > 0 else 0.0)
     for (ga, ea), (gb, eb) in zip(seams, seams[1:]):  # between two anchors
@@ -211,7 +239,12 @@ async def evaluate_rubric_ranking(
     nonempty = [(i, r) for i, r in enumerate(responses) if r]
 
     if not nonempty:
-        return {"scores": scores, "ranking": [], "reasoning": "All responses empty", "llm_output": ""}
+        return {
+            "scores": scores,
+            "ranking": [],
+            "reasoning": "All responses empty",
+            "llm_output": "",
+        }
 
     if anchors and not band_edges:
         raise ValueError("anchors require band_edges (one score seam per anchor)")
@@ -222,14 +255,21 @@ async def evaluate_rubric_ranking(
         if a and str(a).strip()
     ]
     clean_anchors = [(a, e) for a, e, _ in clean_pairs]
-    clean_anchor_labels = [p[2] for p in clean_pairs]  # parallel to clean_anchors; for logging
+    clean_anchor_labels = [
+        p[2] for p in clean_pairs
+    ]  # parallel to clean_anchors; for logging
     use_anchors = bool(clean_anchors)
     use_gt = bool(ground_truth and str(ground_truth).strip()) and not use_anchors
     m = len(nonempty)
 
     if m == 1 and not use_gt and not use_anchors:
         scores[nonempty[0][0]] = 1.0
-        return {"scores": scores, "ranking": [[nonempty[0][0]]], "reasoning": "Only one non-empty response", "llm_output": ""}
+        return {
+            "scores": scores,
+            "ranking": [[nonempty[0][0]]],
+            "reasoning": "Only one non-empty response",
+            "llm_output": "",
+        }
 
     items = [r for _, r in nonempty]
     gt_local = m if use_gt else None
@@ -242,7 +282,9 @@ async def evaluate_rubric_ranking(
             anchor_local_edges.append((len(items), e))
             items.append(a)
     max_local = len(items) - 1
-    responses_block = "\n\n".join(f"--- Response {j} ---\n{r}" for j, r in enumerate(items))
+    responses_block = "\n\n".join(
+        f"--- Response {j} ---\n{r}" for j, r in enumerate(items)
+    )
     prompt = RUBRIC_RANKING_PROMPT.format(
         rubric_type=rubric.type,
         title=rubric.title,
@@ -266,9 +308,16 @@ async def evaluate_rubric_ranking(
             temperature=0,
             timeout=timeout,
         )
-        content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
+        content = (
+            (resp.choices[0].message.content or "").strip() if resp.choices else ""
+        )
         if not content:
-            return {"scores": scores, "ranking": [], "reasoning": "Empty judge response", "llm_output": ""}
+            return {
+                "scores": scores,
+                "ranking": [],
+                "reasoning": "Empty judge response",
+                "llm_output": "",
+            }
 
         result = _extract_json(content)
         ranking = result.get("ranking", [])
@@ -295,6 +344,10 @@ async def evaluate_rubric_ranking(
                 ((pos_of[loc], e) for loc, e in anchor_local_edges if loc in pos_of),
                 key=lambda x: x[0],
             )
+            # the judge can rank a higher-band anchor below a lower one; collapse such
+            # inversions so the seams stay monotonic (else _band_score interpolates
+            # backwards and a poem just below the floor anchor can outscore one above it).
+            seams = _monotonic_seams(seams)
             for j, p in pos_of.items():
                 if j >= m:  # an anchor slot, not a returned response
                     continue
@@ -305,7 +358,9 @@ async def evaluate_rubric_ranking(
             if gt_pos is None:
                 for j, p in pos_of.items():
                     if 0 <= j < m:
-                        scores[nonempty[j][0]] = 1.0 - p / max_pos if max_pos > 0 else 1.0
+                        scores[nonempty[j][0]] = (
+                            1.0 - p / max_pos if max_pos > 0 else 1.0
+                        )
             else:
                 for j, p in pos_of.items():
                     if j == gt_local:
@@ -314,7 +369,11 @@ async def evaluate_rubric_ranking(
                         sc = 0.5 + 0.5 * (gt_pos - p) / gt_pos if gt_pos > 0 else 0.5
                     elif p > gt_pos:
                         denom = max_pos - gt_pos
-                        sc = below_gt_ceiling * (1.0 - (p - gt_pos) / denom) if denom > 0 else below_gt_ceiling
+                        sc = (
+                            below_gt_ceiling * (1.0 - (p - gt_pos) / denom)
+                            if denom > 0
+                            else below_gt_ceiling
+                        )
                     else:
                         sc = 0.5
                     scores[nonempty[j][0]] = sc
@@ -342,20 +401,31 @@ async def evaluate_rubric_ranking(
                     labels.append(f"resp{j} (ground-truth)")
                 else:
                     k = j - m - (1 if use_gt else 0)
-                    role = (clean_anchor_labels[k] if k < len(clean_anchor_labels)
-                            and clean_anchor_labels[k] else f"anchor@{seam_of.get(j, 0.0):g}")
+                    role = (
+                        clean_anchor_labels[k]
+                        if k < len(clean_anchor_labels) and clean_anchor_labels[k]
+                        else f"anchor@{seam_of.get(j, 0.0):g}"
+                    )
                     labels.append(f"resp{j} ({role})")
 
             def _lab(j: int) -> str:
                 return labels[j] if 0 <= j < len(labels) else f"resp{j}"
 
-            ranking_fmt = " > ".join(
-                "[" + ", ".join(_lab(j) for j in (tier if isinstance(tier, list) else [tier])) + "]"
-                for tier in ranking
-            ) or "(empty)"
-            scores_fmt = "  ".join(
-                f"{_lab(j)}={scores[nonempty[j][0]]:.3f}" for j in range(m)
-            ) or "(none)"
+            ranking_fmt = (
+                " > ".join(
+                    "["
+                    + ", ".join(
+                        _lab(j) for j in (tier if isinstance(tier, list) else [tier])
+                    )
+                    + "]"
+                    for tier in ranking
+                )
+                or "(empty)"
+            )
+            scores_fmt = (
+                "  ".join(f"{_lab(j)}={scores[nonempty[j][0]]:.3f}" for j in range(m))
+                or "(none)"
+            )
 
             poem_blocks = []
             for j, text in enumerate(items):
@@ -385,4 +455,9 @@ async def evaluate_rubric_ranking(
         return out
     except Exception as e:
         print(f"Error ranking rubric '{rubric.title}': {e}\njudge output:\n{content}")
-        return {"scores": scores, "ranking": [], "reasoning": f"Error: {e}", "llm_output": content}
+        return {
+            "scores": scores,
+            "ranking": [],
+            "reasoning": f"Error: {e}",
+            "llm_output": content,
+        }
