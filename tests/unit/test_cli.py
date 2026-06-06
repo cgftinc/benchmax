@@ -50,23 +50,18 @@ def stub_flow(monkeypatch):
     return captured
 
 
-def test_login_prod_omits_env_marker(stub_flow):
-    assert cli._cmd_login(argparse.Namespace(env="prod")) == 0
+def test_login_writes_session(stub_flow):
+    assert cli._cmd_login(argparse.Namespace()) == 0
     s = stub_flow["session"]
     assert s["access_token"] == "sess_abc"
-    assert "env" not in s  # prod carries no marker
+    assert "env" not in s  # no env concept — domain comes from config/env var
     assert s["expires_at"] > 0
-
-
-def test_login_staging_sets_env(stub_flow):
-    cli._cmd_login(argparse.Namespace(env="staging"))
-    assert stub_flow["session"]["env"] == "staging"
 
 
 def test_login_failure_returns_1(monkeypatch):
     monkeypatch.setenv("CASTFORM_AUTH_URL", "http://localhost:4300")
     monkeypatch.setattr(login, "request_device_code", _raise_device_auth)
-    assert cli._cmd_login(argparse.Namespace(env="prod")) == 1
+    assert cli._cmd_login(argparse.Namespace()) == 1
 
 
 def test_logout_clears_session(monkeypatch):
@@ -85,7 +80,7 @@ def test_whoami_not_logged_in(monkeypatch):
 
 def test_whoami_logged_in_shows_email(monkeypatch, capsys):
     monkeypatch.setattr(
-        credentials, "read_castform_session", lambda: {"access_token": "x", "env": "staging"}
+        credentials, "read_castform_session", lambda: {"access_token": "x"}
     )
     claims = base64.urlsafe_b64encode(json.dumps({"email": "a@b.com"}).encode()).rstrip(b"=")
     monkeypatch.setattr(credentials, "_session_jwt", lambda: f"h.{claims.decode()}.s")
@@ -96,7 +91,7 @@ def test_whoami_logged_in_shows_email(monkeypatch, capsys):
 def test_ensure_session_noop_when_credential_resolves(monkeypatch):
     monkeypatch.setattr(credentials, "platform_bearer", lambda: "tok")
     called = {}
-    monkeypatch.setattr(login, "_login", lambda env=None: called.setdefault("login", True))
+    monkeypatch.setattr(login, "_login", lambda: called.setdefault("login", True))
     login.ensure_session()
     assert "login" not in called
 
@@ -105,7 +100,7 @@ def test_ensure_session_skips_when_not_interactive(monkeypatch):
     monkeypatch.delenv("CASTFORM_NO_AUTO_LOGIN", raising=False)
     monkeypatch.setattr(credentials, "platform_bearer", _raise_runtime)
     called = {}
-    monkeypatch.setattr(login, "_login", lambda env=None: called.setdefault("login", True))
+    monkeypatch.setattr(login, "_login", lambda: called.setdefault("login", True))
     login.ensure_session(interactive=False)
     assert "login" not in called
 
@@ -114,6 +109,6 @@ def test_ensure_session_logs_in_when_interactive(monkeypatch):
     monkeypatch.delenv("CASTFORM_NO_AUTO_LOGIN", raising=False)
     monkeypatch.setattr(credentials, "platform_bearer", _raise_runtime)
     called = {}
-    monkeypatch.setattr(login, "_login", lambda env=None: called.setdefault("login", True))
+    monkeypatch.setattr(login, "_login", lambda: called.setdefault("login", True))
     login.ensure_session(interactive=True)
     assert called.get("login")

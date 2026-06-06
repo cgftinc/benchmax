@@ -42,7 +42,7 @@ from benchmax.rubrics import rubric as rubric_mod
 #
 # Defaults route through ``benchmax.config``: the prod LLM endpoint is
 # ``https://llm.castform.com/v1`` and the platform control plane is
-# ``https://api.castform.com``. Point at staging or a different env by setting
+# ``https://api.castform.com``. Point at a different environment by setting
 # ``CASTFORM_BASE_DOMAIN`` (or override URLs individually via
 # ``CASTFORM_PLATFORM_URL`` / ``CASTFORM_LLM_URL``).
 from benchmax import config

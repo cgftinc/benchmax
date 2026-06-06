@@ -18,21 +18,11 @@ from . import credentials
 from .device_auth import poll_for_token, request_device_code
 
 
-def _auth_url(env: str | None) -> str:
-    """Auth host for a login. There's no cached session yet to derive from, so
-    map the chosen env directly; ``CASTFORM_AUTH_URL`` (local dev) always wins."""
-    override = os.environ.get("CASTFORM_AUTH_URL")
-    if override:
-        return override
-    base = os.environ.get("CASTFORM_BASE_DOMAIN") or (
-        "castform.dev" if env == "staging" else "castform.com"
-    )
-    return f"https://auth.{base}"
-
-
-def _login(env: str | None) -> None:
+def _login() -> None:
     """Run the device flow and cache the session. Raises DeviceAuthError on failure."""
-    auth = _auth_url(env)
+    from benchmax import config
+
+    auth = config.auth_url()
     dc = request_device_code(auth)
     verification = dc.get("verification_uri_complete") or dc["verification_uri"]
     print(f"\nTo sign in, open this URL in your browser:\n\n    {verification}\n")
@@ -51,13 +41,10 @@ def _login(env: str | None) -> None:
         session["refresh_token"] = tok["refresh_token"]
     if tok.get("expires_in"):
         session["expires_at"] = int(time.time()) + int(tok["expires_in"])
-    # prod carries no env marker (the default); only internal staging logins set it.
-    if env == "staging":
-        session["env"] = "staging"
     credentials.write_castform_session(session)
 
 
-def ensure_session(env: str | None = None, *, interactive: bool | None = None) -> None:
+def ensure_session(*, interactive: bool | None = None) -> None:
     """Make sure a platform credential is available; auto-login if interactive.
 
     No-op when one already resolves (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY`` /
@@ -78,4 +65,4 @@ def ensure_session(env: str | None = None, *, interactive: bool | None = None) -
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
     if not interactive or os.environ.get("CASTFORM_NO_AUTO_LOGIN"):
         return
-    _login(env)
+    _login()
