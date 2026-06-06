@@ -11,19 +11,19 @@ from __future__ import annotations
 import argparse
 import sys
 
+from benchmax import config
 from benchmax.platform import credentials
 from benchmax.platform.device_auth import DeviceAuthError
 from benchmax.platform.login import _login
 
 
-def _cmd_login(args: argparse.Namespace) -> int:
-    env = "staging" if args.env == "staging" else None
+def _cmd_login(_args: argparse.Namespace) -> int:
     try:
-        _login(env)
+        _login()
     except DeviceAuthError as exc:
         print(f"Login failed: {exc}", file=sys.stderr)
         return 1
-    print(f"\n✓ Logged in to {args.env}.")
+    print(f"\n✓ Logged in to {config.base_domain()}.")
     return 0
 
 
@@ -38,19 +38,18 @@ def _cmd_whoami(_args: argparse.Namespace) -> int:
     if not session:
         print("Not logged in. Run `castform login`.", file=sys.stderr)
         return 1
-    env = session.get("env", "prod")
     jwt = credentials._session_jwt()  # mints from the session; None if invalid/expired/offline
     if not jwt:
         print(
-            f"Session present (env: {env}), but couldn't reach auth-service to "
-            "verify it (offline, or the session expired). If this persists, run "
+            "Session present, but couldn't reach auth-service to verify it "
+            "(offline, or the session expired). If this persists, run "
             "`castform login` again.",
             file=sys.stderr,
         )
         return 1
     claims = credentials._jwt_claims(jwt)
     who = claims.get("email") or claims.get("sub", "<unknown>")
-    print(f"Logged in as {who} (env: {env}).")
+    print(f"Logged in as {who} ({config.base_domain()}).")
     return 0
 
 
@@ -59,12 +58,6 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_login = sub.add_parser("login", help="Sign in via your browser")
-    p_login.add_argument(
-        "--env",
-        choices=["prod", "staging"],
-        default="prod",
-        help="Environment to sign in to (staging is internal-only)",
-    )
     p_login.set_defaults(func=_cmd_login)
 
     sub.add_parser("logout", help="Clear the cached session").set_defaults(func=_cmd_logout)

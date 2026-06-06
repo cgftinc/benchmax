@@ -192,10 +192,10 @@ def test_read_castform_session_malformed_returns_none(tmp_path, monkeypatch):
 
 def test_write_session_creates_dir_and_0600(tmp_path, monkeypatch):
     monkeypatch.setenv(_CRED_PATH_ENV, str(tmp_path / "sub" / "credentials.json"))
-    write_castform_session({"access_token": "sess_abc", "env": "staging"})
+    write_castform_session({"access_token": "sess_abc", "refresh_token": "r"})
     p = tmp_path / "sub" / "credentials.json"
     assert oct(p.stat().st_mode & 0o777) == "0o600"
-    assert read_castform_session() == {"access_token": "sess_abc", "env": "staging"}
+    assert read_castform_session() == {"access_token": "sess_abc", "refresh_token": "r"}
 
 
 def test_clear_session_removes_file_and_jwt_cache(tmp_path, monkeypatch):

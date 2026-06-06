@@ -123,8 +123,7 @@ def read_castform_session() -> dict | None:
     world/group-readable credential is not trusted. Written by ``castform
     login`` (Phase 4); schema::
 
-        {"access_token": str, "refresh_token": str, "expires_at": int,
-         "env": "staging"}   # env omitted for prod (the default)
+        {"access_token": str, "refresh_token": str, "expires_at": int}
 
     ``refresh_token`` is reserved for the per-process mint/refresh added with the
     device flow (Phase 3/4); today only ``access_token`` / ``env`` are consumed.
