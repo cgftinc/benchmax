@@ -598,9 +598,8 @@ if __name__ == "__main__":
     # the EXACT same env_args / by-value modules / deps as the launch.
     #  - local_modules: ship env + rubric by value (the platform's installed
     #    benchmax may not contain this version of these modules).
-    #  - judge_api_key="": satisfies the constructor without leaking a key; the
-    #    judge resolves its bearer at runtime via the platform act-as seam.
-    constructor_args = {"judge_base_url": LLM_BASE_URL, "judge_api_key": ""}
+    #  - judge bearer resolves at runtime via the device-auth / platform seam.
+    constructor_args = {"judge_base_url": LLM_BASE_URL}
     local_modules = [telestich_env_mod, rubric_mod]
     # All three are still required (is_valid_word → correctness; pronouncing →
     # rhyme). Removing word_bank did NOT free any of them.
