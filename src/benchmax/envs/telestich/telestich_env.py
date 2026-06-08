@@ -48,6 +48,19 @@ JUDGE_MODEL = "gpt-5.4"
 # full-group 15/36 false-better vs batch-of-3 0/36, ~83% agreement with a Sonnet audit).
 JUDGE_BATCH = 3
 
+# Multi-anchor ELO judge (default; replaces the disjoint JUDGE_BATCH ranker). Each judge
+# call ranks a small SLICE of poems against BOTH anchors (kept in every call); poems sit
+# in overlapping slices so a Bradley-Terry fit — with the anchors pinned as fixed-rating
+# reference players — recovers one calibrated ranking. A single 9+2 ranking lets the judge
+# float poems above the blind anchors (~20% of poems spuriously above baseline); slice+BT
+# holds the scale (~1%) — golden audit over 30 prompts (M3 vs M1).
+ELO_JUDGE = True  # False → fall back to the JUDGE_BATCH disjoint-batch ranker
+ELO_SLICE = 5  # model poems per judge call; +2 anchors = 7 items (judge-reliable range)
+ELO_STRIDE = 3  # slice stride; adjacent slices overlap by ELO_SLICE-ELO_STRIDE poems
+ELO_GREAT_RATING = 1.2  # BT-rating gap acceptable(0.0)→great; P(great>acc)≈0.77
+ELO_BT_ITERS = 500
+ELO_BT_LR = 0.1
+
 # CORRECT poems are ranked by the multi-anchor rubric judge against `acceptable`
 # and `great` reference anchors; the band score maps onto a reward ladder
 # (_map_correct_score): below acceptable → [0.1,0.4) "below", acceptable..great →
@@ -75,8 +88,13 @@ QUALITY_RUBRIC = Rubric(
         "blunt, funny, or colloquial. A short, plain poem that nails the requested voice "
         "BEATS a lavish one that drifts off-voice.\n"
         "(2) COHERENCE. The lines must connect into one deliberate poem with a real "
-        "through-line of sense — HEAVILY penalize interchangeable lines, list-like "
-        "poems, or sentences that don't actually parse.\n"
+        "through-line of sense. A line that is a non-sequitur, or whose ENDING word "
+        "is clearly bolted on just to land its letter so the line stops making sense "
+        "(e.g. ending on 'you', 'so', 'rev', 'ref' where it doesn't fit), makes the "
+        "poem INCOHERENT — rank such a poem below an otherwise-comparable one that "
+        "reads cleanly all the way through, and do NOT let vivid imagery rescue a "
+        "poem whose lines don't actually parse. HEAVILY penalize interchangeable "
+        "lines, list-like poems, or sentences that don't actually parse.\n"
         "Then, secondary: concrete imagery that SERVES the brief (not decoration for its "
         "own sake), and natural un-forced line endings. HEAVILY penalize forced/filler "
         "endings — interjections or words tacked on as a non-sequitur just to land a "
@@ -601,6 +619,68 @@ def _map_correct_score(s: float) -> float:
     return s
 
 
+# ── ELO judge helpers (pure; see ELO_JUDGE) ──────────────────────────────
+# Logistic map BT-rating → band score, calibrated so the acceptable anchor rating (0.0)
+# → ACCEPTABLE_EDGE and the great anchor (ELO_GREAT_RATING) → GREAT_EDGE. Asymptotes to
+# (0,1), so below-baseline poems keep a gradient instead of flooring to 0 (a hard band
+# clamp would collapse them — the run sits almost entirely below baseline).
+_ELO_A = math.log(1.0 / ACCEPTABLE_EDGE - 1.0)
+_ELO_B = math.log(1.0 / GREAT_EDGE - 1.0)
+_ELO_K = (_ELO_A - _ELO_B) / ELO_GREAT_RATING
+_ELO_R0 = _ELO_A / _ELO_K
+
+
+def _rating_to_band(r: float) -> float:
+    """BT rating → band score in (0,1), calibrated at the two anchor ratings."""
+    return 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, _ELO_K * (r - _ELO_R0)))))
+
+
+def _make_slices(
+    n: int, size: int = ELO_SLICE, stride: int = ELO_STRIDE
+) -> list[list[int]]:
+    """Overlapping poem-index slices over 0..n-1: wrap-around windows of `size` at `stride`,
+    plus an extra slice for any index the stride left covered <2× — so every poem appears in
+    ≥2 slices for cross-comparison. n ≤ size → one slice of all poems."""
+    if n <= size:
+        return [list(range(n))]
+    slices = [[(s + j) % n for j in range(size)] for s in range(0, n, stride)]
+    cnt = Counter(i for sl in slices for i in sl)
+    under = [i for i in range(n) if cnt[i] < 2]
+    while under:
+        take = under[:size]
+        under = under[size:]
+        if len(take) < size:
+            take += [i for i in range(n) if i not in take][: size - len(take)]
+        slices.append(take)
+    return slices
+
+
+def _bt_fit(
+    pairs: list[tuple[int, int]],
+    fixed: dict[int, float],
+    n_players: int,
+    iters: int = ELO_BT_ITERS,
+    lr: float = ELO_BT_LR,
+) -> list[float]:
+    """Bradley-Terry ratings by gradient ascent over (winner, loser) pairs pooled across
+    slices; `fixed` players (the anchors) stay pinned at their given ratings."""
+    R = [0.0] * n_players
+    for pid, val in fixed.items():
+        R[pid] = val
+    norm = max(1.0, len(pairs) / max(1, n_players))
+    for _ in range(iters):
+        grad = [0.0] * n_players
+        for win, lose in pairs:
+            d = max(-30.0, min(30.0, R[win] - R[lose]))
+            pe = 1.0 / (1.0 + math.exp(-d))
+            grad[win] += 1.0 - pe
+            grad[lose] -= 1.0 - pe
+        for i in range(n_players):
+            if i not in fixed:
+                R[i] += lr * grad[i] / norm
+    return R
+
+
 def _first_ref(refs: Any) -> str | None:
     """First non-empty reference poem from a refs list, or None."""
     items = [r for r in (refs or []) if r and str(r).strip()]
@@ -771,7 +851,10 @@ Tips:
 word), then SEND your draft to the `feedback` tool — pass both your poem and the \
 hidden `word` it should spell — to confirm the endings and flag any over-long lines \
 or filler endings; don't try to verify every last letter in your head, that's \
-error-prone. Revise from its feedback, then finalize. Use it sparingly (≤3 calls — usually one verify pass is \
+error-prone. The tool only checks CORRECTNESS (right endings, line count, no run-ons \
+or filler words) — it does NOT tell you whether the poem is any good, so a "passed" \
+result is not a quality signal: judge coherence and voice yourself before finalizing. \
+Revise from its feedback, then finalize. Use it sparingly (≤3 calls — usually one verify pass is \
 enough); once you can reliably nail it first try, skip it for the efficiency bonus.
 - Rhyme only works between lines that share an ending letter, so rhyme the lines \
 whose letters REPEAT in the word; match vowel SOUNDS, not spelling, and don't force it.
@@ -876,8 +959,9 @@ then stop."""
         # Clean telestich: right structure, real non-filler endings, no run-on lines.
         # Deterministic checks are all the feedback we give (no LLM critic).
         good = (
-            "Looks good: the endings spell the word, every line ends in a real "
-            "non-filler word, and no line runs long."
+            "Correctness check passed: the endings spell the word, every line ends "
+            "in a real non-filler word, and no line runs long. (This checks the "
+            "mechanics only, not how good the poem is.)"
         )
         if not last_note:
             good += (
@@ -902,13 +986,17 @@ then stop."""
         band_edges: list[float],
         anchor_labels: list[str] | None = None,
     ) -> list[float]:
-        """Quality via the shared MULTI-ANCHOR rubric judge. BATCHED: each call ranks
-        at most JUDGE_BATCH poems against the anchors (acceptable floor + great bar)
-        inserted blind. Ranking the whole group at once lets near-identical sibling
-        poems contaminate each other's placement so the judge over-rates them above the
-        anchors (audited on run 0ec8e2dc: full-group 15/36 false-better → batch-of-3
-        0/36). Batches run concurrently; scores are returned in `poems` order. On judge
-        error a batch returns 0s. `anchor_labels` only name the anchors in the debug log."""
+        """Quality via the MULTI-ANCHOR rubric judge, returned in `poems` order. With
+        ELO_JUDGE (default) each call ranks a small SLICE of poems against both anchors and
+        a Bradley-Terry fit (anchors pinned as fixed-rating reference players) yields one
+        calibrated score per poem — see _quality_elo. ELO_JUDGE=False restores the disjoint
+        JUDGE_BATCH ranker: each call ranks ≤JUDGE_BATCH poems against the blind anchors
+        (run 0ec8e2dc: full-group 15/36 false-better → batch-of-3 0/36), scores in `poems`
+        order, a failed batch → 0s; `anchor_labels` only name the anchors in the debug log."""
+        if not poems:
+            return []
+        if ELO_JUDGE and anchors:
+            return await self._quality_elo(prompt, poems, anchors, band_edges)
 
         async def _score_batch(batch: list[str]) -> list[float]:
             res = await evaluate_rubric_ranking(
@@ -929,6 +1017,57 @@ then stop."""
         ]
         results = await asyncio.gather(*(_score_batch(b) for b in batches))
         return [s for batch_scores in results for s in batch_scores]
+
+    async def _quality_elo(
+        self,
+        prompt: str,
+        poems: list[str],
+        anchors: list[str],
+        band_edges: list[float],
+    ) -> list[float]:
+        """Slice-and-Bradley-Terry quality scorer (see ELO_JUDGE / _quality). Each judge
+        call ranks an ELO_SLICE-sized slice of poems against BOTH anchors (in every call);
+        poems sit in overlapping slices (_make_slices), so the pooled pairwise outcomes feed
+        a BT fit with the anchors pinned at fixed ratings (_bt_fit). Ratings map back to band
+        scores (_rating_to_band). Slices run concurrently; a failed slice contributes no
+        pairs. Returns band scores in `poems` order."""
+        n = len(poems)
+        n_anchors = len(anchors)
+        anchor_ids = list(range(n, n + n_anchors))
+        # anchor band edge → fixed BT rating (acceptable edge → 0.0, great edge → GREAT_RATING)
+        span = GREAT_EDGE - ACCEPTABLE_EDGE
+        fixed = {
+            n + a: (band_edges[a] - ACCEPTABLE_EDGE) / span * ELO_GREAT_RATING
+            for a in range(n_anchors)
+        }
+
+        async def _slice_pairs(sl: list[int]) -> list[tuple[int, int]]:
+            try:
+                res = await evaluate_rubric_ranking(
+                    rubric=QUALITY_RUBRIC,
+                    question=prompt,
+                    responses=[poems[i] for i in sl] + list(anchors),
+                    model_name=JUDGE_MODEL,
+                    base_url=self._judge_base_url,
+                    timeout=self._judge_timeout,
+                )
+                sc = res["scores"]
+            except Exception:
+                logger.exception("[TelestichEnv] elo slice failed; dropping slice")
+                return []
+            players = list(sl) + anchor_ids  # local item index → global player id
+            return [
+                (players[a], players[b])
+                for a in range(len(players))
+                for b in range(len(players))
+                if a != b and sc[a] > sc[b] + 1e-9
+            ]
+
+        slices = _make_slices(n)
+        results = await asyncio.gather(*(_slice_pairs(sl) for sl in slices))
+        pairs = [pr for sub in results for pr in sub]
+        ratings = _bt_fit(pairs, fixed, n + n_anchors)
+        return [_rating_to_band(ratings[i]) for i in range(n)]
 
     async def _score_quality(
         self,
