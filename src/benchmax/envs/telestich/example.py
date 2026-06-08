@@ -17,8 +17,8 @@ env's word-list / rhyme dependencies):
 
 (``CASTFORM_LLM_API_KEY`` is optional — it defaults to ``CASTFORM_API_KEY``.)
 
-By default this is a 2-example smoke run. Set ``TELESTICH_FULL_RUN=1`` to launch
-a real run on the full seed dataset (~90/10 train/eval split).
+This launches a real training run on the full committed seed dataset
+(~90/10 train/eval split).
 """
 
 import asyncio
@@ -552,7 +552,6 @@ def get_dataset():
 # alongside the pickle so a UI can show "what code is in this env" without
 # unpickling.
 if __name__ == "__main__":
-    import tempfile
     import uuid
 
     from benchmax.platform.client import TrainerClient
@@ -565,33 +564,17 @@ if __name__ == "__main__":
     print(f"Platform URL: {BASE_URL}")
     print(f"LLM URL:      {LLM_BASE_URL}\n")
 
-    # 1. Build the dataset.
-    #    Full run (TELESTICH_FULL_RUN=1): the committed seed dataset, topped up
-    #    to NUM_EXAMPLES via the platform LLM if short, split ~90/10 train/eval.
-    #    Default: a 2-example smoke that just exercises gen -> bundle -> upload
-    #    -> launch (and the key-less judge path), not a real training job.
-    full_run = bool(os.environ.get("TELESTICH_FULL_RUN"))
-    if full_run:
-        examples = get_dataset()
-        if len(examples) < 2:
-            raise SystemExit(f"Need >=2 examples for a full run, got {len(examples)}.")
-        # Hold out a representative eval set at random; keep TRAIN in curriculum
-        # order (simpler first) so the difficulty ramp is preserved.
-        n_eval = max(1, len(examples) // 10)
-        eval_idx = set(random.sample(range(len(examples)), n_eval))
-        eval_data = [e for i, e in enumerate(examples) if i in eval_idx]
-        train_data = [e for i, e in enumerate(examples) if i not in eval_idx]
-        print(f"Full run: {len(train_data)} train (curriculum order) / {len(eval_data)} eval.\n")
-    else:
-        with tempfile.TemporaryDirectory() as tmp:
-            gen_path = Path(tmp) / "gen.jsonl"
-            print(f"Generating 2 examples via {LLM_BASE_URL} ...")
-            asyncio.run(generate_dataset(n=2, path=str(gen_path), concurrency=2))
-            examples = load_dataset(str(gen_path))
-        if len(examples) < 2:
-            raise SystemExit(f"Needed 2 examples, only got {len(examples)}.")
-        train_data, eval_data = examples[:1], examples[1:2]
-        print(f"Smoke run: generated {len(examples)} examples — 1 train, 1 eval.\n")
+    # 1. Build the dataset from the committed seed file (curriculum order). Hold out a
+    #    representative eval set at random; keep TRAIN in curriculum order (simpler first)
+    #    so the difficulty ramp is preserved.
+    examples = get_dataset()
+    if len(examples) < 2:
+        raise SystemExit(f"Need >=2 examples, got {len(examples)}.")
+    n_eval = max(1, len(examples) // 10)
+    eval_idx = set(random.sample(range(len(examples)), n_eval))
+    eval_data = [e for i, e in enumerate(examples) if i in eval_idx]
+    train_data = [e for i, e in enumerate(examples) if i not in eval_idx]
+    print(f"{len(train_data)} train (curriculum order) / {len(eval_data)} eval.\n")
 
     # 2. Bundle the env class and upload everything to platform storage.
     # Bundle config, defined once so the pre-flight validation below exercises
@@ -622,10 +605,12 @@ if __name__ == "__main__":
         llm_api_key="",
         remote_examples=2,
     ):
-        raise SystemExit("Env validation failed — aborting before launch (see output above).")
+        raise SystemExit(
+            "Env validation failed — aborting before launch (see output above)."
+        )
 
     # 3. Bundle the env class and upload everything to platform storage.
-    run_name = f"telestich-{'full' if full_run else 'example'}-{uuid.uuid4().hex[:8]}"
+    run_name = f"telestich-full-{uuid.uuid4().hex[:8]}"
     print(f"\nUploading bundle + datasets as {run_name!r} ...")
     uploaded = upload_training_run(
         env_class=TelestichEnv,
