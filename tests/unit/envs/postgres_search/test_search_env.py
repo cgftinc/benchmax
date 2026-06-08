@@ -448,6 +448,38 @@ class TestComputeReward:
         )
         assert all(v == 0.0 for v in result.values())
 
+    @patch(
+        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
+        new_callable=AsyncMock,
+    )
+    def test_no_answer_block_returns_zeros(self, mock_eval):
+        # Model never emits <answer> tags. Even though the judge would happily
+        # score the reasoning/citation text, the missing answer block must zero
+        # out every component — conciseness, citations and efficiency included.
+        mock_eval.return_value = {"score": 1.0}
+        env = _make_env(
+            w_correctness=1.0,
+            w_conciseness=0.5,
+            w_citation_recall=1.0,
+            w_citation_precision=1.0,
+        )
+        result = asyncio.run(
+            env.compute_reward(
+                "r1",
+                _msgs("Here is 42, see [Source: doc_a] but I forgot the tags"),
+                {
+                    "question": "What?",
+                    "ground_truth": "42",
+                    "reference_chunks": [
+                        {"content": "...", "metadata": {"file": "doc_a"}}
+                    ],
+                },
+            )
+        )
+        assert all(v == 0.0 for v in result.values())
+        # The judge must never even be consulted without a final answer.
+        mock_eval.assert_not_called()
+
 
 class TestCitationScoring:
     def test_no_reference_chunks_returns_zero(self):

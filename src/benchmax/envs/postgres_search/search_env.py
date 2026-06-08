@@ -285,8 +285,14 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             if not text.strip():
                 return zeros
 
-            t = task or {}
+            # No final <answer> block → no answer to score. Return all-zero
+            # rewards so conciseness / citations / efficiency can't accrue
+            # from reasoning or tool-call text alone.
             answer = extract_answer_block(text)
+            if not answer:
+                return zeros
+
+            t = task or {}
             prompt = str(t.get("question") or t.get("prompt") or "")
             gt_str = str(t.get("ground_truth") or "")
             reference_chunks = t.get("reference_chunks", [])
