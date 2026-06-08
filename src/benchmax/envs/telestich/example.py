@@ -59,6 +59,10 @@ EXPERIMENT_PREFIX = "telestich"
 DATASET_PATH = str(Path(__file__).parent / "telestich_dataset.jsonl")
 NUM_EXAMPLES = 400
 CONCURRENCY = 15
+# Trainer model — the launch `model` arg selects the trainer YAML (and thus the GPU
+# pool) server-side. Supported: "Qwen/Qwen3.5-4B" (gpu4) or "Qwen/Qwen3.5-35B-A3B"
+# (gpu8). Override via TELESTICH_MODEL.
+MODEL = os.environ.get("TELESTICH_MODEL", "Qwen/Qwen3.5-4B")
 
 # (model, weight). Weights reflect observed reliability on our checks:
 # - Both grok models leak banned example words and rubber-stamp the CoT self-check.
@@ -631,8 +635,9 @@ if __name__ == "__main__":
     ):
         print(f"  {label:<14}: {path}")
 
-    # 4. Launch the training run. ``simple`` is the deployed 4B/gpu4 template.
-    print("\nLaunching training run ...")
+    # 4. Launch the training run. training_run_type="simple" + the `model` arg select
+    #    the trainer YAML/pool server-side (Qwen3.5-4B→gpu4, Qwen3.5-35B-A3B→gpu8).
+    print(f"\nLaunching training run (model={MODEL}) ...")
     with TrainerClient(api_key=API_KEY, base_url=BASE_URL) as trainer:
         run_id = trainer.launch_training_run(
             training_run_type="simple",
@@ -645,7 +650,7 @@ if __name__ == "__main__":
             # max_response_len 3000: a brief reason + 1-2 tool rounds + poem fits well
             # under this; lowered from 4000 to cut off in-head enumeration rambles
             # sooner (they truncate to a 0-reward anyway).
-            launcher_args={"max_response_len": 3000, "num_epochs": 10},
+            launcher_args={"model": MODEL, "max_response_len": 3000, "num_epochs": 10},
         )
 
     print(f"\n✓ Launched run_id={run_id}")
