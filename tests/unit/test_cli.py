@@ -47,6 +47,9 @@ def stub_flow(monkeypatch):
     monkeypatch.setattr(
         credentials, "write_castform_session", lambda s: captured.update(session=s)
     )
+    # This test is about session writing, not browser UX — stub the open so it
+    # never launches a real browser (e.g. under `pytest -s`, where stdin is a tty).
+    monkeypatch.setattr(login, "_maybe_open_browser", lambda _u: None)
     return captured
 
 
@@ -67,7 +70,9 @@ def test_login_failure_returns_1(monkeypatch):
 def test_logout_clears_session(monkeypatch):
     called = {}
     monkeypatch.setattr(
-        credentials, "clear_castform_session", lambda: called.setdefault("cleared", True)
+        credentials,
+        "clear_castform_session",
+        lambda: called.setdefault("cleared", True),
     )
     assert cli._cmd_logout(argparse.Namespace()) == 0
     assert called["cleared"]
@@ -82,7 +87,9 @@ def test_whoami_logged_in_shows_email(monkeypatch, capsys):
     monkeypatch.setattr(
         credentials, "read_castform_session", lambda: {"access_token": "x"}
     )
-    claims = base64.urlsafe_b64encode(json.dumps({"email": "a@b.com"}).encode()).rstrip(b"=")
+    claims = base64.urlsafe_b64encode(json.dumps({"email": "a@b.com"}).encode()).rstrip(
+        b"="
+    )
     monkeypatch.setattr(credentials, "_session_jwt", lambda: f"h.{claims.decode()}.s")
     assert cli._cmd_whoami(argparse.Namespace()) == 0
     assert "a@b.com" in capsys.readouterr().out
@@ -112,3 +119,51 @@ def test_ensure_session_logs_in_when_interactive(monkeypatch):
     monkeypatch.setattr(login, "_login", lambda: called.setdefault("login", True))
     login.ensure_session(interactive=True)
     assert called.get("login")
+
+
+class _FakeStdin:
+    def __init__(self, tty: bool):
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+def test_maybe_open_browser_opens_on_tty(monkeypatch):
+    monkeypatch.setattr(login.sys, "stdin", _FakeStdin(True))
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("CASTFORM_NO_BROWSER", raising=False)
+    opened = {}
+    monkeypatch.setattr(login.webbrowser, "open", lambda u: opened.setdefault("url", u))
+    login._maybe_open_browser("https://app.x/device?user_code=ABCD")
+    assert opened["url"] == "https://app.x/device?user_code=ABCD"
+
+
+def test_maybe_open_browser_skips_over_ssh(monkeypatch):
+    monkeypatch.setattr(login.sys, "stdin", _FakeStdin(True))
+    monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
+    monkeypatch.delenv("CASTFORM_NO_BROWSER", raising=False)
+    opened = {}
+    monkeypatch.setattr(login.webbrowser, "open", lambda u: opened.setdefault("url", u))
+    login._maybe_open_browser("https://app.x/device")
+    assert "url" not in opened
+
+
+def test_maybe_open_browser_skips_non_interactive(monkeypatch):
+    monkeypatch.setattr(login.sys, "stdin", _FakeStdin(False))
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("CASTFORM_NO_BROWSER", raising=False)
+    opened = {}
+    monkeypatch.setattr(login.webbrowser, "open", lambda u: opened.setdefault("url", u))
+    login._maybe_open_browser("https://app.x/device")
+    assert "url" not in opened
+
+
+def test_maybe_open_browser_opt_out(monkeypatch):
+    monkeypatch.setattr(login.sys, "stdin", _FakeStdin(True))
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.setenv("CASTFORM_NO_BROWSER", "1")
+    opened = {}
+    monkeypatch.setattr(login.webbrowser, "open", lambda u: opened.setdefault("url", u))
+    login._maybe_open_browser("https://app.x/device")
+    assert "url" not in opened
