@@ -490,6 +490,99 @@ class TestBm25Downgrade:
 
 
 # ---------------------------------------------------------------------------
+# Chroma Cloud hosted embedding-function repair
+# ---------------------------------------------------------------------------
+
+
+class _FakeModel:
+    def __init__(self, cfg):
+        self.configuration_json = cfg
+
+
+class _FakeCloudCollection:
+    """Minimal stand-in for a chromadb Collection's EF-relevant internals."""
+
+    def __init__(self, cfg, ef=None):
+        self._model = _FakeModel(cfg)
+        self._embedding_function = ef
+
+
+_QWEN_CFG = {
+    "embedding_function": {
+        "name": "chroma-cloud-qwen",
+        "model": "Qwen/Qwen3-Embedding-0.6B",
+        "task": None,
+    }
+}
+
+_QWEN_EF_PATH = (
+    "chromadb.utils.embedding_functions."
+    "chroma_cloud_qwen_embedding_function.ChromaCloudQwenEmbeddingFunction"
+)
+
+
+class TestCloudQwenEmbeddingRepair:
+    """chromadb's build_from_config rejects chroma-cloud-qwen's task=None config
+    (through >=1.5.9), breaking every text query. _repair_cloud_embedding_function
+    attaches a directly-built EF so _embed uses it instead of the broken loader.
+    """
+
+    def test_attaches_ef_for_cloud_qwen_config(self):
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        col = _FakeCloudCollection(_QWEN_CFG)
+        sentinel = object()
+        with patch(_QWEN_EF_PATH, return_value=sentinel) as ef_cls:
+            ChromaClient._repair_cloud_embedding_function(col)
+        assert col._embedding_function is sentinel
+        # task=None must be forwarded (the value chromadb chokes on).
+        assert ef_cls.call_args.kwargs["task"] is None
+
+    def test_repairs_over_default_embedding_function(self):
+        """A DefaultEmbeddingFunction means 'unresolved' — chromadb ignores it."""
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        class DefaultEmbeddingFunction:  # name is what the guard checks
+            pass
+
+        col = _FakeCloudCollection(_QWEN_CFG, ef=DefaultEmbeddingFunction())
+        sentinel = object()
+        with patch(_QWEN_EF_PATH, return_value=sentinel):
+            ChromaClient._repair_cloud_embedding_function(col)
+        assert col._embedding_function is sentinel
+
+    def test_leaves_real_embedding_function_untouched(self):
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        real_ef = object()  # type name != DefaultEmbeddingFunction
+        col = _FakeCloudCollection(_QWEN_CFG, ef=real_ef)
+        with patch(_QWEN_EF_PATH, return_value=object()):
+            ChromaClient._repair_cloud_embedding_function(col)
+        assert col._embedding_function is real_ef
+
+    def test_ignores_non_cloud_qwen_config(self):
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        col = _FakeCloudCollection({"embedding_function": {"name": "openai"}})
+        ChromaClient._repair_cloud_embedding_function(col)
+        assert col._embedding_function is None
+
+    def test_guarded_against_broken_internals(self):
+        """Any deviation in chromadb internals is a no-op, never a crash."""
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        class _Boom:
+            @property
+            def configuration_json(self):
+                raise RuntimeError("internals changed")
+
+        col = _FakeCloudCollection({})
+        col._model = _Boom()
+        ChromaClient._repair_cloud_embedding_function(col)  # must not raise
+        assert col._embedding_function is None
+
+
+# ---------------------------------------------------------------------------
 # search_related / search_text honor and clamp the requested mode
 # ---------------------------------------------------------------------------
 
