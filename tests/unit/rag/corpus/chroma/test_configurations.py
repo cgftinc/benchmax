@@ -626,6 +626,31 @@ class TestSearchModeClamp:
         results = source.search_related(primary, ["q"], top_k=5, mode="hybrid")
         assert results[0]["chunk"].content == "v"
 
+    def test_hybrid_without_embed_fn_degrades_to_lexical_not_vector(self):
+        """mode='hybrid' + no client embed_fn must run LEXICAL, not vector.
+
+        Remote collections have no embed_fn, so dense query vectors can't be
+        produced. Hybrid must degrade to its sparse/lexical leg (no embedding),
+        not fall through to vector search — which would force chromadb to embed
+        every query (slow; pulls the all-MiniLM model on a default-EF collection).
+        """
+        col = FakeCollection(count=5)
+        source = make_source(col, files=NoFileFakeFiles())  # embed_fn=None
+        source._chroma.modes = {"vector", "lexical", "hybrid"}
+        source._chroma.search_api = True
+
+        captured: list[str | None] = []
+
+        def _capture(spec):
+            captured.append(spec.get("mode"))
+            return []
+
+        source._search_with_scores = _capture  # type: ignore[method-assign]
+        source.search_related(
+            Chunk(content="src", metadata=()), ["q"], top_k=3, mode="hybrid"
+        )
+        assert captured == ["lexical"]
+
     def test_search_related_refreshes_modes_from_client(self):
         """search_related re-syncs _search_capabilities from _chroma.modes.
 
