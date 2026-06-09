@@ -642,19 +642,21 @@ class ChromaChunkSource:
         # lack a BM25 index, in which case modes was downgraded to vector-only.
         modes = self._current_modes()
 
-        # Pick mode. An explicit `mode` restricts to that strategy (clamped to
-        # what the collection supports); mode=None keeps the "best available"
-        # default. Clamping is what lets callers (e.g. the QA metadata-linker)
-        # force vector search to recover from a lexical/hybrid failure.
+        # Pick mode. "hybrid"/None use the best available strategy and KEEP
+        # lexical enabled as a fallback: hybrid = dense + sparse, and when we
+        # can't produce dense query vectors (no embed_fn, the usual remote case)
+        # the per-query loop below degrades to the sparse/lexical leg — which
+        # needs no embedding. Only an explicit "vector" disables lexical; that's
+        # the dense-only recovery path a caller uses after a lexical/hybrid
+        # failure. (Disabling lexical for "hybrid" silently forced vector search,
+        # which made remote collections dense-embed every query — slow, and on a
+        # default-EF collection it pulls the all-MiniLM model.)
         if mode == "vector":
             use_hybrid = use_lexical = False
         elif mode == "lexical":
             use_hybrid = False
             use_lexical = "lexical" in modes
-        elif mode == "hybrid":
-            use_hybrid = "hybrid" in modes
-            use_lexical = False
-        else:  # None or unrecognized -> best available
+        else:  # "hybrid", None, or unrecognized -> best available
             use_hybrid = "hybrid" in modes
             use_lexical = "lexical" in modes
 
