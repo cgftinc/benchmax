@@ -13,6 +13,7 @@ Covers degraded/variant customer configurations:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,10 +25,29 @@ from fakes.chroma import (
 )
 
 from benchmax.rag.chunkers.models import Chunk
+from benchmax.rag.corpus.chroma.client import BM25_KEY
 from benchmax.rag.corpus.search_schema.search_exceptions import (
     UnsupportedSearchModeError,
 )
 from benchmax.rag.corpus.search_schema.search_types import SearchSpec
+
+
+def _fake_schema(*, has_bm25: bool, enabled: bool = True):
+    """Build a stand-in for chromadb's Schema object.
+
+    Mirrors the attribute chain ChromaClient._has_bm25_index walks:
+    schema.keys[BM25_KEY].sparse_vector.sparse_vector_index.{enabled,config}.
+    """
+    if not has_bm25:
+        return SimpleNamespace(keys={})
+    index = SimpleNamespace(
+        enabled=enabled,
+        config=SimpleNamespace(embedding_function=object()),
+    )
+    value_type = SimpleNamespace(
+        sparse_vector=SimpleNamespace(sparse_vector_index=index)
+    )
+    return SimpleNamespace(keys={BM25_KEY: value_type})
 
 # ---------------------------------------------------------------------------
 # Capabilities
@@ -209,7 +229,9 @@ class TestSearchTextFlow:
         """search_text picks hybrid mode when Search API + BM25 available."""
         col = FakeCollection(count=5)
         source = make_source(col)
-        # Enable hybrid/lexical
+        # Enable hybrid/lexical. _chroma.modes is the source of truth — search_text
+        # re-syncs capabilities from it after lazy collection init.
+        source._chroma.modes = {"vector", "lexical", "hybrid"}
         source._search_capabilities["modes"] = {"vector", "lexical", "hybrid"}
         source._chroma.search_api = True
 
@@ -227,6 +249,7 @@ class TestSearchTextFlow:
         """search_text picks lexical when hybrid is unavailable."""
         col = FakeCollection(count=5)
         source = make_source(col)
+        source._chroma.modes = {"vector", "lexical"}
         source._search_capabilities["modes"] = {"vector", "lexical"}
         source._chroma.search_api = True
 
@@ -403,6 +426,226 @@ class TestBm25Downgrade:
         # get_or_create_collection called twice: once with schema (failed),
         # once without (succeeded)
         assert mock_client.get_or_create_collection.call_count == 2
+
+    def test_existing_collection_without_bm25_index_downgrades(self):
+        """A pre-existing collection (no BM25 index) downgrades to vector-only.
+
+        get_or_create_collection returns an existing collection as-is, so the
+        schema-based create "succeeds" without applying our BM25 index. The
+        index-readiness probe must catch that and drop lexical/hybrid, or a
+        later query raises "key not found in schema".
+        """
+        from benchmax.rag.corpus.chroma.client import BM25_KEY, ChromaClient
+
+        with patch("benchmax.rag.corpus.chroma.client.has_search_api", return_value=True):
+            chroma = ChromaClient(collection_name="t", host="h", enable_bm25=True)
+        assert chroma.modes == {"vector", "lexical", "hybrid"}
+
+        existing = SimpleNamespace(schema=_fake_schema(has_bm25=False))
+        mock_client = MagicMock()
+        mock_client.get_or_create_collection = MagicMock(return_value=existing)
+        chroma._raw_client = mock_client
+
+        with patch.object(ChromaClient, "_build_schema", return_value={"sentinel": 1}):
+            result = chroma.get_collection()
+
+        assert result is existing
+        assert chroma.modes == {"vector"}
+        assert chroma.ranking == {"cosine"}
+        # Schema branch "succeeded" -> no fallback create.
+        assert mock_client.get_or_create_collection.call_count == 1
+        assert BM25_KEY not in existing.schema.keys
+
+    def test_collection_with_bm25_index_keeps_lexical_hybrid(self):
+        """A collection that actually has the BM25 index keeps lexical+hybrid."""
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        with patch("benchmax.rag.corpus.chroma.client.has_search_api", return_value=True):
+            chroma = ChromaClient(collection_name="t", host="h", enable_bm25=True)
+
+        indexed = SimpleNamespace(schema=_fake_schema(has_bm25=True))
+        mock_client = MagicMock()
+        mock_client.get_or_create_collection = MagicMock(return_value=indexed)
+        chroma._raw_client = mock_client
+
+        with patch.object(ChromaClient, "_build_schema", return_value={"sentinel": 1}):
+            chroma.get_collection()
+
+        assert chroma.modes == {"vector", "lexical", "hybrid"}
+        assert chroma.ranking == {"cosine", "bm25"}
+
+    def test_index_probe_treats_missing_schema_as_not_ready(self):
+        """No schema attr / None schema -> downgrade (vector is always safe)."""
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        assert ChromaClient._has_bm25_index(SimpleNamespace(schema=None)) is False
+        assert ChromaClient._has_bm25_index(object()) is False  # no .schema attr
+        # Key present but sparse index disabled -> not usable.
+        assert (
+            ChromaClient._has_bm25_index(
+                SimpleNamespace(schema=_fake_schema(has_bm25=True, enabled=False))
+            )
+            is False
+        )
+
+
+# ---------------------------------------------------------------------------
+# Chroma Cloud hosted embedding-function repair
+# ---------------------------------------------------------------------------
+
+
+class _FakeModel:
+    def __init__(self, cfg):
+        self.configuration_json = cfg
+
+
+class _FakeCloudCollection:
+    """Minimal stand-in for a chromadb Collection's EF-relevant internals."""
+
+    def __init__(self, cfg, ef=None):
+        self._model = _FakeModel(cfg)
+        self._embedding_function = ef
+
+
+_QWEN_CFG = {
+    "embedding_function": {
+        "name": "chroma-cloud-qwen",
+        "model": "Qwen/Qwen3-Embedding-0.6B",
+        "task": None,
+    }
+}
+
+_QWEN_EF_PATH = (
+    "chromadb.utils.embedding_functions."
+    "chroma_cloud_qwen_embedding_function.ChromaCloudQwenEmbeddingFunction"
+)
+
+
+class TestCloudQwenEmbeddingRepair:
+    """chromadb's build_from_config rejects chroma-cloud-qwen's task=None config
+    (through >=1.5.9), breaking every text query. _repair_cloud_embedding_function
+    attaches a directly-built EF so _embed uses it instead of the broken loader.
+    """
+
+    def test_attaches_ef_for_cloud_qwen_config(self):
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        col = _FakeCloudCollection(_QWEN_CFG)
+        sentinel = object()
+        with patch(_QWEN_EF_PATH, return_value=sentinel) as ef_cls:
+            ChromaClient._repair_cloud_embedding_function(col)
+        assert col._embedding_function is sentinel
+        # task=None must be forwarded (the value chromadb chokes on).
+        assert ef_cls.call_args.kwargs["task"] is None
+
+    def test_repairs_over_default_embedding_function(self):
+        """A DefaultEmbeddingFunction means 'unresolved' — chromadb ignores it."""
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        class DefaultEmbeddingFunction:  # name is what the guard checks
+            pass
+
+        col = _FakeCloudCollection(_QWEN_CFG, ef=DefaultEmbeddingFunction())
+        sentinel = object()
+        with patch(_QWEN_EF_PATH, return_value=sentinel):
+            ChromaClient._repair_cloud_embedding_function(col)
+        assert col._embedding_function is sentinel
+
+    def test_leaves_real_embedding_function_untouched(self):
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        real_ef = object()  # type name != DefaultEmbeddingFunction
+        col = _FakeCloudCollection(_QWEN_CFG, ef=real_ef)
+        with patch(_QWEN_EF_PATH, return_value=object()):
+            ChromaClient._repair_cloud_embedding_function(col)
+        assert col._embedding_function is real_ef
+
+    def test_ignores_non_cloud_qwen_config(self):
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        col = _FakeCloudCollection({"embedding_function": {"name": "openai"}})
+        ChromaClient._repair_cloud_embedding_function(col)
+        assert col._embedding_function is None
+
+    def test_guarded_against_broken_internals(self):
+        """Any deviation in chromadb internals is a no-op, never a crash."""
+        from benchmax.rag.corpus.chroma.client import ChromaClient
+
+        class _Boom:
+            @property
+            def configuration_json(self):
+                raise RuntimeError("internals changed")
+
+        col = _FakeCloudCollection({})
+        col._model = _Boom()
+        ChromaClient._repair_cloud_embedding_function(col)  # must not raise
+        assert col._embedding_function is None
+
+
+# ---------------------------------------------------------------------------
+# search_related / search_text honor and clamp the requested mode
+# ---------------------------------------------------------------------------
+
+
+class TestSearchModeClamp:
+    def test_explicit_vector_mode_forces_vector_path(self):
+        """mode='vector' uses the query() vector path even when hybrid is available.
+
+        Lets the QA metadata-linker force vector search to recover from a
+        lexical/hybrid failure without depending on capability state.
+        """
+        col = FakeCollection(
+            query_results_per_call=[make_query_result(["v"])],
+            count=5,
+        )
+        source = make_source(col, files=NoFileFakeFiles())
+        source._chroma.modes = {"vector", "lexical", "hybrid"}
+        source._chroma.search_api = True
+
+        primary = Chunk(content="src", metadata=())
+        results = source.search_related(primary, ["q"], top_k=5, mode="vector")
+        assert results[0]["chunk"].content == "v"
+        # Vector path went through the legacy query() API, not collection.search().
+        assert col._last_query_kwargs["query_texts"] == ["q"]
+
+    def test_downgraded_modes_clamp_stale_hybrid_request_to_vector(self):
+        """A stale mode='hybrid' is clamped to vector when the index is gone.
+
+        Mirrors the linker passing best_search_mode='hybrid' against a
+        collection whose capabilities were downgraded to vector-only.
+        """
+        col = FakeCollection(
+            query_results_per_call=[make_query_result(["v"])],
+            count=5,
+        )
+        source = make_source(col, files=NoFileFakeFiles())
+        source._chroma.modes = {"vector"}  # downgraded
+        source._chroma.search_api = True
+
+        primary = Chunk(content="src", metadata=())
+        results = source.search_related(primary, ["q"], top_k=5, mode="hybrid")
+        assert results[0]["chunk"].content == "v"
+
+    def test_search_related_refreshes_modes_from_client(self):
+        """search_related re-syncs _search_capabilities from _chroma.modes.
+
+        A source whose capabilities still advertise hybrid (frozen at
+        construction) but whose client was downgraded must not attempt hybrid.
+        """
+        col = FakeCollection(
+            query_results_per_call=[make_query_result(["v"])],
+            count=5,
+        )
+        source = make_source(col, files=NoFileFakeFiles())
+        # Stale capabilities say hybrid; client is the source of truth (vector).
+        source._search_capabilities["modes"] = {"vector", "lexical", "hybrid"}
+        source._chroma.modes = {"vector"}
+        source._chroma.search_api = True
+
+        primary = Chunk(content="src", metadata=())
+        results = source.search_related(primary, ["q"], top_k=5)
+        assert results[0]["chunk"].content == "v"
+        assert source._search_capabilities["modes"] == {"vector"}
 
 
 # ---------------------------------------------------------------------------

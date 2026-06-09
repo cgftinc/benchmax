@@ -150,6 +150,17 @@ class ChromaClient:
                 self.modes = {"vector"}
                 self.ranking = {"cosine"}
 
+        # get_or_create_collection returns a PRE-EXISTING collection as-is: when
+        # one already exists (e.g. linked from Chroma Cloud, built outside
+        # benchmax), our BM25 schema is never applied and no exception fires. The
+        # collection then has no `bm25_embedding` sparse index, so any lexical /
+        # hybrid query raises "key not found in schema". Verify the index is
+        # actually present and downgrade to vector-only when it isn't, so the
+        # advertised capabilities match what the collection can serve.
+        if created_with_schema and not self._has_bm25_index(self._collection):
+            self.modes = {"vector"}
+            self.ranking = {"cosine"}
+
         if not created_with_schema:
             metadata: dict[str, str] = {}
             if self.distance_metric:
@@ -158,7 +169,93 @@ class ChromaClient:
                 kwargs["metadata"] = metadata
             self._collection = client.get_or_create_collection(**kwargs)
 
+        # When the caller supplies no embed_fn we rely on the collection's own
+        # (server-side) embedding function. Repair it if chromadb can't.
+        if self.embed_fn is None:
+            self._repair_cloud_embedding_function(self._collection)
+
         return self._collection
+
+    @staticmethod
+    def _repair_cloud_embedding_function(collection: Any) -> None:
+        """Attach a working EF when chromadb can't rebuild a Cloud hosted one.
+
+        A Chroma Cloud collection embedded with the hosted ``chroma-cloud-qwen``
+        function stores ``task=None`` in its config, but chromadb's
+        ``build_from_config`` asserts ``task`` is required and raises
+        "Could not build embedding function chroma-cloud-qwen" on *any* text
+        query (legacy ``query()`` and the Search API alike). The bug is present
+        through at least chromadb 1.5.9 (latest at time of writing), so a version
+        bump is not a fix.
+
+        ``Collection._embed`` prefers an explicitly-set ``_embedding_function``
+        over the config-loaded one, so we build the EF directly (its constructor
+        accepts ``task=None``) and attach it — sidestepping the broken loader.
+        The embedding itself still happens server-side at embed.trychroma.com, so
+        results match what the collection was indexed with. Reads the raw
+        ``configuration_json`` dict rather than the ``configuration`` property,
+        because the property is exactly what triggers the failing rebuild.
+
+        Best-effort and fully guarded: any deviation in chromadb internals or a
+        missing API key leaves the collection untouched (current behavior).
+        """
+        # chromadb sets _embedding_function to a DefaultEmbeddingFunction when no
+        # EF is supplied, and its _embed() ignores that default (falling through
+        # to the config loader). So only a real, non-default EF means "already
+        # resolved" — don't override that.
+        existing = getattr(collection, "_embedding_function", None)
+        if existing is not None and type(existing).__name__ != "DefaultEmbeddingFunction":
+            return
+        try:
+            ef_config = (collection._model.configuration_json or {}).get(
+                "embedding_function"
+            ) or {}
+        except Exception:
+            return
+        if ef_config.get("name") != "chroma-cloud-qwen":
+            return
+        try:
+            from chromadb.utils.embedding_functions.chroma_cloud_qwen_embedding_function import (
+                ChromaCloudQwenEmbeddingFunction,
+                ChromaCloudQwenEmbeddingModel,
+            )
+
+            raw_model = ef_config.get("model")
+            model = (
+                ChromaCloudQwenEmbeddingModel(raw_model)
+                if raw_model
+                else ChromaCloudQwenEmbeddingModel.QWEN3_EMBEDDING_0p6B
+            )
+            collection._embedding_function = ChromaCloudQwenEmbeddingFunction(
+                model=model,
+                task=ef_config.get("task"),
+                api_key_env_var=ef_config.get("api_key_env_var", "CHROMA_API_KEY"),
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    def _has_bm25_index(collection: Any) -> bool:
+        """True when *collection* exposes a usable BM25 sparse index.
+
+        Mirrors Chroma's own query-time gate
+        (``CollectionCommon._embed_knn_string_queries``): a string query against
+        ``BM25_KEY`` only succeeds when the key is present in the schema with an
+        enabled sparse-vector index that carries an embedding function. Any
+        introspection failure is treated as "not ready" — vector-only is always
+        safe, whereas falsely advertising BM25 surfaces as a hard error mid-run.
+        """
+        try:
+            schema = collection.schema
+        except Exception:
+            return False
+        if schema is None or BM25_KEY not in getattr(schema, "keys", {}):
+            return False
+        sparse = getattr(schema.keys[BM25_KEY], "sparse_vector", None)
+        index = getattr(sparse, "sparse_vector_index", None)
+        if index is None or not getattr(index, "enabled", False):
+            return False
+        return getattr(getattr(index, "config", None), "embedding_function", None) is not None
 
     def _build_schema(self) -> Any:
         from chromadb import Schema, SparseVectorIndexConfig

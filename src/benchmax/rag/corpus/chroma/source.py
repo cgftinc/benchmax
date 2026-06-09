@@ -564,7 +564,7 @@ class ChromaChunkSource:
 
         Picks the best available mode: hybrid > lexical > vector.
         """
-        modes = self._search_capabilities["modes"]
+        modes = self._current_modes()
         if "hybrid" in modes:
             vector = self.embed_query(text_query)
             return self.search(
@@ -597,6 +597,19 @@ class ChromaChunkSource:
             )
         )
 
+    def _current_modes(self) -> set[SearchMode]:
+        """Return live search modes, refreshing capabilities after lazy init.
+
+        ``get_collection()`` is cached/idempotent; calling it ensures any
+        capability downgrade (e.g. a collection lacking a BM25 index) has been
+        applied before we read modes. ``_search_capabilities`` is frozen at
+        construction — before that lazy init — so re-sync it from the client.
+        """
+        self._chroma.get_collection()
+        self._search_capabilities["modes"] = cast(set[SearchMode], self._chroma.modes)
+        self._search_capabilities["ranking"] = set(self._chroma.ranking)
+        return self._search_capabilities["modes"]
+
     def search_related(
         self,
         source: Chunk,
@@ -625,10 +638,25 @@ class ChromaChunkSource:
         source_file = self._files.chunk_file_path(source) if file_aware else None
         source_idx = self._files.chunk_index(source) if file_aware else None
 
-        # Pick best mode
-        modes = self._search_capabilities["modes"]
-        use_hybrid = "hybrid" in modes
-        use_lexical = "lexical" in modes
+        # Refresh capabilities before choosing a mode: the backing collection may
+        # lack a BM25 index, in which case modes was downgraded to vector-only.
+        modes = self._current_modes()
+
+        # Pick mode. An explicit `mode` restricts to that strategy (clamped to
+        # what the collection supports); mode=None keeps the "best available"
+        # default. Clamping is what lets callers (e.g. the QA metadata-linker)
+        # force vector search to recover from a lexical/hybrid failure.
+        if mode == "vector":
+            use_hybrid = use_lexical = False
+        elif mode == "lexical":
+            use_hybrid = False
+            use_lexical = "lexical" in modes
+        elif mode == "hybrid":
+            use_hybrid = "hybrid" in modes
+            use_lexical = False
+        else:  # None or unrecognized -> best available
+            use_hybrid = "hybrid" in modes
+            use_lexical = "lexical" in modes
 
         # Batch-embed all queries when embed_fn available and vectors needed
         vectors: list[list[float]] | None = None
