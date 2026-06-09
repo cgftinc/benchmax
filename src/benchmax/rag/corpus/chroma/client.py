@@ -150,6 +150,17 @@ class ChromaClient:
                 self.modes = {"vector"}
                 self.ranking = {"cosine"}
 
+        # get_or_create_collection returns a PRE-EXISTING collection as-is: when
+        # one already exists (e.g. linked from Chroma Cloud, built outside
+        # benchmax), our BM25 schema is never applied and no exception fires. The
+        # collection then has no `bm25_embedding` sparse index, so any lexical /
+        # hybrid query raises "key not found in schema". Verify the index is
+        # actually present and downgrade to vector-only when it isn't, so the
+        # advertised capabilities match what the collection can serve.
+        if created_with_schema and not self._has_bm25_index(self._collection):
+            self.modes = {"vector"}
+            self.ranking = {"cosine"}
+
         if not created_with_schema:
             metadata: dict[str, str] = {}
             if self.distance_metric:
@@ -159,6 +170,29 @@ class ChromaClient:
             self._collection = client.get_or_create_collection(**kwargs)
 
         return self._collection
+
+    @staticmethod
+    def _has_bm25_index(collection: Any) -> bool:
+        """True when *collection* exposes a usable BM25 sparse index.
+
+        Mirrors Chroma's own query-time gate
+        (``CollectionCommon._embed_knn_string_queries``): a string query against
+        ``BM25_KEY`` only succeeds when the key is present in the schema with an
+        enabled sparse-vector index that carries an embedding function. Any
+        introspection failure is treated as "not ready" — vector-only is always
+        safe, whereas falsely advertising BM25 surfaces as a hard error mid-run.
+        """
+        try:
+            schema = collection.schema
+        except Exception:
+            return False
+        if schema is None or BM25_KEY not in getattr(schema, "keys", {}):
+            return False
+        sparse = getattr(schema.keys[BM25_KEY], "sparse_vector", None)
+        index = getattr(sparse, "sparse_vector_index", None)
+        if index is None or not getattr(index, "enabled", False):
+            return False
+        return getattr(getattr(index, "config", None), "embedding_function", None) is not None
 
     def _build_schema(self) -> Any:
         from chromadb import Schema, SparseVectorIndexConfig
