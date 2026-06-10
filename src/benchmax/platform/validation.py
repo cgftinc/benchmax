@@ -7,6 +7,7 @@ the env class contract matches what the trainer expects.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import math
 import tempfile
@@ -578,6 +579,41 @@ def _run_local_checks(
             from benchmax.bundle import unregistered_local_refs
 
             risky = unregistered_local_refs(cloudpickle.dumps(env_class))
+            # Mirror dump_bundle's auto_local_modules: import + pickle-by-value
+            # any local refs the user didn't list, so validation reflects what
+            # the bundle will actually contain. Only genuinely unimportable refs
+            # (which the trainer also couldn't load) remain to be flagged.
+            auto: list[ModuleType] = []
+            if risky:
+                seen: set[str] = set()
+                try:
+                    for _ in range(10):
+                        pending = [
+                            m
+                            for m in unregistered_local_refs(cloudpickle.dumps(env_class))
+                            if m not in seen
+                        ]
+                        if not pending:
+                            break
+                        new_mods: list[ModuleType] = []
+                        for name in pending:
+                            seen.add(name)
+                            try:
+                                new_mods.append(importlib.import_module(name))
+                            except Exception:
+                                pass
+                        if not new_mods:
+                            break
+                        for mod in new_mods:
+                            cloudpickle.register_pickle_by_value(mod)
+                            auto.append(mod)
+                    risky = unregistered_local_refs(cloudpickle.dumps(env_class))
+                finally:
+                    for mod in auto:
+                        try:
+                            cloudpickle.unregister_pickle_by_value(mod)
+                        except Exception:
+                            pass
             if risky:
                 print(
                     f"  \u2717 {env_class.__name__}: missing "
@@ -589,7 +625,13 @@ def _run_local_checks(
                 )
                 failed += 1
             else:
-                print("  \u2713 no unregistered local-module references")
+                if auto:
+                    names = ", ".join(sorted(m.__name__ for m in auto))
+                    print(
+                        f"  \u2713 auto-bundled local module(s): {names} "
+                    )
+                else:
+                    print("  \u2713 no unregistered local-module references")
                 passed += 1
         except Exception as exc:
             print(f"  \u2717 local-modules check failed: {type(exc).__name__}: {exc}")
