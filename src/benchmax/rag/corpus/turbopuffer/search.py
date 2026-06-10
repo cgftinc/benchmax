@@ -30,7 +30,12 @@ class TpufSearch:
     Args:
         namespace: Turbopuffer namespace name.
         region: Turbopuffer region (default ``"aws-us-east-1"``).
-        content_attr: List of BM25-indexed content fields.
+        content_attr: Low-level escape hatch — list of BM25-indexed content
+            fields for multi-field schemas. Prefer ``content_field``.
+        content_field: Turbopuffer attribute holding the chunk text — the
+            canonical single-column param. Must be BM25-indexed for lexical
+            search. Raises if ``content_attr`` is also supplied with a
+            different value.
         embed_fn: Custom embedding function. Required for vector/hybrid.
         vector_attr: Vector attribute name (default ``"vector"``).
         distance_metric: Distance metric (default ``"cosine_distance"``).
@@ -48,11 +53,14 @@ class TpufSearch:
         embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
         vector_attr: str = "vector",
         distance_metric: str = "cosine_distance",
+        content_field: str | None = None,
         token_provider: str | TokenProvider | None = None,
     ) -> None:
+        from .namespace import resolve_content_attr
+
         self._namespace = namespace
         self._region = region
-        self._content_attr = content_attr
+        self._content_attr = resolve_content_attr(content_attr, content_field)
         self._embed_fn = embed_fn
         self._vector_attr = vector_attr
         self._distance_metric = distance_metric
