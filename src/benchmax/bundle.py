@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import inspect
 import io
 import json
@@ -76,6 +77,7 @@ def dump_bundle(
     pip_dependencies: list[str] | None = None,
     local_modules: list[ModuleType] | None = None,
     env_class_source: str | None = None,
+    auto_local_modules: bool = True,
 ) -> Bundle:
     """Pickle ``(env_class, constructor_args)`` and stamp metadata.
 
@@ -90,6 +92,10 @@ def dump_bundle(
             recover it — e.g. a class produced by ``exec()`` into an in-memory
             namespace, which has no source file on disk. When ``None``
             (default), source is introspected from ``env_class``.
+        auto_local_modules: When True (default), any local module the pickle
+            references but that wasn't passed in ``local_modules`` is imported
+            and pickled by value automatically (a warning names them). When
+            False, such a reference raises ``BundlingError`` instead.
 
     Raises:
         BundlingError: bad env_class, cloudpickle failure, or pickle references
@@ -123,6 +129,46 @@ def dump_bundle(
                     cloudpickle.unregister_pickle_by_value(mod)
                 except Exception:
                     pass
+
+    if auto_local_modules and _unregistered_local_refs(pickled):
+        # Import each referenced local module and re-dump with it pickled by
+        # value. Loop because a by-value module can surface further local refs;
+        # registrations accumulate (and are torn down once at the end) so an
+        # earlier module stays by-value while we resolve the ones it pulled in.
+        seen: set[str] = {m.__name__ for m in local_modules}
+        registered: list[ModuleType] = []
+        with _BUNDLE_LOCK:
+            try:
+                for _ in range(10):
+                    pending = [
+                        m for m in _unregistered_local_refs(pickled) if m not in seen
+                    ]
+                    if not pending:
+                        break
+                    new_mods: list[ModuleType] = []
+                    for name in pending:
+                        seen.add(name)  # unimportable names fall through to the guard
+                        try:
+                            new_mods.append(importlib.import_module(name))
+                        except Exception:
+                            pass
+                    if not new_mods:
+                        break
+                    logger.warning(
+                        "[bundle] %s: auto-bundling local module(s): %s ",
+                        env_class.__name__,
+                        ", ".join(sorted(m.__name__ for m in new_mods)),
+                    )
+                    for mod in new_mods:
+                        cloudpickle.register_pickle_by_value(mod)
+                        registered.append(mod)
+                    pickled = cloudpickle.dumps((env_class, constructor_args))
+            finally:
+                for mod in registered:
+                    try:
+                        cloudpickle.unregister_pickle_by_value(mod)
+                    except Exception:
+                        pass
 
     risky = _unregistered_local_refs(pickled)
     if risky:
@@ -259,6 +305,15 @@ def _referenced_modules(pickled: bytes) -> set[str]:
     # Hooks find_class so we see every (module, name) the unpickler would import —
     # i.e. exactly what'd raise ModuleNotFoundError on a fresh interpreter. The stub
     # lets unpickling proceed past missing classes so we collect every ref.
+    #
+    # find_class alone has a blind spot: a bare ``import foo`` that leaves a
+    # module *object* in the env's globals is pickled as
+    # ``cloudpickle.subimport("foo")`` — the module name is a REDUCE argument,
+    # not a find_class path, so we'd only see ``cloudpickle.cloudpickle`` (which
+    # looks installed) and miss ``foo``. We shim subimport to record its arg and
+    # return a stub instead of importing, so a missing module is captured rather
+    # than aborting the whole load early. (``dynamic_subimport`` is by-value /
+    # self-contained — leave it to the real find_class so we don't flag it.)
     refs: set[str] = set()
 
     class _Stub:
@@ -271,9 +326,28 @@ def _referenced_modules(pickled: bytes) -> set[str]:
         def __reduce__(self) -> tuple:
             return (type(self), ())
 
+    def _recording_subimport(name: str, *a: Any, **kw: Any) -> ModuleType:
+        refs.add(name)
+        return ModuleType(str(name))
+
+    def _noop_setstate(obj: Any, *a: Any, **kw: Any) -> Any:
+        # cloudpickle's _make_skeleton_class resolves the class_tracker_id back
+        # to the *live* class (it was tracked when env_class was dumped), so the
+        # real ``_class_setstate``/``_function_setstate`` would setattr the
+        # reconstructed (stub-globals) members onto the live class/function —
+        # mutating the caller's class mid-bundle and poisoning any later dump.
+        # We only need the refs from ``state``, which are already recorded while
+        # it's unpickled; the setter itself is a no-op here.
+        return obj
+
     class _Recorder(pickle.Unpickler):
         def find_class(self, module: str, name: str) -> Any:
             refs.add(module)
+            if module.startswith("cloudpickle"):
+                if name == "subimport":
+                    return _recording_subimport
+                if name in ("_class_setstate", "_function_setstate"):
+                    return _noop_setstate
             try:
                 return super().find_class(module, name)
             except Exception:
