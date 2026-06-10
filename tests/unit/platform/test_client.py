@@ -61,19 +61,49 @@ def test_launch_training_run_posts_to_train_runs_launch():
     assert "/train/runs/launch" in captured["url"]
 
 
+def test_launch_training_run_surfaces_server_warnings():
+    """Soft-cap / OOM-risk warnings come back in the response and are raised
+    as Python warnings so they're visible in notebooks/REPL."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "runId": "run-warn",
+                "warnings": [
+                    '"max_rollout_len" = 32000 exceeds soft cap of 16384; proceed with caution.'
+                ],
+            },
+        )
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.warns(UserWarning, match=r"max_rollout_len.*16384"):
+        run_id = trainer.launch_training_run(
+            training_run_type="simple",
+            env_cls_path="x/env-cls.pkl",
+            env_metadata_path="x/env-metadata.json",
+            train_dataset_path="x/train.jsonl",
+            eval_dataset_path="x/eval.jsonl",
+        )
+    assert run_id == "run-warn"
+
+
 def test_launch_training_run_sends_training_run_type_in_body():
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         import json
+
         captured["body"] = json.loads(request.content.decode())
         return httpx.Response(200, json={"runId": "r1"})
 
     trainer = _make_trainer_with_transport(handler)
     trainer.launch_training_run(
         training_run_type="simple-r5",
-        env_cls_path="a", env_metadata_path="b",
-        train_dataset_path="c", eval_dataset_path="d",
+        env_cls_path="a",
+        env_metadata_path="b",
+        train_dataset_path="c",
+        eval_dataset_path="d",
     )
 
     assert captured["body"]["type"] == "simple-r5"
@@ -82,15 +112,21 @@ def test_launch_training_run_sends_training_run_type_in_body():
 
 def test_launch_training_run_reads_run_id_not_experiment_id():
     """Regression guard: server returns {runId}, not {experimentId}."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"runId": "the-id"})
 
     trainer = _make_trainer_with_transport(handler)
-    assert trainer.launch_training_run(
-        training_run_type="simple",
-        env_cls_path="a", env_metadata_path="b",
-        train_dataset_path="c", eval_dataset_path="d",
-    ) == "the-id"
+    assert (
+        trainer.launch_training_run(
+            training_run_type="simple",
+            env_cls_path="a",
+            env_metadata_path="b",
+            train_dataset_path="c",
+            eval_dataset_path="d",
+        )
+        == "the-id"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -109,11 +145,11 @@ _SAMPLE_LAUNCH_ARGS = [
         "min": 0,
     },
     {
-        "name": "max_response_len",
-        "label": "max response length",
+        "name": "max_rollout_len",
+        "label": "max rollout length",
         "type": "integer",
         "required": False,
-        "description": "Cap on generated tokens per rollout.",
+        "description": "Total tokens generated across the whole rollout.",
         "warnAbove": 16384,
     },
     {
@@ -172,7 +208,7 @@ def test_print_launch_args_prints_each_spec(capsys):
 
     out = capsys.readouterr().out
     assert "learning_rate" in out
-    assert "max_response_len" in out
+    assert "max_rollout_len" in out
     assert "warn_above=16384" in out
     assert "Qwen/Qwen3-4B-Instruct-2507" in out
 
@@ -228,7 +264,8 @@ def test_rollout_client_targets_platform_service_v1(monkeypatch):
     with pytest.raises(RolloutServerError):
         client.stream_rollout(
             raw_example={"prompt": "hi"},
-            env_cls_path="a", env_metadata_path="b",
+            env_cls_path="a",
+            env_metadata_path="b",
         )
 
     assert captured["url"] == "https://api.castform.com/v1/rollout/stream"
@@ -248,7 +285,8 @@ def test_stream_rollout_refuses_to_forward_platform_key_to_third_party_llm(monke
     with pytest.raises(ValueError, match="third-party host"):
         client.stream_rollout(
             raw_example={"prompt": "hi"},
-            env_cls_path="a", env_metadata_path="b",
+            env_cls_path="a",
+            env_metadata_path="b",
             llm_base_url="https://api.openai.com/v1",  # third-party
             llm_api_key="",  # missing — should raise
         )
@@ -265,25 +303,30 @@ def test_stream_rollout_allows_platform_key_for_platform_llm_endpoint(monkeypatc
     # pre-flight key-forwarding check passes; we raise inside the context to
     # avoid exercising the SSE loop in this test.
     import httpx as httpx_mod
+
     captured: dict[str, Any] = {}
 
     class _StubCM:
         def __init__(self, payload):
             captured["payload"] = payload
+
         def __enter__(self):
             raise RuntimeError("stub: skipping SSE loop")
+
         def __exit__(self, *a):
             return False
 
     monkeypatch.setattr(
-        httpx_mod, "stream",
+        httpx_mod,
+        "stream",
         lambda method, url, json=None, **kw: _StubCM(json),
     )
 
     with pytest.raises(RuntimeError, match="stub"):
         client.stream_rollout(
             raw_example={"prompt": "hi"},
-            env_cls_path="a", env_metadata_path="b",
+            env_cls_path="a",
+            env_metadata_path="b",
             # llm_base_url=None → resolves to platform default → key forwarding allowed
         )
 
@@ -426,7 +469,8 @@ def test_stream_rollout_raises_authentication_error_on_401(monkeypatch):
     with pytest.raises(AuthenticationError) as exc_info:
         client.stream_rollout(
             raw_example={"prompt": "hi"},
-            env_cls_path="a", env_metadata_path="b",
+            env_cls_path="a",
+            env_metadata_path="b",
         )
     assert exc_info.value.status_code == 401
 
@@ -441,7 +485,8 @@ def test_stream_rollout_raises_authentication_error_on_403(monkeypatch):
     with pytest.raises(AuthenticationError) as exc_info:
         client.stream_rollout(
             raw_example={"prompt": "hi"},
-            env_cls_path="a", env_metadata_path="b",
+            env_cls_path="a",
+            env_metadata_path="b",
         )
     assert exc_info.value.status_code == 403
 
@@ -454,7 +499,8 @@ def test_stream_rollout_raises_rollout_not_found_on_404(monkeypatch):
     with pytest.raises(RolloutNotFound):
         client.stream_rollout(
             raw_example={"prompt": "hi"},
-            env_cls_path="a", env_metadata_path="b",
+            env_cls_path="a",
+            env_metadata_path="b",
         )
 
 
@@ -466,7 +512,8 @@ def test_stream_rollout_raises_rollout_server_error_on_5xx(monkeypatch):
     with pytest.raises(RolloutServerError):
         client.stream_rollout(
             raw_example={"prompt": "hi"},
-            env_cls_path="a", env_metadata_path="b",
+            env_cls_path="a",
+            env_metadata_path="b",
         )
 
 
@@ -477,15 +524,19 @@ def test_stream_rollout_raises_rollout_server_error_on_5xx(monkeypatch):
 
 def test_validation_result_is_bool_castable():
     assert bool(ValidationResult(examples=[ExampleValidation(0, True)])) is True
-    assert bool(ValidationResult(examples=[ExampleValidation(0, False, "err")])) is False
+    assert (
+        bool(ValidationResult(examples=[ExampleValidation(0, False, "err")])) is False
+    )
     assert bool(ValidationResult(examples=[])) is True  # vacuously true
 
 
 def test_validation_result_ok_property():
-    r = ValidationResult(examples=[
-        ExampleValidation(0, True),
-        ExampleValidation(1, False, "boom"),
-    ])
+    r = ValidationResult(
+        examples=[
+            ExampleValidation(0, True),
+            ExampleValidation(1, False, "boom"),
+        ]
+    )
     assert r.ok is False
     assert r.examples[1].error == "boom"
 

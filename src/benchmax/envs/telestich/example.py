@@ -647,10 +647,10 @@ if __name__ == "__main__":
             eval_dataset_path=uploaded.eval_dataset_path,
             name=run_name,
             # num_epochs: passes over the train set (platform default is 5).
-            # max_response_len 3000: a brief reason + 1-2 tool rounds + poem fits well
+            # max_rollout_len 3000: a brief reason + 1-2 tool rounds + poem fits well
             # under this; lowered from 4000 to cut off in-head enumeration rambles
             # sooner (they truncate to a 0-reward anyway).
-            launcher_args={"model": MODEL, "max_response_len": 3000, "num_epochs": 10},
+            launcher_args={"model": MODEL, "max_rollout_len": 3000, "num_epochs": 10},
         )
 
     print(f"\n✓ Launched run_id={run_id}")

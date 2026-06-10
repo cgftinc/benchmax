@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import textwrap
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -404,7 +405,7 @@ class TrainerClient:
             eval_dataset_path: Path to the evaluation dataset
             name: Optional name for the training run
             launcher_args: Extra launcher args forwarded to the server
-                (e.g. {"max_response_len": 4000}). The 4 required paths
+                (e.g. {"max_rollout_len": 4000}). The 4 required paths
                 above always take precedence.
 
         Returns:
@@ -431,8 +432,11 @@ class TrainerClient:
         )
         self._handle_response_errors(response)
         body = response.json()
+        # Surface soft-cap / OOM-risk warnings via the warnings module (shown by
+        # default in notebooks/REPL) — a bare logger.warning is swallowed unless
+        # the caller configured logging.
         for warning in body.get("warnings", []) or []:
-            logger.warning("launch warning: %s", warning)
+            warnings.warn(f"launch warning: {warning}", stacklevel=2)
         return body["runId"]
 
     def list_launch_args(self) -> list[LaunchArgSpec]:
