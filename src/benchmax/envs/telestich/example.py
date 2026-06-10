@@ -63,6 +63,8 @@ CONCURRENCY = 15
 # pool) server-side. Supported: "Qwen/Qwen3.5-4B" (gpu4) or "Qwen/Qwen3.5-35B-A3B"
 # (gpu8). Override via TELESTICH_MODEL.
 MODEL = os.environ.get("TELESTICH_MODEL", "Qwen/Qwen3.5-4B")
+# Run name — defaults to a unique telestich-full-<uuid>. Override via TELESTICH_RUN_NAME.
+RUN_NAME = os.environ.get("TELESTICH_RUN_NAME", "")
 
 # (model, weight). Weights reflect observed reliability on our checks:
 # - Both grok models leak banned example words and rubber-stamp the CoT self-check.
@@ -558,12 +560,15 @@ def get_dataset():
 if __name__ == "__main__":
     import uuid
 
+    from benchmax.platform import ensure_session
     from benchmax.platform.client import TrainerClient
     from benchmax.platform.training_run import upload_training_run
     from benchmax.platform.validation import validate_env
 
-    if not API_KEY:
-        raise SystemExit("Set CASTFORM_API_KEY before running this example.")
+    # Device-auth session bootstrap: browser login if no credential resolves.
+    # After this the platform bearer comes from ~/.castform — no API key needed,
+    # so we pass api_key="" to the platform calls below (resolves via the seam).
+    ensure_session()
 
     print(f"Platform URL: {BASE_URL}")
     print(f"LLM URL:      {LLM_BASE_URL}\n")
@@ -603,7 +608,7 @@ if __name__ == "__main__":
         eval_dataset=eval_data[:2],
         local_modules=local_modules,
         pip_dependencies=pip_dependencies,
-        api_key=API_KEY,
+        api_key="",  # session bearer via ensure_session()
         base_url=BASE_URL,
         llm_base_url=LLM_BASE_URL,
         llm_api_key="",
@@ -614,14 +619,14 @@ if __name__ == "__main__":
         )
 
     # 3. Bundle the env class and upload everything to platform storage.
-    run_name = f"telestich-full-{uuid.uuid4().hex[:8]}"
+    run_name = RUN_NAME or f"telestich-full-{uuid.uuid4().hex[:8]}"
     print(f"\nUploading bundle + datasets as {run_name!r} ...")
     uploaded = upload_training_run(
         env_class=TelestichEnv,
         train_dataset=train_data,
         eval_dataset=eval_data,
         run_name=run_name,
-        api_key=API_KEY,
+        api_key="",  # session bearer via ensure_session()
         base_url=BASE_URL,
         local_modules=local_modules,
         constructor_args=constructor_args,
@@ -638,7 +643,7 @@ if __name__ == "__main__":
     # 4. Launch the training run. training_run_type="simple" + the `model` arg select
     #    the trainer YAML/pool server-side (Qwen3.5-4B→gpu4, Qwen3.5-35B-A3B→gpu8).
     print(f"\nLaunching training run (model={MODEL}) ...")
-    with TrainerClient(api_key=API_KEY, base_url=BASE_URL) as trainer:
+    with TrainerClient(api_key="", base_url=BASE_URL) as trainer:
         run_id = trainer.launch_training_run(
             training_run_type="simple",
             env_cls_path=uploaded.env_cls_path,
