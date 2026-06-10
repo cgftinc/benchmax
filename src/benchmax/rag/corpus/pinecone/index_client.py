@@ -80,7 +80,9 @@ class PineconeIndexClient:
         self._api_key = api_key
         self._index_name = index_name
         self._index_host = index_host
-        self._namespace = namespace
+        # Platform codegen may pass None for an unset namespace; Pinecone's
+        # default namespace is "".
+        self._namespace = namespace or ""
         self._embed_model = embed_model
         self.embed_fn = embed_fn or self._build_pinecone_embed_fn()
         self._field_mapping = field_mapping or dict(DEFAULT_FIELD_MAPPING)
@@ -91,6 +93,8 @@ class PineconeIndexClient:
         self._known_ids: list[str] | None = None
         # Cached vector dimension (detected on first embed or describe_index).
         self._vector_dim: int | None = None
+        # Cached index vector type ("dense" | "sparse"), probed lazily.
+        self._vector_type: str | None = None
 
     def _build_pinecone_embed_fn(self) -> Callable[[list[str]], list[list[float]]]:
         """Build an embed_fn using Pinecone's hosted Inference API.
@@ -157,6 +161,35 @@ class PineconeIndexClient:
                 self._index = pc.Index(self._index_name)
         return self._index
 
+    def vector_type(self) -> str:
+        """Return the index vector type, ``"dense"`` or ``"sparse"``.
+
+        Probes the index via ``describe_index_stats`` on first call and
+        caches the result.
+        """
+        if self._vector_type is None:
+            index = self._get_index()
+            stats = index.describe_index_stats()
+            self._vector_type = getattr(stats, "vector_type", None) or "dense"
+        return self._vector_type
+
+    def namespace_vector_count(self) -> int:
+        """Return the vector count for this client's namespace.
+
+        Scoped to the namespace, NOT the index-wide total — an index-wide
+        count would disagree with what list/fetch/query in this namespace
+        can actually see.  The SDK keys the default namespace as
+        ``"__default__"`` (the REST API uses ``""``).
+        """
+        stats = self._get_index().describe_index_stats()
+        namespaces = getattr(stats, "namespaces", None) or {}
+        ns_stats = namespaces.get(self._namespace or "__default__")
+        if ns_stats is None and not self._namespace:
+            ns_stats = namespaces.get("")
+        if ns_stats is None:
+            return 0
+        return int(getattr(ns_stats, "vector_count", 0) or 0)
+
     def zero_vector(self) -> list[float]:
         """Return a zero-vector with the correct dimension for this index.
 
@@ -168,6 +201,12 @@ class PineconeIndexClient:
             index = self._get_index()
             stats = index.describe_index_stats()
             self._vector_dim = stats.dimension
+        if self._vector_dim is None:
+            # Sparse indexes have no fixed dimension.
+            raise ValueError(
+                f"Pinecone index '{self._index_name}' has no dimension — it is "
+                "a sparse index, which has no dense zero-vector."
+            )
         return [0.0] * self._vector_dim
 
     # ------------------------------------------------------------------
@@ -305,6 +344,14 @@ class PineconeIndexClient:
         include_metadata: bool = True,
     ) -> Any:
         """Run a vector query against the index."""
+        if self.vector_type() == "sparse":
+            # A dense query vector against a sparse index is rejected by
+            # Pinecone with an opaque error; fail with an actionable one.
+            raise ValueError(
+                f"Pinecone index '{self._index_name}' is a sparse index — "
+                "search against sparse indexes is not supported yet. "
+                "Use a dense index."
+            )
         index = self._get_index()
         kwargs: dict[str, Any] = {
             "vector": vector,

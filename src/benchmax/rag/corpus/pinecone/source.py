@@ -26,6 +26,9 @@ from .index_client import PineconeIndexClient
 
 logger = logging.getLogger(__name__)
 
+#: Max IDs per vectors/fetch call — Pinecone caps fetch batches at 100.
+_FETCH_BATCH_SIZE = 100
+
 
 def _raw_to_chunk(raw: dict[str, Any]) -> Chunk:
     """Convert a raw dict from PineconeIndexClient to a Chunk."""
@@ -237,40 +240,40 @@ class PineconeChunkSource:
     # ------------------------------------------------------------------
 
     def get_chunk_count(self) -> int:
-        """Return the total number of vectors in the index."""
-        index = self._client._get_index()
-        stats = index.describe_index_stats()
-        return int(stats.total_vector_count or 0)
+        """Return the number of vectors in the configured namespace.
+
+        Scoped to the namespace this source reads from — an index-wide
+        total would disagree with what sampling/search can actually see.
+        """
+        return self._client.namespace_vector_count()
 
     def sample_chunks(self, n: int, min_chars: int = 0) -> list[Chunk]:
         """Return n randomly sampled chunks, optionally filtered by
         minimum length.
 
-        Uses a random vector query to get pseudo-random results
-        efficiently in a single API call.
+        Samples uniformly from the paginated ID listing and hydrates the
+        sample via fetch — no query vector involved, so the draw is
+        genuinely uniform (not nearest-to-a-random-point) and works for
+        dense and sparse indexes alike.
         """
-        # Generate a random vector for pseudo-random sampling
-        dim = len(self._client.zero_vector())
-        rand_vec = [random.gauss(0, 1) for _ in range(dim)]
-
-        # Fetch more than needed to allow for min_chars filtering
-        fetch_k = min(n * 3, 10000) if min_chars > 0 else min(n, 10000)
-        result = self._client.query(
-            vector=rand_vec,
-            top_k=fetch_k,
-            include_metadata=True,
-        )
-
-        matches = result.matches or []
-        if not matches:
+        # Oversample when a length filter will discard part of the draw
+        fetch_n = min(n * 3, 10000) if min_chars > 0 else min(n, 10000)
+        ids = self._client.sample_ids(fetch_n)
+        if not ids:
             return []
 
-        chunks = [_raw_to_chunk(self._client.match_to_raw(m)) for m in matches]
+        raws: list[dict[str, Any]] = []
+        for batch_start in range(0, len(ids), _FETCH_BATCH_SIZE):
+            raws.extend(
+                self._client.fetch_by_ids_raw(
+                    ids[batch_start : batch_start + _FETCH_BATCH_SIZE]
+                )
+            )
+        chunks = [_raw_to_chunk(r) for r in raws]
 
         if min_chars > 0:
             chunks = [c for c in chunks if len(c.content) >= min_chars]
 
-        # Shuffle to avoid bias from similarity ordering
         random.shuffle(chunks)
         return chunks[:n]
 

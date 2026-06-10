@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import cloudpickle
 import pytest
 
+from benchmax.rag.corpus.pinecone.index_client import PineconeIndexClient
 from benchmax.rag.corpus.pinecone.search import PineconeSearch
 
 
@@ -28,27 +29,24 @@ class FakeIndex:
         return SimpleNamespace(dimension=3)
 
 
+def _fixed_embed(texts):
+    return [[0.1, 0.2, 0.3]] * len(texts)
+
+
 def _make_search(embed_fn=None) -> PineconeSearch:
     ps = PineconeSearch(
-        api_key="test",
-        index_name="test",
-        embed_fn=embed_fn or (lambda texts: [[0.1, 0.2, 0.3]] * len(texts)),
+        "test",
+        embed_fn=embed_fn or _fixed_embed,
+        token_provider=lambda: "test-key",
     )
-    # Inject fake client to avoid real Pinecone calls
-    from benchmax.rag.corpus.pinecone.index_client import PineconeIndexClient
-
-    client = PineconeIndexClient.__new__(PineconeIndexClient)
-    client._api_key = "test"
-    client._index_name = "test"
-    client._index_host = None
-    client._namespace = ""
-    client._embed_model = "test"
-    client.embed_fn = embed_fn or (lambda texts: [[0.1, 0.2, 0.3]] * len(texts))
-    client._field_mapping = {"content": "content"}
-    client._reverse_mapping = {"content": "content"}
+    # Inject a real client wired to a fake index — no real Pinecone calls.
+    client = PineconeIndexClient(
+        api_key="test-key",
+        index_name="test",
+        embed_fn=embed_fn or _fixed_embed,
+        field_mapping={"content": "content"},
+    )
     client._index = FakeIndex()
-    client._known_ids = None
-    client._vector_dim = 3
     ps._client = client
     return ps
 
@@ -99,15 +97,17 @@ class TestEmbed:
 
 class TestPickle:
     def test_roundtrip_preserves_config(self):
-        ps = PineconeSearch(api_key="k", index_name="idx", namespace="ns")
+        ps = PineconeSearch(
+            "idx", namespace="ns", token_provider=lambda: "k"
+        )
         data = cloudpickle.dumps(ps)
         restored = pickle.loads(data)
-        assert restored._api_key == "k"
         assert restored._index_name == "idx"
         assert restored._namespace == "ns"
+        assert restored._token_provider() == "k"
         assert restored._client is None  # stripped
 
     def test_available_modes_after_restore(self):
-        ps = PineconeSearch(api_key="k", index_name="idx")
+        ps = PineconeSearch("idx", token_provider=lambda: "k")
         restored = pickle.loads(cloudpickle.dumps(ps))
         assert restored.available_modes == ["vector"]
