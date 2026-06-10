@@ -12,10 +12,12 @@ Run it from the benchmax project root (the ``telestich`` extra pulls in the
 env's word-list / rhyme dependencies):
 
     cd core/benchmax
-    CASTFORM_API_KEY=sk_... \
-        uv run --extra telestich python -m benchmax.envs.telestich.example
+    uv run --extra telestich python -m benchmax.envs.telestich.example
 
-(``CASTFORM_LLM_API_KEY`` is optional — it defaults to ``CASTFORM_API_KEY``.)
+Auth is the device-auth session (``ensure_session()`` opens a browser login if
+``~/.castform`` has no valid session) — no API key needed. ``CASTFORM_API_KEY``
+/ ``CASTFORM_LLM_API_KEY`` are only consulted by the offline dataset-generation
+helpers, not the launch path.
 
 This launches a real training run on the full committed seed dataset
 (~90/10 train/eval split).

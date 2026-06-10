@@ -98,9 +98,11 @@ line, and correct poems get a full per-component breakdown.
 training run. Run it from the benchmax project root:
 
 ```bash
-CASTFORM_API_KEY=sk_... CASTFORM_LLM_API_KEY=sk_... \
-    uv run --extra telestich python -m benchmax.envs.telestich.example
+uv run --extra telestich python -m benchmax.envs.telestich.example
 ```
+
+Auth uses the device-auth session (a browser login is opened automatically if
+`~/.castform` has no valid session) — no API key needed.
 
 `telestich_dataset.jsonl` (next to the script) is the curated English seed dataset
 (curriculum-ordered). Set `TELESTICH_FULL_RUN=1` for a real run on the full set;
