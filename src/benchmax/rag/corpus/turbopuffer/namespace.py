@@ -19,6 +19,27 @@ from benchmax.rag.corpus.search_schema.search_types import (
 )
 
 
+def resolve_content_attr(
+    content_attr: list[str] | None, content_field: str | None
+) -> list[str] | None:
+    """Resolve the ``content_field`` sugar against an explicit ``content_attr``.
+
+    ``content_field`` is the canonical single-column param; ``content_attr``
+    is the low-level multi-field escape hatch.  Specifying the text column
+    both ways with different values raises instead of silently picking a
+    winner.
+    """
+    if not content_field:
+        return content_attr
+    if content_attr is not None and content_attr != [content_field]:
+        raise ValueError(
+            f"content_field={content_field!r} conflicts with "
+            f"content_attr={content_attr!r}. Specify the text column one way "
+            "or the other."
+        )
+    return [content_field]
+
+
 class TpufNamespace:
     """Thin wrapper around a Turbopuffer namespace.
 

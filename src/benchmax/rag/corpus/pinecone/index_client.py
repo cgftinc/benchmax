@@ -60,9 +60,17 @@ class PineconeIndexClient:
         embed_model: Pinecone hosted embedding model name.  Ignored when
             ``embed_fn`` is provided.  Defaults to
             ``"multilingual-e5-large"``.
-        field_mapping: Maps *Pinecone metadata field names* → *internal
-            field names*.  Useful for "bring your own index" scenarios where
-            the user's metadata schema differs from the default.
+        field_mapping: Low-level escape hatch — maps *Pinecone metadata
+            field names* → *internal field names* for schemas that also
+            relocate structural fields (``file_path``, ``chunk_index``,
+            headers).  For the common "my text is under a different key"
+            case, prefer ``content_field``.
+        content_field: Pinecone metadata key holding the chunk text, for
+            "bring your own index" schemas that don't use ``content`` (e.g.
+            ``"summary"`` or ``"passage"``).  The canonical way to point at
+            your text column.  Empty / None means the default ``content``
+            key.  Raises if ``field_mapping`` already maps a *different*
+            key to ``content``.
     """
 
     def __init__(
@@ -75,15 +83,35 @@ class PineconeIndexClient:
         embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
         embed_model: str = "multilingual-e5-large",
         field_mapping: dict[str, str] | None = None,
+        content_field: str | None = None,
     ) -> None:
         # Store config for lazy init / pickle safety.
         self._api_key = api_key
         self._index_name = index_name
         self._index_host = index_host
-        self._namespace = namespace
+        # Platform codegen may pass None for an unset namespace; Pinecone's
+        # default namespace is "".
+        self._namespace = namespace or ""
         self._embed_model = embed_model
         self.embed_fn = embed_fn or self._build_pinecone_embed_fn()
-        self._field_mapping = field_mapping or dict(DEFAULT_FIELD_MAPPING)
+        mapping = dict(field_mapping) if field_mapping else dict(DEFAULT_FIELD_MAPPING)
+        if content_field and content_field != "content":
+            conflicting = [
+                k
+                for k, v in mapping.items()
+                if v == "content" and k not in ("content", content_field)
+            ]
+            if field_mapping and conflicting:
+                raise ValueError(
+                    f"content_field={content_field!r} conflicts with field_mapping "
+                    f"entries {conflicting} that already map to 'content'. "
+                    "Specify the text column one way or the other."
+                )
+            # Drop the default content→content entry so the reverse mapping
+            # resolves "content" to the custom key unambiguously.
+            mapping.pop("content", None)
+            mapping[content_field] = "content"
+        self._field_mapping = mapping
         # Reverse mapping: internal name → pinecone metadata key
         self._reverse_mapping = {v: k for k, v in self._field_mapping.items()}
         self._index: Any | None = None
@@ -91,6 +119,8 @@ class PineconeIndexClient:
         self._known_ids: list[str] | None = None
         # Cached vector dimension (detected on first embed or describe_index).
         self._vector_dim: int | None = None
+        # Cached index vector type ("dense" | "sparse"), probed lazily.
+        self._vector_type: str | None = None
 
     def _build_pinecone_embed_fn(self) -> Callable[[list[str]], list[list[float]]]:
         """Build an embed_fn using Pinecone's hosted Inference API.
@@ -157,6 +187,35 @@ class PineconeIndexClient:
                 self._index = pc.Index(self._index_name)
         return self._index
 
+    def vector_type(self) -> str:
+        """Return the index vector type, ``"dense"`` or ``"sparse"``.
+
+        Probes the index via ``describe_index_stats`` on first call and
+        caches the result.
+        """
+        if self._vector_type is None:
+            index = self._get_index()
+            stats = index.describe_index_stats()
+            self._vector_type = getattr(stats, "vector_type", None) or "dense"
+        return self._vector_type
+
+    def namespace_vector_count(self) -> int:
+        """Return the vector count for this client's namespace.
+
+        Scoped to the namespace, NOT the index-wide total — an index-wide
+        count would disagree with what list/fetch/query in this namespace
+        can actually see.  The SDK keys the default namespace as
+        ``"__default__"`` (the REST API uses ``""``).
+        """
+        stats = self._get_index().describe_index_stats()
+        namespaces = getattr(stats, "namespaces", None) or {}
+        ns_stats = namespaces.get(self._namespace or "__default__")
+        if ns_stats is None and not self._namespace:
+            ns_stats = namespaces.get("")
+        if ns_stats is None:
+            return 0
+        return int(getattr(ns_stats, "vector_count", 0) or 0)
+
     def zero_vector(self) -> list[float]:
         """Return a zero-vector with the correct dimension for this index.
 
@@ -168,6 +227,12 @@ class PineconeIndexClient:
             index = self._get_index()
             stats = index.describe_index_stats()
             self._vector_dim = stats.dimension
+        if self._vector_dim is None:
+            # Sparse indexes have no fixed dimension.
+            raise ValueError(
+                f"Pinecone index '{self._index_name}' has no dimension — it is "
+                "a sparse index, which has no dense zero-vector."
+            )
         return [0.0] * self._vector_dim
 
     # ------------------------------------------------------------------
@@ -305,6 +370,14 @@ class PineconeIndexClient:
         include_metadata: bool = True,
     ) -> Any:
         """Run a vector query against the index."""
+        if self.vector_type() == "sparse":
+            # A dense query vector against a sparse index is rejected by
+            # Pinecone with an opaque error; fail with an actionable one.
+            raise ValueError(
+                f"Pinecone index '{self._index_name}' is a sparse index — "
+                "search against sparse indexes is not supported yet. "
+                "Use a dense index."
+            )
         index = self._get_index()
         kwargs: dict[str, Any] = {
             "vector": vector,
