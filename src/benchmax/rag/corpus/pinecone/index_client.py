@@ -60,9 +60,17 @@ class PineconeIndexClient:
         embed_model: Pinecone hosted embedding model name.  Ignored when
             ``embed_fn`` is provided.  Defaults to
             ``"multilingual-e5-large"``.
-        field_mapping: Maps *Pinecone metadata field names* → *internal
-            field names*.  Useful for "bring your own index" scenarios where
-            the user's metadata schema differs from the default.
+        field_mapping: Low-level escape hatch — maps *Pinecone metadata
+            field names* → *internal field names* for schemas that also
+            relocate structural fields (``file_path``, ``chunk_index``,
+            headers).  For the common "my text is under a different key"
+            case, prefer ``content_field``.
+        content_field: Pinecone metadata key holding the chunk text, for
+            "bring your own index" schemas that don't use ``content`` (e.g.
+            ``"summary"`` or ``"passage"``).  The canonical way to point at
+            your text column.  Empty / None means the default ``content``
+            key.  Raises if ``field_mapping`` already maps a *different*
+            key to ``content``.
     """
 
     def __init__(
@@ -75,6 +83,7 @@ class PineconeIndexClient:
         embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
         embed_model: str = "multilingual-e5-large",
         field_mapping: dict[str, str] | None = None,
+        content_field: str | None = None,
     ) -> None:
         # Store config for lazy init / pickle safety.
         self._api_key = api_key
@@ -85,7 +94,24 @@ class PineconeIndexClient:
         self._namespace = namespace or ""
         self._embed_model = embed_model
         self.embed_fn = embed_fn or self._build_pinecone_embed_fn()
-        self._field_mapping = field_mapping or dict(DEFAULT_FIELD_MAPPING)
+        mapping = dict(field_mapping) if field_mapping else dict(DEFAULT_FIELD_MAPPING)
+        if content_field and content_field != "content":
+            conflicting = [
+                k
+                for k, v in mapping.items()
+                if v == "content" and k not in ("content", content_field)
+            ]
+            if field_mapping and conflicting:
+                raise ValueError(
+                    f"content_field={content_field!r} conflicts with field_mapping "
+                    f"entries {conflicting} that already map to 'content'. "
+                    "Specify the text column one way or the other."
+                )
+            # Drop the default content→content entry so the reverse mapping
+            # resolves "content" to the custom key unambiguously.
+            mapping.pop("content", None)
+            mapping[content_field] = "content"
+        self._field_mapping = mapping
         # Reverse mapping: internal name → pinecone metadata key
         self._reverse_mapping = {v: k for k, v in self._field_mapping.items()}
         self._index: Any | None = None

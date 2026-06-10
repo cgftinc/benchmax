@@ -141,3 +141,86 @@ class TestSampleChunksViaIds:
     def test_empty_index_returns_empty(self):
         source = make_source(FakeIndex(matches=[]))
         assert source.sample_chunks(5) == []
+
+
+class TestContentField:
+    """content_field sugar — BYO indexes whose text isn't under `content`."""
+
+    def _movie_client(self, **kwargs) -> PineconeIndexClient:
+        client = PineconeIndexClient(
+            api_key="k", index_name="movies", embed_fn=lambda t: [], **kwargs
+        )
+        return client
+
+    def test_maps_custom_key_to_content(self):
+        client = self._movie_client(content_field="summary")
+        assert client._pc_field("content") == "summary"
+
+        match = SimpleNamespace(
+            id="0",
+            metadata={"title": "Avatar", "summary": "On the alien world..."},
+            score=0.9,
+        )
+        raw = client.match_to_raw(match)
+        assert raw["content"] == "On the alien world..."
+        assert raw["metadata"]["title"] == "Avatar"
+        assert "summary" not in raw["metadata"]  # consumed as content
+
+    def test_fetch_to_raw_uses_custom_key(self):
+        client = self._movie_client(content_field="summary")
+        raw = client.fetch_to_raw(
+            "0", SimpleNamespace(metadata={"summary": "text here", "year": 2009})
+        )
+        assert raw["content"] == "text here"
+
+    def test_empty_or_default_is_noop(self):
+        for cf in (None, "", "content"):
+            client = self._movie_client(content_field=cf)
+            assert client._pc_field("content") == "content"
+
+    def test_explicit_field_mapping_composes(self):
+        client = self._movie_client(
+            field_mapping={"path": "file_path"}, content_field="summary"
+        )
+        assert client._pc_field("content") == "summary"
+        assert client._pc_field("file_path") == "path"
+
+    def test_conflicting_content_mappings_raise(self):
+        # field_mapping already claims the content column with a different
+        # key — ambiguous, must fail instead of silently picking a winner.
+        with pytest.raises(ValueError, match="conflicts"):
+            self._movie_client(
+                field_mapping={"description": "content"}, content_field="summary"
+            )
+
+    def test_agreeing_content_mappings_pass(self):
+        client = self._movie_client(
+            field_mapping={"summary": "content"}, content_field="summary"
+        )
+        assert client._pc_field("content") == "summary"
+
+
+class TestEmptyContentGuard:
+    def test_all_empty_content_raises_with_field_listing(self):
+        # Records whose text lives under `summary` while the source still
+        # reads `content` — the sample-movies failure mode.
+        matches = [
+            make_match("0", "", title="Avatar", summary="On the alien world..."),
+            make_match("1", "", title="Endgame", summary="In the aftermath..."),
+        ]
+        source = make_source(FakeIndex(matches=matches))
+        with pytest.raises(ValueError) as exc:
+            source.sample_chunks(2)
+        msg = str(exc.value)
+        assert "content" in msg
+        assert "summary" in msg and "title" in msg
+        assert "content_field" in msg
+
+    def test_some_content_passes(self):
+        matches = [
+            make_match("0", "real text"),
+            make_match("1", "", stray="x"),
+        ]
+        source = make_source(FakeIndex(matches=matches))
+        chunks = source.sample_chunks(2)
+        assert len(chunks) == 2

@@ -67,8 +67,13 @@ class PineconeChunkSource:
         embed_model: Pinecone hosted embedding model name.  Ignored when
             ``embed_fn`` is provided.  Defaults to
             ``"multilingual-e5-large"``.
-        field_mapping: Maps Pinecone metadata field names to internal names.
-            Useful for "bring your own index" scenarios.
+        field_mapping: Low-level escape hatch — maps Pinecone metadata field
+            names to internal names when structural fields (``file_path``,
+            ``chunk_index``, headers) are also relocated.  For the common
+            case, prefer ``content_field``.
+        content_field: Pinecone metadata key holding the chunk text — the
+            canonical way to point at your text column for pre-existing
+            indexes that don't use ``content``.
 
     Example:
         >>> # Using Pinecone's built-in embeddings (simplest)
@@ -85,12 +90,12 @@ class PineconeChunkSource:
         ...     embed_fn=my_embed_fn,
         ... )
 
-        >>> # Pre-existing index with custom field names
+        >>> # Pre-existing index whose text lives under another key
         >>> source = PineconeChunkSource(
         ...     api_key="pcsk_...",
         ...     index_name="product-catalog",
         ...     embed_model="llama-text-embed-v2",
-        ...     field_mapping={"description": "content", "path": "file_path"},
+        ...     content_field="description",
         ... )
     """
 
@@ -104,6 +109,7 @@ class PineconeChunkSource:
         embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
         embed_model: str = "multilingual-e5-large",
         field_mapping: dict[str, str] | None = None,
+        content_field: str | None = None,
     ) -> None:
         self._client = PineconeIndexClient(
             api_key=api_key,
@@ -113,6 +119,7 @@ class PineconeChunkSource:
             embed_fn=embed_fn,
             embed_model=embed_model,
             field_mapping=field_mapping,
+            content_field=content_field,
         )
         self._files = FileAwareness(self._client)
 
@@ -270,6 +277,22 @@ class PineconeChunkSource:
                 )
             )
         chunks = [_raw_to_chunk(r) for r in raws]
+
+        # Every fetched record decoding to empty content means the text key
+        # is wrong (BYO index whose schema doesn't use the configured field),
+        # not that the corpus is empty. Without this, the pipeline dies later
+        # with an unactionable "No eligible chunks were found".
+        if chunks and all(not c.content for c in chunks):
+            content_key = self._client._pc_field("content")
+            seen_keys = sorted(
+                {k for r in raws for k in r.get("metadata", {}) if not k.startswith("_")}
+            )
+            raise ValueError(
+                f"No text found under metadata field '{content_key}' in any "
+                f"sampled record. This index's metadata fields are: "
+                f"{seen_keys}. Set content_field to the one holding the "
+                f"chunk text."
+            )
 
         if min_chars > 0:
             chunks = [c for c in chunks if len(c.content) >= min_chars]
