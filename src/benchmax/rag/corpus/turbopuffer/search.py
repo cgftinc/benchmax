@@ -100,7 +100,6 @@ class TpufSearch:
         top_k: int = 10,
     ) -> list[dict[str, Any]]:
         """Search and return structured results."""
-        ns = self._get_client()
         modes = self.available_modes
         content_fields = self._content_attr or ["content"]
 
@@ -118,6 +117,11 @@ class TpufSearch:
                 f"Available modes: {modes}. "
                 f"{'Provide embed_fn for vector/hybrid.' if mode in ('vector', 'hybrid') else ''}"
             )
+
+        # Validate the request before constructing the client — an invalid
+        # mode should fail as such, not as a missing-credential error from
+        # the token provider.
+        ns = self._get_client()
 
         if mode == "lexical":
             rank_by = [content_fields[0], "BM25", query]
