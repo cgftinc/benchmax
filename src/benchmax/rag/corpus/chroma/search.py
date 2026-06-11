@@ -10,6 +10,9 @@ from collections.abc import Callable
 from typing import Any
 
 from benchmax.platform.credentials import TokenProvider, as_token_provider, env_token
+from benchmax.rag.corpus.search_schema.search_exceptions import (
+    LocalEmbeddingDownloadDisallowedError,
+)
 
 
 class ChromaSearch:
@@ -113,19 +116,33 @@ class ChromaSearch:
     ) -> list[dict[str, Any]]:
         """Search and return structured results."""
         client = self._get_client()
+        # Initialize the collection first so capabilities reflect the real index
+        # (BM25 downgrade) and the embedder config is readable below.
+        client.get_collection()
+        modes = client.modes
+        has_lexical = "lexical" in modes
 
-        if mode == "auto":
-            modes = client.modes
+        # Never download a client-side embedding model at inference/rollout time.
+        # When a dense embed isn't safe — no embed_fn and no Chroma-hosted
+        # server-side embedding function — use the BM25 lexical index if the
+        # collection has one, otherwise refuse rather than fetch all-MiniLM.
+        if not client.dense_embed_is_safe():
+            if not has_lexical:
+                raise LocalEmbeddingDownloadDisallowedError(
+                    "chroma", self._collection_name
+                )
+            mode = "lexical"
+        elif mode == "auto":
             if "hybrid" in modes:
                 mode = "hybrid"
-            elif "lexical" in modes:
+            elif has_lexical:
                 mode = "lexical"
             else:
                 mode = "vector"
-        elif mode not in client.modes:
+        elif mode not in modes:
             raise ValueError(
                 f"ChromaSearch does not support mode '{mode}'. "
-                f"Available modes: {sorted(client.modes)}"
+                f"Available modes: {sorted(modes)}"
             )
 
         if client.search_api and mode in ("lexical", "hybrid"):
