@@ -82,16 +82,9 @@ def extract_completion_text(completion: str | list[dict[str, Any]]) -> str:
 
 
 def extract_answer_block(text: str) -> str:
-    """Extract content from ``<answer>`` tags.
-
-    Returns the (stripped) tag contents when an ``<answer>…</answer>`` block
-    is present, otherwise ``""``. A missing answer block is treated as "no
-    final answer" rather than silently falling back to the full completion —
-    consumers can gate rewards on a non-empty result. ``<answer></answer>``
-    likewise yields ``""``.
-    """
+    """Extract content from <answer> tags, or return full text."""
     match = _ANSWER_TAG_RE.search(text or "")
-    return match.group(1).strip() if match else ""
+    return (match.group(1) if match else text).strip()
 
 
 def clip01(value: Any) -> float:

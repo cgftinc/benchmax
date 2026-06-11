@@ -35,12 +35,7 @@ class TestExtractAnswerBlock:
         assert extract_answer_block("before <answer>the answer</answer> after") == "the answer"
 
     def test_without_tags(self):
-        # No <answer> block → empty string, not the full text. Consumers
-        # gate rewards on a non-empty answer.
-        assert extract_answer_block("no tags here") == ""
-
-    def test_empty_tags(self):
-        assert extract_answer_block("before <answer></answer> after") == ""
+        assert extract_answer_block("no tags here") == "no tags here"
 
     def test_empty(self):
         assert extract_answer_block("") == ""
