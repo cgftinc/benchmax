@@ -646,13 +646,19 @@ class ChromaChunkSource:
         # lexical enabled as a fallback: hybrid = dense + sparse, and when we
         # can't produce dense query vectors (no embed_fn, the usual remote case)
         # the per-query loop below degrades to the sparse/lexical leg — which
-        # needs no embedding. Only an explicit "vector" disables lexical; that's
-        # the dense-only recovery path a caller uses after a lexical/hybrid
-        # failure. (Disabling lexical for "hybrid" silently forced vector search,
-        # which made remote collections dense-embed every query — slow, and on a
-        # default-EF collection it pulls the all-MiniLM model.)
+        # needs no embedding.
+        #
+        # An explicit "vector" (e.g. the linker's "inference" reasoning mode)
+        # normally disables lexical. But if the dense embed would be the
+        # chromadb-local fallback (no embed_fn, no hosted EF) we keep lexical
+        # instead: a remote default-EF collection would otherwise download
+        # all-MiniLM to embed every query. Server-side dense (hosted EF) or a
+        # client embed_fn stays on the vector path — semantic search preserved.
         if mode == "vector":
-            use_hybrid = use_lexical = False
+            use_hybrid = False
+            use_lexical = (
+                "lexical" in modes and self._chroma.dense_requires_local_model()
+            )
         elif mode == "lexical":
             use_hybrid = False
             use_lexical = "lexical" in modes

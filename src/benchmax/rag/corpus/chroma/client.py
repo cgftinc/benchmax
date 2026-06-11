@@ -176,6 +176,26 @@ class ChromaClient:
 
         return self._collection
 
+    def dense_requires_local_model(self) -> bool:
+        """True when a dense (vector) query would make chromadb embed locally.
+
+        With no caller ``embed_fn`` and no hosted embedding function, chromadb
+        falls back to its ``DefaultEmbeddingFunction``, which downloads and runs
+        all-MiniLM on the client — pathologically slow in constrained executors.
+        A hosted EF (e.g. chroma-cloud-qwen, attached by
+        ``_repair_cloud_embedding_function``) embeds server-side, so dense stays
+        cheap there. Callers use this to prefer a lexical index over an
+        expensive local embed. Best-effort: any introspection failure reports
+        False (don't degrade on uncertainty).
+        """
+        if self.embed_fn is not None:
+            return False
+        col = self._collection
+        if col is None:
+            return False
+        ef = getattr(col, "_embedding_function", None)
+        return ef is None or type(ef).__name__ == "DefaultEmbeddingFunction"
+
     @staticmethod
     def _repair_cloud_embedding_function(collection: Any) -> None:
         """Attach a working EF when chromadb can't rebuild a Cloud hosted one.

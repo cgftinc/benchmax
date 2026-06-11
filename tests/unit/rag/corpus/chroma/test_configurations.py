@@ -587,12 +587,51 @@ class TestCloudQwenEmbeddingRepair:
 # ---------------------------------------------------------------------------
 
 
-class TestSearchModeClamp:
-    def test_explicit_vector_mode_forces_vector_path(self):
-        """mode='vector' uses the query() vector path even when hybrid is available.
+class TestDenseLocality:
+    """dense_requires_local_model() — when a vector query embeds locally."""
 
-        Lets the QA metadata-linker force vector search to recover from a
-        lexical/hybrid failure without depending on capability state.
+    def _client(self, *, embed_fn=None, ef="missing"):
+        col = FakeCollection(count=0)
+        source = make_source(col, embed_fn=embed_fn)
+        if ef != "missing":
+            source._chroma._collection._embedding_function = ef
+        return source._chroma
+
+    def test_true_when_no_embed_fn_and_no_ef(self):
+        # FakeCollection has no _embedding_function -> chromadb default fallback.
+        assert self._client().dense_requires_local_model() is True
+
+    def test_true_for_default_embedding_function(self):
+        class DefaultEmbeddingFunction:
+            pass
+
+        assert (
+            self._client(ef=DefaultEmbeddingFunction()).dense_requires_local_model()
+            is True
+        )
+
+    def test_false_with_client_embed_fn(self):
+        from unittest.mock import MagicMock
+
+        assert self._client(embed_fn=MagicMock()).dense_requires_local_model() is False
+
+    def test_false_with_hosted_embedding_function(self):
+        # A non-default EF (e.g. chroma-cloud-qwen) embeds server-side.
+        assert self._client(ef=object()).dense_requires_local_model() is False
+
+    def test_false_when_collection_uninitialized(self):
+        chroma = self._client()
+        chroma._collection = None
+        assert chroma.dense_requires_local_model() is False
+
+
+class TestSearchModeClamp:
+    def test_explicit_vector_mode_uses_vector_when_dense_is_cheap(self):
+        """mode='vector' uses the query() vector path when dense is not local.
+
+        A server-side embedding function (here a non-default stand-in) means a
+        dense embed is cheap, so the vector preference is honored rather than
+        degraded to lexical.
         """
         col = FakeCollection(
             query_results_per_call=[make_query_result(["v"])],
@@ -601,12 +640,59 @@ class TestSearchModeClamp:
         source = make_source(col, files=NoFileFakeFiles())
         source._chroma.modes = {"vector", "lexical", "hybrid"}
         source._chroma.search_api = True
+        # Hosted/server-side EF (type name != DefaultEmbeddingFunction) -> dense
+        # is cheap, so vector is not degraded.
+        source._chroma._collection._embedding_function = object()
 
         primary = Chunk(content="src", metadata=())
         results = source.search_related(primary, ["q"], top_k=5, mode="vector")
         assert results[0]["chunk"].content == "v"
         # Vector path went through the legacy query() API, not collection.search().
         assert col._last_query_kwargs["query_texts"] == ["q"]
+
+    def test_vector_degrades_to_lexical_when_dense_is_local(self):
+        """mode='vector' + local-default dense + lexical available -> lexical.
+
+        The linker's "inference" reasoning mode requests vector. On a remote
+        default-EF collection (no embed_fn, no hosted EF) honoring it would make
+        chromadb download all-MiniLM to embed every query. With a lexical index
+        present we use that instead — no embedding, no model download.
+        """
+        col = FakeCollection(count=5)
+        source = make_source(col, files=NoFileFakeFiles())  # embed_fn=None
+        source._chroma.modes = {"vector", "lexical", "hybrid"}
+        source._chroma.search_api = True
+        # FakeCollection has no _embedding_function -> treated as local default.
+        assert source._chroma.dense_requires_local_model() is True
+
+        captured: list[str | None] = []
+        source._search_with_scores = lambda spec: captured.append(spec.get("mode")) or []  # type: ignore[method-assign,return-value]
+        source.search_related(
+            Chunk(content="src", metadata=()), ["q"], top_k=3, mode="vector"
+        )
+        assert captured == ["lexical"]
+
+    def test_vector_stays_vector_when_no_lexical_fallback(self):
+        """mode='vector' on a vector-only collection still does vector.
+
+        No lexical index to fall back to (e.g. a hosted-EF collection downgraded
+        to vector-only), so the dense path is the only option.
+        """
+        col = FakeCollection(
+            query_results_per_call=[make_query_result(["v"])],
+            count=5,
+        )
+        source = make_source(col, files=NoFileFakeFiles())
+        source._chroma.modes = {"vector"}  # no lexical
+        source._chroma.search_api = True
+
+        captured: list[str | None] = []
+        orig = source._search_with_scores
+        source._search_with_scores = lambda spec: (captured.append(spec.get("mode")), orig(spec))[1]  # type: ignore[method-assign]
+        source.search_related(
+            Chunk(content="src", metadata=()), ["q"], top_k=3, mode="vector"
+        )
+        assert captured == ["vector"]
 
     def test_downgraded_modes_clamp_stale_hybrid_request_to_vector(self):
         """A stale mode='hybrid' is clamped to vector when the index is gone.
