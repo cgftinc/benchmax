@@ -17,6 +17,7 @@ from tqdm.auto import tqdm
 from benchmax.rag.chunkers.models import Chunk, ChunkCollection
 from benchmax.rag.corpus.search_schema.search_exceptions import (
     InvalidSearchSpecError,
+    LocalEmbeddingDownloadDisallowedError,
     UnsupportedSearchModeError,
 )
 from benchmax.rag.corpus.search_schema.search_types import (
@@ -642,29 +643,30 @@ class ChromaChunkSource:
         # lack a BM25 index, in which case modes was downgraded to vector-only.
         modes = self._current_modes()
 
-        # Pick mode. "hybrid"/None use the best available strategy and KEEP
-        # lexical enabled as a fallback: hybrid = dense + sparse, and when we
-        # can't produce dense query vectors (no embed_fn, the usual remote case)
-        # the per-query loop below degrades to the sparse/lexical leg — which
-        # needs no embedding.
-        #
-        # An explicit "vector" (e.g. the linker's "inference" reasoning mode)
-        # normally disables lexical. But if the dense embed would be the
-        # chromadb-local fallback (no embed_fn, no hosted EF) we keep lexical
-        # instead: a remote default-EF collection would otherwise download
-        # all-MiniLM to embed every query. Server-side dense (hosted EF) or a
-        # client embed_fn stays on the vector path — semantic search preserved.
-        if mode == "vector":
+        has_lexical = "lexical" in modes
+        has_hybrid = "hybrid" in modes
+
+        # Hard rule: never let chromadb embed a query with a client-side model
+        # (it downloads all-MiniLM and crawls in constrained executors). When a
+        # dense embed isn't safe — no embed_fn and no Chroma-hosted server-side
+        # embedding function — use the BM25 lexical index if the collection has
+        # one, otherwise refuse. This covers every requested mode, including the
+        # linker's "inference" preference for vector.
+        if not self._chroma.dense_embed_is_safe():
+            if not has_lexical:
+                raise LocalEmbeddingDownloadDisallowedError(
+                    "chroma", self._chroma.collection_name
+                )
             use_hybrid = False
-            use_lexical = (
-                "lexical" in modes and self._chroma.dense_requires_local_model()
-            )
+            use_lexical = True
         elif mode == "lexical":
             use_hybrid = False
-            use_lexical = "lexical" in modes
+            use_lexical = has_lexical
+        elif mode == "vector":
+            use_hybrid = use_lexical = False
         else:  # "hybrid", None, or unrecognized -> best available
-            use_hybrid = "hybrid" in modes
-            use_lexical = "lexical" in modes
+            use_hybrid = has_hybrid
+            use_lexical = has_lexical
 
         # Batch-embed all queries when embed_fn available and vectors needed
         vectors: list[list[float]] | None = None

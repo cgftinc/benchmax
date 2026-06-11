@@ -16,6 +16,13 @@ from typing import Any
 # Sparse-key name used when setting up BM25 schema
 BM25_KEY = "bm25_embedding"
 
+# Embedding functions that run server-side on Chroma Cloud (embed.trychroma.com)
+# — querying a collection that uses one never downloads a model. Everything else
+# (default all-MiniLM, sentence-transformers / HF / Ollama / ONNX locals,
+# third-party API EFs, or no EF) is treated as unsafe. Add hosted names here as
+# they are verified server-side.
+_SERVER_SIDE_EF_NAMES = frozenset({"chroma-cloud-qwen"})
+
 
 def has_search_api() -> bool:
     """Return True when the chromadb package exposes the Search API."""
@@ -176,25 +183,28 @@ class ChromaClient:
 
         return self._collection
 
-    def dense_requires_local_model(self) -> bool:
-        """True when a dense (vector) query would make chromadb embed locally.
+    def dense_embed_is_safe(self) -> bool:
+        """True when a dense (vector) query embeds WITHOUT downloading a model.
 
-        With no caller ``embed_fn`` and no hosted embedding function, chromadb
-        falls back to its ``DefaultEmbeddingFunction``, which downloads and runs
-        all-MiniLM on the client — pathologically slow in constrained executors.
-        A hosted EF (e.g. chroma-cloud-qwen, attached by
-        ``_repair_cloud_embedding_function``) embeds server-side, so dense stays
-        cheap there. Callers use this to prefer a lexical index over an
-        expensive local embed. Best-effort: any introspection failure reports
-        False (don't degrade on uncertainty).
+        Safe only when we can produce vectors without a client-side model
+        download: either a caller-supplied ``embed_fn``, or a Chroma-hosted
+        server-side embedding function (embeds at embed.trychroma.com). Every
+        other embedder — chromadb's default all-MiniLM, sentence-transformers /
+        HuggingFace / Ollama / ONNX locals, third-party API EFs we lack keys
+        for, or no EF at all — is treated as UNSAFE, so callers refuse the dense
+        path rather than trigger a model download. Conservative by design: an
+        unknown embedder is unsafe.
         """
         if self.embed_fn is not None:
-            return False
+            return True
         col = self._collection
         if col is None:
             return False
-        ef = getattr(col, "_embedding_function", None)
-        return ef is None or type(ef).__name__ == "DefaultEmbeddingFunction"
+        try:
+            ef = (col._model.configuration_json or {}).get("embedding_function") or {}
+        except Exception:
+            return False
+        return ef.get("name") in _SERVER_SIDE_EF_NAMES
 
     @staticmethod
     def _repair_cloud_embedding_function(collection: Any) -> None:
