@@ -27,6 +27,7 @@ from fakes.chroma import (
 from benchmax.rag.chunkers.models import Chunk
 from benchmax.rag.corpus.chroma.client import BM25_KEY
 from benchmax.rag.corpus.search_schema.search_exceptions import (
+    LocalEmbeddingDownloadDisallowedError,
     UnsupportedSearchModeError,
 )
 from benchmax.rag.corpus.search_schema.search_types import SearchSpec
@@ -587,12 +588,55 @@ class TestCloudQwenEmbeddingRepair:
 # ---------------------------------------------------------------------------
 
 
-class TestSearchModeClamp:
-    def test_explicit_vector_mode_forces_vector_path(self):
-        """mode='vector' uses the query() vector path even when hybrid is available.
+def _set_ef_name(source, name):
+    """Set the fake collection's configured embedding-function name.
 
-        Lets the QA metadata-linker force vector search to recover from a
-        lexical/hybrid failure without depending on capability state.
+    ``name=None`` means a collection with no embedding function at all.
+    """
+    cfg = {"embedding_function": {"name": name}} if name is not None else {}
+    source._chroma._collection._model = SimpleNamespace(configuration_json=cfg)
+
+
+class TestDenseSafety:
+    """dense_embed_is_safe() — when a vector query won't download a model."""
+
+    def _chroma(self, *, embed_fn=None, ef_name="missing"):
+        source = make_source(FakeCollection(count=0), embed_fn=embed_fn)
+        if ef_name != "missing":
+            _set_ef_name(source, ef_name)
+        return source._chroma
+
+    def test_true_with_client_embed_fn(self):
+        from unittest.mock import MagicMock
+
+        assert self._chroma(embed_fn=MagicMock()).dense_embed_is_safe() is True
+
+    def test_true_for_hosted_server_side_ef(self):
+        assert self._chroma(ef_name="chroma-cloud-qwen").dense_embed_is_safe() is True
+
+    def test_false_for_default_ef(self):
+        # all-MiniLM, client-side download.
+        assert self._chroma(ef_name="default").dense_embed_is_safe() is False
+
+    def test_false_for_third_party_api_ef(self):
+        # No model download, but we lack the provider key -> treat as unsafe.
+        assert self._chroma(ef_name="openai").dense_embed_is_safe() is False
+
+    def test_false_for_no_embedding_function(self):
+        assert self._chroma(ef_name=None).dense_embed_is_safe() is False
+
+    def test_false_when_collection_uninitialized(self):
+        chroma = self._chroma()
+        chroma._collection = None
+        assert chroma.dense_embed_is_safe() is False
+
+
+class TestSearchModeClamp:
+    def test_vector_uses_vector_when_dense_is_safe(self):
+        """mode='vector' uses the query() vector path when dense is safe.
+
+        A server-side hosted embedding function (default fake = chroma-cloud-qwen)
+        means a dense embed never downloads a model, so vector is honored.
         """
         col = FakeCollection(
             query_results_per_call=[make_query_result(["v"])],
@@ -607,6 +651,58 @@ class TestSearchModeClamp:
         assert results[0]["chunk"].content == "v"
         # Vector path went through the legacy query() API, not collection.search().
         assert col._last_query_kwargs["query_texts"] == ["q"]
+
+    def test_unsafe_dense_degrades_to_lexical_when_bm25_present(self):
+        """Unsafe dense (default EF, no embed_fn) + BM25 -> lexical, no download.
+
+        Covers the e2e collection: the linker's "inference" mode requests vector,
+        but honoring it would download all-MiniLM. With a BM25 index present we
+        use that instead — for every requested mode.
+        """
+        source = make_source(FakeCollection(count=5), files=NoFileFakeFiles())
+        source._chroma.modes = {"vector", "lexical", "hybrid"}
+        source._chroma.search_api = True
+        _set_ef_name(source, "default")  # client-side all-MiniLM -> unsafe
+        assert source._chroma.dense_embed_is_safe() is False
+
+        captured: list[str | None] = []
+        source._search_with_scores = lambda spec: captured.append(spec.get("mode")) or []  # type: ignore[method-assign,return-value]
+        for requested in ("vector", "hybrid", None):
+            captured.clear()
+            source.search_related(
+                Chunk(content="src", metadata=()), ["q"], top_k=3, mode=requested
+            )
+            assert captured == ["lexical"], requested
+
+    def test_unsafe_dense_without_bm25_raises(self):
+        """Unsafe dense + no BM25 index -> error, never a model download."""
+        source = make_source(FakeCollection(count=5), files=NoFileFakeFiles())
+        source._chroma.modes = {"vector"}  # vector-only, no lexical
+        source._chroma.search_api = True
+        _set_ef_name(source, "default")  # unsafe
+
+        with pytest.raises(LocalEmbeddingDownloadDisallowedError):
+            source.search_related(
+                Chunk(content="src", metadata=()), ["q"], top_k=3, mode="vector"
+            )
+
+    def test_vector_stays_vector_when_safe_and_no_lexical(self):
+        """Safe dense (hosted EF) + vector-only collection -> vector."""
+        col = FakeCollection(
+            query_results_per_call=[make_query_result(["v"])],
+            count=5,
+        )
+        source = make_source(col, files=NoFileFakeFiles())
+        source._chroma.modes = {"vector"}  # no lexical; default fake EF is hosted
+        source._chroma.search_api = True
+
+        captured: list[str | None] = []
+        orig = source._search_with_scores
+        source._search_with_scores = lambda spec: (captured.append(spec.get("mode")), orig(spec))[1]  # type: ignore[method-assign]
+        source.search_related(
+            Chunk(content="src", metadata=()), ["q"], top_k=3, mode="vector"
+        )
+        assert captured == ["vector"]
 
     def test_downgraded_modes_clamp_stale_hybrid_request_to_vector(self):
         """A stale mode='hybrid' is clamped to vector when the index is gone.

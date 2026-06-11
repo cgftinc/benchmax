@@ -5,6 +5,7 @@ One place to update when the real ChromaChunkSource interface changes.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from benchmax.rag.chunkers.models import Chunk
@@ -182,6 +183,13 @@ def make_source(
     # Inject the fake collection so no real Chroma connection is made
     chroma._collection = collection
     chroma._total_count = collection.count() if collection else None
+    # Default fake collection embeds server-side (hosted EF) so dense queries are
+    # "safe" by default. Tests covering the local-download / error policy override
+    # collection._model.configuration_json with a default/third-party/no EF.
+    if collection is not None and not hasattr(collection, "_model"):
+        collection._model = SimpleNamespace(
+            configuration_json={"embedding_function": {"name": "chroma-cloud-qwen"}}
+        )
 
     source = ChromaChunkSource.__new__(ChromaChunkSource)
     source._chroma = chroma
