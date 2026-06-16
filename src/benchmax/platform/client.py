@@ -503,6 +503,63 @@ class TrainerClient:
             print(header + (f"  [{', '.join(bits)}]" if bits else ""))
             print(f"      {spec.description}")
 
+    # --- Run-lifecycle reads (CLI: `castform runs ...`) -------------------
+    # Thin GETs over platform REST. The CLI formats; these just return the
+    # decoded JSON. Auth posture differs per route — see each docstring.
+
+    def list_runs(self, *, include_config: bool = False) -> list[dict[str, Any]]:
+        """GET /v1/train/runs — the caller's runs. Hard auth: 401 if logged out."""
+        params = {"includeConfig": "true"} if include_config else None
+        response = self._http_client.get("/v1/train/runs", params=params)
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_run(self, run_id: str, *, include_config: bool = False) -> dict[str, Any]:
+        """GET /v1/train/runs/{id} — optionalAuth (public runs readable logged-out)."""
+        params = {"includeConfig": "true"} if include_config else None
+        response = self._http_client.get(f"/v1/train/runs/{run_id}", params=params)
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_run_details(self, run_id: str) -> dict[str, Any]:
+        """GET /v1/train/runs/{id}/details — adds latestStep, modes[], errorCount."""
+        response = self._http_client.get(f"/v1/train/runs/{run_id}/details")
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_run_events(self, run_id: str) -> list[dict[str, Any]]:
+        """GET /v1/train/runs/{id}/events — lifecycle/artifact/diagnostic, oldest first."""
+        response = self._http_client.get(f"/v1/train/runs/{run_id}/events")
+        self._handle_response_errors(response)
+        return response.json().get("events", [])
+
+    def get_run_scalars(
+        self, run_id: str, mode: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """GET /v1/train/runs/{id}/scalars?mode= — {scalarName: [{step, value}]}.
+
+        ``mode`` is required by the server (400 if omitted). Discover the valid
+        set from :meth:`get_run_details` — ``modes`` is dynamic per run, not a
+        fixed enum. An unknown mode returns ``{}`` (not an error).
+        """
+        response = self._http_client.get(
+            f"/v1/train/runs/{run_id}/scalars", params={"mode": mode}
+        )
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_environment_logs(
+        self, run_id: str, *, rollout_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """GET /v1/train/runs/{id}/environment-logs — run-level logs, or one
+        rollout's when ``rollout_id`` is given."""
+        params = {"rolloutId": rollout_id} if rollout_id else None
+        response = self._http_client.get(
+            f"/v1/train/runs/{run_id}/environment-logs", params=params
+        )
+        self._handle_response_errors(response)
+        return response.json().get("logs", [])
+
 
 # Server URLs are resolved lazily via callables so env-var changes after
 # import (e.g. test fixtures setting CASTFORM_BASE_DOMAIN) take effect.
