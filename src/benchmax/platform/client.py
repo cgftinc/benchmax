@@ -61,9 +61,9 @@ class LaunchArgSpec:
 class ExampleValidation:
     """Per-example outcome from RolloutClient.validate_examples.
 
-    ``rewards`` carries the reward components produced by the rollout —
-    ``compute_reward`` for a per-example entry, and the across-sibling **mean**
-    ``compute_group_reward`` for the group entry (index ``-1``). None when the
+    ``rewards`` carries the rollout's final reward components — the per-rollout
+    final rewards for a per-example entry, and the **mean** of the group
+    rollouts' final rewards for the group entry (index ``-1``). None when the
     rollout failed or the server reported no reward values. Surfacing these is
     what lets ``castform validate`` show numbers, not just pass/fail.
     """
@@ -424,8 +424,9 @@ class TrainerClient:
         """Launch a new training run from a job template.
 
         Args:
-            training_run_type: Job template selector. Currently ``"simple"``
-                (gpu4 pool) or ``"simple-r5"`` (gpu4-r5 smoke-test pool).
+            training_run_type: Job template selector. ``"simple"`` (GPU pool —
+                gpu4 for 4B, gpu8 for 35B) or ``"simple-cpu"`` (CPU-only smoke
+                pool, no GPU).
             env_cls_path: Path to the environment class pickle (.pkl file)
             env_metadata_path: Path to the environment metadata JSON file
             train_dataset_path: Path to the training dataset
@@ -1461,8 +1462,8 @@ class RolloutClient:
                 index=-1, ok=False, error=f"all group rollouts failed: {first}"
             )
 
-        # Mean group reward across the succeeded siblings — the numbers the
-        # group path computed and used to discard before.
+        # Mean of the succeeded siblings' final rewards — the numbers the group
+        # path computed and used to discard before.
         mean = _mean_rewards([e.get("rewards") for e in succeeded])
         if verbose:
             print(

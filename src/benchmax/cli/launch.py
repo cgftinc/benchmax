@@ -81,10 +81,10 @@ def _cmd_launch(args: argparse.Namespace) -> int:
     from benchmax.platform.validation import validate_env
 
     with TrainerClient() as client:
-        specs = client.list_launch_args()
         if args.list_args:
             client.print_launch_args()
             return 0
+        specs = client.list_launch_args()
 
         try:
             project = load_project(

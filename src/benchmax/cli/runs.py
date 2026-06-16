@@ -85,7 +85,8 @@ def _cmd_runs_status(args: argparse.Namespace) -> int:
         run = client.get_run(args.run_id)
         details = client.get_run_details(args.run_id)
     if args.json:
-        print_json({"status": run.get("status"), **details})
+        # details spread first so the run's own status field wins, not /details'.
+        print_json({**details, "status": run.get("status")})
         return 0
     latest_step = details.get("latestStep")
     total = run.get("totalSteps")

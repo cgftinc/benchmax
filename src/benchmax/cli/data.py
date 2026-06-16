@@ -28,7 +28,7 @@ def _cmd_data_upload(args: argparse.Namespace) -> int:
     try:
         with StorageClient() as client:
             result = client.upload_local_file(storage_path, str(local))
-    except ValueError as exc:  # unsupported file type (StorageClient._get_mime_type)
+    except ValueError as exc:  # unsupported file type (_get_mime_type)
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     if args.json:
