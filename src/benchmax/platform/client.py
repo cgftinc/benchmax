@@ -560,6 +560,18 @@ class TrainerClient:
         self._handle_response_errors(response)
         return response.json().get("logs", [])
 
+    def cancel_run(self, run_id: str) -> dict[str, Any]:
+        """POST /v1/train/runs/{id}/cancel — owner-only (403 otherwise).
+
+        A launched run (has a launcher job) gets a ``training.cancelling`` event
+        and its launcher job cancelled ("Job cancellation requested"); a run with
+        no job is marked complete directly with no cancelling event
+        ("Marked as complete"). Returns the ``{success, message}`` body.
+        """
+        response = self._http_client.post(f"/v1/train/runs/{run_id}/cancel")
+        self._handle_response_errors(response)
+        return response.json()
+
 
 # Server URLs are resolved lazily via callables so env-var changes after
 # import (e.g. test fixtures setting CASTFORM_BASE_DOMAIN) take effect.
