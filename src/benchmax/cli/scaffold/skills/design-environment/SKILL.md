@@ -35,6 +35,40 @@ class MyEnv(BaseEnv):
 `prompt` (or `messages` / `prompt_messages`) field, and exposes the whole row as
 `task`. Override it only if your columns differ.
 
+## Reading the rollout (`messages` and `task`)
+
+Both reward hooks are `async`. `messages` is the full transcript as a list of
+`{"role", "content"}` dicts (OpenAI chat shape):
+
+```python
+[
+    {"role": "system", "content": "…"},     # your system_prompt
+    {"role": "user", "content": "…"},        # the dataset prompt
+    {"role": "assistant", "content": "…"},   # the model's answer
+    # multi-turn (tools) appends more assistant / tool messages here
+]
+```
+
+- `role` is one of `system` / `user` / `assistant` / `tool`; `content` is a
+  string. The model's output is the **`assistant`** turn(s).
+- `task` is the **dataset row as a dict** (e.g. `{"prompt": …, "ground_truth": …}`),
+  or `None` if the env grades without per-row data — read it defensively with
+  `(task or {}).get("ground_truth")`.
+
+Copy-paste — get the model's final text answer:
+
+```python
+def last_answer(messages) -> str:
+    """The model's final text answer (last assistant turn)."""
+    for m in reversed(messages):
+        if m["role"] == "assistant" and m.get("content"):
+            return m["content"]
+    return ""
+```
+
+To join *every* assistant turn instead (multi-turn rollouts), use the shipped
+helper: `from benchmax.envs.reward_helpers import extract_completion_text`.
+
 ## Reward rules (these decide whether training works)
 
 - Return **positive** scores. Negatives destabilise training.

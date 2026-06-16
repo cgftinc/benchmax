@@ -44,8 +44,30 @@ def _fmt_rewards(rewards: dict | None) -> str:
     return ", ".join(f"{k}={fmt_value(v)}" for k, v in rewards.items())
 
 
+def _ok_rewards(remote) -> list[dict]:
+    """Reward dicts for the rollouts that succeeded (basis for mean + variance)."""
+    return [ex.rewards or {} for ex in remote.examples if ex.ok]
+
+
+def _constant_components(ok_rewards: list[dict]) -> list[tuple[str, object]]:
+    """Reward components that never vary across the ok rollouts — a constant
+    component gives no gradient, so training can't learn from it (the classic
+    "all-zero reward" footgun). Needs >=2 rollouts to mean anything; returns
+    ``(component, value)`` per offending component, sorted by name."""
+    if len(ok_rewards) < 2:
+        return []
+    keys = sorted({k for r in ok_rewards for k in r})
+    constant = []
+    for k in keys:
+        values = [r[k] for r in ok_rewards if k in r]
+        if len(values) >= 2 and len(set(values)) == 1:
+            constant.append((k, values[0]))
+    return constant
+
+
 def _report_to_dict(report) -> dict:
     remote = report.remote
+    ok_rewards = _ok_rewards(remote) if remote else []
     return {
         "ok": report.ok,
         "local_ran": report.local_ran,
@@ -55,6 +77,15 @@ def _report_to_dict(report) -> dict:
         "examples": [
             {"index": e.index, "ok": e.ok, "error": e.error, "rewards": e.rewards}
             for e in (remote.examples if remote else [])
+        ],
+        "warnings": [
+            {
+                "kind": "constant_reward_component",
+                "component": name,
+                "value": value,
+                "rollouts": len(ok_rewards),
+            }
+            for name, value in _constant_components(ok_rewards)
         ],
         "group_reward": (
             None
@@ -93,6 +124,19 @@ def _print_report(report) -> None:
         mean = _mean_rewards(ok_rewards)
         if mean:
             print(f"Mean reward: {_fmt_rewards(mean)}")
+
+        constant = _constant_components(ok_rewards)
+        if constant:
+            print()
+            for name, value in constant:
+                print(
+                    f"⚠ reward component {name!r} never varies across the "
+                    f"{len(ok_rewards)} sampled rollouts (every value = {fmt_value(value)})"
+                )
+            print(
+                "  A constant reward gives no signal to learn from — check the "
+                "reward logic, or sample more varied rows with --examples N."
+            )
 
         group = remote.group_reward
         if group is None:
