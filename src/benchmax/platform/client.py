@@ -59,11 +59,19 @@ class LaunchArgSpec:
 
 @dataclass(frozen=True)
 class ExampleValidation:
-    """Per-example outcome from RolloutClient.validate_examples."""
+    """Per-example outcome from RolloutClient.validate_examples.
+
+    ``rewards`` carries the reward components produced by the rollout —
+    ``compute_reward`` for a per-example entry, and the across-sibling **mean**
+    ``compute_group_reward`` for the group entry (index ``-1``). None when the
+    rollout failed or the server reported no reward values. Surfacing these is
+    what lets ``castform validate`` show numbers, not just pass/fail.
+    """
 
     index: int
     ok: bool
     error: str | None = None
+    rewards: dict[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +125,25 @@ def _get_mime_type(path: Path) -> str:
 def _file_hash(content: bytes, length: int = 8) -> str:
     """Compute a short hash of file content."""
     return hashlib.sha256(content).hexdigest()[:length]
+
+
+def _mean_rewards(reward_dicts: list[Any]) -> dict[str, float] | None:
+    """Mean of each reward component across rollouts. None if no numeric values.
+
+    Bools are excluded (``bool`` is an ``int`` subclass but not a reward).
+    """
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for rewards in reward_dicts:
+        if not isinstance(rewards, dict):
+            continue
+        for key, value in rewards.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                sums[key] = sums.get(key, 0.0) + float(value)
+                counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    return {key: sums[key] / counts[key] for key in sums}
 
 
 class _BearerAuth(httpx.Auth):
@@ -1212,6 +1239,9 @@ class RolloutClient:
                         error=None
                         if ok
                         else (final.get("error") or "rollout reported success=False"),
+                        # Surface the per-rollout reward components (dropped here
+                        # before — they're what `castform validate` displays).
+                        rewards=final.get("rewards"),
                     )
                 )
             except (RolloutError, RuntimeError) as exc:
@@ -1431,6 +1461,9 @@ class RolloutClient:
                 index=-1, ok=False, error=f"all group rollouts failed: {first}"
             )
 
+        # Mean group reward across the succeeded siblings — the numbers the
+        # group path computed and used to discard before.
+        mean = _mean_rewards([e.get("rewards") for e in succeeded])
         if verbose:
             print(
                 _ok(
@@ -1438,4 +1471,4 @@ class RolloutClient:
                     f"{len(succeeded)}"
                 )
             )
-        return ExampleValidation(index=-1, ok=True)
+        return ExampleValidation(index=-1, ok=True, rewards=mean)

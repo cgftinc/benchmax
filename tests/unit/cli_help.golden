@@ -9,6 +9,7 @@ positional arguments:
     whoami    Show the current login
     runs      Inspect training runs
     stop      Stop (cancel) a run you own
+    validate  Verify an env on a real-rollout subset; show rewards + errors
 
 options:
   -h, --help  show this help message and exit
