@@ -10,6 +10,7 @@ positional arguments:
     runs      Inspect training runs
     stop      Stop (cancel) a run you own
     validate  Verify an env on a real-rollout subset; show rewards + errors
+    launch    Validate, upload, and launch a training run
 
 options:
   -h, --help  show this help message and exit
