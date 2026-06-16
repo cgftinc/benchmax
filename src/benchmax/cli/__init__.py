@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from benchmax.cli import _auth, control, data, launch, runs, validate
+from benchmax.cli import _auth, control, data, launch, runs, setup, validate
 
 # Re-export auth handlers — tests/unit/test_cli.py imports them as cli._cmd_*.
 from benchmax.cli._auth import _cmd_login, _cmd_logout, _cmd_whoami
@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.register(sub)
     launch.register(sub)
     data.register(sub)
+    setup.register(sub)
     return parser
 
 

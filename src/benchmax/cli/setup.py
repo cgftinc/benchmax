@@ -1,0 +1,128 @@
+"""castform setup — scaffold a project for an agent-driven RL run (slice 1.8).
+
+Logs you in (no-op if already authed), then writes the agent scaffold from the
+packaged templates (``benchmax/cli/scaffold``): CLAUDE.md / AGENTS.md, the
+per-stage skills into ``.claude/skills/``, and a starter prompt. Does NOT open
+the agent. The scaffold prose duplicates the web-app generator
+(``buildAgentContextBody``) for now — accepted divergence debt; keep aligned.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from importlib import resources
+from pathlib import Path
+
+from benchmax import config
+from benchmax.cli._client import handle_errors
+from benchmax.platform import credentials
+
+_SKILLS = (
+    "design-environment",
+    "generate-data",
+    "verify-environment",
+    "launch-run",
+    "view-progress",
+)
+
+
+def _scaffold():
+    return resources.files("benchmax.cli.scaffold")
+
+
+def _write(dest: Path, text: str, *, force: bool, log: list[str]) -> None:
+    if dest.exists() and not force:
+        log.append(f"  skip (exists): {dest}")
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(text, encoding="utf-8")
+    log.append(f"  wrote {dest}")
+
+
+def _login_first(skip: bool) -> None:
+    if skip:
+        return
+    try:
+        credentials.platform_bearer()
+        jwt = credentials._session_jwt()
+        who = (
+            credentials._jwt_claims(jwt).get("email") if jwt else None
+        ) or "your account"
+        print(f"Signed in as {who} ({config.base_domain()}).")
+    except RuntimeError:
+        print("Signing in…")
+        from benchmax.platform.login import _login
+
+        _login()
+        print(f"✓ Signed in to {config.base_domain()}.")
+
+
+def _choose_agents(arg: str | None) -> set[str]:
+    if arg:
+        return {"claude", "codex"} if arg == "both" else {arg}
+    if sys.stdin.isatty():
+        reply = (
+            input("Which coding agent? [claude/codex/both] (default both): ")
+            .strip()
+            .lower()
+        )
+        if reply in ("claude", "codex"):
+            return {reply}
+    return {"claude", "codex"}  # default: write for both (same prose, harmless)
+
+
+@handle_errors
+def _cmd_setup(args: argparse.Namespace) -> int:
+    target = Path(args.dir).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+
+    _login_first(args.skip_login)
+
+    agents = _choose_agents(args.agent)
+    root = _scaffold()
+    instructions = (root / "CLAUDE.md").read_text(encoding="utf-8")
+    starter = (root / "STARTER.md").read_text(encoding="utf-8")
+
+    log: list[str] = []
+    if "claude" in agents:
+        _write(target / "CLAUDE.md", instructions, force=args.force, log=log)
+        for name in _SKILLS:
+            skill = (root / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+            _write(
+                target / ".claude" / "skills" / name / "SKILL.md",
+                skill,
+                force=args.force,
+                log=log,
+            )
+    if "codex" in agents:
+        _write(target / "AGENTS.md", instructions, force=args.force, log=log)
+    _write(target / "GETTING_STARTED.md", starter, force=args.force, log=log)
+
+    print(f"\nScaffolded {target} for: {', '.join(sorted(agents))}")
+    print("\n".join(log))
+    print("\n" + "─" * 60)
+    print(starter)
+    return 0
+
+
+def register(sub: argparse._SubParsersAction) -> None:
+    """Attach the top-level `setup` verb."""
+    p = sub.add_parser(
+        "setup", help="Sign in + scaffold this project for a coding agent"
+    )
+    p.add_argument(
+        "--dir", default=".", help="Project directory to scaffold (default: .)"
+    )
+    p.add_argument(
+        "--agent",
+        choices=["claude", "codex", "both"],
+        help="Coding agent (default: ask, else both)",
+    )
+    p.add_argument(
+        "--force", action="store_true", help="Overwrite existing scaffold files"
+    )
+    p.add_argument(
+        "--skip-login", action="store_true", help="Don't sign in (scaffold only)"
+    )
+    p.set_defaults(func=_cmd_setup)
