@@ -11,6 +11,7 @@ positional arguments:
     stop      Stop (cancel) a run you own
     validate  Verify an env on a real-rollout subset; show rewards + errors
     launch    Validate, upload, and launch a training run
+    data      Dataset utilities
 
 options:
   -h, --help  show this help message and exit
