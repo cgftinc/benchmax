@@ -2,9 +2,11 @@
 
 Logs you in (no-op if already authed), then writes the agent scaffold from the
 packaged templates (``benchmax/cli/scaffold``): CLAUDE.md / AGENTS.md, the
-per-stage skills into ``.claude/skills/``, and a starter prompt. Does NOT open
-the agent. The scaffold prose duplicates the web-app generator
-(``buildAgentContextBody``) for now — accepted divergence debt; keep aligned.
+per-stage skills into ``.claude/skills/``, a starter prompt, and a working
+starter env (``run.py`` + ``train_dataset.jsonl`` / ``eval_dataset.jsonl``) so the
+first ``castform validate`` is green out of the box. Does NOT open the agent.
+The scaffold prose duplicates the web-app generator (``buildAgentContextBody``)
+for now — accepted divergence debt; keep aligned.
 """
 
 from __future__ import annotations
@@ -24,6 +26,14 @@ _SKILLS = (
     "verify-environment",
     "launch-run",
     "view-progress",
+)
+
+# Starter env + datasets, written to the project root (unless --no-template). A
+# working run.py so the first `castform validate` is green; see scaffold/run.py.
+_TEMPLATES = (
+    "run.py",
+    "train_dataset.jsonl",
+    "eval_dataset.jsonl",
 )
 
 
@@ -99,6 +109,17 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         _write(target / "AGENTS.md", instructions, force=args.force, log=log)
     _write(target / "GETTING_STARTED.md", starter, force=args.force, log=log)
 
+    # Starter env + datasets (the fast-path core). --no-template = docs only, for
+    # seasoned users bringing their own run.py. Skip-if-exists never clobbers them.
+    if not args.no_template:
+        for name in _TEMPLATES:
+            _write(
+                target / name,
+                (root / name).read_text(encoding="utf-8"),
+                force=args.force,
+                log=log,
+            )
+
     print(f"\nScaffolded {target} for: {', '.join(sorted(agents))}")
     print("\n".join(log))
     print("\n" + "─" * 60)
@@ -121,6 +142,11 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--force", action="store_true", help="Overwrite existing scaffold files"
+    )
+    p.add_argument(
+        "--no-template",
+        action="store_true",
+        help="Docs only — skip the starter run.py + datasets",
     )
     p.add_argument(
         "--skip-login", action="store_true", help="Don't sign in (scaffold only)"
