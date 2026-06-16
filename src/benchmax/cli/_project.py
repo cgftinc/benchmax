@@ -107,7 +107,12 @@ def load_project(
     """Load the env class + datasets for a project dir (or an importable module)."""
     from_file = module_path is None
     if module_path:
-        module = importlib.import_module(module_path)
+        try:
+            module = importlib.import_module(module_path)
+        except Exception as exc:  # missing dep, bad path, import-time error
+            raise ProjectError(
+                f"Could not import module {module_path!r}: {exc}"
+            ) from exc
     else:
         path = Path(directory) / run_file
         if not path.exists():

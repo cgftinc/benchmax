@@ -74,6 +74,15 @@ def test_load_jsonl_missing(tmp_path):
         _load_jsonl(tmp_path / "nope.jsonl")
 
 
+def test_load_project_bad_module_is_project_error():
+    # A missing dep / bad module path must surface as ProjectError, not a raw
+    # ModuleNotFoundError traceback (regression: the --module branch was unwrapped).
+    from benchmax.cli._project import load_project
+
+    with pytest.raises(ProjectError, match="Could not import module"):
+        load_project(module_path="benchmax.totally.not.a.module")
+
+
 # --- validate report rendering ------------------------------------------
 
 
@@ -98,7 +107,7 @@ def _validate_ns(**over) -> argparse.Namespace:
         examples=2,
         group_samples=2,
         local_only=False,
-        no_stream=True,
+        verbose=False,
         json=False,
     )
     base.update(over)

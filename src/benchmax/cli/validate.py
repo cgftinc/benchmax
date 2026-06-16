@@ -140,7 +140,9 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         remote_examples=args.examples,
         group_reward_samples=args.group_samples,
         llm_model=args.model,
-        verbose=not args.no_stream,
+        # The SDK streams rollout events live regardless; --verbose adds
+        # validate_env's own summary on top. Default off — our summary is below.
+        verbose=args.verbose,
     )
 
     if args.json:
@@ -192,7 +194,9 @@ def register(sub: argparse._SubParsersAction) -> None:
         help="Run offline contract checks only (no rollouts; needs env deps installed)",
     )
     p.add_argument(
-        "--no-stream", action="store_true", help="Suppress live rollout output"
+        "--verbose",
+        action="store_true",
+        help="Also show validate_env's own progress summary (rollout events always stream)",
     )
     p.add_argument("--json", action="store_true", help="Emit raw JSON")
     p.set_defaults(func=_cmd_validate)
