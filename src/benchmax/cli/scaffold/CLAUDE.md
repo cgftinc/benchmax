@@ -2,7 +2,13 @@
 
 This project trains an LLM with reinforcement learning on **castform**. You (the
 coding agent) drive the whole loop with the `castform` CLI: design an environment
-→ make data → **validate** (cheap, real rollouts) → **launch** (GPU) → monitor.
+→ make data → reach a **baseline** (`castform validate` — cheap, real rollouts) →
+review → **iterate or launch** (GPU) → monitor.
+
+`castform setup` already dropped a **working** starter env (`run.py` + datasets),
+so `castform validate` is green right away — customize it for your task from
+there. The green baseline is the milestone: when validate passes with sane,
+**varying** rewards, stop and decide **iterate or launch**.
 
 > Skills for each stage live in `.claude/skills/` — `design-environment`,
 > `generate-data`, `verify-environment`, `launch-run`, `view-progress`. Read the
@@ -32,15 +38,22 @@ load those two files. Keep that layout.
 
 1. **Design the environment** (`design-environment` skill). A `BaseEnv` subclass
    with `list_tools` / `run_tool` / `compute_reward`, and optionally
-   `compute_group_reward` for relative/ranking rewards.
+   `compute_group_reward` for relative/ranking rewards. Tools are optional — return
+   `[]` from `list_tools` for single-turn tasks. (RAG/traces tasks connect/ingest
+   the source first — see `generate-data`.)
 2. **Make the data** (`generate-data` skill). Write `train_dataset.jsonl` /
    `eval_dataset.jsonl`. Upload a local file with `castform data upload <file>`.
-3. **Validate** (`verify-environment` skill): `castform validate`. Runs a small
+3. **Baseline** (`verify-environment` skill): `castform validate`. Runs a small
    real-rollout subset on a cheap model (no GPU) and prints per-rollout + group
-   reward values and any reward-function errors. Do this until rewards look sane.
-4. **Launch** (`launch-run` skill): `castform launch`. Validates, uploads, and
-   launches a GPU run; prints the run URL.
-5. **Monitor** (`view-progress` skill): `castform runs status/scalars/logs <id>`.
+   reward values and any reward-function errors. A green baseline = validate
+   passes with sane, **varying** rewards.
+4. **Review & decide** — the **iterate-or-launch** point. Read the rewards: if
+   they don't discriminate (the constant-reward warning, or every rollout scores
+   alike), the rows may be too easy/hard for the model — fix the reward or data
+   and re-validate. Otherwise, launch.
+5. **Launch** (`launch-run` skill): `castform launch`. Validates, uploads, and
+   launches a GPU run; prints the run URL. (Spends credits.)
+6. **Monitor** (`view-progress` skill): `castform runs status/scalars/logs <id>`.
 
 ## Reward functions — get these right
 
