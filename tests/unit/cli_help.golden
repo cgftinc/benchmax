@@ -1,0 +1,12 @@
+usage: castform [-h] <command> ...
+
+Castform CLI
+
+positional arguments:
+  <command>
+    login     Sign in via your browser
+    logout    Clear the cached session
+    whoami    Show the current login
+
+options:
+  -h, --help  show this help message and exit
