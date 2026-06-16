@@ -15,6 +15,7 @@ observed", not "verified". The output says which.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 
@@ -170,24 +171,33 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    # The SDK streams rollout events to stdout regardless. In --json mode keep
+    # stdout clean (machine-readable, pipeable to jq) by routing that stream to
+    # stderr; we emit only the JSON object on stdout below.
+    stream_sink = (
+        contextlib.redirect_stdout(sys.stderr)
+        if args.json
+        else contextlib.nullcontext()
+    )
+
     # Default: remote rollout subset (local=False) — runs compute_reward and
     # compute_group_reward for real, no local deps required. --local-only does
     # the offline contract checks instead (needs the env's deps installed here).
-    report = validate_env(
-        env_class=project.env_class,
-        env_args=_parse_env_args(args.env_arg),
-        train_dataset=project.train_dataset,
-        eval_dataset=project.eval_dataset or None,
-        local_modules=[project.module] if project.from_file else None,
-        local=args.local_only,
-        api_key=None,  # device session via the bearer seam
-        remote_examples=args.examples,
-        group_reward_samples=args.group_samples,
-        llm_model=args.model,
-        # The SDK streams rollout events live regardless; --verbose adds
-        # validate_env's own summary on top. Default off — our summary is below.
-        verbose=args.verbose,
-    )
+    with stream_sink:
+        report = validate_env(
+            env_class=project.env_class,
+            env_args=_parse_env_args(args.env_arg),
+            train_dataset=project.train_dataset,
+            eval_dataset=project.eval_dataset or None,
+            local_modules=[project.module] if project.from_file else None,
+            local=args.local_only,
+            api_key=None,  # device session via the bearer seam
+            remote_examples=args.examples,
+            group_reward_samples=args.group_samples,
+            llm_model=args.model,
+            # --verbose adds validate_env's own summary on top; default off.
+            verbose=args.verbose,
+        )
 
     if args.json:
         print_json(_report_to_dict(report))

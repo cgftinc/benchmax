@@ -8,7 +8,32 @@ description: Design a castform RL environment — a BaseEnv subclass with tools 
 The environment is a single `BaseEnv` subclass in `run.py`. It defines what the
 model can do (tools), how a rollout is scored (rewards), and the system prompt.
 
-## Minimal shape
+## Fast path (to a green baseline)
+
+`castform setup` already wrote a **working** `run.py` — a single-turn QA env whose
+reward scores `1.0` when the model's final answer contains the row's
+`ground_truth`, else `0.0` (a discriminating reward, not an all-zero stub). So you
+can validate it immediately:
+
+```bash
+castform validate
+```
+
+Then customize it for your task — usually just three things:
+
+1. **`system_prompt`** — what the model is told it's doing.
+2. **`compute_reward`** — how a rollout is scored. Keep it **discriminating** (it
+   must give different scores to better/worse answers).
+3. the datasets — the **generate-data** skill.
+
+The starter is single-turn with no tools (`list_tools` returns `[]`). That's the
+right default — only reach for tools if the task genuinely needs them.
+
+Next: **generate-data** for the datasets, then **verify-environment** to validate.
+
+## Going deeper
+
+### The BaseEnv shape
 
 ```python
 from benchmax.envs.base_env import BaseEnv
@@ -23,8 +48,10 @@ class MyEnv(BaseEnv):
         ...                            # only reached if list_tools is non-empty
 
     async def compute_reward(self, rollout_id, messages, task, **kwargs):
-        # messages = full transcript; task = the dataset row (prompt, ground_truth, …)
-        return {"quality": 0.0}        # dict[str, float]
+        # messages = full transcript; task = the dataset row (prompt, ground_truth…).
+        # Return a DISCRIMINATING dict[str, float] — see Reward rules below. The
+        # starter scores `correct = ground_truth in the model's final answer`.
+        ...
 
     # optional: relative/ranking reward across a rollout group
     async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kwargs):
@@ -35,7 +62,7 @@ class MyEnv(BaseEnv):
 `prompt` (or `messages` / `prompt_messages`) field, and exposes the whole row as
 `task`. Override it only if your columns differ.
 
-## Reading the rollout (`messages` and `task`)
+### Reading the rollout (`messages` and `task`)
 
 Both reward hooks are `async`. `messages` is the full transcript as a list of
 `{"role", "content"}` dicts (OpenAI chat shape):
@@ -55,7 +82,8 @@ Both reward hooks are `async`. `messages` is the full transcript as a list of
   or `None` if the env grades without per-row data — read it defensively with
   `(task or {}).get("ground_truth")`.
 
-Copy-paste — get the model's final text answer:
+Copy-paste — get the model's final text answer (the starter inlines exactly this;
+there is **no importable `last_answer`** helper, so don't `import` one):
 
 ```python
 def last_answer(messages) -> str:
@@ -69,38 +97,38 @@ def last_answer(messages) -> str:
 To join *every* assistant turn instead (multi-turn rollouts), use the shipped
 helper: `from benchmax.envs.reward_helpers import extract_completion_text`.
 
-## Reward rules (these decide whether training works)
+### Reward rules (these decide whether training works)
 
 - Return **positive** scores. Negatives destabilise training.
 - **Every component is summed** into one scalar — scale components so the sum
   reflects the priorities you want.
+- Keep it **discriminating**: a reward that returns the same value for every
+  rollout gives no gradient. If `validate` warns a component never varies, the
+  reward or the data needs work (see generate-data's difficulty-filter).
 - For qualitative scoring, be **comparative**: judge against `ground_truth`, or
   use `compute_group_reward` to **rank** completions within the group. Ranking is
   much more stable than an absolute LLM-judge score.
 - `compute_group_reward` must return one `dict[str, float]` per rollout, all
   finite. Override it only when reward needs cross-rollout context.
 
-## Tools / turns
+### Tools / turns
 
 - No tool need? Return `[]` from `list_tools` (single-turn). Don't add tools the
   task doesn't require.
 - If you DO use tools, the env is multi-turn — and `max_turns` defaults to **4**,
   `max_tool_calls` to **8**. The trainer ignores any `recommended_max_*` on the
-  env. Plan to pass the real limit at launch (`--set max_turns=N`); note it in
-  `run.py` so it isn't forgotten.
+  env. Plan to pass the real limit at launch (`castform launch --set max_turns=N`);
+  note it in `run.py` so it isn't forgotten.
 
-## Companion-server envs (advanced)
+### Companion-server envs (advanced)
 
 If the env needs a separate server (a game/sim like Showdown), that server must
 be provisioned alongside the rollout (the `SkypilotProvisioner` pattern). This is
 manual today and the biggest footgun — get a single-turn, no-companion env
 working first.
 
-## Dependencies
+### Dependencies
 
 Imports beyond benchmax must be bundled at launch: external PyPI via
 `--pip <pkg>` (or `pip_dependencies=[…]`), local files are bundled from `run.py`
 automatically by `castform launch` (pass `local_modules=[mod]` if calling the SDK).
-
-When the env looks right, go to the **verify-environment** skill and run
-`castform validate`.
