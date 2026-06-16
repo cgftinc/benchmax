@@ -23,6 +23,9 @@ through `castform validate`, then grow.
 - Keep train and eval **disjoint**. Eval is what you watch for generalisation.
 - The row is passed to `compute_reward` as `task`, so put any per-example scoring
   data (answers, rubrics, configs) right in the row.
+- Store large integers as **strings**, not JSON numbers. A numeric value above the
+  JS safe-integer limit (~`2^53`) fails the rollout (a Python↔TypeScript
+  number-divergence guard), so write `"ground_truth": "24024198…"`, not a bare int.
 
 `castform launch` uploads your datasets automatically; manual upload is only for
 sharing/inspecting a file out of band:
