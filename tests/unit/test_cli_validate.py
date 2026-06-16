@@ -184,3 +184,57 @@ def test_env_arg_parsing():
         "b": "hi",
         "c": True,
     }
+
+
+# --- constant / all-zero reward warning ---------------------------------
+
+
+def test_validate_warns_on_constant_component(monkeypatch, capsys):
+    # 'fmt' is uniformly 0 across both rollouts (the "can't learn" footgun);
+    # 'acc' varies and must NOT be flagged. Soft warning — exit code unchanged.
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"acc": 1.0, "fmt": 0.0}),
+            ExampleValidation(index=1, ok=True, rewards={"acc": 0.0, "fmt": 0.0}),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0  # still green
+    out = capsys.readouterr().out
+    assert "reward component 'fmt' never varies" in out
+    assert "reward component 'acc' never varies" not in out
+
+
+def test_validate_constant_needs_two_rollouts(monkeypatch, capsys):
+    # A single rollout can't establish variance — don't warn.
+    report = _report(
+        examples=[ExampleValidation(index=0, ok=True, rewards={"acc": 0.0})],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0
+    assert "never varies" not in capsys.readouterr().out
+
+
+def test_validate_json_includes_constant_warning(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"acc": 0.0}),
+            ExampleValidation(index=1, ok=True, rewards={"acc": 0.0}),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns(json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"warnings"' in out and '"component": "acc"' in out
+
+
+def test_constant_components_helper():
+    # direct unit: ignores varying + single-value sets, flags the constant one.
+    assert validate._constant_components(
+        [{"a": 1.0, "b": 0.0}, {"a": 2.0, "b": 0.0}]
+    ) == [("b", 0.0)]
+    assert validate._constant_components([{"a": 0.0}]) == []  # <2 rollouts
+    assert validate._constant_components([]) == []
