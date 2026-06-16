@@ -33,7 +33,8 @@ castform validate --json          # machine-readable
 **Errors are surfaced, not swallowed.** Common ones:
 - *missing / bad judge API key* → an LLM-judge reward couldn't authenticate. Set
   the judge's key/url (often via the env's constructor args / env vars) and
-  re-run. validate shows the error string in both the per-rollout and group rows.
+  re-run. validate shows the error string in the per-rollout row (and the group
+  row too if the judge runs inside `compute_group_reward`).
 - *contract violation* → `compute_reward` must return `dict[str, float]`;
   `compute_group_reward` one finite dict per rollout.
 

@@ -31,7 +31,8 @@ Key ones:
 - **`model`** — e.g. `Qwen/Qwen3.5-4B` (smaller, cheaper) or `Qwen/Qwen3.5-35B-A3B`.
 - **`max_rollout_len`** — total tokens generated across the WHOLE rollout (all
   turns), not a per-response cap. This is the real knob; **`max_response_len` is
-  not a thing** (the server rejects it).
+  not a thing** (the server rejects it). A rollout that hits the budget is
+  truncated and dropped from the loss — set it generously.
 - **`max_turns`** — defaults to **4**. If your env is multi-turn, set this
   explicitly: `--set max_turns=N`. The trainer does not read the env's
   `recommended_max_turns`.

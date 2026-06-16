@@ -202,7 +202,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--eval", default="eval_dataset.jsonl", help="Eval dataset (jsonl)")
     p.add_argument("--name", help="Run name (default: the env class name)")
     p.add_argument(
-        "--type", default="simple", help="Training run type (e.g. simple, simple-r5)"
+        "--type",
+        default="simple",
+        help="Training run type: simple (GPU) or simple-cpu (smoke)",
     )
     p.add_argument(
         "--env-arg", action="append", metavar="KEY=VALUE", help="Env constructor arg"

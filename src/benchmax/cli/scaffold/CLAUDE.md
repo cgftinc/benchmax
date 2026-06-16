@@ -75,7 +75,9 @@ automatically; if you call the SDK directly, pass them to `upload_training_run`.
   so always set the limit explicitly at launch: `castform launch --set max_turns=N`.
 - **The launch token budget is `max_rollout_len`** (total tokens across the whole
   rollout, all turns) — **not** `max_response_len`. The server rejects unknown
-  arg names. `castform launch --list-args` shows the live, accepted set.
+  arg names. `castform launch --list-args` shows the live, accepted set. Set it
+  generously: a rollout that hits the budget is truncated and **dropped from the
+  loss**, so too small a value silently wastes rollouts.
 - **Companion-server envs** (an env that talks to a separate game/sim server, e.g.
   a Showdown-style env) need that server provisioned alongside the rollout — the
   `SkypilotProvisioner` pattern. This is manual today and is the biggest
