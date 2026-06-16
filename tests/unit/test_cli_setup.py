@@ -110,6 +110,23 @@ def test_setup_template_force_overwrites(tmp_path):
     assert (tmp_path / "run.py").read_text() != "MINE"
 
 
+def test_getting_started_uses_one_prompt_model(tmp_path):
+    """GETTING_STARTED mirrors the UI's one-prompt model (3 AGENT_PROMPTS variants
+    + baseline handoff), not the old rigid 1-4 checklist."""
+    assert setup._cmd_setup(_ns(tmp_path, agent="claude")) == 0
+    gs = (tmp_path / "GETTING_STARTED.md").read_text()
+    # the 3 paste-able variants (generic / rag / traces) matching the UI backbone
+    assert "improve a model on <your task>" in gs
+    assert "retrieval-augmented" in gs
+    assert "production traces" in gs
+    # explicit baseline -> iterate-or-launch handoff
+    assert "green baseline" in gs and "iterate or launch" in gs.lower()
+    # the rigid checklist + reward-Q&A-first framing are gone
+    assert "work through them in order" not in gs.lower()
+    assert "how to reward it" not in gs
+    assert "Quick commands" in gs
+
+
 def test_starter_reward_discriminates(tmp_path):
     """Deterministic proof the shipped reward is discriminating: 1.0 on a correct
     answer, 0.0 on a wrong one. (A strong cheap model may still score uniformly on

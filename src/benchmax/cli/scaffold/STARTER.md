@@ -1,22 +1,64 @@
 # Get started
 
-Paste this to your coding agent to kick off a run (edit the goal first):
+`castform setup` already dropped a **working** starter env here (`run.py` +
+`train_dataset.jsonl` / `eval_dataset.jsonl`), so you can hit a green baseline
+right now — cheap, no GPU:
 
----
-I want to train a model on **castform** to: **‹describe your task — what should the
-model get better at, and how do we judge success?›**
+```
+castform validate
+```
 
-Use the castform skills in `.claude/skills/`. Work through them in order:
-1. **design-environment** — write `run.py` (a `BaseEnv` with `compute_reward`;
-   use `compute_group_reward` ranking if it fits the task).
-2. **generate-data** — write `train_dataset.jsonl` + `eval_dataset.jsonl`
-   (`prompt` + `ground_truth` per line).
-3. **verify-environment** — run `castform validate` and iterate until the reward
-   values look sane and nothing errors. (Cheap — no GPU.)
-4. **launch-run** — once I confirm, `castform launch` (this spends GPU).
+Then point your coding agent (Claude Code / Codex) at your real task. Pick the
+variant that matches your goal, swap in the `<…>` placeholder, and paste it in.
+The agent decomposes the goal and works through the stages — consulting the
+skills in `.claude/skills/` as reference, not following them in lockstep.
 
-Start by asking me any clarifying questions about the task and how to reward it.
----
+## Paste one of these into your agent
+
+**Your own task** (fully wired end-to-end today):
+
+```
+i want to start a training run to improve a model on <your task>. create a
+reasonable environment with relevant tools, generate a small synthetic dataset,
+run a baseline eval, review the results, and propose next steps to either
+iterate or launch.
+```
+
+**RAG over your corpus:**
+
+```
+i want to start a training run to improve a model on retrieval-augmented
+answering over my own corpus. connect <your corpus or data source>, create a rag
+environment with retrieval tools, generate a small synthetic dataset of
+questions and grounded answers, run a baseline eval, review the results, and
+propose next steps to either iterate or launch.
+```
+
+**From your agent's production traces:**
+
+```
+i want to start a training run to improve a model on my own agent's tasks using
+my production traces. ingest <your exported traces>, create an environment with
+the relevant tools, build a small eval set from the traces, run a baseline eval
+against my current model, review the results, and propose next steps to either
+iterate or launch.
+```
+
+> Only the **first (generic) flow completes end-to-end on today's CLI.** The RAG
+> and traces *front-halves* — corpus connect / trace ingest and synthetic Q&A
+> generation — are library-direct or coming; the **generate-data** skill points
+> at the lib calls. The environment → baseline → launch back-half is identical
+> for all three.
+
+## The milestone: a green baseline
+
+When `castform validate` passes on your env with sane, **varying** rewards,
+you've hit a **green baseline**. That's the decision point — the agent should
+stop and ask:
+
+> **Baseline is green — iterate or launch?**
+> - *Iterate* — improve the reward / data / env and re-validate (still no GPU).
+> - *Launch* — `castform launch` to train on GPUs (this spends credits).
 
 ## Quick commands
 
