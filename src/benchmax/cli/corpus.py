@@ -2,14 +2,17 @@
 
 ``corpus ingest <folder>`` chunks a local document folder and uploads it to the
 deployed Corpora backend (BM25/lexical search), yielding a named corpus that
-``data qa-gen`` and the rag ``run.py`` template resolve by name. Thin wrapper over
-``benchmax.rag.corpus.postgres.PostgresChunkSource`` — the rag bits import lazily
-so users without the ``[rag]`` extra don't trip at CLI registration.
+``data qa-gen`` and the rag ``run.py`` template resolve by name. ``corpus list`` /
+``corpus delete`` manage them against the 5-corpus-per-user cap (the cap is why
+``ingest`` can refuse — delete one to free a slot). Thin wrappers over
+``benchmax.rag.corpus.postgres`` — the rag bits import lazily so users without the
+``[rag]`` extra don't trip at CLI registration.
 
 Corpus creation is forced **non-interactive** (``on_limit="error"``): the lib's
 default ``on_limit="prompt"`` would call ``input()`` at the 5-corpus cap, which
 hangs a CLI. ``"error"`` instead finds an existing corpus by name, creates one if
 under cap, or raises ``CorpusLimitError`` — surfaced here as a clean message.
+``delete`` likewise requires ``--yes`` rather than prompting.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from benchmax import config
 from benchmax.cli._client import handle_errors
 
 _RAG_INSTALL_HINT = "Install RAG support with: pip install castform[rag]"
@@ -75,6 +79,84 @@ def _cmd_corpus_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _corpus_client():
+    """A CorpusClient bound to the configured platform host + credential seam.
+
+    Lazy-imported so the base CLI registers without the ``[rag]`` extra.
+    """
+    from benchmax.rag.corpus.postgres.client import CorpusClient
+
+    return CorpusClient(base_url=config.platform_url())
+
+
+@handle_errors
+def _cmd_corpus_list(args: argparse.Namespace) -> int:
+    try:
+        client = _corpus_client()
+    except ImportError as exc:
+        print(f"Error: {exc}. {_RAG_INSTALL_HINT}", file=sys.stderr)
+        return 1
+    corpora = client.list_corpora()
+    if args.json:
+        from benchmax.cli._output import print_json
+
+        print_json(
+            [
+                {"id": c.id, "name": c.name, "created_at": c.created_at.isoformat()}
+                for c in corpora
+            ]
+        )
+        return 0
+    if not corpora:
+        print("No corpora yet. Create one: castform corpus ingest <folder>")
+        return 0
+    print(f"{len(corpora)}/5 corpora:")
+    for c in corpora:
+        print(f"  {c.name}  (id: {c.id})")
+    return 0
+
+
+@handle_errors
+def _cmd_corpus_delete(args: argparse.Namespace) -> int:
+    try:
+        client = _corpus_client()
+    except ImportError as exc:
+        print(f"Error: {exc}. {_RAG_INSTALL_HINT}", file=sys.stderr)
+        return 1
+    corpora = client.list_corpora()
+    target = next(
+        (c for c in corpora if c.id == args.corpus or c.name == args.corpus), None
+    )
+    if target is None:
+        have = ", ".join(c.name for c in corpora) or "(none)"
+        print(
+            f"Error: no corpus matching {args.corpus!r}. Have: {have}", file=sys.stderr
+        )
+        return 1
+    # Destructive + irreversible — require explicit --yes rather than prompting
+    # (an input() would hang a non-interactive/agent run).
+    if not args.yes:
+        print(
+            f"Error: refusing to delete corpus '{target.name}' (id: {target.id}) "
+            "without --yes.",
+            file=sys.stderr,
+        )
+        return 1
+    if not client.delete_corpus(target.id):
+        print(
+            f"Error: delete failed for corpus '{target.name}' (id: {target.id}).",
+            file=sys.stderr,
+        )
+        return 1
+    if args.json:
+        from benchmax.cli._output import print_json
+
+        print_json({"deleted": True, "corpus_name": target.name, "corpus_id": target.id})
+    else:
+        print(f"✓ Deleted corpus '{target.name}' (id: {target.id})")
+    return 0
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     """Attach the `corpus` group to the top-level subparsers."""
     corpus = sub.add_parser("corpus", help="Corpus utilities for RAG envs")
@@ -94,3 +176,15 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p_ing.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_ing.set_defaults(func=_cmd_corpus_ingest)
+
+    p_ls = corpus_sub.add_parser("list", help="List your corpora (and the 5-corpus cap)")
+    p_ls.add_argument("--json", action="store_true", help="Emit raw JSON")
+    p_ls.set_defaults(func=_cmd_corpus_list)
+
+    p_del = corpus_sub.add_parser("delete", help="Delete a corpus by name or id")
+    p_del.add_argument("corpus", help="Corpus name or id to delete")
+    p_del.add_argument(
+        "--yes", action="store_true", help="Confirm deletion (required; irreversible)"
+    )
+    p_del.add_argument("--json", action="store_true", help="Emit raw JSON")
+    p_del.set_defaults(func=_cmd_corpus_delete)
