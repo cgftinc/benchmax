@@ -12,6 +12,7 @@ positional arguments:
     validate  Verify an env on a real-rollout subset; show rewards + errors
     launch    Validate, upload, and launch a training run
     data      Dataset utilities
+    corpus    Corpus utilities for RAG envs
     setup     Sign in + scaffold this project for a coding agent
 
 options:
