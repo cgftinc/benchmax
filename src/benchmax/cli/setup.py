@@ -87,6 +87,25 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     target = Path(args.dir).resolve()
     target.mkdir(parents=True, exist_ok=True)
 
+    # `--template rag` must not silently leave a stale non-rag run.py in place — it
+    # would still `validate` green and masquerade as a rag baseline. Fail loudly
+    # (require a clean dir or --force) instead of the usual skip-if-exists.
+    run_py = target / "run.py"
+    if (
+        args.template == "rag"
+        and not args.no_template
+        and run_py.exists()
+        and not args.force
+    ):
+        print(
+            f"Error: {run_py} already exists — refusing to leave a non-rag run.py "
+            "in place for --template rag (it would still validate green and look "
+            "like a working rag baseline). Re-run with --force to replace it, or "
+            "use a clean directory.",
+            file=sys.stderr,
+        )
+        return 1
+
     _login_first(args.skip_login)
 
     agents = _choose_agents(args.agent)
@@ -109,16 +128,28 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         _write(target / "AGENTS.md", instructions, force=args.force, log=log)
     _write(target / "GETTING_STARTED.md", starter, force=args.force, log=log)
 
-    # Starter env + datasets (the fast-path core). --no-template = docs only, for
-    # seasoned users bringing their own run.py. Skip-if-exists never clobbers them.
+    # Starter env (the fast-path core). --no-template = docs only, for seasoned
+    # users bringing their own run.py.
     if not args.no_template:
-        for name in _TEMPLATES:
+        if args.template == "rag":
+            # rag: write only run.py (the SearchEnv). The datasets come from
+            # `castform data qa-gen` — generic QA rows are the wrong shape for
+            # retrieval. The existing-run.py case already failed fast above.
             _write(
-                target / name,
-                (root / name).read_text(encoding="utf-8"),
+                target / "run.py",
+                (root / "rag_run.py").read_text(encoding="utf-8"),
                 force=args.force,
                 log=log,
             )
+        else:
+            # generic: run.py + starter datasets, all skip-if-exists.
+            for name in _TEMPLATES:
+                _write(
+                    target / name,
+                    (root / name).read_text(encoding="utf-8"),
+                    force=args.force,
+                    log=log,
+                )
 
     print(f"\nScaffolded {target} for: {', '.join(sorted(agents))}")
     print("\n".join(log))
@@ -142,6 +173,13 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--force", action="store_true", help="Overwrite existing scaffold files"
+    )
+    p.add_argument(
+        "--template",
+        choices=["generic", "rag"],
+        default="generic",
+        help="Starter env: 'generic' single-turn QA, or 'rag' SearchEnv "
+        "(default: generic)",
     )
     p.add_argument(
         "--no-template",

@@ -26,6 +26,7 @@ def _ns(tmp, **kw):
         force=False,
         skip_login=True,
         no_template=False,
+        template="generic",
     )
     base.update(kw)
     return argparse.Namespace(**base)
@@ -108,6 +109,47 @@ def test_setup_template_force_overwrites(tmp_path):
     (tmp_path / "run.py").write_text("MINE")
     assert setup._cmd_setup(_ns(tmp_path, force=True)) == 0
     assert (tmp_path / "run.py").read_text() != "MINE"
+
+
+def test_setup_template_rag_writes_searchenv(tmp_path):
+    """--template rag writes a run.py the loader discovers as CustomSearchEnv (a
+    SearchEnv subclass), and it constructs with no args, offline."""
+    from benchmax.cli._project import _load_module_from_file, discover_env_class
+    from benchmax.envs.postgres_search.search_env import SearchEnv
+
+    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
+    run_py = (tmp_path / "run.py").read_text()
+    assert "class CustomSearchEnv(SearchEnv)" in run_py
+    mod = _load_module_from_file(tmp_path / "run.py")
+    env_cls = discover_env_class(mod)  # imported SearchEnv is ignored (other module)
+    assert env_cls.__name__ == "CustomSearchEnv"
+    assert issubclass(env_cls, SearchEnv)
+    assert isinstance(env_cls(), SearchEnv)  # no-arg construct, no network
+
+
+def test_setup_template_rag_omits_generic_datasets(tmp_path):
+    """rag datasets come from `castform data qa-gen`; --template rag must NOT drop
+    the generic multiplication starter rows (wrong shape for retrieval)."""
+    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
+    assert (tmp_path / "run.py").exists()
+    assert not (tmp_path / "train_dataset.jsonl").exists()
+    assert not (tmp_path / "eval_dataset.jsonl").exists()
+
+
+def test_setup_template_rag_refuses_existing_run_py(tmp_path, capsys):
+    """The hollow-pass guard: existing run.py + --template rag (no --force) must
+    fail loudly and leave the file untouched — never silently skip."""
+    (tmp_path / "run.py").write_text("MINE")
+    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 1
+    assert (tmp_path / "run.py").read_text() == "MINE"  # untouched
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_setup_template_rag_force_overwrites(tmp_path):
+    (tmp_path / "run.py").write_text("MINE")
+    assert setup._cmd_setup(_ns(tmp_path, template="rag", force=True)) == 0
+    run_py = (tmp_path / "run.py").read_text()
+    assert "CustomSearchEnv" in run_py and run_py != "MINE"
 
 
 def test_getting_started_uses_one_prompt_model(tmp_path):
