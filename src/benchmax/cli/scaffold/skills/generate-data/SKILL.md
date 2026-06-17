@@ -132,6 +132,10 @@ provider's extra, e.g. `pip install castform[turbopuffer]`):
 castform data qa-gen --provider turbopuffer --fast   # → train_dataset.jsonl + eval_dataset.jsonl
 ```
 
+> That `pip install castform[<provider>]` only sets up **your machine** for qa-gen. The
+> validate/launch **sandbox** needs the same SDK independently — pass `--pip <provider>`
+> to `castform validate` (see design-environment), or the env hollow-greens.
+
 ### Traces — build data from recorded agent traces
 
 For **traces** (post-training on what your agent already did), pull and shape them

@@ -206,6 +206,17 @@ Chroma → `ChromaSearch(collection_name=…, tenant=…, database=…, token_pr
 (`config.*` and `platform_embed_fn` are fine inside `__init__` — they resolve in the
 sandbox against the env's own domain.)
 
+**Ship the provider SDK to the sandbox — REQUIRED.** The rollout sandbox bundles only
+`run.py` + benchmax; the provider SDK (`turbopuffer` / `pinecone` / `chromadb`) is NOT
+there. Pass it on **both** validate and launch, or the search client's import fails in
+the sandbox and gets swallowed into an all-zero **hollow green** (the `pip install
+castform[<provider>]` you did for `qa-gen` only fixes your *local* machine, not the
+sandbox):
+
+```bash
+castform validate --pip turbopuffer --examples 2   # repeatable; same flag on launch
+```
+
 **Does it actually retrieve?** A green `validate` can hide an empty search (the tool
 swallows errors into a string — see verify-environment). The `embed_fn` decides it:
 - **turbopuffer**: lexical/BM25 works with **no** `embed_fn`. Vector/hybrid

@@ -44,6 +44,13 @@ point:
 > `⚠ rewards DON'T vary` check even when your reward is fine — that means the rows
 > are too **easy**, not that the reward is broken. Add harder rows (generate-data's
 > difficulty-filter) or sample more with `--examples N`.
+>
+> **`validate` rolls out the FIRST N rows in file order** (not a random sample), so at
+> `--examples 2` the variance check only sees rows 0–1 — put differing-difficulty rows
+> first (or interleave them) so a varied dataset actually shows variance. If the cheap
+> eval model simply aces the whole task (pure arithmetic, lookups), no honest row will
+> vary: that's fine — verify the reward discriminates via the injected-error check
+> below, try a tougher `--model`, and treat a constant-but-verified reward as launchable.
 
 ## Going deeper
 
@@ -88,10 +95,12 @@ point:
   off variance + errors, not just the exit code):
   - `→ GREEN baseline` — usable; iterate or launch.
   - `⚠ green, but NO training signal` — validate "passed" but every reward is
-    constant: a **hollow pass**. For rag this is classically an unreachable corpus
-    the search tool swallowed into all-zero rewards. NOT a baseline — read the
-    transcript and confirm retrieval/judge actually work (generate-data has a
-    direct retrieval check).
+    constant: a **hollow pass**. For rag the search tool swallowed an error into a
+    string → all-zero rewards. Two usual causes: (1) a **provider** env whose SDK
+    isn't in the sandbox — re-run with `castform validate --pip <provider>` (see
+    design-environment); (2) an unreachable/empty corpus or bad credentials. NOT a
+    baseline — read the transcript and confirm retrieval/judge actually work
+    (generate-data has a direct retrieval check).
   - `→ NOT passing` — a reward fn errored; fix it and re-validate.
 
 **Common reward errors** (shown under `⚠ reward errors`):
