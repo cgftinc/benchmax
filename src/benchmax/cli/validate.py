@@ -20,9 +20,9 @@ import json
 import sys
 
 from benchmax.cli._client import handle_errors
-from benchmax.cli._output import fmt_value, print_json, render_table
+from benchmax.cli._output import fmt_value, print_json
 from benchmax.cli._project import ProjectError, load_project
-from benchmax.platform.client import _mean_rewards
+from benchmax.platform.client import _VALIDATION_MODEL, _mean_rewards
 
 
 def _parse_env_args(pairs: list[str] | None) -> dict:
@@ -43,6 +43,133 @@ def _fmt_rewards(rewards: dict | None) -> str:
     if not rewards:
         return "(none)"
     return ", ".join(f"{k}={fmt_value(v)}" for k, v in rewards.items())
+
+
+# --- scorecard rendering (same shape every run) -------------------------
+
+_CARD_WIDTH = 52  # header-rule width; the card body is hand-aligned, not boxed
+
+
+def _rule(label: str = "") -> str:
+    """A ``─── label ───`` header rule (plain rule when label is empty)."""
+    if not label:
+        return "─" * _CARD_WIDTH
+    prefix = f"─── {label} "
+    return prefix + "─" * max(3, _CARD_WIDTH - len(prefix))
+
+
+def _std(values: list[float]) -> float:
+    """Population std of one reward component across the sampled rollouts."""
+    n = len(values)
+    if n == 0:
+        return 0.0
+    mean = sum(values) / n
+    return (sum((v - mean) ** 2 for v in values) / n) ** 0.5
+
+
+def _check(symbol: str, label: str, detail: str = "") -> str:
+    """One aligned check row: ``  ✓  label                 detail``."""
+    return f"  {symbol}  {label:<29}{detail}".rstrip()
+
+
+def _distinct_errors(remote) -> list[str]:
+    """Unique rollout-failure messages, in first-seen order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for ex in remote.examples:
+        if not ex.ok and ex.error and ex.error not in seen:
+            seen.add(ex.error)
+            out.append(ex.error)
+    return out
+
+
+def _print_rewards(ok_rewards: list[dict]) -> None:
+    """Reward components as ``avg``/``std`` rows + a summed total."""
+    mean = _mean_rewards(ok_rewards) or {}
+    if not mean:
+        print("  reward     n/a — no successful rollouts to score")
+        return
+    comps = sorted(mean)
+    name_w = max(len("reward component"), len("total reward"), *(len(c) for c in comps))
+
+    def row(name: str, avg: str, std: str) -> str:
+        return f"  {name:<{name_w}}   {avg:>7}  {std:>7}"
+
+    print(row("reward component", "avg", "std"))
+    for k in comps:
+        vals = [
+            r[k]
+            for r in ok_rewards
+            if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool)
+        ]
+        print(row(k, fmt_value(mean[k]), fmt_value(_std(vals))))
+    print("  " + "─" * (name_w + 19))
+    print(f"  {'total reward':<{name_w}}   {fmt_value(sum(mean.values())):>7}")
+
+
+def _print_checks(report, remote, ok_rewards: list[dict]) -> None:
+    """The fixed checks block: errors, reward variance, group reward."""
+    print("  checks")
+    n = len(remote.examples)
+    n_ok = sum(1 for ex in remote.examples if ex.ok)
+    n_failed = n - n_ok
+    if n_failed == 0:
+        print(_check("✓", "no reward errors", f"{n_ok}/{n} rollouts ok"))
+    else:
+        print(
+            _check(
+                "⚠", "reward errors", f"{n_failed}/{n} rollouts failed (see transcript)"
+            )
+        )
+        for err in _distinct_errors(remote):
+            print(f"       {err}")
+
+    constant = _constant_components(ok_rewards)
+    all_comps = sorted({k for r in ok_rewards for k in r})
+    if len(ok_rewards) < 2:
+        print(
+            _check("·", "rewards vary across rollouts", "not assessed (<2 ok rollouts)")
+        )
+    elif not constant:
+        print(_check("✓", "rewards vary across rollouts"))
+    elif len(constant) == len(all_comps):
+        print(
+            _check(
+                "⚠",
+                "rewards DON'T vary",
+                f"all components constant (= {fmt_value(constant[0][1])})",
+            )
+        )
+    else:
+        names = ", ".join(repr(name) for name, _ in constant)
+        print(
+            _check("⚠", "some components constant", f"{names} never vary (no gradient)")
+        )
+
+    group = remote.group_reward
+    if group is None:
+        print(_check("·", "group reward", "not run (no compute_group_reward)"))
+    elif not group.ok:
+        print(_check("⚠", "group reward", f"FAILED — {group.error}"))
+    else:
+        print(_check("✓", "group reward", f"mean {_fmt_rewards(group.rewards)}"))
+
+
+def _recommendation(report, ok_rewards: list[dict]) -> str:
+    """The single decision line. Keys off variance + errors, not just report.ok —
+    so a technically-passing run with no signal (the hollow green) is loud."""
+    if not report.ok:
+        return "→ NOT passing — fix the errors above, then re-validate."
+    constant = _constant_components(ok_rewards)
+    all_comps = sorted({k for r in ok_rewards for k in r})
+    if all_comps and len(constant) == len(all_comps):
+        return (
+            "⚠ green, but NO training signal — every reward component is constant.\n"
+            "  Likely a hollow pass: rows too easy/hard, or the env "
+            "(retrieval/judge) is failing.\n"
+            "  Read the per-rollout transcript before trusting this baseline."
+        )
+    return "→ GREEN baseline — iterate (improve reward/data) or launch."
 
 
 def _ok_rewards(remote) -> list[dict]:
@@ -100,58 +227,39 @@ def _report_to_dict(report) -> dict:
     }
 
 
-def _print_report(report) -> None:
+def _print_report(report, *, env_label: str, model: str, train_label: str) -> None:
+    """Render the fixed scorecard: header → reward avg/std → checks → one line."""
+    remote = report.remote
+    print(_rule("castform validate"))
+    print(f"  env        {env_label}")
+    if remote is not None:
+        n = len(remote.examples)
+        print(f"  model      {model}  (cheap eval, no GPU)")
+        print(f"  rollouts   {n} example{'' if n == 1 else 's'} · {train_label}")
+    print()
+
     if report.local_ran:
         status = "passed" if report.local_ok else "FAILED"
         print(
-            f"Local contract checks: {status} "
+            f"  contract checks  {status} "
             f"({report.local_passed} passed, {report.local_failed} failed)"
         )
+        print()
 
-    remote = report.remote
     if remote is None:
-        print("Remote rollout subset did not run (no reward values to show).")
-    else:
-        print("\nPer-rollout rewards:")
-        rows = []
-        ok_rewards = []
-        for ex in remote.examples:
-            if ex.ok:
-                ok_rewards.append(ex.rewards or {})
-                rows.append([ex.index, "ok", _fmt_rewards(ex.rewards)])
-            else:
-                rows.append([ex.index, "FAILED", ex.error or "rollout failed"])
-        render_table(["EXAMPLE", "RESULT", "REWARDS / ERROR"], rows)
-        mean = _mean_rewards(ok_rewards)
-        if mean:
-            print(f"Mean reward: {_fmt_rewards(mean)}")
-
-        constant = _constant_components(ok_rewards)
-        if constant:
+        if not report.local_ran:
+            print("  remote rollout subset did not run — no reward values to show.")
             print()
-            for name, value in constant:
-                print(
-                    f"⚠ reward component {name!r} never varies across the "
-                    f"{len(ok_rewards)} sampled rollouts (every value = {fmt_value(value)})"
-                )
-            print(
-                "  A constant reward gives no signal to learn from — check the "
-                "reward logic, or sample more varied rows with --examples N."
-            )
+        print("  ✓ validate passed" if report.ok else "  ✗ validate failed")
+        return
 
-        group = remote.group_reward
-        if group is None:
-            print(
-                "\nGroup reward: not run — env doesn't override compute_group_reward, "
-                "or the server skipped it (group path not verified)."
-            )
-        elif not group.ok:
-            print(f"\nGroup reward: FAILED — {group.error}")
-        else:
-            print(f"\nGroup reward: ok — mean {_fmt_rewards(group.rewards)}")
-
+    ok_rewards = _ok_rewards(remote)
+    _print_rewards(ok_rewards)
     print()
-    print("✓ validate passed" if report.ok else "✗ validate failed")
+    _print_checks(report, remote, ok_rewards)
+    print()
+    print("  ✓ validate passed" if report.ok else "  ✗ validate failed")
+    print("  " + _recommendation(report, ok_rewards))
 
 
 @handle_errors
@@ -202,8 +310,14 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     if args.json:
         print_json(_report_to_dict(report))
         return 0 if report.ok else 1
+    source = args.run_file if project.from_file else (args.module or "module")
     print()
-    _print_report(report)
+    _print_report(
+        report,
+        env_label=f"{project.env_class.__name__} · {source}",
+        model=args.model or _VALIDATION_MODEL,
+        train_label=args.train,
+    )
     return 0 if report.ok else 1
 
 

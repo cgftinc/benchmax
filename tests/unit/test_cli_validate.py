@@ -141,8 +141,9 @@ def test_validate_shows_rewards_and_group(monkeypatch, capsys):
     _patch(monkeypatch, report)
     assert validate._cmd_validate(_validate_ns()) == 0
     out = capsys.readouterr().out
-    assert "acc=1" in out and "Mean reward" in out
-    assert "Group reward: ok" in out and "rank=0.5" in out
+    assert "acc" in out and "total reward" in out
+    assert "group reward" in out and "rank=0.5" in out
+    assert "GREEN baseline" in out
 
 
 def test_validate_surfaces_error(monkeypatch, capsys):
@@ -154,7 +155,8 @@ def test_validate_surfaces_error(monkeypatch, capsys):
     assert validate._cmd_validate(_validate_ns()) == 1  # report not ok
     out = capsys.readouterr().out
     assert "bad judge api key" in out
-    assert "Group reward: FAILED" in out
+    assert "reward errors" in out and "FAILED" in out
+    assert "validate failed" in out
 
 
 def test_validate_group_not_run(monkeypatch, capsys):
@@ -164,7 +166,8 @@ def test_validate_group_not_run(monkeypatch, capsys):
     )
     _patch(monkeypatch, report)
     assert validate._cmd_validate(_validate_ns()) == 0
-    assert "Group reward: not run" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "group reward" in out and "not run" in out
 
 
 def test_validate_json(monkeypatch, capsys):
@@ -202,8 +205,8 @@ def test_validate_warns_on_constant_component(monkeypatch, capsys):
     _patch(monkeypatch, report)
     assert validate._cmd_validate(_validate_ns()) == 0  # still green
     out = capsys.readouterr().out
-    assert "reward component 'fmt' never varies" in out
-    assert "reward component 'acc' never varies" not in out
+    assert "some components constant" in out and "'fmt' never vary" in out
+    assert "'acc' never vary" not in out
 
 
 def test_validate_constant_needs_two_rollouts(monkeypatch, capsys):
@@ -214,7 +217,7 @@ def test_validate_constant_needs_two_rollouts(monkeypatch, capsys):
     )
     _patch(monkeypatch, report)
     assert validate._cmd_validate(_validate_ns()) == 0
-    assert "never varies" not in capsys.readouterr().out
+    assert "never vary" not in capsys.readouterr().out
 
 
 def test_validate_json_includes_constant_warning(monkeypatch, capsys):
