@@ -9,7 +9,7 @@ review → **iterate or launch** (GPU) → monitor.
 
 ```bash
 castform setup        # 1. scaffold a working env + starter data
-castform data …       # 2. data — keep the starter, upload your own, or generate (rag)
+castform data …       # 2. data — keep the starter, upload your own, or generate (rag/traces)
 castform validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
 castform launch       # 4. launch — train on GPUs (spends credits)
 ```

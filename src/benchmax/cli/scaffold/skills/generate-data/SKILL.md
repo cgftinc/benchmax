@@ -9,7 +9,7 @@ This skill is the **data** step of the path every run follows:
 
 ```bash
 castform setup        # 1. scaffold a working env + starter data
-castform data …       # 2. data — keep the starter, upload your own, or generate (rag)
+castform data …       # 2. data — keep the starter, upload your own, or generate (rag/traces)
 castform validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
 castform launch       # 4. launch — train on GPUs (spends credits)
 ```
@@ -109,7 +109,7 @@ corpus name / ingest before reading anything into a green `validate`.
 | Source | When | Setup |
 |---|---|---|
 | **Local folder → CGFT corpus** | docs on disk; simplest | `castform corpus ingest` — **no key** (your `castform login` session). The gated fast path. |
-| **Remote provider** (turbopuffer / pinecone / chroma) | your corpus already lives in a vector DB | set the `DATA_*` env vars below, point `run.py`'s search client at the provider. *Documented; not gated by this CLI yet — needs an account + a provider chunk source for qa-gen.* |
+| **Remote provider** (turbopuffer / pinecone / chroma) | your corpus already lives in a vector DB | set the `DATA_*` env vars below, then `castform data qa-gen --provider <name>` reads the corpus directly; point `run.py`'s search client at the same provider (see **design-environment**). |
 
 #### Provider credentials — env vars, NEVER in `run.py`
 
@@ -124,10 +124,27 @@ all three providers; resource identifiers also take `DATA_*` overrides:
 | **chroma** | `DATA_api_key` | `DATA_collection_name` (req), `DATA_tenant`, `DATA_database` |
 
 The local-folder path needs **no key** — it authenticates with your `castform
-login` session.
+login` session. With the `DATA_*` vars set, generate QA pairs straight from the
+provider corpus (no `corpus ingest` — it reads stored chunks directly; needs that
+provider's extra, e.g. `pip install castform[turbopuffer]`):
 
-### Traces — not in today's CLI
+```bash
+castform data qa-gen --provider turbopuffer --fast   # → train_dataset.jsonl + eval_dataset.jsonl
+```
 
-For **traces** (build data from collected agent traces), call the
-`benchmax.traces` library pipeline directly from Python for now — a `castform data
-traces` verb is coming. See `castform.com/docs/traces`.
+### Traces — build data from recorded agent traces
+
+For **traces** (post-training on what your agent already did), pull and shape them
+with `castform data traces` (Braintrust; needs the `[traces]` extra and a
+`BT_API_KEY`):
+
+```bash
+export BT_API_KEY=...                         # Braintrust key
+castform data traces --project my-agent       # → train_dataset.jsonl + eval_dataset.jsonl
+```
+
+It fetches the project's traces, detects the **system prompt + tools**, and writes
+`{prompt_messages, ground_truth, init_rollout_args}` rows. Pass `--project-id` (or
+`BT_PROJECT_ID`) instead of `--project` if you have the id, and `--limit N` to cap
+the fetch. Then author the env's `dataset_preprocess` to match those rows — see
+**design-environment**'s traces note.
