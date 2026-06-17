@@ -157,6 +157,9 @@ def _cmd_data_qa_gen(args: argparse.Namespace) -> int:
     # Source: a provider corpus (DATA_* env) or an existing CGFT corpus by name/id —
     # never docs_path, which would make the lib's loader fall into the interactive
     # on_limit="prompt" create branch.
+    # Lower --min-chunk-chars for small docs: the default 400-char floor rejects
+    # short chunks ("No eligible chunks ..."); leave unset to keep the lib default.
+    chunk_kw = {} if args.min_chunk_chars is None else {"min_chunk_chars": args.min_chunk_chars}
     source_factory = None
     if args.provider:
         try:
@@ -164,11 +167,12 @@ def _cmd_data_qa_gen(args: argparse.Namespace) -> int:
         except ValueError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
-        corpus = CorpusConfig(corpus_name=corpus_label, corpus_id="")
+        corpus = CorpusConfig(corpus_name=corpus_label, corpus_id="", **chunk_kw)
     else:
         corpus = CorpusConfig(
             corpus_name=args.corpus_name or CorpusConfig().corpus_name,
             corpus_id=args.corpus_id or "",
+            **chunk_kw,
         )
 
     # --fast: keep only the heuristic quality_gate (skip the 3 LLM-judge filters),
@@ -364,6 +368,13 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p_qa.add_argument(
         "--samples", type=int, default=50, help="Target QA pairs (default: 50)"
+    )
+    p_qa.add_argument(
+        "--min-chunk-chars",
+        type=int,
+        default=None,
+        help="Min chars for a chunk to be eligible (default 400; lower it for "
+        "small docs that otherwise yield 'No eligible chunks')",
     )
     p_qa.add_argument(
         "--fast",

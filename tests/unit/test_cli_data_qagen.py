@@ -47,6 +47,7 @@ def _ns(**kw):
         corpus_id=None,
         provider=None,
         samples=50,
+        min_chunk_chars=None,
         fast=False,
         out=".",
         json=False,
@@ -111,6 +112,16 @@ def test_qa_gen_requires_a_corpus():
     # The mutually-exclusive group is required: neither flag → argparse exits.
     with pytest.raises(SystemExit):
         build_parser().parse_args(["data", "qa-gen"])
+
+
+def test_qa_gen_min_chunk_chars_overrides_corpus_floor(monkeypatch):
+    # lower the eligibility floor for small docs; unset → lib default (not None).
+    captured = _install(monkeypatch)
+    assert data._cmd_data_qa_gen(_ns(corpus_name="x", min_chunk_chars=120)) == 0
+    assert captured["cfg"].corpus.min_chunk_chars == 120
+    captured2 = _install(monkeypatch)
+    assert data._cmd_data_qa_gen(_ns(corpus_name="x")) == 0
+    assert captured2["cfg"].corpus.min_chunk_chars == 400  # lib default preserved
 
 
 def test_qa_gen_provider_passes_source_factory(monkeypatch):
