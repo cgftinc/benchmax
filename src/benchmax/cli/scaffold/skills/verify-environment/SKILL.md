@@ -131,14 +131,56 @@ seen it.
 
 ## Output format — report the baseline the same way every time
 
-After a validate pass, summarise it for the user in this fixed shape (don't
-free-form it — the scorecard already standardised the numbers):
+After a validate pass, report in this exact order — don't lead with numbers;
+orient the user first.
 
-- **Run config** — env (`run.py` class) · model · N examples · dataset.
-- **Rewards** — the component `avg ± std` + total; call out any `std = 0`.
-- **Checks** — errors / variance / group, each ✓ or ⚠ with the one-line reason.
-- **Recommendation** — exactly one: **iterate** (what you'd change and why) or
-  **launch** (go to launch-run). For a hollow green, say so plainly and stop —
-  it's not a baseline.
+**1. What you built**
+- One or two sentences: the task and how the env scores it.
+- **Reward components** — open with *how rollouts are scored = what the model
+  optimizes*, then one terse bullet per dict key: `name` (range) — the behaviour
+  it rewards. Mark the primary objective.
+- **Tools** — if `list_tools` is non-empty, one bullet each: `name` — what the
+  model can do with it. Otherwise "single-turn, no tools."
+
+**2. Baseline report** — the scorecard, re-presented (don't free-form the numbers).
+- **Run config** — env class · model · N examples · dataset.
+- **Rewards** — a table: each component `avg ± std`, then the summed **total**.
+  Flag any `std = 0`.
+- **Checks** — errors / variance / group, each ✓ or ⚠ with a one-line reason.
+- **Verdict** — the scorecard's bottom line (GREEN / hollow green / not passing).
+
+**3. What it means** — tie each number to a cause. Component by component:
+saturated (constant high/low), live (varies), or erroring — and for each flat one
+say *why* (reward not discriminating vs rows too easy/hard vs task structurally
+hard) and whether it's fine or a problem. Name the single most important finding.
+Confirm it's not a hollow green (you verified discrimination via the injected-
+error check).
+
+**4. Next steps** — expert guidance, not a menu. Don't offer a launch/iterate
+multiple-choice. The baseline was kept deliberately simple and fast so the user
+could validate the loop in minutes — it proves the pipeline runs, not that the env
+is as deep as their real task. Act as an expert: reason about what's actually thin
+*here* and name the 2–3 things most worth the user's time before this is a run
+they'd trust, each with why it matters for the trained model and a concrete move. A
+fast green baseline is a starting point to build on, not a finished env.
+
+Reason through these — only raise what's genuinely weak, skip what's already right:
+- **Environment / tool fidelity** — does the env give the model the tools the real
+  task needs? If the task only needs what's there (e.g. a search tool for a RAG
+  task, and that's provided), say so and move on. If the user's ask implies more —
+  real APIs/integrations a production agent would call — flag the gap and what it'd
+  take to close it. The model only learns the world you simulate.
+- **Reward fidelity** — you crafted the reward based on what you think the user
+  wants; only they can confirm it matches what they actually care about. Surface
+  what it rewards vs ignores and invite correction — the model optimizes exactly
+  what you score.
+- **Data quantity / quality** — the baseline data was generated for speed, not
+  coverage. For a custom env you wrote the rows, so name their gaps. For RAG/traces
+  the first-party generation ran lean (fewer samples, quality filters/retries/
+  multi-hop off — e.g. `qa-gen --fast`) to keep the baseline quick; recommend
+  regenerating with quality on and more samples for a real run.
+
+Launch is available (`castform launch`) when the env is faithful enough for their
+goal — but lead with the gaps when it isn't. Let the user steer; never auto-launch.
 
 When the baseline is green and errors are clear, go to the **launch-run** skill.
