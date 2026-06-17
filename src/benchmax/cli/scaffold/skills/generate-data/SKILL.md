@@ -81,7 +81,9 @@ castform validate
 qa-gen rows are `{question, answer, reference_chunks}` — exactly what the rag
 `SearchEnv` reads (no remap). `--fast` skips the LLM-judge filters for a quick
 small set; drop it for the full filtered pipeline. (`--force` on `setup` is only
-needed to replace an existing `run.py`.)
+needed to replace an existing `run.py`.) For **small docs** that error with "No
+eligible chunks", lower the eligibility floor:
+`castform data qa-gen … --min-chunk-chars 120` (default 400).
 
 > **`validate` green ≠ working retrieval.** The search tool swallows errors into a
 > string, so a rag env can validate green against an empty/unreachable corpus.
@@ -100,6 +102,10 @@ corpus name / ingest before reading anything into a green `validate`.
 
 #### Choosing a data source
 
+If the user's request **declares** the source ("RAG over my corpus", "my vector DB"),
+go straight to it; if it's free-form, infer the likely source and **confirm** before
+ingesting. Two RAG sources:
+
 | Source | When | Setup |
 |---|---|---|
 | **Local folder → CGFT corpus** | docs on disk; simplest | `castform corpus ingest` — **no key** (your `castform login` session). The gated fast path. |
@@ -107,15 +113,22 @@ corpus name / ingest before reading anything into a green `validate`.
 
 #### Provider credentials — env vars, NEVER in `run.py`
 
-Keys live in **environment variables**, read at build/bundle time. Never write a
-key into `run.py` — it gets bundled and uploaded. The secret is `DATA_api_key` for
-all three providers; resource identifiers also take `DATA_*` overrides:
+Keys live in **environment variables**, read at build/bundle time. **Export them in
+your shell** (`export DATA_api_key=…`); never write a key into `run.py` (it gets bundled
+and uploaded) and never paste one into the chat with your agent. Have the user set them
+and **verify presence** (`echo ${DATA_api_key:+set}`) rather than handling the value
+yourself. The secret is `DATA_api_key` for all three providers; resource identifiers
+also take `DATA_*` overrides:
 
 | Provider | Secret (required) | Resource fields |
 |---|---|---|
 | **turbopuffer** | `DATA_api_key` | `DATA_namespace` (req), `DATA_region` |
 | **pinecone** | `DATA_api_key` | `DATA_index_name` (req), `DATA_index_host`, `DATA_namespace` |
 | **chroma** | `DATA_api_key` | `DATA_collection_name` (req), `DATA_tenant`, `DATA_database` |
+
+> **pinecone default namespace:** pinecone serves the default namespace as
+> `__default__`, not `""`. If your index uses it, set `DATA_namespace=__default__`
+> explicitly — an unset namespace queries the wrong (empty) one → hollow green.
 
 The local-folder path needs **no key** — it authenticates with your `castform
 login` session. With the `DATA_*` vars set, generate QA pairs straight from the
@@ -127,8 +140,13 @@ castform data qa-gen --provider turbopuffer --fast   # → train_dataset.jsonl +
 ```
 
 > That `pip install castform[<provider>]` only sets up **your machine** for qa-gen. The
-> validate/launch **sandbox** needs the same SDK independently — pass `--pip <provider>`
-> to `castform validate` (see design-environment), or the env hollow-greens.
+> validate/launch **sandbox** needs the same SDK independently — pass `--provider <name>`
+> to `castform validate`/`launch` (it injects the SDK, incl. chroma's `snowballstemmer`;
+> see design-environment), or the env hollow-greens. No package names to memorize.
+
+> **Confirm provider retrieval** with `castform validate --full-messages` (read the
+> search tool's output — real chunks vs a swallowed `Error:`). `castform corpus search`
+> only targets CGFT corpora, not a provider namespace.
 
 ### Traces — build data from recorded agent traces
 
@@ -137,12 +155,20 @@ with `castform data traces` (Braintrust; needs the `[traces]` extra and a
 `BT_API_KEY`):
 
 ```bash
-export BT_API_KEY=...                         # Braintrust key
-castform data traces --project my-agent       # → train_dataset.jsonl + eval_dataset.jsonl
+export BT_API_KEY=...                              # Braintrust key (never paste in chat)
+castform data traces --project my-agent --dry-run  # detect-only: print prompt + tools, write nothing
+castform data traces --project my-agent            # → train_dataset.jsonl + eval_dataset.jsonl
 ```
 
 It fetches the project's traces, detects the **system prompt + tools**, and writes
-`{prompt_messages, ground_truth, init_rollout_args}` rows. Pass `--project-id` (or
-`BT_PROJECT_ID`) instead of `--project` if you have the id, and `--limit N` to cap
-the fetch. Then author the env's `dataset_preprocess` to match those rows — see
-**design-environment**'s traces note.
+`{prompt_messages, ground_truth, init_rollout_args}` rows. **Confirm the detection
+first:** `--dry-run` prints the full detected system prompt + tools and writes nothing —
+check they match the agent before generating. Pass `--project-id` (or `BT_PROJECT_ID`)
+instead of `--project` if you have the id, and `--limit N` to cap the fetch. Then author
+the env's `dataset_preprocess` to match those rows — see **design-environment**'s traces
+note.
+
+> Generated trace rows skew **text-reply heavy**, with action/tool rows landing late in
+> file order. Since `validate` rolls out the first N rows, **interleave an action row near
+> the front** before a small `--examples 2` validate, or the variance check only sees
+> reply rows (see verify-environment).

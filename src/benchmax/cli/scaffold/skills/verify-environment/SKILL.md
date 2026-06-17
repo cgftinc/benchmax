@@ -96,11 +96,12 @@ point:
   - `→ GREEN baseline` — usable; iterate or launch.
   - `⚠ green, but NO training signal` — validate "passed" but every reward is
     constant: a **hollow pass**. For rag the search tool swallowed an error into a
-    string → all-zero rewards. Two usual causes: (1) a **provider** env whose SDK
-    isn't in the sandbox — re-run with `castform validate --pip <provider>` (see
-    design-environment); (2) an unreachable/empty corpus or bad credentials. NOT a
-    baseline — read the transcript and confirm retrieval/judge actually work
-    (generate-data has a direct retrieval check).
+    string → all-zero rewards. Read the per-rollout transcript with
+    `castform validate --full-messages` to surface the swallowed `Error:`. Two usual
+    causes: (1) a **provider** env whose SDK isn't in the sandbox — re-run with
+    `castform validate --provider <name>` (or `--pip <sdk>`; see design-environment);
+    (2) an unreachable/empty corpus or bad credentials. NOT a baseline — confirm
+    retrieval/judge actually work (generate-data has a direct retrieval check).
   - `→ NOT passing` — a reward fn errored; fix it and re-validate.
 
 **Common reward errors** (shown under `⚠ reward errors`):

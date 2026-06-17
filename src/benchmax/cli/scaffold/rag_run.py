@@ -37,6 +37,13 @@ MAX_SEARCH_CALLS = 10
 
 
 class CustomSearchEnv(SearchEnv):
+    # Extra pip deps the rollout sandbox needs — `validate`/`launch` read this and
+    # install it (the sandbox bundles only run.py + benchmax). Empty for the default
+    # Postgres corpus; when you swap `search=` to a provider client, list its SDK
+    # here (e.g. ["chromadb>=1.0.0", "snowballstemmer>=2.2.0"]) — or pass
+    # `--provider <name>` to validate/launch and skip the bookkeeping.
+    PIP_DEPENDENCIES: list[str] = []
+
     # Rendered once at class-definition so the dataset/prompt preprocessors read
     # the resolved value via `cls` (keep MAX_SEARCH_CALLS in sync with __init__).
     system_prompt = SearchEnv.render_system_prompt(
