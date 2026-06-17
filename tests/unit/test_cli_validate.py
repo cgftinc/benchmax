@@ -220,6 +220,42 @@ def test_validate_constant_needs_two_rollouts(monkeypatch, capsys):
     assert "never vary" not in capsys.readouterr().out
 
 
+def test_validate_all_constant_is_hollow_green(monkeypatch, capsys):
+    # validate "passes" (report.ok) but every reward is 0 — no training signal.
+    # The headline check + recommendation must call this out, not green-light it.
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"acc": 0.0, "fmt": 0.0}),
+            ExampleValidation(index=1, ok=True, rewards={"acc": 0.0, "fmt": 0.0}),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0  # exit code unchanged
+    out = capsys.readouterr().out
+    assert "rewards DON'T vary" in out
+    assert "NO training signal" in out
+    assert "GREEN baseline" not in out
+
+
+def test_validate_ragged_zero_is_hollow_green(monkeypatch, capsys):
+    # Regression: a component present in <2 rollouts can't be "constant", so the
+    # old per-component gate green-lit an all-zero run with ragged keys. The
+    # total-reward gate catches it.
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"score": 0.0}),
+            ExampleValidation(index=1, ok=True, rewards={"score": 0.0}),
+            ExampleValidation(index=2, ok=True, rewards={"bonus": 0.0}),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0
+    out = capsys.readouterr().out
+    assert "NO training signal" in out and "GREEN baseline" not in out
+
+
 def test_validate_json_includes_constant_warning(monkeypatch, capsys):
     report = _report(
         examples=[
@@ -241,3 +277,12 @@ def test_constant_components_helper():
     ) == [("b", 0.0)]
     assert validate._constant_components([{"a": 0.0}]) == []  # <2 rollouts
     assert validate._constant_components([]) == []
+
+
+def test_constant_total_helper():
+    # constant total (incl. ragged keys + bool exclusion) -> the value; else None.
+    assert validate._constant_total([{"a": 0.0}, {"a": 0.0}]) == 0.0
+    assert validate._constant_total([{"a": 0.0}, {"b": 0.0}]) == 0.0  # ragged, both 0
+    assert validate._constant_total([{"a": 1.0}, {"a": 2.0}]) is None  # varies
+    assert validate._constant_total([{"a": 0.0}]) is None  # <2 rollouts
+    assert validate._constant_total([{"p": True}, {"p": False}]) == 0.0  # bools excluded

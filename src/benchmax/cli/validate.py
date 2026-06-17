@@ -87,7 +87,7 @@ def _print_rewards(ok_rewards: list[dict]) -> None:
     """Reward components as ``avg``/``std`` rows + a summed total."""
     mean = _mean_rewards(ok_rewards) or {}
     if not mean:
-        print("  reward     n/a — no successful rollouts to score")
+        print("  reward     n/a — no numeric reward components to score")
         return
     comps = sorted(mean)
     name_w = max(len("reward component"), len("total reward"), *(len(c) for c in comps))
@@ -107,7 +107,7 @@ def _print_rewards(ok_rewards: list[dict]) -> None:
     print(f"  {'total reward':<{name_w}}   {fmt_value(sum(mean.values())):>7}")
 
 
-def _print_checks(report, remote, ok_rewards: list[dict]) -> None:
+def _print_checks(remote, ok_rewards: list[dict]) -> None:
     """The fixed checks block: errors, reward variance, group reward."""
     print("  checks")
     n = len(remote.examples)
@@ -124,27 +124,33 @@ def _print_checks(report, remote, ok_rewards: list[dict]) -> None:
         for err in _distinct_errors(remote):
             print(f"       {err}")
 
-    constant = _constant_components(ok_rewards)
-    all_comps = sorted({k for r in ok_rewards for k in r})
+    # Headline keys off the per-rollout TOTAL (robust to ragged/empty component
+    # keys); the per-component list is a softer warning when the total varies.
+    flat_total = _constant_total(ok_rewards)
+    constant = [
+        (name, value)
+        for name, value in _constant_components(ok_rewards)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
     if len(ok_rewards) < 2:
         print(
             _check("·", "rewards vary across rollouts", "not assessed (<2 ok rollouts)")
         )
-    elif not constant:
-        print(_check("✓", "rewards vary across rollouts"))
-    elif len(constant) == len(all_comps):
+    elif flat_total is not None:
         print(
             _check(
                 "⚠",
                 "rewards DON'T vary",
-                f"all components constant (= {fmt_value(constant[0][1])})",
+                f"total reward constant (= {fmt_value(flat_total)})",
             )
         )
-    else:
+    elif constant:
         names = ", ".join(repr(name) for name, _ in constant)
         print(
             _check("⚠", "some components constant", f"{names} never vary (no gradient)")
         )
+    else:
+        print(_check("✓", "rewards vary across rollouts"))
 
     group = remote.group_reward
     if group is None:
@@ -157,14 +163,14 @@ def _print_checks(report, remote, ok_rewards: list[dict]) -> None:
 
 def _recommendation(report, ok_rewards: list[dict]) -> str:
     """The single decision line. Keys off variance + errors, not just report.ok —
-    so a technically-passing run with no signal (the hollow green) is loud."""
+    so a technically-passing run with no signal (the hollow green) is loud.
+    Same ``_constant_total`` gate as the checks block, so the two never disagree."""
     if not report.ok:
         return "→ NOT passing — fix the errors above, then re-validate."
-    constant = _constant_components(ok_rewards)
-    all_comps = sorted({k for r in ok_rewards for k in r})
-    if all_comps and len(constant) == len(all_comps):
+    if _constant_total(ok_rewards) is not None:
         return (
-            "⚠ green, but NO training signal — every reward component is constant.\n"
+            "⚠ green, but NO training signal — the total reward never varies across "
+            "rollouts.\n"
             "  Likely a hollow pass: rows too easy/hard, or the env "
             "(retrieval/judge) is failing.\n"
             "  Read the per-rollout transcript before trusting this baseline."
@@ -191,6 +197,25 @@ def _constant_components(ok_rewards: list[dict]) -> list[tuple[str, object]]:
         if len(values) >= 2 and len(set(values)) == 1:
             constant.append((k, values[0]))
     return constant
+
+
+def _constant_total(ok_rewards: list[dict]) -> float | None:
+    """The per-rollout TOTAL numeric reward if it never varies across the ok
+    rollouts (>=2), else None. A constant total = no advantage to learn from —
+    the true hollow-green test. Sums numeric components per rollout, so it catches
+    ragged keys / empty reward dicts that a per-component check (which needs a key
+    present in >=2 rollouts) silently misses. Bools are excluded, like the table."""
+    if len(ok_rewards) < 2:
+        return None
+    totals = [
+        sum(
+            v
+            for v in r.values()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        )
+        for r in ok_rewards
+    ]
+    return totals[0] if len(set(totals)) == 1 else None
 
 
 def _report_to_dict(report) -> dict:
@@ -256,7 +281,7 @@ def _print_report(report, *, env_label: str, model: str, train_label: str) -> No
     ok_rewards = _ok_rewards(remote)
     _print_rewards(ok_rewards)
     print()
-    _print_checks(report, remote, ok_rewards)
+    _print_checks(remote, ok_rewards)
     print()
     print("  ✓ validate passed" if report.ok else "  ✗ validate failed")
     print("  " + _recommendation(report, ok_rewards))
