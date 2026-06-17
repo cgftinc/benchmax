@@ -5,6 +5,15 @@ description: Verify a castform env with `castform validate` and interpret the re
 
 # Verify the environment
 
+This skill is the **validate** step of the path every run follows:
+
+```bash
+castform setup        # 1. scaffold a working env + starter data
+castform data …       # 2. data — keep the starter, upload your own, or generate (rag)
+castform validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
+castform launch       # 4. launch — train on GPUs (spends credits)
+```
+
 ## Fast path: validate is your baseline
 
 `castform validate` IS the cheap baseline eval. It runs a small **real-rollout

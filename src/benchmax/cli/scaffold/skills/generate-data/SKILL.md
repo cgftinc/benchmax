@@ -5,6 +5,15 @@ description: Create the train/eval datasets for a castform run — generic promp
 
 # Generate the data
 
+This skill is the **data** step of the path every run follows:
+
+```bash
+castform setup        # 1. scaffold a working env + starter data
+castform data …       # 2. data — keep the starter, upload your own, or generate (rag)
+castform validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
+castform launch       # 4. launch — train on GPUs (spends credits)
+```
+
 ## Fast path (to a green baseline)
 
 A run needs `train_dataset.jsonl` and `eval_dataset.jsonl` — one JSON object per

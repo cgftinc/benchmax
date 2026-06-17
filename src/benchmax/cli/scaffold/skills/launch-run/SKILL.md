@@ -5,6 +5,9 @@ description: Launch a castform GPU training run with `castform launch` (validate
 
 # Launch a run
 
+> The four-step path: `castform setup → data → validate → launch`. This skill is
+> the **launch** step (4) — only after `validate` is green. See `GETTING_STARTED.md`.
+
 ## Fast path
 
 `castform launch` runs the full flow: pre-flight `validate` → upload env+datasets

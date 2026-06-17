@@ -5,6 +5,9 @@ description: Monitor a castform training run — status, reward scalars, and log
 
 # View progress
 
+> The four-step path: `castform setup → data → validate → launch`. This skill is
+> **after launch** — monitoring the GPU run. See `GETTING_STARTED.md`.
+
 ## Fast path
 
 Track a run with the `castform runs` commands (all take `--json`):

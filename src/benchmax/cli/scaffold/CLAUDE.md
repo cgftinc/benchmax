@@ -5,6 +5,15 @@ coding agent) drive the whole loop with the `castform` CLI: design an environmen
 → make data → reach a **baseline** (`castform validate` — cheap, real rollouts) →
 review → **iterate or launch** (GPU) → monitor.
 
+**Every castform run is the same four steps:**
+
+```bash
+castform setup        # 1. scaffold a working env + starter data
+castform data …       # 2. data — keep the starter, upload your own, or generate (rag)
+castform validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
+castform launch       # 4. launch — train on GPUs (spends credits)
+```
+
 `castform setup` already dropped a **working** starter env (`run.py` + datasets),
 so `castform validate` is green right away — customize it for your task from
 there. The green baseline is the milestone: when validate passes with sane,

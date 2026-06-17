@@ -5,6 +5,10 @@ description: Design a castform RL environment — a BaseEnv subclass with tools 
 
 # Design the environment
 
+> The four-step path: `castform setup → data → validate → launch`. This skill
+> shapes the **env** that `setup` scaffolds and `validate` (step 3) checks — see
+> `GETTING_STARTED.md` for the whole chain.
+
 The environment is a single `BaseEnv` subclass in `run.py`. It defines what the
 model can do (tools), how a rollout is scored (rewards), and the system prompt.
 

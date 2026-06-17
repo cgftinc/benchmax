@@ -1,8 +1,27 @@
 # Get started
 
 `castform setup` already dropped a **working** starter env here (`run.py` +
-`train_dataset.jsonl` / `eval_dataset.jsonl`), so you can hit a green baseline
-right now — cheap, no GPU:
+`train_dataset.jsonl` / `eval_dataset.jsonl`), so the whole chain runs right now —
+cheap, no GPU.
+
+**Every castform run is the same four steps:**
+
+```bash
+castform setup        # 1. scaffold a working env + starter data
+castform data …       # 2. data — keep the starter, upload your own, or generate (rag)
+castform validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
+castform launch       # 4. launch — train on GPUs (spends credits)
+```
+
+Only step 2 varies — by where the data comes from:
+
+```bash
+castform data upload mydata.jsonl                             # provide your own jsonl
+castform corpus ingest ./docs && castform data qa-gen --fast # generate (rag)
+```
+
+`setup` did step 1 and the starter dataset covers step 2, so `castform validate`
+(step 3) is green out of the box — try it:
 
 ```
 castform validate
@@ -44,11 +63,10 @@ against my current model, review the results, and propose next steps to either
 iterate or launch.
 ```
 
-> Only the **first (generic) flow completes end-to-end on today's CLI.** The RAG
-> and traces *front-halves* — corpus connect / trace ingest and synthetic Q&A
-> generation — are library-direct or coming; the **generate-data** skill points
-> at the lib calls. The environment → baseline → launch back-half is identical
-> for all three.
+> **Generic and RAG both run end-to-end on today's CLI** (RAG's data step is
+> `corpus ingest` → `data qa-gen` — see **generate-data**). **Traces** is the one
+> exception: its front-half (trace ingest + eval-set build) is library-direct or
+> coming. The four-step path above is identical for all three.
 
 ## The milestone: a green baseline
 
