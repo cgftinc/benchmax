@@ -53,9 +53,9 @@ load those two files. Keep that layout.
 2. **Make the data** (`generate-data` skill). Write `train_dataset.jsonl` /
    `eval_dataset.jsonl`. Upload a local file with `castform data upload <file>`.
 3. **Baseline** (`verify-environment` skill): `castform validate`. Runs a small
-   real-rollout subset on a cheap model (no GPU) and prints per-rollout + group
-   reward values and any reward-function errors. A green baseline = validate
-   passes with sane, **varying** rewards.
+   real-rollout subset on a cheap model (no GPU) and prints a fixed **scorecard** —
+   reward `avg`/`std`, pass/fail checks, and a one-line verdict. A green baseline =
+   validate passes with sane, **varying** rewards.
 4. **Review & decide** — the **iterate-or-launch** point. Read the rewards: if
    they don't discriminate (the constant-reward warning, or every rollout scores
    alike), the rows may be too easy/hard for the model — fix the reward or data

@@ -107,8 +107,8 @@ helper: `from benchmax.envs.reward_helpers import extract_completion_text`.
 - **Every component is summed** into one scalar — scale components so the sum
   reflects the priorities you want.
 - Keep it **discriminating**: a reward that returns the same value for every
-  rollout gives no gradient. If `validate` warns a component never varies, the
-  reward or the data needs work (see generate-data's difficulty-filter).
+  rollout gives no gradient. If `validate`'s `⚠ … constant` check fires (a `std`
+  of `0`), the reward or the data needs work (see generate-data's difficulty-filter).
 - For qualitative scoring, be **comparative**: judge against `ground_truth`, or
   use `compute_group_reward` to **rank** completions within the group. Ranking is
   much more stable than an absolute LLM-judge score.
