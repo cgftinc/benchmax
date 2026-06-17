@@ -28,6 +28,7 @@ def _install(monkeypatch, result=None):
 
     def _fake(cfg, **kwargs):
         captured["cfg"] = cfg
+        captured["kwargs"] = kwargs
         return result or {
             "output_paths": {
                 "train_jsonl": "train_dataset.jsonl",
@@ -42,7 +43,13 @@ def _install(monkeypatch, result=None):
 
 def _ns(**kw):
     base = dict(
-        corpus_name=None, corpus_id=None, samples=50, fast=False, out=".", json=False
+        corpus_name=None,
+        corpus_id=None,
+        provider=None,
+        samples=50,
+        fast=False,
+        out=".",
+        json=False,
     )
     base.update(kw)
     return argparse.Namespace(**base)
@@ -104,3 +111,29 @@ def test_qa_gen_requires_a_corpus():
     # The mutually-exclusive group is required: neither flag → argparse exits.
     with pytest.raises(SystemExit):
         build_parser().parse_args(["data", "qa-gen"])
+
+
+def test_qa_gen_provider_passes_source_factory(monkeypatch):
+    # --provider reads DATA_* env and hands run_pipeline a source_factory; the
+    # corpus label comes from the provider's resource id (turbopuffer → namespace).
+    captured = _install(monkeypatch)
+    monkeypatch.setenv("DATA_api_key", "tpuf-key")
+    monkeypatch.setenv("DATA_namespace", "myns")
+    rc = data._cmd_data_qa_gen(_ns(provider="turbopuffer"))
+    assert rc == 0
+    assert callable(captured["kwargs"]["source_factory"])
+    assert captured["cfg"].corpus.corpus_name == "myns"
+
+
+def test_qa_gen_provider_missing_env_is_clean(monkeypatch, capsys):
+    # chroma needs DATA_collection_name; absent → a clean Error, no traceback.
+    monkeypatch.delenv("DATA_collection_name", raising=False)
+    assert data._cmd_data_qa_gen(_ns(provider="chroma")) == 1
+    assert "DATA_collection_name" in capsys.readouterr().err
+
+
+def test_qa_gen_provider_is_mutually_exclusive_with_corpus():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["data", "qa-gen", "--corpus-name", "x", "--provider", "chroma"]
+        )
