@@ -226,7 +226,8 @@ swallows errors into a string — see verify-environment). The `embed_fn` decide
   `embed_fn=platform_embed_fn()` so query + index embeddings match.
 - **chroma**: a Chroma Cloud collection (server-side EF) or a BM25 collection works
   as-is; a bare collection raises `LocalEmbeddingDownloadDisallowedError` — pass
-  `embed_fn=platform_embed_fn()`.
+  `embed_fn=platform_embed_fn()`. A **BM25** chroma collection also needs the stemmer
+  in the sandbox: `--pip 'chromadb>=1.0.0' --pip snowballstemmer`.
 
 `platform_embed_fn()` is `text-embedding-3-large` over the platform `/v1/embeddings`;
 it inherits the env's domain in the sandbox, so it works on staging and prod alike.

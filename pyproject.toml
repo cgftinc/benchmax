@@ -61,7 +61,8 @@ rag = [
     "tqdm>=4.66.0",
 ]
 traces = ["tqdm>=4.66.0"]
-chroma = ["chromadb>=1.0.0"]
+# chromadb's BM25 embedding function needs snowballstemmer but doesn't declare it.
+chroma = ["chromadb>=1.0.0", "snowballstemmer>=2.2.0"]
 pinecone = ["pinecone>=5.0.0"]
 turbopuffer = ["turbopuffer>=1.16.2"]
 
