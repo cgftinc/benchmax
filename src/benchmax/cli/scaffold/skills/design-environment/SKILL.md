@@ -236,10 +236,23 @@ it inherits the env's domain in the sandbox, so it works on staging and prod ali
 
 `castform data traces` (generate-data) pulls + shapes Braintrust traces into
 `{prompt_messages, ground_truth, init_rollout_args}` rows and prints the **detected
-system prompt + tools**. Author a `run.py` whose `dataset_preprocess` matches that
-shape — build the prompt from `prompt_messages` and read the recorded completion off
-`ground_truth` — and set `system_prompt` to the agent's task (the detected one is a
-good start). Score comparatively against `ground_truth` (or rank within a group).
+system prompt + tools**. Set `system_prompt` to the agent's task (the detected one is
+a good start) and author the env to fit the rows — three things to get right:
+
+- **`ground_truth` is the recorded next assistant turn as a DICT**
+  (`{"role","content","tool_calls"}`), not a string — a `ground_truth in answer`
+  reward breaks. Read `gt.get("content")` and `gt.get("tool_calls")` and score
+  comparatively (text overlap vs `content`; the tool the model picked vs the
+  `tool_calls` it should have). Rank within a group for a stabler signal.
+- **`prompt_messages` carry OpenAI tool fields** (`tool_calls`/`tool_call_id`/`name`)
+  and `role:"tool"` turns. Override `dataset_preprocess` to **flatten** them into a
+  clean chat prefix (e.g. render a tool call as a text line, a tool result as
+  `[tool result …]`) rather than passing the raw turns through.
+- **Do NOT register the detected tools as live `list_tools`** unless you have a real
+  backend for `run_tool` — a fake tool layer hollow-greens (every call errors). For
+  trace imitation, keep it single-turn (`list_tools` → `[]`) and have the model
+  *declare* its action (e.g. a `TOOL: <name>` line) that `compute_reward` scores
+  against the recorded `tool_calls`.
 
 ### Companion-server envs (advanced)
 
