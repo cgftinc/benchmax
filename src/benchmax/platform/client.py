@@ -1117,6 +1117,7 @@ class RolloutClient:
         check_group_reward: bool = True,
         group_reward_samples: int = 2,
         verbose: bool = True,
+        full_messages: bool = False,
     ) -> ValidationResult:
         """Run rollouts on the first *n* examples and report pass/fail.
 
@@ -1231,6 +1232,7 @@ class RolloutClient:
                     llm_api_key=llm_api_key,
                     llm_model=llm_model,
                     max_turns=max_turns,
+                    full_messages=full_messages,
                 )
                 ok = bool(final.get("success"))
                 per_example.append(

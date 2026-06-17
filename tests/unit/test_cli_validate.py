@@ -109,6 +109,7 @@ def _validate_ns(**over) -> argparse.Namespace:
         group_samples=2,
         local_only=False,
         verbose=False,
+        full_messages=False,
         json=False,
     )
     base.update(over)

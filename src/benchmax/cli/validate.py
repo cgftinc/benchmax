@@ -331,6 +331,10 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             llm_model=args.model,
             # --verbose adds validate_env's own summary on top; default off.
             verbose=args.verbose,
+            # --full-messages prints untruncated tool/transcript text — needed to
+            # read a swallowed search error (e.g. a missing provider SDK) behind a
+            # hollow green.
+            full_messages=args.full_messages,
         )
 
     if args.json:
@@ -399,6 +403,12 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--verbose",
         action="store_true",
         help="Also show validate_env's own progress summary (rollout events always stream)",
+    )
+    p.add_argument(
+        "--full-messages",
+        action="store_true",
+        help="Print untruncated tool/transcript text — use to read a swallowed "
+        "search error (e.g. a missing provider SDK) behind a hollow green",
     )
     p.add_argument("--json", action="store_true", help="Emit raw JSON")
     p.set_defaults(func=_cmd_validate)

@@ -760,6 +760,7 @@ def validate_env(
     llm_model: str | None = None,
     max_turns: int = 4,
     verbose: bool = True,
+    full_messages: bool = False,
 ) -> ValidationReport:
     """Validate an environment before launching a training run.
 
@@ -878,6 +879,7 @@ def validate_env(
             check_group_reward=True,
             group_reward_samples=group_reward_samples,
             verbose=verbose,
+            full_messages=full_messages,
             **extra,
         )
 
