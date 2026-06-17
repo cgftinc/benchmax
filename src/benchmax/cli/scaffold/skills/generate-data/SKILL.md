@@ -1,6 +1,6 @@
 ---
 name: generate-data
-description: Create the train/eval datasets for a castform run (prompt/ground_truth jsonl) and upload local files. Use when building or uploading training data.
+description: Create the train/eval datasets for a castform run — generic prompt/ground_truth jsonl, or RAG QA pairs from a corpus (`corpus ingest` + `data qa-gen`). Use when building or uploading training data.
 ---
 
 # Generate the data
@@ -57,14 +57,53 @@ the reward **varies** across rollouts — a green baseline needs both. The shipp
 starter does exactly this: easy rows plus large-multiplication rows the cheap
 model reliably misses.
 
-### First-party generators (RAG / traces) — not wired as CLI verbs yet
+### RAG — generate QA pairs from a corpus (first-party CLI verbs)
 
-For **search/RAG** (generate QA pairs from a corpus) or **traces** (build data
-from collected agent traces), castform generates the data via the
-`benchmax.rag.qa_generation` / `benchmax.traces` library pipelines — call those
-**directly from Python**, not via the CLI. They need the corpus/traces and the
-relevant extras — see `castform.com/docs/rag` and `.../traces`.
+For **search/RAG** (post-training a model to search a corpus and cite sources),
+the whole data path is CLI verbs. **Fast path — a local doc folder, no provider
+key** (needs the `[rag]` extra: `pip install castform[rag]`):
 
-Dedicated `castform data qa-gen` / `traces` verbs (and corpus-connect) are
-**coming, not in today's CLI**. Only the generic `prompt`/`ground_truth` flow
-above completes end-to-end on the CLI today.
+```bash
+castform corpus ingest ./docs --name my-corpus       # chunk + upload → BM25 corpus
+castform data qa-gen --corpus-name my-corpus --fast  # → train_dataset.jsonl + eval_dataset.jsonl
+castform setup --template rag --force                # SearchEnv run.py (edit the CORPUS_NAME constant)
+castform validate
+```
+
+qa-gen rows are `{question, answer, reference_chunks}` — exactly what the rag
+`SearchEnv` reads (no remap). `--fast` skips the LLM-judge filters for a quick
+small set; drop it for the full filtered pipeline. (`--force` on `setup` is only
+needed to replace an existing `run.py`.)
+
+> **`validate` green ≠ working retrieval.** The search tool swallows errors into a
+> string, so a rag env can validate green against an empty/unreachable corpus.
+> Confirm the search tool returns real chunks (not an `Error:` / `No results`
+> string) before trusting the baseline.
+
+#### Choosing a data source
+
+| Source | When | Setup |
+|---|---|---|
+| **Local folder → CGFT corpus** | docs on disk; simplest | `castform corpus ingest` — **no key** (your `castform login` session). The gated fast path. |
+| **Remote provider** (turbopuffer / pinecone / chroma) | your corpus already lives in a vector DB | set the `DATA_*` env vars below, point `run.py`'s search client at the provider. *Documented; not gated by this CLI yet — needs an account + a provider chunk source for qa-gen.* |
+
+#### Provider credentials — env vars, NEVER in `run.py`
+
+Keys live in **environment variables**, read at build/bundle time. Never write a
+key into `run.py` — it gets bundled and uploaded. The secret is `DATA_api_key` for
+all three providers; resource identifiers also take `DATA_*` overrides:
+
+| Provider | Secret (required) | Resource fields |
+|---|---|---|
+| **turbopuffer** | `DATA_api_key` | `DATA_namespace` (req), `DATA_region` |
+| **pinecone** | `DATA_api_key` | `DATA_index_name` (req), `DATA_index_host`, `DATA_namespace` |
+| **chroma** | `DATA_api_key` | `DATA_collection_name` (req), `DATA_tenant`, `DATA_database` |
+
+The local-folder path needs **no key** — it authenticates with your `castform
+login` session.
+
+### Traces — not in today's CLI
+
+For **traces** (build data from collected agent traces), call the
+`benchmax.traces` library pipeline directly from Python for now — a `castform data
+traces` verb is coming. See `castform.com/docs/traces`.
