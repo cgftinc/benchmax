@@ -6,7 +6,7 @@ import argparse
 
 import pytest
 
-from benchmax.cli import validate
+from benchmax.cli import build_parser, validate
 from benchmax.cli._project import (
     ProjectError,
     _load_jsonl,
@@ -103,6 +103,7 @@ def _validate_ns(**over) -> argparse.Namespace:
         train="train_dataset.jsonl",
         eval="eval_dataset.jsonl",
         env_arg=None,
+        pip=None,
         model=None,
         examples=2,
         group_samples=2,
@@ -187,6 +188,28 @@ def test_env_arg_parsing():
         "b": "hi",
         "c": True,
     }
+
+
+def test_validate_pip_forwards_to_sandbox(monkeypatch):
+    # --pip must reach validate_env as pip_dependencies (provider RAG envs whose
+    # search client imports a provider SDK hollow-green without it in the sandbox).
+    captured: dict = {}
+
+    def _capture(**k):
+        captured.update(k)
+        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+
+    monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
+    validate._cmd_validate(_validate_ns(pip=["turbopuffer", "pinecone>=5"]))
+    assert captured["pip_dependencies"] == ["turbopuffer", "pinecone>=5"]
+
+
+def test_validate_pip_repeatable_in_parser():
+    args = build_parser().parse_args(
+        ["validate", "--pip", "turbopuffer", "--pip", "chromadb>=1.0.0"]
+    )
+    assert args.pip == ["turbopuffer", "chromadb>=1.0.0"]
 
 
 # --- constant / all-zero reward warning ---------------------------------

@@ -323,6 +323,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             train_dataset=project.train_dataset,
             eval_dataset=project.eval_dataset or None,
             local_modules=[project.module] if project.from_file else None,
+            pip_dependencies=args.pip or None,
             local=args.local_only,
             api_key=None,  # device session via the bearer seam
             remote_examples=args.examples,
@@ -368,6 +369,14 @@ def register(sub: argparse._SubParsersAction) -> None:
         action="append",
         metavar="KEY=VALUE",
         help="Env constructor arg (repeatable)",
+    )
+    p.add_argument(
+        "--pip",
+        action="append",
+        metavar="DEP",
+        help="Extra pip dependency for the rollout sandbox (repeatable). Needed "
+        "for provider RAG envs whose search client imports a provider SDK "
+        "(e.g. turbopuffer) — the sandbox bundles only run.py + benchmax.",
     )
     p.add_argument(
         "--model", help="LLM model for the rollout subset (default: cheap nano)"
