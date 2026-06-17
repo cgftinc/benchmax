@@ -8,15 +8,16 @@ review → **iterate or launch** (GPU) → monitor.
 **Every castform run is the same four steps:**
 
 ```bash
-castform setup        # 1. scaffold a working env + starter data
-castform data …       # 2. data — keep the starter, upload your own, or generate (rag/traces)
+castform setup        # 1. scaffold agent skills + project guides
+castform data …       # 2. data — write your own jsonl, or generate (rag/traces)
 castform validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
 castform launch       # 4. launch — train on GPUs (spends credits)
 ```
 
-`castform setup` already dropped a **working** starter env (`run.py` + datasets),
-so `castform validate` is green right away — customize it for your task from
-there. The green baseline is the milestone: when validate passes with sane,
+`castform setup` does **not** write `run.py` — you create it: a `BaseEnv`
+subclass, following the **design-environment** skill (the example code lives in
+the skills, not a scaffolded file). Write your datasets too, then `castform
+validate`. The green baseline is the milestone: when validate passes with sane,
 **varying** rewards, stop and decide **iterate or launch**.
 
 > Skills for each stage live in `.claude/skills/` — `design-environment`,

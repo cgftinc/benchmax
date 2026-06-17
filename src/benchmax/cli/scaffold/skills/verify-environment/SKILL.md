@@ -8,8 +8,8 @@ description: Verify a castform env with `castform validate` and interpret the re
 This skill is the **validate** step of the path every run follows:
 
 ```bash
-castform setup        # 1. scaffold a working env + starter data
-castform data …       # 2. data — keep the starter, upload your own, or generate (rag/traces)
+castform setup        # 1. scaffold agent skills + project guides
+castform data …       # 2. data — write your own jsonl, or generate (rag/traces)
 castform validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
 castform launch       # 4. launch — train on GPUs (spends credits)
 ```
@@ -60,7 +60,7 @@ point:
 
 ```
 ─── castform validate ──────────────────────────────
-  env        StarterEnv · run.py
+  env        CustomEnv · run.py
   model      gpt-5.4-nano  (cheap eval, no GPU)
   rollouts   2 examples · train_dataset.jsonl
 

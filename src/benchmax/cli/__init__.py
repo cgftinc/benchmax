@@ -13,7 +13,17 @@ from __future__ import annotations
 import argparse
 import sys
 
-from benchmax.cli import _auth, control, corpus, data, launch, runs, setup, validate
+from benchmax.cli import (
+    _auth,
+    control,
+    corpus,
+    data,
+    help,
+    launch,
+    runs,
+    setup,
+    validate,
+)
 
 # Re-export auth handlers — tests/unit/test_cli.py imports them as cli._cmd_*.
 from benchmax.cli._auth import _cmd_login, _cmd_logout, _cmd_whoami
@@ -33,6 +43,21 @@ def build_parser() -> argparse.ArgumentParser:
     data.register(sub)
     corpus.register(sub)
     setup.register(sub)
+
+    # `guide` renders the getting-started walkthrough (the renderer lives in
+    # ``benchmax.cli.help``). Named `guide`, not `quickstart`, because `setup`
+    # is itself the quickstart flow — keep the two from blurring together.
+    gp = sub.add_parser("guide", help="Walk through your first run")
+    gp.set_defaults(func=help._cmd_help)
+
+    # `help` mirrors `-h`: just list the commands. Users reach for it by habit;
+    # the walkthrough is `castform guide`, not here.
+    def _list_commands(_args: argparse.Namespace) -> int:
+        parser.print_help()
+        return 0
+
+    hp = sub.add_parser("help", help="List the available commands")
+    hp.set_defaults(func=_list_commands)
     return parser
 
 

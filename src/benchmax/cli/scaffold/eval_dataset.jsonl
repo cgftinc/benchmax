@@ -1,4 +1,0 @@
-{"prompt": "What is 10 - 3? Reply with only the number.", "ground_truth": "7"}
-{"prompt": "What is 9150637482915063748291506 multiplied by 482915063748291506374829? Reply with only the number.", "ground_truth": "4418980683399433740035695381733504381456392902474"}
-{"prompt": "What planet is known as the Red Planet? Reply with one word.", "ground_truth": "Mars"}
-{"prompt": "What is 1506374829150637482915 multiplied by 82915063748291506374829? Reply with only the number.", "ground_truth": "124901164987846833456314842431218917073546535"}

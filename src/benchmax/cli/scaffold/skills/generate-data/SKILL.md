@@ -8,8 +8,8 @@ description: Create the train/eval datasets for a castform run — generic promp
 This skill is the **data** step of the path every run follows:
 
 ```bash
-castform setup        # 1. scaffold a working env + starter data
-castform data …       # 2. data — keep the starter, upload your own, or generate (rag/traces)
+castform setup        # 1. scaffold agent skills + project guides
+castform data …       # 2. data — write your own jsonl, or generate (rag/traces)
 castform validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
 castform launch       # 4. launch — train on GPUs (spends credits)
 ```
@@ -25,9 +25,9 @@ line. Each row needs at least a `prompt`; most rewards also want a `ground_truth
 {"prompt": "Capital of Japan?", "ground_truth": "Tokyo"}
 ```
 
-`castform setup` already shipped a small starter dataset — **replace its rows**
-with your task's. Keep it tiny at first (tens of rows) so you iterate cheaply
-through `castform validate`, then grow.
+`castform setup` ships **no** dataset — write `train_dataset.jsonl` /
+`eval_dataset.jsonl` for your task. Keep it tiny at first (tens of rows) so you
+iterate cheaply through `castform validate`, then grow.
 
 - Keep train and eval **disjoint**. Eval is what you watch for generalisation.
 - The row is passed to `compute_reward` as `task`, so put any per-example scoring
@@ -62,9 +62,8 @@ castform validate --train candidates.jsonl --examples 20 --json \
 
 Those indices are the rows worth keeping — the model misses them, so there's
 signal. (Swap `correct` for your reward component.) Mix in some it gets right so
-the reward **varies** across rollouts — a green baseline needs both. The shipped
-starter does exactly this: easy rows plus large-multiplication rows the cheap
-model reliably misses.
+the reward **varies** across rollouts — a green baseline needs both. A good mix is
+easy rows plus genuinely hard ones the cheap model reliably misses.
 
 ### RAG — generate QA pairs from a corpus (first-party CLI verbs)
 

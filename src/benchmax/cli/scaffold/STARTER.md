@@ -1,19 +1,19 @@
 # Get started
 
-`castform setup` already dropped a **working** starter env here (`run.py` +
-`train_dataset.jsonl` / `eval_dataset.jsonl`), so the whole chain runs right now —
-cheap, no GPU.
+`castform setup` scaffolded the agent skills and project guides here. You write
+`run.py` (a `BaseEnv` subclass) and a little data following those skills — then
+the whole chain runs cheaply, no GPU.
 
 **Every castform run is the same four steps:**
 
 ```bash
-castform setup        # 1. scaffold a working env + starter data
-castform data …       # 2. data — keep the starter, upload your own, or generate (rag/traces)
+castform setup        # 1. scaffold agent skills + project guides
+castform data …       # 2. data — write your own jsonl, or generate (rag/traces)
 castform validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
 castform launch       # 4. launch — train on GPUs (spends credits)
 ```
 
-Only step 2 varies — by where the data comes from:
+Step 2 is where the data comes from:
 
 ```bash
 castform data upload mydata.jsonl                             # provide your own jsonl
@@ -21,8 +21,7 @@ castform corpus ingest ./docs && castform data qa-gen --fast # generate (rag)
 castform data traces --project my-agent                       # generate (traces)
 ```
 
-`setup` did step 1 and the starter dataset covers step 2, so `castform validate`
-(step 3) is green out of the box — try it:
+Once `run.py` and your datasets are in place, validate (cheap, no GPU):
 
 ```
 castform validate

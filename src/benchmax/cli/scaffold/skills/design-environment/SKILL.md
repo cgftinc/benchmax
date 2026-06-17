@@ -6,32 +6,26 @@ description: Design a castform RL environment — a BaseEnv subclass with tools 
 # Design the environment
 
 > The four-step path: `castform setup → data → validate → launch`. This skill
-> shapes the **env** that `setup` scaffolds and `validate` (step 3) checks — see
+> shapes the **env** you write at step 1 and `validate` (step 3) checks — see
 > `GETTING_STARTED.md` for the whole chain.
 
-The environment is a single `BaseEnv` subclass in `run.py`. It defines what the
+The environment is a single `BaseEnv` subclass in `run.py`. `castform setup` does
+**not** scaffold it — you write `run.py` from the shape below. It defines what the
 model can do (tools), how a rollout is scored (rewards), and the system prompt.
 
 ## Fast path (to a green baseline)
 
-`castform setup` already wrote a **working** `run.py` — a single-turn QA env whose
-reward scores `1.0` when the model's final answer contains the row's
-`ground_truth`, else `0.0` (a discriminating reward, not an all-zero stub). So you
-can validate it immediately:
-
-```bash
-castform validate
-```
-
-Then customize it for your task — usually just three things:
+Write a single-turn `run.py` — a `BaseEnv` subclass — by filling in three things
+(copy the shape from **The BaseEnv shape** below):
 
 1. **`system_prompt`** — what the model is told it's doing.
-2. **`compute_reward`** — how a rollout is scored. Keep it **discriminating** (it
-   must give different scores to better/worse answers).
-3. the datasets — the **generate-data** skill.
+2. **`compute_reward`** — how a rollout is scored. Make it **discriminating** (it
+   must give different scores to better/worse answers); a reward that never varies
+   gives training no gradient.
+3. the datasets — the **generate-data** skill (`castform setup` does not ship any).
 
-The starter is single-turn with no tools (`list_tools` returns `[]`). That's the
-right default — only reach for tools if the task genuinely needs them.
+Start single-turn with no tools (`list_tools` returns `[]`). That's the right
+default — only reach for tools if the task genuinely needs them.
 
 Next: **generate-data** for the datasets, then **verify-environment** to validate.
 
@@ -53,8 +47,8 @@ class MyEnv(BaseEnv):
 
     async def compute_reward(self, rollout_id, messages, task, **kwargs):
         # messages = full transcript; task = the dataset row (prompt, ground_truth…).
-        # Return a DISCRIMINATING dict[str, float] — see Reward rules below. The
-        # starter scores `correct = ground_truth in the model's final answer`.
+        # Return a DISCRIMINATING dict[str, float] — see Reward rules below. A
+        # simple reward: `correct = ground_truth in the model's final answer`.
         ...
 
     # optional: relative/ranking reward across a rollout group
@@ -86,8 +80,8 @@ Both reward hooks are `async`. `messages` is the full transcript as a list of
   or `None` if the env grades without per-row data — read it defensively with
   `(task or {}).get("ground_truth")`.
 
-Copy-paste — get the model's final text answer (the starter inlines exactly this;
-there is **no importable `last_answer`** helper, so don't `import` one):
+Copy-paste — get the model's final text answer (inline this in `run.py`; there is
+**no importable `last_answer`** helper, so don't `import` one):
 
 ```python
 def last_answer(messages) -> str:

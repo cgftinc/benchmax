@@ -1,8 +1,0 @@
-{"prompt": "What is 2 + 2? Reply with only the number.", "ground_truth": "4"}
-{"prompt": "What is 7482915063748291506374829 multiplied by 4063748291506374829150637? Reply with only the number.", "ground_truth": "30408683305794435500154796041207796832425026116073"}
-{"prompt": "What is the capital of Japan? Reply with one word.", "ground_truth": "Tokyo"}
-{"prompt": "What is 482915063748291506374829 multiplied by 6374829150637482915063? Reply with only the number.", "ground_truth": "3078501025664567060101766080235059438448149227"}
-{"prompt": "How many days are in a week? Reply with only the number.", "ground_truth": "7"}
-{"prompt": "What is 82915063748291506374829 multiplied by 37482915063748291506374? Reply with only the number.", "ground_truth": "3107898291982485582765343738223317416286660046"}
-{"prompt": "What color do you get by mixing blue and yellow paint? Reply with one word.", "ground_truth": "green"}
-{"prompt": "What is 291506374829150637482 multiplied by 748291506374829150637? Reply with only the number.", "ground_truth": "218131744338770710104747317327505156376034"}

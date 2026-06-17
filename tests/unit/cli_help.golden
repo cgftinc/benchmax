@@ -14,6 +14,8 @@ positional arguments:
     data      Dataset utilities
     corpus    Corpus utilities for RAG envs
     setup     Sign in + scaffold this project for a coding agent
+    guide     Walk through your first run
+    help      List the available commands
 
 options:
   -h, --help  show this help message and exit

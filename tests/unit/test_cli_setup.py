@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 
 from benchmax.cli import setup
 
@@ -15,8 +14,8 @@ _SKILLS = (
     "view-progress",
 )
 
-
-_TEMPLATES = ("run.py", "train_dataset.jsonl", "eval_dataset.jsonl")
+# castform setup ships these — never an env or datasets for the generic flow.
+_NEVER_SHIPPED = ("run.py", "train_dataset.jsonl", "eval_dataset.jsonl")
 
 
 def _ns(tmp, **kw):
@@ -27,6 +26,7 @@ def _ns(tmp, **kw):
         skip_login=True,
         no_template=False,
         template="generic",
+        verbose=False,
     )
     base.update(kw)
     return argparse.Namespace(**base)
@@ -37,11 +37,18 @@ def test_setup_writes_both_agents(tmp_path, capsys):
     assert (tmp_path / "CLAUDE.md").exists()
     assert (tmp_path / "AGENTS.md").exists()
     assert (tmp_path / "GETTING_STARTED.md").exists()
+    # both agents get the full skill set, each under its own skills dir
     for name in _SKILLS:
         assert (tmp_path / ".claude" / "skills" / name / "SKILL.md").exists()
-    # CLAUDE.md and AGENTS.md share one source (same body)
-    assert (tmp_path / "CLAUDE.md").read_text() == (tmp_path / "AGENTS.md").read_text()
-    assert "Quick commands" in capsys.readouterr().out  # starter emitted
+        assert (tmp_path / ".agents" / "skills" / name / "SKILL.md").exists()
+    # same prose, but each body points at its own agent's skills dir
+    assert ".claude/skills" in (tmp_path / "CLAUDE.md").read_text()
+    assert ".agents/skills" in (tmp_path / "AGENTS.md").read_text()
+    out = capsys.readouterr().out  # the get-started block is emitted
+    assert "ask your agent" in out  # the prompt box
+    assert "helpful commands" in out  # the commands divider
+    assert "castform validate" in out
+    assert "castform guide" in out  # the guide is surfaced in the commands
 
 
 def test_setup_claude_only(tmp_path):
@@ -51,11 +58,40 @@ def test_setup_claude_only(tmp_path):
     assert (tmp_path / ".claude" / "skills" / "launch-run" / "SKILL.md").exists()
 
 
-def test_setup_codex_only_has_no_skills(tmp_path):
+def test_setup_codex_writes_agents_skills(tmp_path):
     assert setup._cmd_setup(_ns(tmp_path, agent="codex")) == 0
     assert (tmp_path / "AGENTS.md").exists()
     assert not (tmp_path / "CLAUDE.md").exists()
-    assert not (tmp_path / ".claude").exists()
+    assert not (tmp_path / ".claude").exists()  # no claude dir for codex-only
+    # codex gets the same skills under .agents/skills, and AGENTS.md points there
+    for name in _SKILLS:
+        assert (tmp_path / ".agents" / "skills" / name / "SKILL.md").exists()
+    assert ".agents/skills" in (tmp_path / "AGENTS.md").read_text()
+    assert ".claude/skills" not in (tmp_path / "AGENTS.md").read_text()
+
+
+def test_setup_default_shows_grouped_summary(tmp_path, capsys):
+    assert setup._cmd_setup(_ns(tmp_path)) == 0
+    out = capsys.readouterr().out
+    assert "agent guides" in out and "agent skills" in out
+    assert "env template" not in out  # generic ships no run.py
+    # no per-file log by default
+    assert "wrote " not in out
+    assert "SKILL.md" not in out
+
+
+def test_setup_default_reports_already_present_on_rerun(tmp_path, capsys):
+    assert setup._cmd_setup(_ns(tmp_path)) == 0
+    capsys.readouterr()  # discard first run
+    assert setup._cmd_setup(_ns(tmp_path)) == 0
+    assert "already present" in capsys.readouterr().out
+
+
+def test_setup_verbose_lists_every_file(tmp_path, capsys):
+    assert setup._cmd_setup(_ns(tmp_path, verbose=True)) == 0
+    out = capsys.readouterr().out
+    assert "wrote " in out and "SKILL.md" in out  # full per-file log
+    assert "agent skills" not in out  # grouped summary suppressed
 
 
 def test_setup_skips_existing_without_force(tmp_path):
@@ -77,38 +113,20 @@ def test_setup_content_cites_real_verbs(tmp_path):
     assert "max_rollout_len" in guide  # the real launch knob is documented
 
 
-def test_setup_writes_starter_template(tmp_path):
+def test_setup_generic_ships_no_env_or_data(tmp_path):
+    """The generic flow scaffolds docs + skills only — the agent writes run.py
+    from the design-environment skill, and generates its own datasets."""
     assert setup._cmd_setup(_ns(tmp_path)) == 0
-    for name in _TEMPLATES:
-        assert (tmp_path / name).exists(), name
-    run_py = (tmp_path / "run.py").read_text()
-    assert "class StarterEnv(BaseEnv)" in run_py
-    # No importable last_answer helper exists — the template must inline it, else
-    # it would ImportError before validate even runs.
-    assert "def _last_answer" in run_py
-    assert not any(
-        line.strip().startswith(("from", "import")) and "last_answer" in line
-        for line in run_py.splitlines()
-    )
-
-
-def test_setup_no_template_omits_starter(tmp_path):
-    assert setup._cmd_setup(_ns(tmp_path, no_template=True)) == 0
-    assert (tmp_path / "CLAUDE.md").exists()  # docs still written
-    for name in _TEMPLATES:
+    assert (tmp_path / "CLAUDE.md").exists()  # docs written
+    for name in _NEVER_SHIPPED:
         assert not (tmp_path / name).exists(), name
 
 
-def test_setup_template_skips_existing_without_force(tmp_path):
+def test_setup_generic_leaves_existing_run_py_untouched(tmp_path):
+    """Generic never touches run.py, so a user's own run.py survives setup."""
     (tmp_path / "run.py").write_text("MINE")
     assert setup._cmd_setup(_ns(tmp_path)) == 0
     assert (tmp_path / "run.py").read_text() == "MINE"
-
-
-def test_setup_template_force_overwrites(tmp_path):
-    (tmp_path / "run.py").write_text("MINE")
-    assert setup._cmd_setup(_ns(tmp_path, force=True)) == 0
-    assert (tmp_path / "run.py").read_text() != "MINE"
 
 
 def test_setup_template_rag_writes_searchenv(tmp_path):
@@ -127,9 +145,9 @@ def test_setup_template_rag_writes_searchenv(tmp_path):
     assert isinstance(env_cls(), SearchEnv)  # no-arg construct, no network
 
 
-def test_setup_template_rag_omits_generic_datasets(tmp_path):
-    """rag datasets come from `castform data qa-gen`; --template rag must NOT drop
-    the generic multiplication starter rows (wrong shape for retrieval)."""
+def test_setup_template_rag_writes_run_py_no_datasets(tmp_path):
+    """--template rag ships the SearchEnv run.py only; datasets come from
+    `castform data qa-gen`, so none are written at setup time."""
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
     assert (tmp_path / "run.py").exists()
     assert not (tmp_path / "train_dataset.jsonl").exists()
@@ -169,32 +187,3 @@ def test_getting_started_uses_one_prompt_model(tmp_path):
     assert "Quick commands" in gs
 
 
-def test_starter_reward_discriminates(tmp_path):
-    """Deterministic proof the shipped reward is discriminating: 1.0 on a correct
-    answer, 0.0 on a wrong one. (A strong cheap model may still score uniformly on
-    a tiny live `validate` sample — that's expected, not a broken reward.)"""
-    import asyncio
-
-    from benchmax.cli._project import load_project
-
-    assert setup._cmd_setup(_ns(tmp_path, agent="claude")) == 0
-    proj = load_project(directory=str(tmp_path))
-    env = proj.env_class()
-    row = proj.train_dataset[0]  # an easy row with a short ground_truth
-
-    def reward(answer):
-        msgs = [{"role": "assistant", "content": answer}]
-        return asyncio.run(env.compute_reward("r", msgs, row))
-
-    assert reward(row["ground_truth"]) == {"correct": 1.0}
-    assert reward("definitely the wrong answer") == {"correct": 0.0}
-
-
-def test_starter_dataset_has_easy_hard_mix(tmp_path):
-    """The dataset interleaves easy + verified-hard rows so the default 2-example
-    validate sample spans the reward variance (first two rows differ in kind)."""
-    assert setup._cmd_setup(_ns(tmp_path, agent="claude")) == 0
-    lines = (tmp_path / "train_dataset.jsonl").read_text().strip().splitlines()
-    assert len(lines) >= 6
-    gt_lens = [len(json.loads(line)["ground_truth"]) for line in lines[:2]]
-    assert min(gt_lens) <= 2 and max(gt_lens) >= 20  # row0 easy, row1 hard
