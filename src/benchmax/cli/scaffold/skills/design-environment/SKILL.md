@@ -115,10 +115,43 @@ helper: `from benchmax.envs.reward_helpers import extract_completion_text`.
 
 - No tool need? Return `[]` from `list_tools` (single-turn). Don't add tools the
   task doesn't require.
-- If you DO use tools, the env is multi-turn — and `max_turns` defaults to **4**,
-  `max_tool_calls` to **8**. The trainer ignores any `recommended_max_*` on the
-  env. Plan to pass the real limit at launch (`castform launch --set max_turns=N`);
-  note it in `run.py` so it isn't forgotten.
+- If you DO use tools, the env is multi-turn. Two contract rules the runtime
+  enforces — break either and the rollout errors, not just the tool call:
+  - `list_tools` returns **`ToolDefinition` dataclasses**
+    (`from benchmax.envs.types import ToolDefinition`), **not** OpenAI
+    `{"type": "function", "function": {…}}` dicts. The runtime reads `tool.name` /
+    `tool.input_schema`, so a dict throws `'dict' object has no attribute 'name'`.
+  - `run_tool` gets the model's call `arguments` spread as `**tool_args` and must
+    **return a string** (the tool's result text). On bad input, return a guidance
+    string — **don't raise** (an exception aborts the whole rollout).
+
+  ```python
+  from benchmax.envs.types import ToolDefinition
+
+  async def list_tools(self):
+      return [
+          ToolDefinition(
+              name="lookup",
+              description="Look up the definition of a term.",
+              input_schema={                       # JSON-schema for the args
+                  "type": "object",
+                  "properties": {"term": {"type": "string"}},
+                  "required": ["term"],
+              },
+          )
+      ]
+
+  async def run_tool(self, rollout_id, tool_name, **tool_args):
+      term = tool_args.get("term")
+      if not term:                                 # guide the model, don't raise
+          return "Error: `lookup` needs a `term` argument."
+      return self._glossary.get(term, f"No entry for {term!r}.")
+  ```
+
+- Tools make the env multi-turn, so `max_turns` defaults to **4**, `max_tool_calls`
+  to **8**. The trainer ignores any `recommended_max_*` on the env. Plan to pass the
+  real limit at launch (`castform launch --set max_turns=N`); note it in `run.py` so
+  it isn't forgotten.
 
 ### Companion-server envs (advanced)
 

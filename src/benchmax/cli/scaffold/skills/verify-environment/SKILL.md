@@ -18,6 +18,11 @@ castform validate --examples 3    # roll out more examples
 castform validate --json          # machine-readable
 ```
 
+> **Narrate the wait to the user.** Each `validate` runs **real remote rollouts
+> (~30–60s each)** — a full fix-and-re-validate loop can take **10+ minutes**. Say
+> what you're checking and why you're re-validating, so the user reads the pause as
+> progress, not a hang.
+
 **A green baseline** = validate passes, rewards are sane and **vary** across
 rollouts, and no reward-function errors. That's the milestone — and the decision
 point:

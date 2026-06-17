@@ -50,7 +50,10 @@ load those two files. Keep that layout.
 4. **Review & decide** — the **iterate-or-launch** point. Read the rewards: if
    they don't discriminate (the constant-reward warning, or every rollout scores
    alike), the rows may be too easy/hard for the model — fix the reward or data
-   and re-validate. Otherwise, launch.
+   and re-validate. Otherwise, launch. **Keep the user posted while you iterate** —
+   narrate what you're changing and why you're re-validating. Each `validate` runs
+   **real remote rollouts (~30–60s each)**, so a full fix-and-re-validate loop can
+   take **10+ minutes**; tell the user the wait is expected, not a hang.
 5. **Launch** (`launch-run` skill): `castform launch`. Validates, uploads, and
    launches a GPU run; prints the run URL. (Spends credits.)
 6. **Monitor** (`view-progress` skill): `castform runs status/scalars/logs <id>`.
