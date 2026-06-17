@@ -8,7 +8,7 @@ cheap, no GPU.
 
 ```bash
 castform setup        # 1. scaffold a working env + starter data
-castform data …       # 2. data — keep the starter, upload your own, or generate (rag)
+castform data …       # 2. data — keep the starter, upload your own, or generate (rag/traces)
 castform validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
 castform launch       # 4. launch — train on GPUs (spends credits)
 ```
@@ -18,6 +18,7 @@ Only step 2 varies — by where the data comes from:
 ```bash
 castform data upload mydata.jsonl                             # provide your own jsonl
 castform corpus ingest ./docs && castform data qa-gen --fast # generate (rag)
+castform data traces --project my-agent                       # generate (traces)
 ```
 
 `setup` did step 1 and the starter dataset covers step 2, so `castform validate`
@@ -63,10 +64,10 @@ against my current model, review the results, and propose next steps to either
 iterate or launch.
 ```
 
-> **Generic and RAG both run end-to-end on today's CLI** (RAG's data step is
-> `corpus ingest` → `data qa-gen` — see **generate-data**). **Traces** is the one
-> exception: its front-half (trace ingest + eval-set build) is library-direct or
-> coming. The four-step path above is identical for all three.
+> **Generic, RAG, and traces all run end-to-end on today's CLI** — the four-step
+> path above is identical; only the **data** step differs. RAG: `corpus ingest` →
+> `data qa-gen` (local) or `data qa-gen --provider` (a vector DB). Traces:
+> `data traces` pulls + shapes your Braintrust traces. See **generate-data**.
 
 ## The milestone: a green baseline
 

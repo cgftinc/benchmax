@@ -157,6 +157,78 @@ helper: `from benchmax.envs.reward_helpers import extract_completion_text`.
   real limit at launch (`castform launch --set max_turns=N`); note it in `run.py` so
   it isn't forgotten.
 
+### RAG and traces environments (the two specializations)
+
+RAG and traces are the **same loop** as any custom env — one `run.py`, then
+`validate` / `launch`. They differ in just two things: the **system prompt** and
+**where the data comes from** (the **generate-data** skill covers the data).
+
+#### RAG — search a corpus and cite sources
+
+`castform setup --template rag` writes a `SearchEnv` subclass with a search tool and
+a 5-component reward (answer correctness + conciseness via an LLM judge, citation
+recall + precision, search efficiency). You usually edit only the corpus and the
+three constants; the system prompt is rendered by `SearchEnv.render_system_prompt`.
+
+The template searches a **local CGFT corpus** (`PostgresSearch`, BM25). To search a
+**provider** corpus, swap the `search=` client. Provider keys + resource ids come
+from `DATA_*` env vars — and the sandbox does **not** see them, so read them at
+**module load** (bundle time, on your machine) and bake them in; never read
+`DATA_*` inside `__init__` (that runs in the sandbox → `KeyError`) and never write a
+literal key in the file (it gets bundled and uploaded):
+
+```python
+import os
+from benchmax.rag.corpus.turbopuffer.search import TpufSearch
+from benchmax.rag.corpus.embed import platform_embed_fn
+
+NAMESPACE = os.environ["DATA_namespace"]          # read at bundle time, baked in
+REGION = os.environ.get("DATA_region", "aws-us-east-1")
+_API_KEY = os.environ["DATA_api_key"]
+
+class CustomSearchEnv(SearchEnv):
+    def __init__(self, **kwargs):
+        super().__init__(
+            search=TpufSearch(
+                namespace=NAMESPACE,
+                region=REGION,
+                token_provider=(lambda: _API_KEY),   # closes over the baked key
+                embed_fn=platform_embed_fn(),         # vector/hybrid — see below
+            ),
+            judge_base_url=config.llm_url(),
+            judge_model="gpt-5.4-mini",
+            **kwargs,
+        )
+```
+
+Pinecone → `PineconeSearch(index_name=…, index_host=…, token_provider=…)`;
+Chroma → `ChromaSearch(collection_name=…, tenant=…, database=…, token_provider=…)`.
+(`config.*` and `platform_embed_fn` are fine inside `__init__` — they resolve in the
+sandbox against the env's own domain.)
+
+**Does it actually retrieve?** A green `validate` can hide an empty search (the tool
+swallows errors into a string — see verify-environment). The `embed_fn` decides it:
+- **turbopuffer**: lexical/BM25 works with **no** `embed_fn`. Vector/hybrid
+  **REQUIRES** `embed_fn=platform_embed_fn()` (tpuf has no server-side embed).
+- **pinecone**: uses its hosted `multilingual-e5-large` automatically — works **only
+  if the index was built with that model**. Built with another? pass
+  `embed_fn=platform_embed_fn()` so query + index embeddings match.
+- **chroma**: a Chroma Cloud collection (server-side EF) or a BM25 collection works
+  as-is; a bare collection raises `LocalEmbeddingDownloadDisallowedError` — pass
+  `embed_fn=platform_embed_fn()`.
+
+`platform_embed_fn()` is `text-embedding-3-large` over the platform `/v1/embeddings`;
+it inherits the env's domain in the sandbox, so it works on staging and prod alike.
+
+#### Traces — learn the agent's task from its recorded traces
+
+`castform data traces` (generate-data) pulls + shapes Braintrust traces into
+`{prompt_messages, ground_truth, init_rollout_args}` rows and prints the **detected
+system prompt + tools**. Author a `run.py` whose `dataset_preprocess` matches that
+shape — build the prompt from `prompt_messages` and read the recorded completion off
+`ground_truth` — and set `system_prompt` to the agent's task (the detected one is a
+good start). Score comparatively against `ground_truth` (or rank within a group).
+
 ### Companion-server envs (advanced)
 
 If the env needs a separate server (a game/sim like Showdown), that server must

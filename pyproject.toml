@@ -60,7 +60,7 @@ rag = [
     "sentence-transformers>=5.2.3",
     "tqdm>=4.66.0",
 ]
-traces = []
+traces = ["tqdm>=4.66.0"]
 chroma = ["chromadb>=1.0.0"]
 pinecone = ["pinecone>=5.0.0"]
 turbopuffer = ["turbopuffer>=1.16.2"]

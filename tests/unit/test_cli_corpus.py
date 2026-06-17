@@ -94,3 +94,99 @@ def test_ingest_missing_rag_dep_hints_install(monkeypatch, tmp_path, capsys):
     _install(monkeypatch, raise_exc=exc)
     assert corpus._cmd_corpus_ingest(_ns(str(tmp_path))) == 1
     assert "pip install castform[rag]" in capsys.readouterr().err
+
+
+# --- corpus list / delete ---------------------------------------------------
+
+import benchmax.rag.corpus.postgres.client as client_mod  # noqa: E402
+
+
+class _Row:
+    def __init__(self, id_, name):
+        self.id = id_
+        self.name = name
+        from datetime import datetime, timezone
+
+        self.created_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+
+class _FakeClient:
+    rows: list = []
+    deleted: list = []
+    delete_ok = True
+
+    def __init__(self, base_url=None):
+        pass
+
+    def list_corpora(self):
+        return list(_FakeClient.rows)
+
+    def delete_corpus(self, corpus_id):
+        _FakeClient.deleted.append(corpus_id)
+        return _FakeClient.delete_ok
+
+
+def _install_client(monkeypatch, *, rows=None, delete_ok=True):
+    _FakeClient.rows = rows if rows is not None else []
+    _FakeClient.deleted = []
+    _FakeClient.delete_ok = delete_ok
+    monkeypatch.setattr(client_mod, "CorpusClient", _FakeClient)
+
+
+def _ns_list(**kw):
+    base = dict(json=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _ns_del(corpus_, **kw):
+    base = dict(corpus=corpus_, yes=False, json=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_corpus_list_shows_names_and_cap(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha"), _Row("id2", "beta")])
+    assert corpus._cmd_corpus_list(_ns_list()) == 0
+    out = capsys.readouterr().out
+    assert "2/5 corpora" in out and "alpha" in out and "beta" in out
+
+
+def test_corpus_list_empty(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[])
+    assert corpus._cmd_corpus_list(_ns_list()) == 0
+    assert "No corpora yet" in capsys.readouterr().out
+
+
+def test_corpus_list_json(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")])
+    assert corpus._cmd_corpus_list(_ns_list(json=True)) == 0
+    out = capsys.readouterr().out
+    assert "id1" in out and "alpha" in out
+
+
+def test_corpus_delete_requires_yes(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")])
+    assert corpus._cmd_corpus_delete(_ns_del("alpha")) == 1
+    assert "without --yes" in capsys.readouterr().err
+    assert _FakeClient.deleted == []  # nothing deleted
+
+
+def test_corpus_delete_by_name_with_yes(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha"), _Row("id2", "beta")])
+    assert corpus._cmd_corpus_delete(_ns_del("alpha", yes=True)) == 0
+    assert _FakeClient.deleted == ["id1"]
+    assert "Deleted corpus 'alpha'" in capsys.readouterr().out
+
+
+def test_corpus_delete_by_id_with_yes(monkeypatch):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")])
+    assert corpus._cmd_corpus_delete(_ns_del("id1", yes=True)) == 0
+    assert _FakeClient.deleted == ["id1"]
+
+
+def test_corpus_delete_not_found(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")])
+    assert corpus._cmd_corpus_delete(_ns_del("nope", yes=True)) == 1
+    assert "no corpus matching" in capsys.readouterr().err
+    assert _FakeClient.deleted == []
