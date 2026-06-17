@@ -18,9 +18,13 @@ import argparse
 import sys
 from pathlib import Path
 
+from benchmax.cli._client import handle_errors
+
 _RAG_INSTALL_HINT = "Install RAG support with: pip install castform[rag]"
 
 
+@handle_errors  # backstop stray httpx errors + no-credential RuntimeError, like the
+# other verbs; the corpus-specific excepts below still run first.
 def _cmd_corpus_ingest(args: argparse.Namespace) -> int:
     folder = Path(args.folder)
     if not folder.is_dir():
