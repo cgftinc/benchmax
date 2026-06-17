@@ -157,6 +157,35 @@ def _cmd_corpus_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+@handle_errors
+def _cmd_corpus_search(args: argparse.Namespace) -> int:
+    # Confirm retrieval the same way the rollout does (resolve by name, lexical) —
+    # real hits here mean a rag env can actually search; empty/Error means fix the
+    # corpus before trusting a green validate.
+    try:
+        from benchmax.rag.corpus.postgres.search import PostgresSearch
+    except ImportError as exc:
+        print(f"Error: {exc}. {_RAG_INSTALL_HINT}", file=sys.stderr)
+        return 1
+    search = PostgresSearch(args.corpus, base_url=config.platform_url())
+    hits = search.search(args.query, top_k=args.top_k)
+    if args.json:
+        from benchmax.cli._output import print_json
+
+        print_json(hits)
+        return 0
+    if not hits:
+        print(f"No results for {args.query!r} in corpus '{args.corpus}'.")
+        return 0
+    print(f"{len(hits)} hit(s) for {args.query!r} in '{args.corpus}':")
+    for h in hits:
+        score = h.get("score")
+        score_s = f"{score:.2f}" if isinstance(score, (int, float)) else str(score)
+        content = (h.get("content") or "").replace("\n", " ")[:100]
+        print(f"  {score_s}  {h.get('source', '')}  {content}")
+    return 0
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     """Attach the `corpus` group to the top-level subparsers."""
     corpus = sub.add_parser("corpus", help="Corpus utilities for RAG envs")
@@ -188,3 +217,14 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p_del.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_del.set_defaults(func=_cmd_corpus_delete)
+
+    p_se = corpus_sub.add_parser(
+        "search", help="Search a corpus to confirm retrieval works (lexical)"
+    )
+    p_se.add_argument("corpus", help="Corpus name")
+    p_se.add_argument("query", help="Query text")
+    p_se.add_argument(
+        "--top-k", type=int, default=5, help="Max hits to show (default: 5)"
+    )
+    p_se.add_argument("--json", action="store_true", help="Emit raw JSON")
+    p_se.set_defaults(func=_cmd_corpus_search)

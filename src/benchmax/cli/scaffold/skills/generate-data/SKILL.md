@@ -93,15 +93,10 @@ Confirm retrieval directly — this hits the corpus the same way the rollout doe
 (resolve by name), so real hits here mean the env can actually search:
 
 ```bash
-python -c "
-from benchmax import config
-from benchmax.rag.corpus.postgres.search import PostgresSearch
-hits = PostgresSearch('my-corpus', base_url=config.platform_url()).search('a question about your docs', top_k=3)
-print(f'{len(hits)} hits'); [print(round(h['score'],2), h['source'], h['content'][:80]) for h in hits]
-"
+castform corpus search my-corpus "a question about your docs" --top-k 3
 ```
 
-Non-empty, sensibly-scored hits = retrieval works. Empty or an exception = fix the
+Non-empty, sensibly-scored hits = retrieval works. Empty or an error = fix the
 corpus name / ingest before reading anything into a green `validate`.
 
 #### Choosing a data source

@@ -190,3 +190,41 @@ def test_corpus_delete_not_found(monkeypatch, capsys):
     assert corpus._cmd_corpus_delete(_ns_del("nope", yes=True)) == 1
     assert "no corpus matching" in capsys.readouterr().err
     assert _FakeClient.deleted == []
+
+
+# --- corpus search ----------------------------------------------------------
+
+import benchmax.rag.corpus.postgres.search as search_mod  # noqa: E402
+
+
+class _FakeSearch:
+    hits: list = []
+
+    def __init__(self, corpus, base_url=None):
+        self.corpus = corpus
+
+    def search(self, query, top_k=5):
+        _FakeSearch.last = (query, top_k)
+        return list(_FakeSearch.hits)
+
+
+def _ns_search(corpus_, query, **kw):
+    base = dict(corpus=corpus_, query=query, top_k=5, json=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_corpus_search_prints_hits(monkeypatch, capsys):
+    _FakeSearch.hits = [{"score": 2.6, "source": "a.md", "content": "hello\nworld"}]
+    monkeypatch.setattr(search_mod, "PostgresSearch", _FakeSearch)
+    assert corpus._cmd_corpus_search(_ns_search("karpathy", "q")) == 0
+    out = capsys.readouterr().out
+    assert "1 hit(s)" in out and "a.md" in out and "2.60" in out
+    assert _FakeSearch.last == ("q", 5)
+
+
+def test_corpus_search_empty(monkeypatch, capsys):
+    _FakeSearch.hits = []
+    monkeypatch.setattr(search_mod, "PostgresSearch", _FakeSearch)
+    assert corpus._cmd_corpus_search(_ns_search("karpathy", "q")) == 0
+    assert "No results" in capsys.readouterr().out
