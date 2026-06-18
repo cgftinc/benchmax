@@ -24,13 +24,25 @@ iterating.
 ```bash
 castform validate                 # uses run.py + train_dataset.jsonl in this dir
 castform validate --examples 3    # roll out more examples
+castform validate --max-turns 11 --max-tool-calls 10   # raise the rollout budget for a multi-turn/search env
 castform validate --json          # machine-readable
 ```
+
+> **Multi-turn / search envs: raise the budget.** Rollouts default to `max_turns=4` /
+> `max_tool_calls=8`. An env whose prompt advertises more (a `SearchEnv` with
+> `MAX_SEARCH_CALLS=10`) is **truncated** below that — the scorecard looks flat/weak for
+> no obvious reason. Validate at a budget that matches: `castform validate --max-turns M
+> --max-tool-calls S` where `S = MAX_SEARCH_CALLS` and `M = S + 1` (the inline answer
+> adds a turn, not a tool call). (At launch the turn budget is `--set max_turns=M`; see
+> design-environment / launch-run.)
 
 > **Narrate the wait to the user.** Each `validate` runs **real remote rollouts
 > (~30–60s each)** — a full fix-and-re-validate loop can take **10+ minutes**. Say
 > what you're checking and why you're re-validating, so the user reads the pause as
-> progress, not a hang.
+> progress, not a hang. **A changed dep set** (`--pip` / `--provider`, or editing the
+> env's `PIP_DEPENDENCIES`) rebuilds the rollout sandbox before any rollout streams —
+> that adds a few minutes on the first validate after the change; a same-deps
+> re-validate skips it (don't mistake the rebuild for a hang and start polling).
 
 **A green baseline** = validate passes, rewards are sane and **vary** across
 rollouts, and no reward-function errors. That's the milestone — and the decision
@@ -96,11 +108,12 @@ point:
   - `→ GREEN baseline` — usable; iterate or launch.
   - `⚠ green, but NO training signal` — validate "passed" but every reward is
     constant: a **hollow pass**. For rag the search tool swallowed an error into a
-    string → all-zero rewards. Two usual causes: (1) a **provider** env whose SDK
-    isn't in the sandbox — re-run with `castform validate --pip <provider>` (see
-    design-environment); (2) an unreachable/empty corpus or bad credentials. NOT a
-    baseline — read the transcript and confirm retrieval/judge actually work
-    (generate-data has a direct retrieval check).
+    string → all-zero rewards. Read the per-rollout transcript with
+    `castform validate --full-messages` to surface the swallowed `Error:`. Two usual
+    causes: (1) a **provider** env whose SDK isn't in the sandbox — re-run with
+    `castform validate --provider <name>` (or `--pip <sdk>`; see design-environment);
+    (2) an unreachable/empty corpus or bad credentials. NOT a baseline — confirm
+    retrieval/judge actually work (generate-data has a direct retrieval check).
   - `→ NOT passing` — a reward fn errored; fix it and re-validate.
 
 **Common reward errors** (shown under `⚠ reward errors`):

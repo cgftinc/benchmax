@@ -96,9 +96,13 @@ automatically; if you call the SDK directly, pass them to `upload_training_run`.
 ## Gotchas that silently cost you (verified against the trainer)
 
 - **`max_turns` defaults to 4, `max_tool_calls` to 8.** A multi-turn env that
-  needs more will be silently truncated. The trainer does **not** consult an env's
-  `recommended_max_turns` (it never passes the env class to the limit resolver) —
-  so always set the limit explicitly at launch: `castform launch --set max_turns=N`.
+  needs more is silently truncated, and the trainer does **not** consult an env's
+  `recommended_max_*` (it never passes the env class to the limit resolver). Set the
+  budget explicitly: `castform validate --max-turns N --max-tool-calls N` (both
+  settable) and `castform launch --set max_turns=N`. ⚠ At launch `max_tool_calls` is
+  **not** a `--set` knob (stays 8), so a SearchEnv with `MAX_SEARCH_CALLS=10` is capped
+  at 8 tool calls in training — keep `MAX_SEARCH_CALLS` ≤ 8 unless `--list-args` shows a
+  higher cap.
 - **The launch token budget is `max_rollout_len`** (total tokens across the whole
   rollout, all turns) — **not** `max_response_len`. The server rejects unknown
   arg names. `castform launch --list-args` shows the live, accepted set. Set it

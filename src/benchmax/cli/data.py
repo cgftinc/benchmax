@@ -20,6 +20,7 @@ from typing import Any
 
 from benchmax.cli._client import handle_errors
 from benchmax.cli._output import print_json
+from benchmax.cli._providers import install_hint, provider_choices
 from benchmax.platform.client import StorageClient
 
 _RAG_INSTALL_HINT = "Install RAG support with: pip install castform[rag]"
@@ -52,7 +53,7 @@ def _provider_qa_source_factory(provider: str) -> tuple[Any, str]:
             from benchmax.rag.corpus.turbopuffer.source import TpufChunkSource
         except ImportError:
             raise ValueError(
-                "turbopuffer not installed. Install with: pip install castform[turbopuffer]"
+                f"turbopuffer not installed. {install_hint('turbopuffer')}"
             ) from None
         _require("DATA_api_key", api_key)
         namespace = _require("DATA_namespace", os.environ.get("DATA_namespace", ""))
@@ -73,7 +74,7 @@ def _provider_qa_source_factory(provider: str) -> tuple[Any, str]:
             from benchmax.rag.corpus.pinecone.source import PineconeChunkSource
         except ImportError:
             raise ValueError(
-                "pinecone not installed. Install with: pip install castform[pinecone]"
+                f"pinecone not installed. {install_hint('pinecone')}"
             ) from None
         _require("DATA_api_key", api_key)
         index_name = _require("DATA_index_name", os.environ.get("DATA_index_name", ""))
@@ -96,7 +97,7 @@ def _provider_qa_source_factory(provider: str) -> tuple[Any, str]:
         from benchmax.rag.corpus.chroma.source import ChromaChunkSource
     except ImportError:
         raise ValueError(
-            "chromadb not installed. Install with: pip install castform[chroma]"
+            f"chromadb not installed. {install_hint('chroma')}"
         ) from None
     collection = _require("DATA_collection_name", os.environ.get("DATA_collection_name", ""))
     tenant = os.environ.get("DATA_tenant") or None
@@ -208,7 +209,7 @@ def _cmd_data_qa_gen(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except ImportError as exc:  # a provider SDK is imported lazily on first use
-        hint = f" Install with: pip install castform[{args.provider}]" if args.provider else ""
+        hint = f" {install_hint(args.provider)}" if args.provider else ""
         print(f"Error: {exc}.{hint}", file=sys.stderr)
         return 1
 
@@ -292,6 +293,21 @@ def _cmd_data_traces(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    if args.dry_run:
+        # Detect-only: surface the FULL detected prompt + tools so the agent can
+        # confirm them before committing a dataset. No files written.
+        system_prompt = result.get("system_prompt", "")
+        tools = result.get("tools", [])
+        tool_names = [t.get("name", "?") for t in tools]
+        if args.json:
+            print_json({"system_prompt": system_prompt, "tools": tools})
+        else:
+            print(f"detected system prompt ({len(system_prompt)} chars):")
+            print(system_prompt or "(none)")
+            print(f"detected tools: {', '.join(tool_names) or '(none)'}")
+            print("dry run — no datasets written. re-run without --dry-run to write them.")
+        return 0
+
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     train_path = out_dir / "train_dataset.jsonl"
@@ -363,7 +379,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     src.add_argument("--corpus-id", help="Existing corpus id")
     src.add_argument(
         "--provider",
-        choices=["turbopuffer", "pinecone", "chroma"],
+        choices=provider_choices(),
         help="Generate from a provider corpus instead of CGFT (reads DATA_* env vars)",
     )
     p_qa.add_argument(
@@ -414,6 +430,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p_tr.add_argument(
         "--out", default=".", help="Output dir for the datasets (default: cwd)"
+    )
+    p_tr.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Detect-only: print the full detected system prompt + tools and write "
+        "nothing — confirm them before generating the dataset",
     )
     p_tr.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_tr.set_defaults(func=_cmd_data_traces)

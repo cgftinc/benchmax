@@ -18,6 +18,7 @@ from benchmax import config
 from benchmax.cli._client import handle_errors
 from benchmax.cli._output import print_json
 from benchmax.cli._project import ProjectError, load_project
+from benchmax.cli._providers import provider_choices, resolve_pip_dependencies
 from benchmax.cli.validate import _parse_env_args
 from benchmax.platform.client import LaunchArgSpec, TrainerClient
 
@@ -102,6 +103,9 @@ def _cmd_launch(args: argparse.Namespace) -> int:
 
         env_args = _parse_env_args(args.env_arg)
         launcher_args = _build_launcher_args(specs, args.set)
+        # Resolve once so the pre-flight validate and the upload install the SAME
+        # deps (--pip + the env's PIP_DEPENDENCIES slot + --provider's SDK).
+        pip_deps = resolve_pip_dependencies(args.pip, project.env_class, args.provider)
         # max_turns defaults to 4 server-side and the trainer never consults
         # recommended_max_* — warn on omit so multi-turn envs aren't silently capped.
         if "max_turns" not in launcher_args:
@@ -136,11 +140,17 @@ def _cmd_launch(args: argparse.Namespace) -> int:
                 train_dataset=project.train_dataset,
                 eval_dataset=project.eval_dataset,
                 local_modules=[project.module] if project.from_file else None,
+                pip_dependencies=pip_deps,
                 local=False,
                 api_key=None,
                 remote_examples=2,
                 group_reward_samples=2,
                 llm_model=args.model,
+                # Smoke-test at the SAME turn budget the run will use, so the
+                # pre-flight doesn't truncate (and flag a false problem) on a
+                # multi-turn/search env. max_tool_calls isn't a launch --set knob,
+                # so it stays the server default.
+                max_turns=launcher_args.get("max_turns", 4),
                 verbose=False,
             )
             if not report.ok:
@@ -159,7 +169,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
             eval_dataset=project.eval_dataset,
             run_name=run_name,
             constructor_args=env_args,
-            pip_dependencies=args.pip or None,
+            pip_dependencies=pip_deps,
             local_modules=[project.module] if project.from_file else None,
         )
 
@@ -210,6 +220,13 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--env-arg", action="append", metavar="KEY=VALUE", help="Env constructor arg"
     )
     p.add_argument("--pip", action="append", metavar="DEP", help="Extra pip dependency")
+    p.add_argument(
+        "--provider",
+        choices=provider_choices(),
+        help="Inject this provider's SDK into the rollout sandbox; does NOT "
+        "configure the corpus (the env reads its config from run.py). Shorthand "
+        "for the right --pip deps.",
+    )
     p.add_argument(
         "--set",
         action="append",

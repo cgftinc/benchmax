@@ -33,10 +33,26 @@ CORPUS_NAME = "my-corpus"
 JUDGE_MODEL = "gpt-5.4-mini"
 
 # Search-call budget per rollout; the system prompt advertises this same number.
+# The ROLLOUT budget is separate and defaults LOWER (max_turns=4 / max_tool_calls=8),
+# and the trainer ignores this value — so to actually use all N searches, raise it.
+# Each search = one turn + one tool call; the final answer is INLINE (one extra TURN,
+# not a tool call) → max_turns = N+1, max_tool_calls = N. For N=10:
+#   castform validate --max-turns 11 --max-tool-calls 10   # both settable on validate
+#   castform launch   --set max_turns=11                   # launch knob; see --list-args
+# At launch only max_turns is a documented `--set` knob (max_tool_calls isn't — it
+# defaults to 8; run `castform launch --list-args` for the live set). If training caps
+# tool calls at 8 (< N), lower MAX_SEARCH_CALLS to fit.
 MAX_SEARCH_CALLS = 10
 
 
 class CustomSearchEnv(SearchEnv):
+    # Extra pip deps the rollout sandbox needs — `validate`/`launch` read this and
+    # install it (the sandbox bundles only run.py + benchmax). Empty for the default
+    # Postgres corpus; when you swap `search=` to a provider client, list its SDK
+    # here (e.g. ["chromadb>=1.0.0", "snowballstemmer>=2.2.0"]) — or pass
+    # `--provider <name>` to validate/launch and skip the bookkeeping.
+    PIP_DEPENDENCIES: list[str] = []
+
     # Rendered once at class-definition so the dataset/prompt preprocessors read
     # the resolved value via `cls` (keep MAX_SEARCH_CALLS in sync with __init__).
     system_prompt = SearchEnv.render_system_prompt(

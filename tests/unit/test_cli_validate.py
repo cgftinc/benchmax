@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -104,9 +105,12 @@ def _validate_ns(**over) -> argparse.Namespace:
         eval="eval_dataset.jsonl",
         env_arg=None,
         pip=None,
+        provider=None,
         model=None,
         examples=2,
         group_samples=2,
+        max_turns=4,
+        max_tool_calls=8,
         local_only=False,
         verbose=False,
         full_messages=False,
@@ -213,6 +217,50 @@ def test_validate_pip_repeatable_in_parser():
     assert args.pip == ["turbopuffer", "chromadb>=1.0.0"]
 
 
+def test_validate_turn_budget_forwards_to_rollout(monkeypatch):
+    # --max-turns / --max-tool-calls must reach validate_env so a deep-search env
+    # (e.g. SearchEnv MAX_SEARCH_CALLS=10) can be validated at the budget the prompt
+    # advertises, instead of the truncating 4/8 default.
+    captured: dict = {}
+
+    def _capture(**k):
+        captured.update(k)
+        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+
+    monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
+    validate._cmd_validate(_validate_ns(max_turns=11, max_tool_calls=11))
+    assert captured["max_turns"] == 11
+    assert captured["max_tool_calls"] == 11
+
+
+def test_validate_turn_budget_defaults_in_parser():
+    args = build_parser().parse_args(["validate"])
+    assert args.max_turns == 4 and args.max_tool_calls == 8
+    args = build_parser().parse_args(["validate", "--max-turns", "11", "--max-tool-calls", "12"])
+    assert args.max_turns == 11 and args.max_tool_calls == 12
+
+
+def test_validate_provider_injects_sdk(monkeypatch):
+    # --provider chroma must reach validate_env as the provider's SDK (incl. the
+    # un-guessable snowballstemmer) merged with any --pip — without the agent
+    # naming the package.
+    captured: dict = {}
+
+    def _capture(**k):
+        captured.update(k)
+        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+
+    monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
+    validate._cmd_validate(_validate_ns(pip=["mydep"], provider="chroma"))
+    assert captured["pip_dependencies"] == [
+        "mydep",
+        "chromadb>=1.0.0",
+        "snowballstemmer>=2.2.0",
+    ]
+
+
 # --- constant / all-zero reward warning ---------------------------------
 
 
@@ -231,6 +279,51 @@ def test_validate_warns_on_constant_component(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "some components constant" in out and "'fmt' never vary" in out
     assert "'acc' never vary" not in out
+
+
+# --- hollow-green recommendation carries an actionable hint ----------------
+
+_GREEN_REPORT = type("R", (), {"ok": True})()
+
+
+def test_recommendation_hollow_green_includes_remediation():
+    # A constant total → the hint must name the concrete next moves so the agent
+    # doesn't re-validate blindly: --full-messages to read a swallowed Error:, and
+    # --provider/--pip for a provider RAG env.
+    rec = validate._recommendation(_GREEN_REPORT, [{"acc": 0.5}, {"acc": 0.5}])
+    assert "NO training signal" in rec
+    assert "--full-messages" in rec and "Error:" in rec
+    assert "--provider" in rec and "--pip" in rec
+
+
+def test_recommendation_varying_reward_has_no_hint():
+    # Reward total varies → the plain GREEN verdict, no remediation noise.
+    rec = validate._recommendation(_GREEN_REPORT, [{"acc": 1.0}, {"acc": 0.0}])
+    assert "GREEN baseline" in rec
+    assert "--full-messages" not in rec and "--provider" not in rec
+
+
+def _skill_text(name: str) -> str:
+    skill = (
+        Path(validate.__file__).parent / "scaffold/skills" / name / "SKILL.md"
+    )
+    return skill.read_text("utf-8")
+
+
+def test_skill_green_sample_line_byte_equal_to_code():
+    # verify-environment renders the GREEN verdict as a sample scorecard line; it
+    # must stay byte-equal to what _recommendation prints (2-space indent) so the
+    # doc never drifts from the tool.
+    green = validate._recommendation(_GREEN_REPORT, [{"acc": 1.0}, {"acc": 0.0}])
+    assert f"  {green}" in _skill_text("verify-environment")
+
+
+def test_skill_hollow_green_prose_reflects_new_remediation():
+    # The paired edit (N6): the doc's hollow-green guidance names the same new flags
+    # the code now recommends.
+    text = _skill_text("verify-environment")
+    assert "--full-messages" in text
+    assert "--provider <name>" in text and "--pip <sdk>" in text
 
 
 def test_validate_constant_needs_two_rollouts(monkeypatch, capsys):
