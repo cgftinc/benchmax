@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>castform data view</title>
+<style>
+  :root {
+    --bg: #fafafa; --fg: #1f2328; --muted: #6b7280; --line: #e5e7eb;
+    --card: #ffffff; --accent: #2563eb; --soft: #f3f4f6;
+    --user: #2563eb; --assistant: #16a34a; --system: #6b7280; --tool: #7c3aed;
+    --warn-bg: #fff7ed; --warn-fg: #9a3412;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  header, #controls, #banner, main { max-width: 1100px; margin: 0 auto; padding: 0 20px; }
+  header { padding-top: 24px; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .sub { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--muted); }
+  .tag { background: #eef2ff; color: #3730a3; border-radius: 4px; padding: 1px 8px; font-size: 12px; }
+  .src { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  #controls { display: flex; gap: 8px; margin: 16px auto; flex-wrap: wrap; }
+  button { font: inherit; cursor: pointer; }
+  button.mode { background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+                padding: 5px 12px; color: var(--fg); }
+  button.mode.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .cap { color: var(--muted); margin-bottom: 12px; font-size: 13px; }
+  .cap.warn { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid #fed7aa;
+              border-radius: 6px; padding: 8px 12px; }
+  .note { color: var(--muted); font-size: 12px; margin: 4px 0 8px; }
+  main { padding-bottom: 60px; }
+
+  table.grid { width: 100%; border-collapse: collapse; background: var(--card);
+               border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  table.grid th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600;
+                  border-bottom: 1px solid var(--line); padding: 8px 10px; vertical-align: top; }
+  table.grid td { border-bottom: 1px solid var(--line); padding: 8px 10px; vertical-align: top; }
+  td.idx, th:first-child { width: 40px; color: var(--muted); font-family: ui-monospace, monospace;
+                           font-size: 12px; }
+  td.num { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; width: 64px; }
+
+  /* expandable rows (corpus + traces) */
+  tr.exp { cursor: pointer; }
+  tr.exp:hover > td { background: #fafbff; }
+  tr.exp.expanded > td { background: #f6f8ff; }
+  .cflex { display: flex; gap: 8px; align-items: flex-start; }
+  .chev { color: var(--muted); transition: transform .12s ease; user-select: none; line-height: 1.4; }
+  tr.exp.expanded .chev { transform: rotate(90deg); }
+  tr.detail > td { background: #f6f8fa; }
+  .trunc-hint { margin-top: 4px; font-size: 11px; font-style: italic; color: var(--muted); }
+  tr.exp.expanded .trunc-hint { display: none; }
+
+  .clamp { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+  .clamp3 { -webkit-line-clamp: 3; }
+  .clamp2 { -webkit-line-clamp: 2; }
+  tr.exp.expanded .unclamp { display: block; overflow: visible; white-space: pre-wrap;
+                             -webkit-line-clamp: unset; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { font-size: 11px; background: var(--soft); color: #374151; border-radius: 4px;
+          padding: 1px 7px; font-family: ui-monospace, monospace; }
+  .chip.score { background: #ecfdf5; color: #065f46; font-family: inherit; font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+
+  /* conversation panel + message blocks */
+  .panel { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--card); }
+  .panel-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+                 color: var(--muted); padding: 8px 12px 2px; }
+  .msg { padding: 8px 12px; border-top: 1px solid var(--line); }
+  .panel > .msg:first-child { border-top: none; }
+  .msg-head { display: flex; gap: 8px; align-items: baseline; }
+  .role { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+  .mname { font-size: 12px; color: var(--muted); font-family: ui-monospace, monospace; }
+  .msg-user      { background: rgba(37,99,235,.04); }   .role-user      { color: var(--user); }
+  .msg-assistant { background: rgba(22,163,74,.05); }    .role-assistant { color: var(--assistant); }
+  .msg-system    { background: rgba(107,114,128,.06); }  .role-system    { color: var(--system); }
+  .msg-tool      { background: rgba(107,114,128,.06); }  .role-tool      { color: var(--tool); }
+  .cb-body, .msg .cb-body { white-space: pre-wrap; word-break: break-word; margin-top: 4px; font-size: 13px; }
+  button.more { background: none; border: none; color: var(--accent); padding: 2px 0; font-size: 12px;
+                display: block; margin-top: 2px; }
+  .toolcall { margin-top: 6px; padding: 6px 8px; background: #faf5ff; border: 1px solid #ede9fe;
+              border-radius: 6px; }
+  .tc-label { font-size: 11px; font-weight: 600; color: var(--tool); }
+  pre.json { background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+             overflow: auto; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 4px 0 0; }
+  .detail-wrap { padding: 4px 2px; }
+  .detail-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+                  color: var(--muted); margin: 8px 0 2px; }
+  details.collapse > summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+  button.rawbtn { background: none; border: 1px solid var(--line); border-radius: 4px;
+                  font-size: 11px; padding: 2px 6px; color: var(--muted); }
+  .raw-block { display: none; }
+  .err { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid #fed7aa;
+         border-radius: 6px; padding: 12px; }
+</style>
+</head>
+<body data-view="__INITIAL_VIEW__">
+<header id="top"></header>
+<div id="controls"></div>
+<div id="banner"></div>
+<main id="content"></main>
+
+<script type="application/json" id="data">__VIEW_MODEL_JSON__</script>
+<script>
+(function () {
+  "use strict";
+
+  var MODEL = null, MODE = "auto";
+
+  function parseModel() {
+    try { return JSON.parse(document.getElementById("data").textContent); }
+    catch (e) { return null; }
+  }
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+  function pre(text) { var p = el("pre", "json"); p.textContent = text; return p; }
+  function jsonPre(value) { return pre(JSON.stringify(value, null, 2)); }
+  function collapsible(label, build) {
+    var d = el("details", "collapse"); d.appendChild(el("summary", null, label));
+    var body = build(); if (body) d.appendChild(body); return d;
+  }
+
+  // Long text clamped to N lines with an explicit show more/less toggle. The
+  // toggle is offered by a deterministic length/newline heuristic (never a
+  // layout measurement, which races with reflow and can strand clipped text).
+  function clampBlock(text, lines) {
+    text = (text == null) ? "" : String(text);
+    lines = lines || 3;
+    var wrap = el("div", "cb");
+    var body = el("div", "cb-body clamp");
+    body.style.webkitLineClamp = String(lines);
+    body.textContent = text;
+    wrap.appendChild(body);
+    var newlines = (text.match(/\n/g) || []).length;
+    if (text.length > 200 || newlines >= lines) {
+      var btn = el("button", "more", "show more");
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var clamped = body.classList.toggle("clamp");
+        btn.textContent = clamped ? "show more" : "show less";
+      });
+      wrap.appendChild(btn);
+    }
+    return wrap;
+  }
+
+  function chips(keys, cls) {
+    var wrap = el("div", "chips");
+    if (!keys.length) { wrap.appendChild(el("span", "muted", "—")); return wrap; }
+    keys.forEach(function (k) { wrap.appendChild(el("span", cls || "chip", k)); });
+    return wrap;
+  }
+
+  // Click a row to toggle a detail row beneath it; the detail is built lazily on
+  // first open. Clicks on inner buttons/links don't toggle the row.
+  function makeExpandable(mainTr, detailTr, build) {
+    detailTr.style.display = "none";
+    var built = false;
+    mainTr.addEventListener("click", function (e) {
+      if (e.target.closest("button, a, summary")) return;
+      var open = detailTr.style.display === "none";
+      detailTr.style.display = open ? "table-row" : "none";
+      mainTr.classList.toggle("expanded", open);
+      if (open && !built) { build(); built = true; }
+    });
+  }
+
+  // --- message rendering (trace conversation panel) -------------------------
+
+  function messageBlock(msg) {
+    var role = msg.role || "?";
+    var block = el("div", "msg msg-" + role);
+    var head = el("div", "msg-head");
+    head.appendChild(el("span", "role role-" + role, role));
+    if (msg.name) head.appendChild(el("span", "mname", msg.name));
+    if (msg.tool_call_id) head.appendChild(el("span", "mname", "tool_call_id: " + msg.tool_call_id));
+    block.appendChild(head);
+    if (msg.content) block.appendChild(clampBlock(msg.content, 6));
+    (msg.tool_calls || []).forEach(function (tc) {
+      var fn = tc.function || {};
+      var box = el("div", "toolcall");
+      box.appendChild(el("span", "tc-label", "Tool Call"));
+      var args;
+      try { args = JSON.stringify(JSON.parse(fn.arguments || "{}")); }
+      catch (e) { args = String(fn.arguments || ""); }
+      box.appendChild(pre((fn.name || "(unnamed)") + "(" + args + ")"));
+      block.appendChild(box);
+    });
+    return block;
+  }
+
+  function conversationPanel(row) {
+    var panel = el("div", "panel");
+    (row.prompt_messages || []).forEach(function (m) { panel.appendChild(messageBlock(m)); });
+    var comp = row.completion_messages || [];
+    if (comp.length) {
+      panel.appendChild(el("div", "panel-label", "Ground truth"));
+      comp.forEach(function (m) { panel.appendChild(messageBlock(m)); });
+    } else {
+      panel.appendChild(el("div", "panel-label", "Ground truth"));
+      panel.appendChild(el("p", "muted", "(no completion)"));
+    }
+    var md = row.metadata || {};
+    if (Object.keys(md).length) {
+      var wrap = el("div", "detail-wrap");
+      wrap.appendChild(collapsible("metadata", function () { return jsonPre(md); }));
+      panel.appendChild(wrap);
+    }
+    return panel;
+  }
+
+  function firstUserText(row) {
+    var msgs = row.prompt_messages || [];
+    var i;
+    for (i = 0; i < msgs.length; i++) if (msgs[i].role === "user" && msgs[i].content) return msgs[i].content;
+    for (i = 0; i < msgs.length; i++) if (msgs[i].content) return msgs[i].content;
+    return "(no text)";
+  }
+
+  // --- table renderers ------------------------------------------------------
+
+  function chunksTable(d) {
+    var rows = d.rows || [];
+    var table = el("table", "grid"), htr = el("tr");
+    ["#", "content", "metadata"].forEach(function (h) { htr.appendChild(el("th", null, h)); });
+    var thead = el("thead"); thead.appendChild(htr); table.appendChild(thead);
+    var tb = el("tbody");
+    rows.forEach(function (r, i) {
+      var tr = el("tr", "exp");
+      tr.appendChild(el("td", "idx", i + 1));
+
+      var ctd = el("td");
+      var cflex = el("div", "cflex");
+      cflex.appendChild(el("span", "chev", "›"));
+      var cwrap = el("div");
+      var body = el("div", "clamp clamp3 unclamp"); body.textContent = r.content || "";
+      cwrap.appendChild(body);
+      var hint = el("div", "trunc-hint", "truncated — click to show more");
+      cwrap.appendChild(hint);
+      cflex.appendChild(cwrap);
+      ctd.appendChild(cflex);
+      tr.appendChild(ctd);
+      markOverflow(body, hint);
+
+      var keys = (r.metadata && typeof r.metadata === "object") ? Object.keys(r.metadata) : [];
+      var mtd = el("td"); mtd.appendChild(chips(keys)); tr.appendChild(mtd);
+
+      var dtr = el("tr", "detail"); var dtd = el("td"); dtd.colSpan = 3; dtr.appendChild(dtd);
+      makeExpandable(tr, dtr, function () {
+        var w = el("div", "detail-wrap");
+        if (r.score !== null && r.score !== undefined)
+          w.appendChild(el("div", "note", "score: " + r.score));
+        if (keys.length) {
+          w.appendChild(el("div", "detail-label", "metadata"));
+          w.appendChild(jsonPre(r.metadata));
+        }
+        if (r.extra) {
+          w.appendChild(el("div", "detail-label", "extra"));
+          w.appendChild(jsonPre(r.extra));
+        }
+        dtd.appendChild(w);
+      });
+      tb.appendChild(tr); tb.appendChild(dtr);
+    });
+    table.appendChild(tb); return table;
+  }
+
+  function markOverflow(body, hint) {
+    requestAnimationFrame(function () {
+      if (body.scrollHeight <= body.clientHeight + 1) hint.style.display = "none";
+    });
+  }
+
+  function tracesTable(d) {
+    var rows = d.rows || [];
+    var table = el("table", "grid"), htr = el("tr");
+    ["#", "Conversation", "# Msgs", "Scores"].forEach(function (h) { htr.appendChild(el("th", null, h)); });
+    var thead = el("thead"); thead.appendChild(htr); table.appendChild(thead);
+    var tb = el("tbody");
+    rows.forEach(function (r, i) {
+      var tr = el("tr", "exp");
+      tr.appendChild(el("td", "idx", i + 1));
+
+      var ctd = el("td");
+      var cflex = el("div", "cflex");
+      cflex.appendChild(el("span", "chev", "›"));
+      var prev = el("div", "clamp clamp2"); prev.textContent = firstUserText(r);
+      cflex.appendChild(prev);
+      ctd.appendChild(cflex);
+      tr.appendChild(ctd);
+
+      var n = (r.prompt_messages || []).length + (r.completion_messages || []).length;
+      tr.appendChild(el("td", "num", n));
+
+      var scores = r.scores || {};
+      var std = el("td");
+      var keys = Object.keys(scores);
+      if (!keys.length) std.appendChild(el("span", "muted", "—"));
+      else {
+        var box = el("div", "chips");
+        keys.forEach(function (k) {
+          var v = scores[k];
+          box.appendChild(el("span", "chip score", k + ": " + (typeof v === "number" ? v.toFixed(2) : v)));
+        });
+        std.appendChild(box);
+      }
+      tr.appendChild(std);
+
+      var dtr = el("tr", "detail"); var dtd = el("td"); dtd.colSpan = 4; dtr.appendChild(dtd);
+      makeExpandable(tr, dtr, function () { dtd.appendChild(conversationPanel(r)); });
+      tb.appendChild(tr); tb.appendChild(dtr);
+    });
+    table.appendChild(tb); return table;
+  }
+
+  function tdContent(text) { var td = el("td"); td.appendChild(clampBlock(text, 3)); return td; }
+
+  function rawRow(row, ncols) {
+    var tr = el("tr", "raw-row"); tr.style.display = "none";
+    var td = el("td"); td.colSpan = ncols; td.appendChild(jsonPre(row));
+    tr.appendChild(td); return tr;
+  }
+  function rawToggleButton() {
+    var b = el("button", "rawbtn", "{ }"); b.title = "Toggle raw JSON";
+    b.addEventListener("click", function (e) {
+      var tr = e.target.closest("tr");
+      if (tr && tr.nextElementSibling && tr.nextElementSibling.classList.contains("raw-row")) {
+        var rr = tr.nextElementSibling;
+        rr.style.display = rr.style.display === "none" ? "table-row" : "none";
+      }
+    });
+    return b;
+  }
+
+  function ragTable(d) {
+    var rows = d.rows || [], showQa = d.variant === "qa-gen";
+    var anyExtra = rows.some(function (r) { return r.extra; });
+    var table = el("table", "grid"), htr = el("tr");
+    ["#", "question", "answer"].forEach(function (h) { htr.appendChild(el("th", null, h)); });
+    if (showQa) { htr.appendChild(el("th", null, "qa_type")); htr.appendChild(el("th", null, "reference_chunks")); }
+    if (anyExtra) htr.appendChild(el("th", null, "extra"));
+    htr.appendChild(el("th", null, ""));
+    var thead = el("thead"); thead.appendChild(htr); table.appendChild(thead);
+    var ncols = htr.children.length, tb = el("tbody");
+    rows.forEach(function (r, i) {
+      var tr = el("tr");
+      tr.appendChild(el("td", "idx", i + 1));
+      tr.appendChild(tdContent(r.question));
+      tr.appendChild(tdContent(r.answer));
+      if (showQa) {
+        tr.appendChild(el("td", null, r.qa_type == null ? "—" : r.qa_type));
+        var tc = el("td");
+        tc.appendChild(r.reference_chunks
+          ? collapsible("chunks (" + r.reference_chunks.length + ")", function () { return jsonPre(r.reference_chunks); })
+          : el("span", "muted", "—"));
+        tr.appendChild(tc);
+      }
+      if (anyExtra) {
+        var te = el("td");
+        te.appendChild(r.extra
+          ? collapsible("extra", function () { return jsonPre(r.extra); })
+          : el("span", "muted", "—"));
+        tr.appendChild(te);
+      }
+      var ta = el("td"); ta.appendChild(rawToggleButton()); tr.appendChild(ta);
+      tb.appendChild(tr); tb.appendChild(rawRow(r, ncols));
+    });
+    table.appendChild(tb); return table;
+  }
+
+  function cell(v) {
+    if (v === undefined) return el("span", "muted", "—");
+    if (v === null) return el("span", "muted", "null");
+    if (typeof v === "object")
+      return collapsible(Array.isArray(v) ? "[" + v.length + "]" : "{…}", function () { return jsonPre(v); });
+    return clampBlock(String(v), 3);
+  }
+
+  function genericTable(d) {
+    var all = d.columns || [], cols = all.slice(0, 12), hidden = all.length - cols.length;
+    var rows = d.rows || [], table = el("table", "grid"), htr = el("tr");
+    htr.appendChild(el("th", null, "#"));
+    cols.forEach(function (c) { htr.appendChild(el("th", null, c)); });
+    htr.appendChild(el("th", null, ""));
+    var thead = el("thead"); thead.appendChild(htr); table.appendChild(thead);
+    var ncols = htr.children.length, tb = el("tbody");
+    rows.forEach(function (r, i) {
+      var tr = el("tr");
+      tr.appendChild(el("td", "idx", i + 1));
+      var isObj = r && typeof r === "object" && !Array.isArray(r);
+      cols.forEach(function (c) {
+        var td = el("td"); td.appendChild(cell(isObj ? r[c] : undefined)); tr.appendChild(td);
+      });
+      var ta = el("td"); ta.appendChild(rawToggleButton()); tr.appendChild(ta);
+      tb.appendChild(tr); tb.appendChild(rawRow(r, ncols));
+    });
+    table.appendChild(tb);
+    var wrap = el("div");
+    if (hidden > 0)
+      wrap.appendChild(el("p", "note", "+" + hidden + " more column" + (hidden === 1 ? "" : "s") + " — open Raw for the full record."));
+    wrap.appendChild(table); return wrap;
+  }
+
+  function rawList(d) {
+    var wrap = el("div", "rawlist");
+    (d.rows || []).forEach(function (r, i) {
+      var sec = el("section");
+      sec.style.margin = "0 0 12px";
+      sec.appendChild(el("div", "idx", "#" + (i + 1)));
+      sec.appendChild(jsonPre(r));
+      wrap.appendChild(sec);
+    });
+    return wrap;
+  }
+
+  function defaultView(d) {
+    if (d.kind === "traces") return tracesTable(d);
+    if (d.kind === "chunks") return chunksTable(d);
+    if (d.kind === "rag") return ragTable(d);
+    return genericTable(d);
+  }
+  function renderBody(d, mode) {
+    var content = document.getElementById("content"); content.textContent = "";
+    content.appendChild(mode === "raw" ? rawList(d) : defaultView(d));
+  }
+
+  function renderHeader(d) {
+    var h = document.getElementById("top"); h.textContent = "";
+    h.appendChild(el("h1", null, "castform data view"));
+    var sub = el("div", "sub");
+    sub.appendChild(el("span", "tag", "kind: " + d.kind));
+    sub.appendChild(el("span", "tag", "variant: " + d.variant));
+    sub.appendChild(el("span", "src", d.source || ""));
+    h.appendChild(sub);
+  }
+  function renderBanner(d) {
+    var b = document.getElementById("banner"); b.textContent = "";
+    var msg = d.capped
+      ? "Showing first " + d.shown + " of " + d.total + " rows (capped). Re-run with --limit 0 to embed all."
+      : "Showing " + d.shown + " of " + d.total + " row" + (d.total === 1 ? "" : "s") + ".";
+    b.appendChild(el("div", d.capped ? "cap warn" : "cap", msg));
+  }
+  function renderControls(d, current) {
+    var c = document.getElementById("controls"); c.textContent = "";
+    [["auto", "View"], ["raw", "Raw JSON"]].forEach(function (pair) {
+      var active = pair[0] === "raw" ? current === "raw" : current !== "raw";
+      var btn = el("button", "mode" + (active ? " active" : ""), pair[1]);
+      btn.addEventListener("click", function () { setMode(pair[0]); });
+      c.appendChild(btn);
+    });
+  }
+
+  function setMode(m) { MODE = m; renderControls(MODEL, m); renderBody(MODEL, m); }
+
+  function init() {
+    MODEL = parseModel();
+    var content = document.getElementById("content");
+    if (!MODEL) {
+      content.appendChild(el("div", "err", "No data embedded (open a file produced by `castform data view`)."));
+      return;
+    }
+    MODE = document.body.dataset.view || "auto";
+    if (["auto", "table", "messages", "raw"].indexOf(MODE) < 0) MODE = "auto";
+    renderHeader(MODEL); renderBanner(MODEL); renderControls(MODEL, MODE); renderBody(MODEL, MODE);
+  }
+  init();
+})();
+</script>
+</body>
+</html>
