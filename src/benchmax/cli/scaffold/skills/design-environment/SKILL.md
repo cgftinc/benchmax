@@ -147,15 +147,27 @@ helper: `from benchmax.envs.reward_helpers import extract_completion_text`.
   ```
 
 - Tools make the env multi-turn, so `max_turns` defaults to **4**, `max_tool_calls`
-  to **8**. The trainer ignores any `recommended_max_*` on the env. Plan to pass the
-  real limit at launch (`castform launch --set max_turns=N`); note it in `run.py` so
-  it isn't forgotten.
+  to **8** — and the trainer ignores any `recommended_max_*` on the env, so a rollout
+  that needs more is silently truncated. Set the real budget at **both** steps (else
+  validate caps at 4/8 too): `castform validate --max-turns N --max-tool-calls N`
+  (both settable here) and `castform launch --set max_turns=N` (at launch only
+  `max_turns` is a documented `--set` knob — `max_tool_calls` isn't, it defaults to 8;
+  run `castform launch --list-args` for the live set). For a rag `SearchEnv`, match
+  `MAX_SEARCH_CALLS`
+  — each search is one turn + one tool call, +1 to answer, so `MAX_SEARCH_CALLS=10` →
+  `N=11` (and keep `MAX_SEARCH_CALLS` ≤ 8 if you need it honored in training). Note the
+  limit in `run.py` so it isn't forgotten.
 
 ### RAG and traces environments (the two specializations)
 
 RAG and traces are the **same loop** as any custom env — one `run.py`, then
 `validate` / `launch`. They differ in just two things: the **system prompt** and
 **where the data comes from** (the **generate-data** skill covers the data).
+
+**Recognize the use-case first.** If the user's request already declares it — "RAG
+over my corpus", "train on my agent's traces" — go straight to that funnel. If it's
+free-form, infer the likely source from the task and **confirm with the user** before
+building the env or pulling data.
 
 #### RAG — search a corpus and cite sources
 
@@ -202,14 +214,29 @@ sandbox against the env's own domain.)
 
 **Ship the provider SDK to the sandbox — REQUIRED.** The rollout sandbox bundles only
 `run.py` + benchmax; the provider SDK (`turbopuffer` / `pinecone` / `chromadb`) is NOT
-there. Pass it on **both** validate and launch, or the search client's import fails in
-the sandbox and gets swallowed into an all-zero **hollow green** (the `pip install
-castform[<provider>]` you did for `qa-gen` only fixes your *local* machine, not the
-sandbox):
+there. If it's missing, the search client's import fails in the sandbox and gets
+swallowed into an all-zero **hollow green** (the `pip install castform[<provider>]` you
+did for `qa-gen` only fixes your *local* machine). Two ways to inject it — both compose,
+so you don't memorize package names:
 
-```bash
-castform validate --pip turbopuffer --examples 2   # repeatable; same flag on launch
-```
+- **`--provider <name>` on validate/launch** (foolproof) — injects the right SDK,
+  including chroma's un-guessable `snowballstemmer`:
+
+  ```bash
+  castform validate --provider turbopuffer --examples 2   # same flag on launch
+  ```
+
+- **The `PIP_DEPENDENCIES` slot in `run.py`** (declare once) — the rag scaffold's
+  `CustomSearchEnv` ships an empty `PIP_DEPENDENCIES: list[str] = []`; fill it when you
+  swap the `search=` client and it travels with the env, applied on every validate **and**
+  launch with no flag:
+
+  ```python
+  class CustomSearchEnv(SearchEnv):
+      PIP_DEPENDENCIES = ["turbopuffer>=1.16.2"]   # chroma: ["chromadb>=1.0.0", "snowballstemmer>=2.2.0"]
+  ```
+
+`--pip <dep>` (repeatable) is the manual override for anything neither covers.
 
 **Does it actually retrieve?** A green `validate` can hide an empty search (the tool
 swallows errors into a string — see verify-environment). The `embed_fn` decides it:
@@ -221,10 +248,15 @@ swallows errors into a string — see verify-environment). The `embed_fn` decide
 - **chroma**: a Chroma Cloud collection (server-side EF) or a BM25 collection works
   as-is; a bare collection raises `LocalEmbeddingDownloadDisallowedError` — pass
   `embed_fn=platform_embed_fn()`. A **BM25** chroma collection also needs the stemmer
-  in the sandbox: `--pip 'chromadb>=1.0.0' --pip snowballstemmer`.
+  in the sandbox — `--provider chroma` injects it (`chromadb` + `snowballstemmer`),
+  the dep you can't guess.
 
 `platform_embed_fn()` is `text-embedding-3-large` over the platform `/v1/embeddings`;
-it inherits the env's domain in the sandbox, so it works on staging and prod alike.
+it inherits the env's domain in the sandbox. **Prefer the no-`embed_fn` lexical path when
+your corpus is full-text-indexed** (turbopuffer/chroma BM25) — it needs nothing extra and
+is the most robust. `platform_embed_fn` requires a recent benchmax **on the sandbox
+image**; if `validate` fails to unpickle with `No module named 'benchmax.rag.corpus.embed'`,
+the deployed image predates it — fall back to the lexical path (no `embed_fn`).
 
 #### Traces — learn the agent's task from its recorded traces
 
@@ -241,7 +273,22 @@ a good start) and author the env to fit the rows — three things to get right:
 - **`prompt_messages` carry OpenAI tool fields** (`tool_calls`/`tool_call_id`/`name`)
   and `role:"tool"` turns. Override `dataset_preprocess` to **flatten** them into a
   clean chat prefix (e.g. render a tool call as a text line, a tool result as
-  `[tool result …]`) rather than passing the raw turns through.
+  `[tool result …]`) rather than passing the raw turns through. The override is a
+  **`@classmethod`** that returns an `Example` — not an instance method, and not a plain
+  dict (that's the usual first miss). Build the return with `make_example`
+  (`from benchmax.envs.example_id import make_example`); it returns the `Example` TypedDict
+  (`benchmax.envs.types`) with the group id pre-computed:
+
+  ```python
+  @classmethod
+  def dataset_preprocess(cls, row, **_) -> "Example":      # Example: benchmax.envs.types
+      flat = _flatten(row["prompt_messages"])              # your tool-field flattener
+      return make_example(
+          prompt_messages=flat,
+          task={"ground_truth": row["ground_truth"]},
+          system_prompt=cls.system_prompt,
+      )
+  ```
 - **Do NOT register the detected tools as live `list_tools`** unless you have a real
   backend for `run_tool` — a fake tool layer hollow-greens (every call errors). For
   trace imitation, keep it single-turn (`list_tools` → `[]`) and have the model
@@ -257,6 +304,9 @@ working first.
 
 ### Dependencies
 
-Imports beyond benchmax must be bundled at launch: external PyPI via
-`--pip <pkg>` (or `pip_dependencies=[…]`), local files are bundled from `run.py`
-automatically by `castform launch` (pass `local_modules=[mod]` if calling the SDK).
+Imports beyond benchmax must be bundled at launch. Three ways for PyPI deps, all
+merged (de-duped): a `PIP_DEPENDENCIES = [...]` class attr on your env (declared once,
+travels with it), `--pip <pkg>` on validate/launch (or `pip_dependencies=[…]` via the
+SDK), and `--provider <name>` for a known RAG provider's SDK. Local files are bundled
+from `run.py` automatically by `castform launch` (pass `local_modules=[mod]` if calling
+the SDK directly).

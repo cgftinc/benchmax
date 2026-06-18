@@ -1114,6 +1114,7 @@ class RolloutClient:
         llm_api_key: str = "",
         llm_model: str = _VALIDATION_MODEL,
         max_turns: int = 4,
+        max_tool_calls: int = 8,
         check_group_reward: bool = True,
         group_reward_samples: int = 2,
         verbose: bool = True,
@@ -1232,6 +1233,7 @@ class RolloutClient:
                     llm_api_key=llm_api_key,
                     llm_model=llm_model,
                     max_turns=max_turns,
+                    max_tool_calls=max_tool_calls,
                     full_messages=full_messages,
                 )
                 ok = bool(final.get("success"))
@@ -1278,6 +1280,7 @@ class RolloutClient:
                     llm_api_key=llm_api_key,
                     llm_model=llm_model,
                     max_turns=max_turns,
+                    max_tool_calls=max_tool_calls,
                     verbose=verbose,
                 )
                 group_reward = self._assess_group_events(
@@ -1327,6 +1330,7 @@ class RolloutClient:
         llm_api_key: str = "",
         llm_model: str = _VALIDATION_MODEL,
         max_turns: int = 4,
+        max_tool_calls: int = 8,
         verbose: bool = True,
     ) -> list[dict[str, Any]]:
         """Run ONE example as a real ``samples``-member group; return its
@@ -1375,7 +1379,11 @@ class RolloutClient:
                 "api_key": llm_api_key,
                 "model": llm_model,
             },
-            "options": {"max_turns": max_turns, "samples_per_example": samples},
+            "options": {
+                "max_turns": max_turns,
+                "max_tool_calls": max_tool_calls,
+                "samples_per_example": samples,
+            },
         }
         # platform-service mounts the batch proxy at /v1/rollout/batch/stream; it
         # validates the platform key and forwards to rollout-service with an

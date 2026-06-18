@@ -22,6 +22,7 @@ import sys
 from benchmax.cli._client import handle_errors
 from benchmax.cli._output import fmt_value, print_json
 from benchmax.cli._project import ProjectError, load_project
+from benchmax.cli._providers import provider_choices, resolve_pip_dependencies
 from benchmax.platform.client import _VALIDATION_MODEL, _mean_rewards
 
 
@@ -173,7 +174,10 @@ def _recommendation(report, ok_rewards: list[dict]) -> str:
             "rollouts.\n"
             "  Likely a hollow pass: rows too easy/hard, or the env "
             "(retrieval/judge) is failing.\n"
-            "  Read the per-rollout transcript before trusting this baseline."
+            "  Read the per-rollout transcript (--full-messages) for a swallowed "
+            "Error: before trusting this baseline.\n"
+            "  For a provider RAG env, add --provider <name> (or --pip <sdk>) so its "
+            "search SDK is in the sandbox."
         )
     return "→ GREEN baseline — iterate (improve reward/data) or launch."
 
@@ -323,12 +327,19 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             train_dataset=project.train_dataset,
             eval_dataset=project.eval_dataset or None,
             local_modules=[project.module] if project.from_file else None,
-            pip_dependencies=args.pip or None,
+            pip_dependencies=resolve_pip_dependencies(
+                args.pip, project.env_class, args.provider
+            ),
             local=args.local_only,
             api_key=None,  # device session via the bearer seam
             remote_examples=args.examples,
             group_reward_samples=args.group_samples,
             llm_model=args.model,
+            # Rollout budget — raise both to match an env that advertises a larger
+            # search/tool budget (e.g. SearchEnv MAX_SEARCH_CALLS=10) so the rollout
+            # isn't truncated below what the system prompt instructs.
+            max_turns=args.max_turns,
+            max_tool_calls=args.max_tool_calls,
             # --verbose adds validate_env's own summary on top; default off.
             verbose=args.verbose,
             # --full-messages prints untruncated tool/transcript text — needed to
@@ -383,6 +394,14 @@ def register(sub: argparse._SubParsersAction) -> None:
         "(e.g. turbopuffer) — the sandbox bundles only run.py + benchmax.",
     )
     p.add_argument(
+        "--provider",
+        choices=provider_choices(),
+        help="Inject this provider's SDK into the rollout sandbox; does NOT "
+        "configure the corpus (the env's search client reads its config from "
+        "run.py). Shorthand for the right --pip deps; differs from qa-gen's "
+        "--provider, which reads a corpus.",
+    )
+    p.add_argument(
         "--model", help="LLM model for the rollout subset (default: cheap nano)"
     )
     p.add_argument(
@@ -393,6 +412,21 @@ def register(sub: argparse._SubParsersAction) -> None:
         type=int,
         default=2,
         help="Group-reward sibling count (default: 2)",
+    )
+    p.add_argument(
+        "--max-turns",
+        type=int,
+        default=4,
+        help="Max conversation turns per rollout (default: 4). Raise it to match a "
+        "multi-turn env's budget — e.g. a SearchEnv with MAX_SEARCH_CALLS=10 needs "
+        "~11 — or the rollout truncates below what the system prompt instructs",
+    )
+    p.add_argument(
+        "--max-tool-calls",
+        type=int,
+        default=8,
+        help="Max tool calls per rollout (default: 8). Each search is one tool "
+        "call, so raise it alongside --max-turns for tool-heavy envs",
     )
     p.add_argument(
         "--local-only",

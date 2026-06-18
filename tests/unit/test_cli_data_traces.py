@@ -63,6 +63,7 @@ def _ns(**kw):
         system_prompt=None,
         max_examples=1000,
         out=".",
+        dry_run=False,
         json=False,
     )
     base.update(kw)
@@ -114,3 +115,54 @@ def test_traces_registered_in_parser():
     args = build_parser().parse_args(["data", "traces", "--project", "x"])
     assert args.func is data._cmd_data_traces
     assert args.project == "x"
+
+
+def test_traces_dry_run_prints_full_prompt_and_writes_nothing(
+    monkeypatch, tmp_path, capsys
+):
+    # --dry-run surfaces the FULL detected prompt (no 200-char "…" truncation) +
+    # tools, and writes no datasets — a confirm-before-generate step.
+    long_prompt = "You are a meticulous research agent. " * 20  # > 200 chars
+
+    class _LongPipeline(_FakePipeline):
+        def run(self):
+            return {
+                "train_dataset": [{"a": 1}],
+                "eval_dataset": [{"b": 2}],
+                "stats": {"train_count": 1, "eval_count": 1},
+                "system_prompt": long_prompt,
+                "tools": [{"name": "search"}, {"name": "fetch"}],
+            }
+
+    _install(monkeypatch)
+    monkeypatch.setattr(traces_mod, "TracesPipeline", _LongPipeline)
+    monkeypatch.setenv("BT_API_KEY", "bt-key")
+    monkeypatch.setenv("BT_PROJECT_ID", "p1")
+
+    rc = data._cmd_data_traces(_ns(out=str(tmp_path), dry_run=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert long_prompt in out  # full, untruncated
+    assert "…" not in out  # the normal-summary ellipsis must NOT appear
+    assert "search" in out and "fetch" in out
+    assert not (tmp_path / "train_dataset.jsonl").exists()
+    assert not (tmp_path / "eval_dataset.jsonl").exists()
+
+
+def test_traces_dry_run_json_writes_nothing(monkeypatch, tmp_path, capsys):
+    # The --json dry-run branch must ALSO write no datasets — guards a regression
+    # that hoists the write above the dry-run short-circuit.
+    _install(monkeypatch)
+    monkeypatch.setenv("BT_API_KEY", "bt-key")
+    monkeypatch.setenv("BT_PROJECT_ID", "p1")
+    rc = data._cmd_data_traces(_ns(out=str(tmp_path), dry_run=True, json=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert '"system_prompt"' in out and '"tools"' in out  # JSON emitted
+    assert not (tmp_path / "train_dataset.jsonl").exists()
+    assert not (tmp_path / "eval_dataset.jsonl").exists()
+
+
+def test_traces_dry_run_in_parser():
+    args = build_parser().parse_args(["data", "traces", "--project", "x", "--dry-run"])
+    assert args.dry_run is True
