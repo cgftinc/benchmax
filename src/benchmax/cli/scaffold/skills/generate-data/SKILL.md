@@ -67,14 +67,28 @@ easy rows plus genuinely hard ones the cheap model reliably misses.
 
 ### RAG — generate QA pairs from a corpus (first-party CLI verbs)
 
+> **The corpus is the USER'S real data — present the real sources, never offer a fake
+> one.** "Search over my handbook/docs/wiki" means *their* documents. **First run
+> `castform corpus list`; if they have ANY corpora, present "reuse an existing corpus" as
+> an option and show the names** so they can pick the one that's their handbook (the
+> fastest path: `qa-gen --corpus-name <n>`, no re-ingest). Don't pre-filter by name — the
+> user knows which corpus is theirs; a non-obvious name isn't a reason to hide it. Then
+> ask which source they have for a NEW corpus: a **local folder** (`corpus ingest
+> <folder>`) or a
+> **vector-DB corpus** (turbopuffer / pinecone / chroma, via `qa-gen --provider <name>`).
+> If they have no docs yet, scaffold the env and walk them through ingest → qa-gen →
+> validate to fill in later — but **never generate a fake / "demo" corpus, not even for a
+> dry run** (a model trained on invented pages learns nothing real). "Generate a small
+> synthetic dataset" means QA **pairs** from their corpus, never synthesized documents.
+
 For **search/RAG** (post-training a model to search a corpus and cite sources),
-the whole data path is CLI verbs. **Fast path — a local doc folder, no provider
+the whole data path is CLI verbs. **Fast path — the user's local doc folder, no provider
 key** (needs the `[rag]` extra: `pip install castform[rag]`):
 
 ```bash
-castform corpus ingest ./docs --name my-corpus       # chunk + upload → BM25 corpus
-castform data qa-gen --corpus-name my-corpus --fast  # → train_dataset.jsonl + eval_dataset.jsonl
-castform setup --template rag --force                # SearchEnv run.py (edit the CORPUS_NAME constant)
+castform corpus ingest <your-docs-folder> --name my-corpus   # the user's real docs → BM25 corpus
+castform data qa-gen --corpus-name my-corpus --fast          # → train_dataset.jsonl + eval_dataset.jsonl
+castform setup --template rag --force                        # SearchEnv run.py (edit the CORPUS_NAME constant)
 castform validate
 ```
 
@@ -104,12 +118,13 @@ corpus name / ingest before reading anything into a green `validate`.
 
 If the user's request **declares** the source ("RAG over my corpus", "my vector DB"),
 go straight to it; if it's free-form, infer the likely source and **confirm** before
-ingesting. Two RAG sources:
+ingesting. Three RAG sources:
 
 | Source | When | Setup |
 |---|---|---|
-| **Local folder → CGFT corpus** | docs on disk; simplest | `castform corpus ingest` — **no key** (your `castform login` session). The gated fast path. |
-| **Remote provider** (turbopuffer / pinecone / chroma) | your corpus already lives in a vector DB | set the `DATA_*` env vars below, then `castform data qa-gen --provider <name>` reads the corpus directly; point `run.py`'s search client at the same provider (see **design-environment**). |
+| **Local folder → CGFT corpus** | docs on disk, not uploaded yet | `castform corpus ingest <folder> --name <n>` — **no key** (your `castform login` session). The gated fast path. |
+| **Existing Castform corpus** | already `corpus ingest`-ed before (or a corpus already on Castform) | **skip ingest** — `castform corpus list` to find the name, then `castform data qa-gen --corpus-name <n>`. The rag scaffold's `PostgresSearch(CORPUS_NAME)` reads it directly; just set `CORPUS_NAME`. |
+| **Remote provider** (turbopuffer / pinecone / chroma) | your corpus already lives in an external vector DB | set the `DATA_*` env vars below, then `castform data qa-gen --provider <name>` reads the corpus directly; point `run.py`'s search client at the same provider (see **design-environment**). |
 
 #### Provider credentials — env vars, NEVER in `run.py`
 

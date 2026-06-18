@@ -166,9 +166,18 @@ RAG and traces are the **same loop** as any custom env — one `run.py`, then
 **where the data comes from** (the **generate-data** skill covers the data).
 
 **Recognize the use-case first.** If the user's request already declares it — "RAG
-over my corpus", "train on my agent's traces" — go straight to that funnel. If it's
-free-form, infer the likely source from the task and **confirm with the user** before
-building the env or pulling data.
+over my corpus", "search over my handbook", "train on my agent's traces" — go straight
+to that funnel. If it's free-form, infer the likely source from the task and **confirm
+with the user** before building the env or pulling data.
+
+**The data is the user's — present the real sources, never offer a fake one.** For
+"search over my <handbook / docs / wiki>", ask which real source they have — a local
+folder, a corpus already on Castform (`castform corpus list`), or a vector-DB corpus —
+and STOP if they have none (they gather their docs first). **Never offer to generate a
+fake / "demo" corpus, not even for a dry run** — a model trained on invented pages
+learns nothing real. "Generate a small synthetic dataset" means QA **pairs**
+generated FROM their corpus (`qa-gen`), not synthesized source docs. A model trained on
+made-up pages learns nothing about their real handbook.
 
 #### RAG — search a corpus and cite sources
 
