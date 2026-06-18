@@ -58,6 +58,11 @@ authoritative at runtime):
 | `max_rollout_len` | model-derived | total tokens across the WHOLE rollout (all turns), not a per-response cap; `> 16384` risks OOM. **`max_response_len` is not a thing** — the server rejects it. Over-budget rollouts are truncated and dropped from the loss, so set it generously. |
 | `max_turns` | `4` (trainer default) | max turns per rollout; set it explicitly if your env is multi-turn (the trainer ignores the env's `recommended_max_turns`). |
 
+**Tool calls cap at 8 at launch — and you can't raise them.** Unlike `castform validate`
+(which takes `--max-tool-calls`), launch exposes only `max_turns` as a `--set` knob;
+`max_tool_calls` is fixed at 8. A multi-turn / search env that needs more is silently
+truncated in training — keep `MAX_SEARCH_CALLS` ≤ 8 (see design-environment's Tools / turns).
+
 Server-controlled fields — `save`, `load`, `global_batch_size`, the eval mirrors —
 are **not settable**: the launch handler fills them in and rejects caller input
 that carries them. (`rollout_batch_size` is derived too, not a launch arg.)
