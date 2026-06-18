@@ -30,6 +30,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Ship the `castform setup` scaffold templates in the wheel (read at runtime via
+# importlib.resources): docs (*.md), the starter run.py + datasets (*.py/*.jsonl),
+# and the per-skill SKILL.md. Skill dirs are hyphenated (data, not Python packages).
+"benchmax.cli.scaffold" = ["*.md", "*.py", "*.jsonl", "skills/*/SKILL.md"]
+
 [project.optional-dependencies]
 mcp = [
     "fastmcp~=2.12.0",
@@ -54,8 +60,9 @@ rag = [
     "sentence-transformers>=5.2.3",
     "tqdm>=4.66.0",
 ]
-traces = []
-chroma = ["chromadb>=1.0.0"]
+traces = ["tqdm>=4.66.0"]
+# chromadb's BM25 embedding function needs snowballstemmer but doesn't declare it.
+chroma = ["chromadb>=1.0.0", "snowballstemmer>=2.2.0"]
 pinecone = ["pinecone>=5.0.0"]
 turbopuffer = ["turbopuffer>=1.16.2"]
 

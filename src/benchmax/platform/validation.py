@@ -759,7 +759,9 @@ def validate_env(
     group_reward_samples: int = 2,
     llm_model: str | None = None,
     max_turns: int = 4,
+    max_tool_calls: int = 8,
     verbose: bool = True,
+    full_messages: bool = False,
 ) -> ValidationReport:
     """Validate an environment before launching a training run.
 
@@ -827,7 +829,14 @@ def validate_env(
             (``samples_per_example`` for a one-example batch). Default 2; costs
             that many extra rollouts, only when the env overrides group reward.
         llm_model: Override the validation model for the remote rollout.
-        max_turns: Max conversation turns per remote rollout.
+        max_turns: Max conversation turns per remote rollout (default 4). Raise it
+            to match an env that advertises a larger budget (e.g. a SearchEnv with
+            ``MAX_SEARCH_CALLS=10`` needs ``max_turns`` ~11 — one turn per search
+            plus the answer) so the rollout isn't truncated below what the prompt
+            instructs. The trainer ignores the env's own ``recommended_max_*``.
+        max_tool_calls: Max tool calls across the whole rollout (default 8). Raise
+            it alongside ``max_turns`` for tool-heavy envs (each search is one tool
+            call, so ``MAX_SEARCH_CALLS=10`` needs ``max_tool_calls`` >= 10).
         verbose: Print progress + the roll-up summary (default True).
 
     Returns:
@@ -871,6 +880,7 @@ def validate_env(
             llm_base_url=llm_base_url,
             llm_api_key=llm_api_key or "",
             max_turns=max_turns,
+            max_tool_calls=max_tool_calls,
             # The group-reward check runs server-side (a real group through
             # rollout-service), so it needs no local env deps — run it whenever
             # the remote pass runs, including launch scripts (local=False),
@@ -878,6 +888,7 @@ def validate_env(
             check_group_reward=True,
             group_reward_samples=group_reward_samples,
             verbose=verbose,
+            full_messages=full_messages,
             **extra,
         )
 

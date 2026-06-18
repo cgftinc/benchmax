@@ -1,0 +1,138 @@
+"""Load a benchmax project (env class + datasets) from a directory.
+
+Convention mirrors the web-app scaffold (``buildAgentContextBody``): ``run.py``
+defines a single :class:`BaseEnv` subclass; ``train_dataset.jsonl`` /
+``eval_dataset.jsonl`` hold one JSON object per line. ``validate`` and ``launch``
+share this loader. An importable module path (``--module``) is an alternative to
+``run.py`` for shipped envs / fixtures.
+"""
+
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import inspect
+import json
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+
+class ProjectError(Exception):
+    """A project couldn't be loaded (missing run.py/dataset, or no/ambiguous env)."""
+
+
+@dataclass
+class LoadedProject:
+    env_class: type
+    train_dataset: list[dict[str, Any]]
+    eval_dataset: list[dict[str, Any]]
+    module: ModuleType
+    from_file: (
+        bool  # loaded from a run.py path (pickle env by value) vs an importable module
+    )
+
+
+def _load_module_from_file(path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    if spec is None or spec.loader is None:
+        raise ProjectError(f"Could not load a module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[path.stem] = module  # so dataclass/pickle name resolution works
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:  # surface the user's import/syntax error cleanly
+        raise ProjectError(f"Failed to import {path.name}: {exc}") from exc
+    return module
+
+
+def discover_env_class(module: ModuleType, explicit: str | None = None) -> type:
+    """Find the env class in ``module``. With no ``explicit`` name, require exactly
+    one BaseEnv subclass *defined in* the module (imported ones are ignored)."""
+    from benchmax.envs.base_env import BaseEnv
+
+    def _is_env(obj: Any) -> bool:
+        return inspect.isclass(obj) and issubclass(obj, BaseEnv) and obj is not BaseEnv
+
+    if explicit:
+        for obj in vars(module).values():
+            if _is_env(obj) and obj.__name__ == explicit:
+                return obj
+        raise ProjectError(f"No BaseEnv subclass named {explicit!r} in the module.")
+
+    defined_here = [
+        obj
+        for obj in vars(module).values()
+        if _is_env(obj) and obj.__module__ == module.__name__
+    ]
+    if not defined_here:
+        raise ProjectError("No BaseEnv subclass defined in the module.")
+    if len(defined_here) > 1:
+        names = sorted(c.__name__ for c in defined_here)
+        raise ProjectError(
+            f"Multiple env classes {names}; pass --env-class to pick one."
+        )
+    return defined_here[0]
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        raise ProjectError(f"Dataset not found: {path}")
+    rows: list[dict[str, Any]] = []
+    for n, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise ProjectError(f"{path}:{n}: invalid JSON ({exc})") from exc
+    if not rows:
+        raise ProjectError(f"Dataset is empty: {path}")
+    return rows
+
+
+def load_project(
+    *,
+    directory: str = ".",
+    run_file: str = "run.py",
+    module_path: str | None = None,
+    env_class_name: str | None = None,
+    train_file: str = "train_dataset.jsonl",
+    eval_file: str = "eval_dataset.jsonl",
+    require_eval: bool = False,
+) -> LoadedProject:
+    """Load the env class + datasets for a project dir (or an importable module)."""
+    from_file = module_path is None
+    if module_path:
+        try:
+            module = importlib.import_module(module_path)
+        except Exception as exc:  # missing dep, bad path, import-time error
+            raise ProjectError(
+                f"Could not import module {module_path!r}: {exc}"
+            ) from exc
+    else:
+        path = Path(directory) / run_file
+        if not path.exists():
+            raise ProjectError(
+                f"{run_file} not found in {directory!r} — run inside a project dir, "
+                "or pass --module for an importable env."
+            )
+        module = _load_module_from_file(path)
+
+    env_class = discover_env_class(module, env_class_name)
+    base = Path(directory)
+    train_dataset = _load_jsonl(base / train_file)
+    eval_path = base / eval_file
+    eval_dataset = _load_jsonl(eval_path) if eval_path.exists() else []
+    if require_eval and not eval_dataset:
+        raise ProjectError(f"Eval dataset required but not found: {eval_path}")
+    return LoadedProject(
+        env_class=env_class,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        module=module,
+        from_file=from_file,
+    )

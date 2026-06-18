@@ -89,6 +89,7 @@ class PostgresChunkSource:
         file_extensions: list[str] | None = None,
         batch_size: int = 100,
         show_summary: bool = True,
+        on_limit: str = "prompt",
     ) -> None:
         """Chunk documents in a folder and upload them to the Corpora API.
 
@@ -103,6 +104,9 @@ class PostgresChunkSource:
             file_extensions: File types to process (default [".md", ".mdx"])
             batch_size: Number of chunks per upload batch (default 100)
             show_summary: Print chunking summary and upload progress (default True)
+            on_limit: Corpus-cap behavior, forwarded to get_or_create_corpus
+                ("prompt" interactive / "error" raise / "oldest" evict). Pass
+                "error" for non-interactive callers (CLI) — never reaches input().
         """
         from benchmax.rag.chunkers.inspector import ChunkInspector
         from benchmax.rag.chunkers.markdown import MarkdownChunker
@@ -123,7 +127,10 @@ class PostgresChunkSource:
             inspector.summary(max_depth=3, max_files_per_folder=4)
 
         self.populate_from_chunks(
-            collection, batch_size=batch_size, show_summary=show_summary
+            collection,
+            batch_size=batch_size,
+            show_summary=show_summary,
+            on_limit=on_limit,
         )
 
     def populate_from_chunks(
@@ -131,6 +138,7 @@ class PostgresChunkSource:
         collection: ChunkCollection,
         batch_size: int = 100,
         show_summary: bool = True,
+        on_limit: str = "prompt",
     ) -> None:
         """Upload a pre-built ChunkCollection to the Corpora API.
         Sets self.collection after upload.
@@ -139,11 +147,13 @@ class PostgresChunkSource:
             collection: ChunkCollection produced by any chunker.
             batch_size: Number of chunks per upload batch (default 100).
             show_summary: Print corpus info and upload progress (default True).
+            on_limit: Corpus-cap behavior forwarded to get_or_create_corpus;
+                "error" keeps it non-interactive (no input() prompt).
         """
         self.collection = collection
 
         self._corpus = self._client.get_or_create_corpus(
-            self._corpus_name, on_limit="prompt"
+            self._corpus_name, on_limit=on_limit
         )
 
         if show_summary:

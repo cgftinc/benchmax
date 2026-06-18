@@ -59,11 +59,19 @@ class LaunchArgSpec:
 
 @dataclass(frozen=True)
 class ExampleValidation:
-    """Per-example outcome from RolloutClient.validate_examples."""
+    """Per-example outcome from RolloutClient.validate_examples.
+
+    ``rewards`` carries the rollout's final reward components — the per-rollout
+    final rewards for a per-example entry, and the **mean** of the group
+    rollouts' final rewards for the group entry (index ``-1``). None when the
+    rollout failed or the server reported no reward values. Surfacing these is
+    what lets ``castform validate`` show numbers, not just pass/fail.
+    """
 
     index: int
     ok: bool
     error: str | None = None
+    rewards: dict[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +125,25 @@ def _get_mime_type(path: Path) -> str:
 def _file_hash(content: bytes, length: int = 8) -> str:
     """Compute a short hash of file content."""
     return hashlib.sha256(content).hexdigest()[:length]
+
+
+def _mean_rewards(reward_dicts: list[Any]) -> dict[str, float] | None:
+    """Mean of each reward component across rollouts. None if no numeric values.
+
+    Bools are excluded (``bool`` is an ``int`` subclass but not a reward).
+    """
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for rewards in reward_dicts:
+        if not isinstance(rewards, dict):
+            continue
+        for key, value in rewards.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                sums[key] = sums.get(key, 0.0) + float(value)
+                counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    return {key: sums[key] / counts[key] for key in sums}
 
 
 class _BearerAuth(httpx.Auth):
@@ -397,8 +424,9 @@ class TrainerClient:
         """Launch a new training run from a job template.
 
         Args:
-            training_run_type: Job template selector. Currently ``"simple"``
-                (gpu4 pool) or ``"simple-r5"`` (gpu4-r5 smoke-test pool).
+            training_run_type: Job template selector. ``"simple"`` (GPU pool —
+                gpu4 for 4B, gpu8 for 35B) or ``"simple-cpu"`` (CPU-only smoke
+                pool, no GPU).
             env_cls_path: Path to the environment class pickle (.pkl file)
             env_metadata_path: Path to the environment metadata JSON file
             train_dataset_path: Path to the training dataset
@@ -502,6 +530,75 @@ class TrainerClient:
                 bits.append(f"enum={spec.enum}")
             print(header + (f"  [{', '.join(bits)}]" if bits else ""))
             print(f"      {spec.description}")
+
+    # --- Run-lifecycle reads (CLI: `castform runs ...`) -------------------
+    # Thin GETs over platform REST. The CLI formats; these just return the
+    # decoded JSON. Auth posture differs per route — see each docstring.
+
+    def list_runs(self, *, include_config: bool = False) -> list[dict[str, Any]]:
+        """GET /v1/train/runs — the caller's runs. Hard auth: 401 if logged out."""
+        params = {"includeConfig": "true"} if include_config else None
+        response = self._http_client.get("/v1/train/runs", params=params)
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_run(self, run_id: str, *, include_config: bool = False) -> dict[str, Any]:
+        """GET /v1/train/runs/{id} — optionalAuth (public runs readable logged-out)."""
+        params = {"includeConfig": "true"} if include_config else None
+        response = self._http_client.get(f"/v1/train/runs/{run_id}", params=params)
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_run_details(self, run_id: str) -> dict[str, Any]:
+        """GET /v1/train/runs/{id}/details — adds latestStep, modes[], errorCount."""
+        response = self._http_client.get(f"/v1/train/runs/{run_id}/details")
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_run_events(self, run_id: str) -> list[dict[str, Any]]:
+        """GET /v1/train/runs/{id}/events — lifecycle/artifact/diagnostic, oldest first."""
+        response = self._http_client.get(f"/v1/train/runs/{run_id}/events")
+        self._handle_response_errors(response)
+        return response.json().get("events", [])
+
+    def get_run_scalars(
+        self, run_id: str, mode: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """GET /v1/train/runs/{id}/scalars?mode= — {scalarName: [{step, value}]}.
+
+        ``mode`` is required by the server (400 if omitted). Discover the valid
+        set from :meth:`get_run_details` — ``modes`` is dynamic per run, not a
+        fixed enum. An unknown mode returns ``{}`` (not an error).
+        """
+        response = self._http_client.get(
+            f"/v1/train/runs/{run_id}/scalars", params={"mode": mode}
+        )
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_environment_logs(
+        self, run_id: str, *, rollout_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """GET /v1/train/runs/{id}/environment-logs — run-level logs, or one
+        rollout's when ``rollout_id`` is given."""
+        params = {"rolloutId": rollout_id} if rollout_id else None
+        response = self._http_client.get(
+            f"/v1/train/runs/{run_id}/environment-logs", params=params
+        )
+        self._handle_response_errors(response)
+        return response.json().get("logs", [])
+
+    def cancel_run(self, run_id: str) -> dict[str, Any]:
+        """POST /v1/train/runs/{id}/cancel — owner-only (403 otherwise).
+
+        A launched run (has a launcher job) gets a ``training.cancelling`` event
+        and its launcher job cancelled ("Job cancellation requested"); a run with
+        no job is marked complete directly with no cancelling event
+        ("Marked as complete"). Returns the ``{success, message}`` body.
+        """
+        response = self._http_client.post(f"/v1/train/runs/{run_id}/cancel")
+        self._handle_response_errors(response)
+        return response.json()
 
 
 # Server URLs are resolved lazily via callables so env-var changes after
@@ -1017,9 +1114,11 @@ class RolloutClient:
         llm_api_key: str = "",
         llm_model: str = _VALIDATION_MODEL,
         max_turns: int = 4,
+        max_tool_calls: int = 8,
         check_group_reward: bool = True,
         group_reward_samples: int = 2,
         verbose: bool = True,
+        full_messages: bool = False,
     ) -> ValidationResult:
         """Run rollouts on the first *n* examples and report pass/fail.
 
@@ -1134,6 +1233,8 @@ class RolloutClient:
                     llm_api_key=llm_api_key,
                     llm_model=llm_model,
                     max_turns=max_turns,
+                    max_tool_calls=max_tool_calls,
+                    full_messages=full_messages,
                 )
                 ok = bool(final.get("success"))
                 per_example.append(
@@ -1143,6 +1244,9 @@ class RolloutClient:
                         error=None
                         if ok
                         else (final.get("error") or "rollout reported success=False"),
+                        # Surface the per-rollout reward components (dropped here
+                        # before — they're what `castform validate` displays).
+                        rewards=final.get("rewards"),
                     )
                 )
             except (RolloutError, RuntimeError) as exc:
@@ -1176,6 +1280,7 @@ class RolloutClient:
                     llm_api_key=llm_api_key,
                     llm_model=llm_model,
                     max_turns=max_turns,
+                    max_tool_calls=max_tool_calls,
                     verbose=verbose,
                 )
                 group_reward = self._assess_group_events(
@@ -1225,6 +1330,7 @@ class RolloutClient:
         llm_api_key: str = "",
         llm_model: str = _VALIDATION_MODEL,
         max_turns: int = 4,
+        max_tool_calls: int = 8,
         verbose: bool = True,
     ) -> list[dict[str, Any]]:
         """Run ONE example as a real ``samples``-member group; return its
@@ -1273,7 +1379,11 @@ class RolloutClient:
                 "api_key": llm_api_key,
                 "model": llm_model,
             },
-            "options": {"max_turns": max_turns, "samples_per_example": samples},
+            "options": {
+                "max_turns": max_turns,
+                "max_tool_calls": max_tool_calls,
+                "samples_per_example": samples,
+            },
         }
         # platform-service mounts the batch proxy at /v1/rollout/batch/stream; it
         # validates the platform key and forwards to rollout-service with an
@@ -1362,6 +1472,9 @@ class RolloutClient:
                 index=-1, ok=False, error=f"all group rollouts failed: {first}"
             )
 
+        # Mean of the succeeded siblings' final rewards — the numbers the group
+        # path computed and used to discard before.
+        mean = _mean_rewards([e.get("rewards") for e in succeeded])
         if verbose:
             print(
                 _ok(
@@ -1369,4 +1482,4 @@ class RolloutClient:
                     f"{len(succeeded)}"
                 )
             )
-        return ExampleValidation(index=-1, ok=True)
+        return ExampleValidation(index=-1, ok=True, rewards=mean)

@@ -1,9 +1,8 @@
-"""``castform`` CLI — browser-based login for the SDK.
+"""castform auth commands: ``login`` / ``logout`` / ``whoami``.
 
-Commands: ``login`` (device authorization), ``logout``, ``whoami``. The login
-flow + the reusable ``ensure_session`` live in :mod:`benchmax.platform.login`;
-this module is the thin argparse wrapper. After ``castform login`` the SDK
-resolves its bearer from ``~/.castform`` automatically — no API key or URL.
+The device-auth flow + the reusable ``ensure_session`` live in
+:mod:`benchmax.platform.login`; these handlers are thin argparse wrappers. After
+``castform login`` the SDK resolves its bearer from ``~/.castform`` automatically.
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ def _cmd_whoami(_args: argparse.Namespace) -> int:
     if not session:
         print("Not logged in. Run `castform login`.", file=sys.stderr)
         return 1
-    jwt = credentials._session_jwt()  # mints from the session; None if invalid/expired/offline
+    jwt = credentials._session_jwt()  # None if invalid/expired/offline
     if not jwt:
         print(
             "Session present, but couldn't reach auth-service to verify it "
@@ -53,19 +52,14 @@ def _cmd_whoami(_args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="castform", description="Castform CLI")
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    p_login = sub.add_parser("login", help="Sign in via your browser")
-    p_login.set_defaults(func=_cmd_login)
-
-    sub.add_parser("logout", help="Clear the cached session").set_defaults(func=_cmd_logout)
-    sub.add_parser("whoami", help="Show the current login").set_defaults(func=_cmd_whoami)
-
-    args = parser.parse_args(argv)
-    return args.func(args)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+def register(sub: argparse._SubParsersAction) -> None:
+    """Attach login/logout/whoami to the top-level subparsers."""
+    sub.add_parser("login", help="Sign in via your browser").set_defaults(
+        func=_cmd_login
+    )
+    sub.add_parser("logout", help="Clear the cached session").set_defaults(
+        func=_cmd_logout
+    )
+    sub.add_parser("whoami", help="Show the current login").set_defaults(
+        func=_cmd_whoami
+    )

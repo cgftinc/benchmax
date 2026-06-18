@@ -1,0 +1,405 @@
+"""Slice 1.4 CLI: project loading + validate report rendering. Offline."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import pytest
+
+from benchmax.cli import build_parser, validate
+from benchmax.cli._project import (
+    ProjectError,
+    _load_jsonl,
+    _load_module_from_file,
+    discover_env_class,
+)
+from benchmax.platform.client import ExampleValidation, ValidationResult
+from benchmax.platform.validation import ValidationReport
+
+# --- project loader ------------------------------------------------------
+
+_ENV_SRC = (
+    "from benchmax.envs.base_env import BaseEnv\n\nclass {name}(BaseEnv):\n    pass\n"
+)
+
+
+def _write_run(tmp_path, *names):
+    body = "from benchmax.envs.base_env import BaseEnv\n\n"
+    for n in names:
+        body += f"class {n}(BaseEnv):\n    pass\n\n"
+    p = tmp_path / "run.py"
+    p.write_text(body)
+    return p
+
+
+def test_discover_single_env(tmp_path):
+    mod = _load_module_from_file(_write_run(tmp_path, "MyEnv"))
+    assert discover_env_class(mod).__name__ == "MyEnv"
+
+
+def test_discover_no_env_raises(tmp_path):
+    p = tmp_path / "run.py"
+    p.write_text("x = 1\n")
+    mod = _load_module_from_file(p)
+    with pytest.raises(ProjectError, match="No BaseEnv"):
+        discover_env_class(mod)
+
+
+def test_discover_ambiguous_raises(tmp_path):
+    mod = _load_module_from_file(_write_run(tmp_path, "EnvA", "EnvB"))
+    with pytest.raises(ProjectError, match="Multiple env classes"):
+        discover_env_class(mod)
+
+
+def test_discover_explicit_name(tmp_path):
+    mod = _load_module_from_file(_write_run(tmp_path, "EnvA", "EnvB"))
+    assert discover_env_class(mod, "EnvB").__name__ == "EnvB"
+
+
+def test_load_jsonl_ok(tmp_path):
+    p = tmp_path / "train.jsonl"
+    p.write_text('{"a": 1}\n\n{"a": 2}\n')
+    assert _load_jsonl(p) == [{"a": 1}, {"a": 2}]
+
+
+def test_load_jsonl_bad_line(tmp_path):
+    p = tmp_path / "train.jsonl"
+    p.write_text('{"a": 1}\nnot json\n')
+    with pytest.raises(ProjectError, match="invalid JSON"):
+        _load_jsonl(p)
+
+
+def test_load_jsonl_missing(tmp_path):
+    with pytest.raises(ProjectError, match="not found"):
+        _load_jsonl(tmp_path / "nope.jsonl")
+
+
+def test_load_project_bad_module_is_project_error():
+    # A missing dep / bad module path must surface as ProjectError, not a raw
+    # ModuleNotFoundError traceback (regression: the --module branch was unwrapped).
+    from benchmax.cli._project import load_project
+
+    with pytest.raises(ProjectError, match="Could not import module"):
+        load_project(module_path="benchmax.totally.not.a.module")
+
+
+# --- validate report rendering ------------------------------------------
+
+
+class _FakeProject:
+    env_class = type("E", (), {})
+    train_dataset = [{"prompt": "x"}]
+    eval_dataset = []
+    module = None
+    from_file = True
+
+
+def _validate_ns(**over) -> argparse.Namespace:
+    base = dict(
+        dir=".",
+        run_file="run.py",
+        module=None,
+        env_class=None,
+        train="train_dataset.jsonl",
+        eval="eval_dataset.jsonl",
+        env_arg=None,
+        pip=None,
+        provider=None,
+        model=None,
+        examples=2,
+        group_samples=2,
+        max_turns=4,
+        max_tool_calls=8,
+        local_only=False,
+        verbose=False,
+        full_messages=False,
+        json=False,
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def _report(examples, group, local_ran=False):
+    remote = ValidationResult(examples=examples, group_reward=group)
+    return ValidationReport(
+        local_passed=0,
+        local_failed=0,
+        remote=remote,
+        local_ran=local_ran,
+        remote_ran=True,
+    )
+
+
+def _patch(monkeypatch, report):
+    monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: report)
+
+
+def test_validate_shows_rewards_and_group(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"acc": 1.0}),
+            ExampleValidation(index=1, ok=True, rewards={"acc": 0.0}),
+        ],
+        group=ExampleValidation(index=-1, ok=True, rewards={"rank": 0.5}),
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0
+    out = capsys.readouterr().out
+    assert "acc" in out and "total reward" in out
+    assert "group reward" in out and "rank=0.5" in out
+    assert "GREEN baseline" in out
+
+
+def test_validate_surfaces_error(monkeypatch, capsys):
+    report = _report(
+        examples=[ExampleValidation(index=0, ok=False, error="bad judge api key")],
+        group=ExampleValidation(index=-1, ok=False, error="group: bad judge api key"),
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 1  # report not ok
+    out = capsys.readouterr().out
+    assert "bad judge api key" in out
+    assert "reward errors" in out and "FAILED" in out
+    assert "validate failed" in out
+
+
+def test_validate_group_not_run(monkeypatch, capsys):
+    report = _report(
+        examples=[ExampleValidation(index=0, ok=True, rewards={"acc": 1.0})],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0
+    out = capsys.readouterr().out
+    assert "group reward" in out and "not run" in out
+
+
+def test_validate_json(monkeypatch, capsys):
+    report = _report(
+        examples=[ExampleValidation(index=0, ok=True, rewards={"acc": 1.0})],
+        group=ExampleValidation(index=-1, ok=True, rewards={"rank": 0.5}),
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns(json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"rewards"' in out and '"acc": 1.0' in out
+
+
+def test_env_arg_parsing():
+    assert validate._parse_env_args(["a=1", "b=hi", "c=true"]) == {
+        "a": 1,
+        "b": "hi",
+        "c": True,
+    }
+
+
+def test_validate_pip_forwards_to_sandbox(monkeypatch):
+    # --pip must reach validate_env as pip_dependencies (provider RAG envs whose
+    # search client imports a provider SDK hollow-green without it in the sandbox).
+    captured: dict = {}
+
+    def _capture(**k):
+        captured.update(k)
+        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+
+    monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
+    validate._cmd_validate(_validate_ns(pip=["turbopuffer", "pinecone>=5"]))
+    assert captured["pip_dependencies"] == ["turbopuffer", "pinecone>=5"]
+
+
+def test_validate_pip_repeatable_in_parser():
+    args = build_parser().parse_args(
+        ["validate", "--pip", "turbopuffer", "--pip", "chromadb>=1.0.0"]
+    )
+    assert args.pip == ["turbopuffer", "chromadb>=1.0.0"]
+
+
+def test_validate_turn_budget_forwards_to_rollout(monkeypatch):
+    # --max-turns / --max-tool-calls must reach validate_env so a deep-search env
+    # (e.g. SearchEnv MAX_SEARCH_CALLS=10) can be validated at the budget the prompt
+    # advertises, instead of the truncating 4/8 default.
+    captured: dict = {}
+
+    def _capture(**k):
+        captured.update(k)
+        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+
+    monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
+    validate._cmd_validate(_validate_ns(max_turns=11, max_tool_calls=11))
+    assert captured["max_turns"] == 11
+    assert captured["max_tool_calls"] == 11
+
+
+def test_validate_turn_budget_defaults_in_parser():
+    args = build_parser().parse_args(["validate"])
+    assert args.max_turns == 4 and args.max_tool_calls == 8
+    args = build_parser().parse_args(["validate", "--max-turns", "11", "--max-tool-calls", "12"])
+    assert args.max_turns == 11 and args.max_tool_calls == 12
+
+
+def test_validate_provider_injects_sdk(monkeypatch):
+    # --provider chroma must reach validate_env as the provider's SDK (incl. the
+    # un-guessable snowballstemmer) merged with any --pip — without the agent
+    # naming the package.
+    captured: dict = {}
+
+    def _capture(**k):
+        captured.update(k)
+        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+
+    monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
+    validate._cmd_validate(_validate_ns(pip=["mydep"], provider="chroma"))
+    assert captured["pip_dependencies"] == [
+        "mydep",
+        "chromadb>=1.0.0",
+        "snowballstemmer>=2.2.0",
+    ]
+
+
+# --- constant / all-zero reward warning ---------------------------------
+
+
+def test_validate_warns_on_constant_component(monkeypatch, capsys):
+    # 'fmt' is uniformly 0 across both rollouts (the "can't learn" footgun);
+    # 'acc' varies and must NOT be flagged. Soft warning — exit code unchanged.
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"acc": 1.0, "fmt": 0.0}),
+            ExampleValidation(index=1, ok=True, rewards={"acc": 0.0, "fmt": 0.0}),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0  # still green
+    out = capsys.readouterr().out
+    assert "some components constant" in out and "'fmt' never vary" in out
+    assert "'acc' never vary" not in out
+
+
+# --- hollow-green recommendation carries an actionable hint ----------------
+
+_GREEN_REPORT = type("R", (), {"ok": True})()
+
+
+def test_recommendation_hollow_green_includes_remediation():
+    # A constant total → the hint must name the concrete next moves so the agent
+    # doesn't re-validate blindly: --full-messages to read a swallowed Error:, and
+    # --provider/--pip for a provider RAG env.
+    rec = validate._recommendation(_GREEN_REPORT, [{"acc": 0.5}, {"acc": 0.5}])
+    assert "NO training signal" in rec
+    assert "--full-messages" in rec and "Error:" in rec
+    assert "--provider" in rec and "--pip" in rec
+
+
+def test_recommendation_varying_reward_has_no_hint():
+    # Reward total varies → the plain GREEN verdict, no remediation noise.
+    rec = validate._recommendation(_GREEN_REPORT, [{"acc": 1.0}, {"acc": 0.0}])
+    assert "GREEN baseline" in rec
+    assert "--full-messages" not in rec and "--provider" not in rec
+
+
+def _skill_text(name: str) -> str:
+    skill = (
+        Path(validate.__file__).parent / "scaffold/skills" / name / "SKILL.md"
+    )
+    return skill.read_text("utf-8")
+
+
+def test_skill_green_sample_line_byte_equal_to_code():
+    # verify-environment renders the GREEN verdict as a sample scorecard line; it
+    # must stay byte-equal to what _recommendation prints (2-space indent) so the
+    # doc never drifts from the tool.
+    green = validate._recommendation(_GREEN_REPORT, [{"acc": 1.0}, {"acc": 0.0}])
+    assert f"  {green}" in _skill_text("verify-environment")
+
+
+def test_skill_hollow_green_prose_reflects_new_remediation():
+    # The paired edit (N6): the doc's hollow-green guidance names the same new flags
+    # the code now recommends.
+    text = _skill_text("verify-environment")
+    assert "--full-messages" in text
+    assert "--provider <name>" in text and "--pip <sdk>" in text
+
+
+def test_validate_constant_needs_two_rollouts(monkeypatch, capsys):
+    # A single rollout can't establish variance — don't warn.
+    report = _report(
+        examples=[ExampleValidation(index=0, ok=True, rewards={"acc": 0.0})],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0
+    assert "never vary" not in capsys.readouterr().out
+
+
+def test_validate_all_constant_is_hollow_green(monkeypatch, capsys):
+    # validate "passes" (report.ok) but every reward is 0 — no training signal.
+    # The headline check + recommendation must call this out, not green-light it.
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"acc": 0.0, "fmt": 0.0}),
+            ExampleValidation(index=1, ok=True, rewards={"acc": 0.0, "fmt": 0.0}),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0  # exit code unchanged
+    out = capsys.readouterr().out
+    assert "rewards DON'T vary" in out
+    assert "NO training signal" in out
+    assert "GREEN baseline" not in out
+
+
+def test_validate_ragged_zero_is_hollow_green(monkeypatch, capsys):
+    # Regression: a component present in <2 rollouts can't be "constant", so the
+    # old per-component gate green-lit an all-zero run with ragged keys. The
+    # total-reward gate catches it.
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"score": 0.0}),
+            ExampleValidation(index=1, ok=True, rewards={"score": 0.0}),
+            ExampleValidation(index=2, ok=True, rewards={"bonus": 0.0}),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0
+    out = capsys.readouterr().out
+    assert "NO training signal" in out and "GREEN baseline" not in out
+
+
+def test_validate_json_includes_constant_warning(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"acc": 0.0}),
+            ExampleValidation(index=1, ok=True, rewards={"acc": 0.0}),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns(json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"warnings"' in out and '"component": "acc"' in out
+
+
+def test_constant_components_helper():
+    # direct unit: ignores varying + single-value sets, flags the constant one.
+    assert validate._constant_components(
+        [{"a": 1.0, "b": 0.0}, {"a": 2.0, "b": 0.0}]
+    ) == [("b", 0.0)]
+    assert validate._constant_components([{"a": 0.0}]) == []  # <2 rollouts
+    assert validate._constant_components([]) == []
+
+
+def test_constant_total_helper():
+    # constant total (incl. ragged keys + bool exclusion) -> the value; else None.
+    assert validate._constant_total([{"a": 0.0}, {"a": 0.0}]) == 0.0
+    assert validate._constant_total([{"a": 0.0}, {"b": 0.0}]) == 0.0  # ragged, both 0
+    assert validate._constant_total([{"a": 1.0}, {"a": 2.0}]) is None  # varies
+    assert validate._constant_total([{"a": 0.0}]) is None  # <2 rollouts
+    assert validate._constant_total([{"p": True}, {"p": False}]) == 0.0  # bools excluded
