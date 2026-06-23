@@ -29,7 +29,7 @@ import pronouncing
 from english_words import get_english_words_set
 from wordfreq import word_frequency
 
-from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.base_env import ToolEnv
 from benchmax.envs.example_id import make_example
 from benchmax.envs.logging import rollout_context
 from benchmax.envs.reward_helpers import extract_completion_text
@@ -796,7 +796,7 @@ def _programmatic_feedback(poem: str, target: str) -> str | None:
 # ══════════════════════════════════════════════════════════════════════
 # ENV CLASS
 # ══════════════════════════════════════════════════════════════════════
-class TelestichEnv(BaseEnv):
+class TelestichEnv(ToolEnv):
     system_prompt = """\
 A telestich is a poem whose lines, read by their LAST letters top to bottom, \
 spell a hidden word the user gives you. Use the word the user names as a single \

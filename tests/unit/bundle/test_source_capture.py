@@ -11,16 +11,18 @@ from __future__ import annotations
 import sys
 from typing import Any, Dict, List, Optional
 
-from benchmax.bundle import _get_source, dump_bundle
-from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.types import Messages, ToolDefinition
+import pytest
+
+from benchmax.bundle import BundlingError, _get_source, dump_bundle
+from benchmax.envs.base_env import BaseEnv, ToolEnv
+from benchmax.envs.types import Messages, ToolDefinition, Trajectory
 
 # Defined at module scope so cloudpickle can pickle it by-value when the test
 # module is registered as a local module (dump_bundle enforces this).
 _TEST_MODULE = sys.modules[__name__]
 
 
-class MinimalEnv(BaseEnv):
+class MinimalEnv(ToolEnv):
     """Minimal valid BaseEnv subclass for bundling tests."""
 
     system_prompt = "test"
@@ -41,11 +43,47 @@ class MinimalEnv(BaseEnv):
         return {"score": 0.0}
 
 
+class FullLoopEnv(BaseEnv):
+    """Minimal env-owned rollout implementation."""
+
+    async def run_rollouts(self, examples, *, num_generations, policy=None, split="train", **kwargs):
+        example = examples[0]
+        return [
+            Trajectory(
+                rollout_id="rid-1",
+                example_id=example["id"],
+                prompt_messages=example["prompt_messages"],
+                messages=[*example["prompt_messages"], {"role": "assistant", "content": "done"}],
+                task=example.get("task"),
+                prompt_ids=[1],
+                completion_ids=[2],
+                completion_mask=[1],
+                logprobs=[0.0],
+                rewards={"reward": 1.0},
+            )
+        ]
+
+
+class EmptyEnv(BaseEnv):
+    pass
+
+
 def test_source_introspected_by_default() -> None:
     """With no override, source is recovered from the class via inspect."""
     bundle = dump_bundle(MinimalEnv, local_modules=[_TEST_MODULE])
     assert bundle.metadata.env_class_source is not None
     assert "class MinimalEnv" in bundle.metadata.env_class_source
+
+
+def test_bundle_accepts_full_loop_env() -> None:
+    bundle = dump_bundle(FullLoopEnv, local_modules=[_TEST_MODULE])
+    assert bundle.metadata.env_class_source is not None
+    assert "class FullLoopEnv" in bundle.metadata.env_class_source
+
+
+def test_bundle_rejects_env_without_any_rollout_contract() -> None:
+    with pytest.raises(BundlingError, match="run_rollouts"):
+        dump_bundle(EmptyEnv, local_modules=[_TEST_MODULE])
 
 
 def test_source_override_wins_over_introspection() -> None:

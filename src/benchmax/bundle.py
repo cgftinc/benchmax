@@ -263,6 +263,11 @@ def _check_env_class(env_class: type[BaseEnv]) -> None:
             f"{env_class.__name__} has unimplemented abstract methods: "
             f"{', '.join(sorted(abstract))}"
         )
+    if env_class.run_rollouts is BaseEnv.run_rollouts:
+        raise BundlingError(
+            f"{env_class.__name__} must implement run_rollouts(). "
+            "Stepped tool/reward envs should inherit ToolEnv."
+        )
 
 
 def _get_source(env_class: type[BaseEnv]) -> str | None:

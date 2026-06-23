@@ -10,7 +10,7 @@ from __future__ import annotations
 import traceback
 from typing import Any
 
-from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.base_env import ToolEnv
 from benchmax.envs.example_id import make_example
 from benchmax.envs.types import Example, Messages, ToolDefinition
 
@@ -87,7 +87,7 @@ _REASONING_MODE_HINTS: dict[str, str] = {
 }
 
 
-class LinkerEnv(BaseEnv):
+class LinkerEnv(ToolEnv):
     """Search environment for LLM-driven chunk linking.
 
     Exposes a single ``search`` tool backed by a :class:`SearchClient`.

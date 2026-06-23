@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, NotRequired, Optional, TypedDict
 
 
@@ -121,6 +121,58 @@ class Example(TypedDict):
     prompt_messages: Messages
     task: NotRequired[Optional[Dict[str, Any]]]
     init_rollout_args: NotRequired[Optional[Dict[str, Any]]]
+
+
+@dataclass(frozen=True)
+class PolicyConfig:
+    """Policy endpoint/config for envs that own the full rollout loop."""
+
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    rollout_func: Any | None = None
+    generation: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Trajectory:
+    """Trainer-ready artifact produced by one completed rollout attempt."""
+
+    rollout_id: str
+    example_id: str
+    prompt_messages: Messages
+    messages: Messages
+    task: Optional[Dict[str, Any]]
+    prompt_ids: List[int]
+    completion_ids: List[int]
+    completion_mask: List[int]
+    logprobs: List[float]
+    rewards: Dict[str, float]
+    prompt_mask: List[int] | None = None
+    truncated: bool = False
+    workspace_path: str | None = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_sample_dict(self) -> Dict[str, Any]:
+        """Return the sample dict consumed by the current trainer."""
+        sample = {
+            "rollout_id": self.rollout_id,
+            "example_id": self.example_id,
+            "prompt_messages": self.prompt_messages,
+            "messages": self.messages,
+            "task": self.task,
+            "prompt_ids": self.prompt_ids,
+            "prompt_mask": self.prompt_mask or [1] * len(self.prompt_ids),
+            "completion_ids": self.completion_ids,
+            "completion_mask": self.completion_mask,
+            "logprobs": self.logprobs,
+            "rewards": self.rewards,
+            "truncated": self.truncated,
+            **self.metadata,
+        }
+        if self.workspace_path is not None:
+            sample["workspace_path"] = self.workspace_path
+        return sample
 
 
 # ---------------------------------------------------------------------------

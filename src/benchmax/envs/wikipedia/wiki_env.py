@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.base_env import ToolEnv
 from benchmax.envs.example_id import make_example
 from benchmax.envs.types import Example, Messages, ToolDefinition
 from benchmax.envs.wikipedia.utils import APIKeyRotator, clean_html, safe_request
@@ -159,7 +159,7 @@ def _make_wikipedia_tools(key_rotator: APIKeyRotator):
     return wikipedia_search_tool, wikipedia_get_article_tool
 
 
-class WikipediaEnv(BaseEnv):
+class WikipediaEnv(ToolEnv):
     """Wikipedia environment with search and article fetch tools."""
 
     system_prompt: str = SYSTEM_PROMPT

@@ -1,10 +1,11 @@
 import logging
+import inspect
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from benchmax.envs.example_id import canonical_example_id, make_example
-from benchmax.envs.types import Example, Messages, ToolDefinition
+from benchmax.envs.types import Example, Messages, PolicyConfig, ToolDefinition, Trajectory
 from benchmax.prompts.tools import render_tools_prompt
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,13 @@ if TYPE_CHECKING:
 
 
 class BaseEnv(ABC):
-    """Base benchmax environment for tool execution and reward computation.
+    """Base benchmax environment.
+
+    The common trainer-facing contract is :meth:`run_rollouts`: given
+    preprocessed examples and a policy endpoint/config, return rewarded
+    token trajectories. Older tool-stepped envs can continue to override
+    ``list_tools`` / ``run_tool`` / ``compute_reward``; ``ToolEnv`` captures
+    that stricter contract explicitly.
 
     Logging:
         Use ``logging.getLogger(__name__)`` from any env method — your
@@ -137,19 +144,18 @@ class BaseEnv(ABC):
 
         return load_dataset(dataset_name, **kwargs), None
 
-    # Methods all environment subclasses must implement.
-
-    @abstractmethod
     async def list_tools(self) -> List[ToolDefinition]:
         """Return list of available tools"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not expose stepped tools"
+        )
 
-    @abstractmethod
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
         """Execute named tool in rollout context with given arguments"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not expose stepped tools"
+        )
 
-    @abstractmethod
     async def compute_reward(
         self,
         rollout_id: str,
@@ -164,7 +170,28 @@ class BaseEnv(ABC):
         scoring config); ``None`` for envs that grade without per-row data.
         Returns ``{reward_name: score}``.
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not expose stepped rewards"
+        )
+
+    async def run_rollouts(
+        self,
+        examples: List[Example],
+        *,
+        num_generations: int,
+        policy: PolicyConfig | None = None,
+        split: str = "train",
+        **kwargs: Any,
+    ) -> List[Trajectory | Dict[str, Any]]:
+        """Run rollout attempts and return trainer-ready trajectories.
+
+        Full-loop envs such as Harbor should override this method. The method
+        name refers to execution attempts; the return value is the trajectory
+        artifact consumed by the learner.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement env-owned rollouts"
+        )
 
     async def compute_group_reward(
         self,
@@ -227,3 +254,171 @@ class BaseEnv(ABC):
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support workspace file retrieval operations"
         )
+
+
+class ToolEnv(BaseEnv):
+    """Adapter contract for turn-stepped tool/reward envs.
+
+    ``ToolEnv`` keeps the old env surface explicit, but exposes it through the
+    new trainer-facing ``run_rollouts`` entrypoint. The policy supplies the
+    model loop; this class owns tool execution, reward computation, and
+    conversion to ``Trajectory``.
+    """
+
+    async def run_rollouts(
+        self,
+        examples: List[Example],
+        *,
+        num_generations: int,
+        policy: PolicyConfig | Dict[str, Any] | None = None,
+        split: str = "train",
+        **kwargs: Any,
+    ) -> List[Trajectory]:
+        rollout_func = _policy_get(policy, "rollout_func") or _policy_get(
+            policy, "runner"
+        )
+        if rollout_func is None:
+            raise RuntimeError(
+                f"{self.__class__.__name__}.run_rollouts requires "
+                "policy.rollout_func for ToolEnv rollouts"
+            )
+
+        prompts = [example["prompt_messages"] for example in examples]
+        init_rollout_args = [
+            example.get("init_rollout_args") or {} for example in examples
+        ]
+        completions = rollout_func(
+            prompts,
+            num_generations,
+            self,
+            init_rollout_args=init_rollout_args,
+        )
+        if inspect.isawaitable(completions):
+            completions = await completions
+
+        trajectories: List[Trajectory] = []
+        for example_index, example in enumerate(examples):
+            start = example_index * num_generations
+            stop = start + num_generations
+            rollout_ids: List[str] = []
+            messages_list: List[Messages] = []
+            tasks: List[Optional[Dict[str, Any]]] = []
+            group_items: List[Dict[str, Any]] = []
+
+            for flat_index in range(start, stop):
+                item = _completion_item(completions, flat_index)
+                rollout_id = item["rollout_ids"]
+                messages = item["completions"]
+                rollout_ids.append(rollout_id)
+                messages_list.append(messages)
+                tasks.append(example.get("task"))
+                group_items.append(item)
+
+            group_rewards = await self.compute_group_reward(
+                rollout_ids,
+                messages_list,
+                tasks,
+                **init_rollout_args[example_index],
+            )
+
+            for item, rollout_id, messages, task, extra_rewards in zip(
+                group_items,
+                rollout_ids,
+                messages_list,
+                tasks,
+                group_rewards,
+                strict=False,
+            ):
+                rewards = await self.compute_reward(
+                    rollout_id,
+                    messages,
+                    task,
+                    **init_rollout_args[example_index],
+                )
+                rewards.update(extra_rewards)
+                trajectories.append(
+                    Trajectory(
+                        rollout_id=rollout_id,
+                        example_id=example["id"],
+                        prompt_messages=example["prompt_messages"],
+                        messages=messages,
+                        task=task,
+                        prompt_ids=item.get("prompt_ids", []),
+                        prompt_mask=item.get("prompt_mask"),
+                        completion_ids=item.get("completion_ids", []),
+                        completion_mask=item.get("completion_mask", []),
+                        logprobs=item.get("logprobs", []),
+                        rewards=rewards,
+                        truncated=bool(item.get("truncated", False)),
+                        workspace_path=_optional_str(
+                            item.get("workspace_paths") or item.get("workspace_path")
+                        ),
+                        metadata=_trajectory_metadata(item),
+                    )
+                )
+
+        return trajectories
+
+    @abstractmethod
+    async def list_tools(self) -> List[ToolDefinition]:
+        """Return list of available tools"""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
+        """Execute named tool in rollout context with given arguments"""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def compute_reward(
+        self,
+        rollout_id: str,
+        messages: Messages,
+        task: Optional[Dict[str, Any]],
+        **kwargs: Any,
+    ) -> Dict[str, float]:
+        """Score a stepped rollout."""
+        raise NotImplementedError
+
+
+def _policy_get(policy: PolicyConfig | Dict[str, Any] | None, key: str) -> Any:
+    if policy is None:
+        return None
+    if isinstance(policy, dict):
+        return policy.get(key)
+    return getattr(policy, key, None)
+
+
+def _completion_item(completions: Dict[str, Any], index: int) -> Dict[str, Any]:
+    item: Dict[str, Any] = {}
+    for key, values in completions.items():
+        if isinstance(values, list) and len(values) > index:
+            item[key] = values[index]
+    missing = [key for key in ("rollout_ids", "completions") if key not in item]
+    if missing:
+        raise ValueError(
+            f"rollout output missing required field(s): {', '.join(missing)}"
+        )
+    return item
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _trajectory_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
+    core = {
+        "completion_ids",
+        "completions",
+        "completion_mask",
+        "logprobs",
+        "prompt_ids",
+        "prompt_mask",
+        "rollout_ids",
+        "truncated",
+        "workspace_path",
+        "workspace_paths",
+    }
+    return {key: value for key, value in item.items() if key not in core}

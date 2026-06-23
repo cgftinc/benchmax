@@ -18,7 +18,7 @@ import traceback
 from collections.abc import Callable
 from typing import Any
 
-from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.base_env import ToolEnv
 from benchmax.envs.example_id import make_example
 from benchmax.envs.reward_helpers import (
     clip01,
@@ -89,7 +89,7 @@ TOOL_OUTPUT_TRUNCATION_SUFFIX = "\n...[truncated due to character limit]"
 SEARCH_EFFICIENCY_DECAY_RATE = 0.2
 
 
-class SearchEnv(BaseEnv):
+class SearchEnv(ToolEnv):
     """Backend-agnostic search environment with multi-component rewards.
 
     Requires an LLM judge for correctness and conciseness scoring.

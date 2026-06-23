@@ -18,7 +18,7 @@ except ModuleNotFoundError as e:
         "fastmcp is required for MCP environments. Install with: pip install 'benchmax[mcp]'"
     ) from e
 
-from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.base_env import ToolEnv
 from benchmax.envs.types import Messages, ToolDefinition
 from .server_pool import ServerPool
 from .provisioners.base_provisioner import BaseProvisioner
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 apply_fastmcp_patch()
 
 
-class ParallelMcpEnv(BaseEnv):
+class ParallelMcpEnv(ToolEnv):
     """
     Parallel MCP Environment for distributed tool execution.
 
