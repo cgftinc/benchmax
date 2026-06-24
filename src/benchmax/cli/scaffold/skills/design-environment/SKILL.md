@@ -27,7 +27,12 @@ Write a single-turn `run.py` — a `BaseEnv` subclass — by filling in three th
 Start single-turn with no tools (`list_tools` returns `[]`). That's the right
 default — only reach for tools if the task genuinely needs them.
 
-Next: **generate-data** for the datasets, then **verify-environment** to validate.
+Next, hand off to the next skill — **load it, don't just run its command**:
+**invoke the `generate-data` skill** for the datasets, then **invoke the
+`verify-environment` skill** before you run `castform validate`. Each stage's
+skill is loaded with the Skill tool; `castform validate` without
+verify-environment loaded means you'll miss how to read the scorecard and report
+the baseline.
 
 ## Going deeper
 
