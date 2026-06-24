@@ -20,9 +20,21 @@ the skills, not a scaffolded file). Write your datasets too, then `castform
 validate`. The green baseline is the milestone: when validate passes with sane,
 **varying** rewards, stop and decide **iterate or launch**.
 
-> Skills for each stage live in `.claude/skills/` — `design-environment`,
-> `generate-data`, `verify-environment`, `launch-run`, `view-progress`. Read the
-> matching skill before doing that stage.
+> **Load the skill for every stage — this is mandatory, not optional.** Each
+> stage has a skill in `.claude/skills/` — `design-environment`, `generate-data`,
+> `verify-environment`, `launch-run`, `view-progress`. **Invoke the matching skill
+> (Skill tool) before you run that stage's `castform` command**, every time.
+> Running a `castform` command without its skill loaded means you miss how to read
+> its output and what to do next.
+>
+> **In particular: ALWAYS invoke the `verify-environment` skill before you run
+> `castform validate`.** That skill defines how to read the scorecard and the exact
+> format for reporting the baseline — `castform validate` run without it loaded is
+> how the baseline report drifts. No exceptions: load `verify-environment` first,
+> then validate.
+>
+> The skills chain — each one ends by pointing to the next; follow that handoff and
+> load the skill it names rather than jumping straight to the command.
 
 ## Setup
 

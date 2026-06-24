@@ -43,7 +43,10 @@ sharing/inspecting a file out of band:
 castform data upload train_dataset.jsonl   # → blobPath: datasets/cli/train_dataset.jsonl
 ```
 
-When the data's in place, go to **verify-environment** and run `castform validate`.
+When the data's in place, **invoke the `verify-environment` skill** (with the
+Skill tool) *before* you run `castform validate` — don't run the command bare. It
+defines how to read the scorecard and the exact format for reporting the baseline;
+running `validate` without it loaded is how the baseline report drifts.
 
 ## Going deeper
 
