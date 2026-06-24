@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import pytest
@@ -43,7 +44,7 @@ class FullLoopMathEnv(BaseEnv):
                 completion_ids = _fake_token_ids(content)
                 trajectories.append(
                     Trajectory(
-                        rollout_id=f"{example['id']}-{generation_idx}",
+                        rollout_id=str(uuid.uuid4()),
                         example_id=example["id"],
                         prompt_messages=example["prompt_messages"],
                         messages=messages,
@@ -71,10 +72,8 @@ async def test_full_loop_math_env_owns_rollout_and_reward() -> None:
         num_generations=2,
     )
 
-    assert [trajectory.rollout_id for trajectory in trajectories] == [
-        "math-2-3-0",
-        "math-2-3-1",
-    ]
+    for trajectory in trajectories:
+        assert str(uuid.UUID(trajectory.rollout_id)) == trajectory.rollout_id
     assert [trajectory.messages[-1]["content"] for trajectory in trajectories] == [
         "5",
         "0",
