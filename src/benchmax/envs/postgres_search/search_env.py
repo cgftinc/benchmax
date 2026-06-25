@@ -23,7 +23,6 @@ from benchmax.envs.example_id import make_example
 from benchmax.envs.reward_helpers import (
     clip01,
     count_search_calls,
-    extract_answer_block,
     extract_completion_text,
     search_within_budget,
 )
@@ -39,6 +38,19 @@ from benchmax.rubrics.rubric import Rubric, evaluate_single_rubric
 logger = logging.getLogger(__name__)
 
 _CITATION_RE = re.compile(r"\[Source:\s*([^\]]+)\]", re.IGNORECASE)
+
+_ANSWER_TAG_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_answer_block(text: str) -> str:
+    """Extract content from <answer> tags; return "" if no answer tag is present.
+
+    Strict variant of ``reward_helpers.extract_answer_block``: a completion
+    without an explicit ``<answer>`` block scores as no answer rather than
+    falling back to the full text.
+    """
+    match = _ANSWER_TAG_RE.search(text or "")
+    return match.group(1).strip() if match else ""
 
 # Match Python-style `{name}` placeholders with word-char names only —
 # leaves JSON-like literals (e.g. `{"answer": "X"}`) and unknown keys
@@ -70,7 +82,6 @@ _CORRECTNESS_RUBRIC = Rubric(
     type="positive",
     score_map={
         0: "Provided answer is missing or incorrect.",
-        0.5: "Partially correct — captures some facts but missing key details.",
         1: "Fully correct and factually consistent.",
     },
 )
@@ -286,7 +297,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
                 return zeros
 
             t = task or {}
-            answer = extract_answer_block(text)
+            answer = _extract_answer_block(text)
             prompt = str(t.get("question") or t.get("prompt") or "")
             gt_str = str(t.get("ground_truth") or "")
             reference_chunks = t.get("reference_chunks", [])
