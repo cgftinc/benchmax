@@ -1,71 +1,44 @@
-import logging
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from benchmax.envs.example_id import canonical_example_id, make_example
 from benchmax.envs.types import Example, Messages, ToolDefinition
-from benchmax.prompts.tools import render_tools_prompt
-
-logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 
 
+@dataclass
+class RolloutResult:
+    messages: list[dict[str, Any]]
+    reward: dict[str, float]
+    task: dict[str, Any] | None = None
+    truncated: bool = False
+    tool_calls_total: int = 0
+    tool_calls_failed: int = 0
+    artifacts: dict[str, Any] = field(default_factory=dict)
+
+
 class BaseEnv(ABC):
-    """Base benchmax environment for tool execution and reward computation.
+    """Minimal environment contract for trainer-driven RL rollouts.
 
-    Logging:
-        Use ``logging.getLogger(__name__)`` from any env method — your
-        logs (and tracebacks from ``logger.exception``) show up in the
-        trainer's log view, attributed to the rollout that triggered them.
-
-        In ``compute_group_reward``, logs apply to every rollout in the
-        group by default. To attribute a log to one specific rollout
-        only, wrap it in ``rollout_context(rid)`` from
-        :mod:`benchmax.envs.logging`.
+    The env owns the harness. The trainer provides an OpenAI-compatible model
+    endpoint for a single rollout session, then reads token-faithful traces from
+    the gateway after this method returns.
     """
 
     system_prompt: str = ""
+    recommended_max_turns: int | None = None
+    recommended_max_tool_calls: int | None = None
 
-    # Env-declared hints for training infra. None = use system defaults.
-    recommended_max_turns: Optional[int] = None
-    recommended_max_tool_calls: Optional[int] = None
-
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any) -> None:
         pass
 
     @classmethod
-    def dataset_preprocess(cls, row: Any, **kwargs) -> Example:
-        """Turn a dataset row into an :class:`Example`.
-
-        ``prompt_messages`` is built from the first column that's present:
-
-        - ``prompt_messages``: already a chat list — used as-is.
-        - ``messages``: chat list — used as ``prompt_messages``.
-        - ``prompt``: single string — wrapped as one user message.
-
-        ``task`` is the entire row as a dict, so any column
-        (``answer``, ``ground_truth``, etc.) is available to
-        ``compute_reward`` without per-env wiring. ``init_rollout_args``
-        is pulled out separately if present.
-
-        Override this for datasets with other column names or to project
-        ``task`` down to a subset of fields.
-
-        System prompt
-            Set ``system_prompt`` as a **static class attribute** and read it
-            via ``cls.system_prompt`` (the default below does). Preprocessing
-            then never constructs an env instance, and the system prompt
-            baked into training Examples matches what the playground uses.
-
-            If your prompt is templated (e.g. a corpus description), render it
-            at class-definition time and assign the result — don't defer it to
-            ``__init__``. See
-            :meth:`benchmax.envs.postgres_search.search_env.SearchEnv.render_system_prompt`
-            for the reference pattern.
-        """
+    def dataset_preprocess(cls, row: Any, **kwargs: Any) -> Example:
         if "prompt_messages" in row:
             prompt_messages = row["prompt_messages"]
         elif "messages" in row:
@@ -75,10 +48,9 @@ class BaseEnv(ABC):
         else:
             raise ValueError(
                 f"{cls.__name__}.dataset_preprocess: row has none of "
-                "'prompt_messages', 'messages', 'prompt'. Override "
-                "dataset_preprocess to build prompt_messages from your "
-                "dataset's columns."
+                "'prompt_messages', 'messages', 'prompt'. Override dataset_preprocess."
             )
+
         task = dict(row)
         return Example(
             id=canonical_example_id(prompt_messages, task),
@@ -94,25 +66,9 @@ class BaseEnv(ABC):
         messages: Messages | None = None,
         **kwargs: Any,
     ) -> Example:
-        """Wrap a playground input into an :class:`Example`.
-
-        Accepts either ``prompt`` (single user string — the typical one-shot
-        chat case) or ``messages`` (a full chat list, used when replaying a
-        multi-turn eval prompt). Exactly one must be provided.
-
-        Classmethod (like :meth:`dataset_preprocess`), reading the static
-        ``cls.system_prompt`` class attribute — so a playground input is
-        preprocessed without constructing an env instance, and the system
-        prompt matches what training uses. ``cls.system_prompt`` is prepended
-        unless the caller already supplied a system message (a replayed eval
-        prompt typically does). ``task=None`` — the rollout worker skips
-        reward computation for playground examples.
-        """
         if messages is None:
             if not prompt:
-                raise ValueError(
-                    "playground_preprocess requires either 'prompt' or 'messages'"
-                )
+                raise ValueError("playground_preprocess requires either 'prompt' or 'messages'")
             messages = [{"role": "user", "content": prompt}]
         has_system = any(m.get("role") == "system" for m in messages)
         return make_example(
@@ -123,107 +79,24 @@ class BaseEnv(ABC):
 
     @classmethod
     def load_dataset(
-        cls, dataset_name: str, **kwargs
-    ) -> Tuple[
-        "DatasetDict | Dataset | IterableDatasetDict | IterableDataset", str | None
-    ]:
-        """Load + prepare a dataset for this env.
-
-        Default thin-wraps ``datasets.load_dataset``. Override to fetch from
-        custom sources or to materialize a local cache; return the dataset
-        and an optional local path.
-        """
+        cls, dataset_name: str, **kwargs: Any
+    ) -> tuple["DatasetDict | Dataset | IterableDatasetDict | IterableDataset", str | None]:
         from datasets import load_dataset
 
         return load_dataset(dataset_name, **kwargs), None
 
-    # Methods all environment subclasses must implement.
-
     @abstractmethod
-    async def list_tools(self) -> List[ToolDefinition]:
-        """Return list of available tools"""
-        pass
-
-    @abstractmethod
-    async def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
-        """Execute named tool in rollout context with given arguments"""
-        pass
-
-    @abstractmethod
-    async def compute_reward(
+    async def run_rollout(
         self,
+        *,
         rollout_id: str,
-        messages: Messages,
-        task: Optional[Dict[str, Any]],
-        **kwargs: Any,
-    ) -> Dict[str, float]:
-        """Score a rollout.
+        model: str,
+        base_url: str,
+        api_key: str,
+        task: dict[str, Any],
+        timeout: float,
+    ) -> RolloutResult:
+        """Run one harness rollout against the supplied OpenAI-compatible endpoint."""
 
-        ``messages`` is the full transcript (seed + assistant + tool turns).
-        ``task`` carries per-example reward-side data (e.g. ``ground_truth``,
-        scoring config); ``None`` for envs that grade without per-row data.
-        Returns ``{reward_name: score}``.
-        """
+    async def shutdown(self) -> None:
         pass
-
-    async def compute_group_reward(
-        self,
-        rollout_ids: List[str],
-        messages_list: List[Messages],
-        tasks: List[Optional[Dict[str, Any]]],
-        **kwargs: Any,
-    ) -> List[Dict[str, float]]:
-        """Score a rollout group jointly.
-
-        Override when reward needs cross-rollout context (relative scoring,
-        group normalization, dedup). Default returns one empty dict per
-        rollout, signalling per-rollout :meth:`compute_reward` runs in
-        isolation. Returns are paired with ``rollout_ids`` by index.
-        """
-        return [{} for _ in rollout_ids]
-
-    async def get_system_prompt(self, add_tool_defs: bool = False) -> str:
-        """Get system prompt. To add tool definitions, set add_tool_defs to True."""
-        if add_tool_defs:
-            return render_tools_prompt(
-                await self.list_tools(), self.system_prompt or ""
-            )
-        else:
-            return self.system_prompt
-
-    # Optional rollout lifecycle management methods
-
-    async def shutdown(self):
-        pass
-
-    async def init_rollout(self, rollout_id: str, **rollout_args) -> None:
-        """Initialize resources for a new rollout"""
-        return None
-
-    async def release_rollout(self, rollout_id: str) -> None:
-        """Free up resources for a new rollout. Called by compute_reward internally but also available for cleanup."""
-        return None
-
-    async def copy_to_workspace(
-        self, rollout_id: str, src_path: Path, dst_filename: Optional[str] = None
-    ) -> None:
-        """Copy a file to the workspace for a specific rollout. If dst_filename is None, use the original filename."""
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support workspace file copy operations"
-        )
-
-    async def copy_content_to_workspace(
-        self, rollout_id: str, src_content: str | bytes, dst_filename: str
-    ) -> None:
-        """Create a file with given content in the workspace for a specific rollout"""
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support workspace content copy operations"
-        )
-
-    async def copy_from_workspace(
-        self, rollout_id: str, src_filename: str, dst_path: Path
-    ) -> None:
-        """Copy a file from the workspace for a specific rollout"""
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support workspace file retrieval operations"
-        )
