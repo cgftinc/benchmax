@@ -104,9 +104,10 @@ class Example(TypedDict):
     :func:`benchmax.envs.example_id.canonical_example_id`. Equal seeds + tasks
     across calls (and across Python/TypeScript) produce equal ids.
 
-    ``prompt_messages`` is the full prompt as a chat-message list. Includes the
-    system message if the env has one (rendered with tool definitions when
-    tools are present).
+    ``prompt_messages`` is the full prompt as a chat-message list for envs
+    where Benchmax owns prompt construction. Harness-owned rollout envs may set
+    this to ``[]``; the trainer must then use the gateway-captured first model
+    request as the authoritative prompt for training records.
 
     ``task`` carries per-example reward-side data: ground truth, scoring config,
     or anything else the env's ``compute_reward`` needs to grade the rollout.

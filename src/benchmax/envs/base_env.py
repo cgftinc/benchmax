@@ -98,5 +98,31 @@ class BaseEnv(ABC):
     ) -> RolloutResult:
         """Run one harness rollout against the supplied OpenAI-compatible endpoint."""
 
+    async def list_tools(self) -> list[ToolDefinition]:
+        return []
+
+    async def run_tool(self, *, rollout_id: str, tool_name: str, **kwargs: Any) -> str:
+        raise ValueError(f"unknown tool: {tool_name}")
+
+    async def compute_reward(
+        self,
+        *,
+        rollout_id: str,
+        messages: list[dict[str, Any]],
+        task: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, float]:
+        return {"reward": 0.0}
+
+    async def compute_group_reward(
+        self,
+        *,
+        rollout_ids: list[str],
+        messages_list: list[list[dict[str, Any]]],
+        tasks: list[dict[str, Any] | None],
+        **kwargs: Any,
+    ) -> list[dict[str, float]]:
+        return [{} for _ in rollout_ids]
+
     async def shutdown(self) -> None:
         pass

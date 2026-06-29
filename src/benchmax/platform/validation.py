@@ -10,6 +10,7 @@ import asyncio
 import importlib
 import json
 import math
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -172,13 +173,17 @@ def _run_local_checks(
     train_dataset: list[dict[str, Any]],
     eval_dataset: list[dict[str, Any]] | None = None,
     local_modules: list[ModuleType] | None = None,
+    llm_base_url: str | None = None,
+    llm_api_key: str | None = None,
+    llm_model: str | None = None,
 ) -> tuple[int, int]:
-    """Run the local (no-network) contract checks for ``validate_env``.
+    """Run local contract checks for ``validate_env``.
 
     Mirrors how the trainer calls env methods — dataset_preprocess,
     load_dataset, list_tools/run_tool, compute_reward, a simulated rollout,
-    compute_group_reward (when overridden), and pickle round-trips. Prints
-    colored progress as it goes.
+    compute_group_reward (when overridden), and pickle round-trips. When an
+    LLM endpoint is supplied, also runs the env-owned ``run_rollout`` harness
+    path against that endpoint. Prints colored progress as it goes.
 
     Returns:
         ``(passed, failed)`` check counts. The caller owns the shared event
@@ -252,8 +257,8 @@ def _run_local_checks(
             print("  \u2717 prompt_messages is not a list of {role,content} dicts")
             failed += 1
         elif not seed:
-            print("  \u2717 prompt_messages is empty")
-            failed += 1
+            print("  \u2713 prompt_messages is empty (rollout harness supplies prompt)")
+            passed += 1
         else:
             print(f"  \u2713 prompt_messages is a {len(seed)}-message chat list")
             passed += 1
@@ -492,7 +497,61 @@ def _run_local_checks(
             print(f"  \u2717 simulated rollout failed: {type(exc).__name__}: {exc}")
             failed += 1
 
-    # 5c. compute_group_reward (group-relative scoring) ----------------------
+    # 5c. Env-owned run_rollout smoke ----------------------------------------
+    if (
+        env is not None
+        and isinstance(preprocessed, dict)
+        and "prompt_messages" in preprocessed
+    ):
+        local_llm_base_url = llm_base_url or os.environ.get("OPENAI_BASE_URL")
+        local_llm_api_key = llm_api_key or os.environ.get("OPENAI_API_KEY")
+        if not local_llm_base_url or not local_llm_api_key:
+            print(
+                "  - run_rollout: skipped"
+                " (set llm_base_url+llm_api_key or OPENAI_BASE_URL+OPENAI_API_KEY)"
+            )
+        else:
+            try:
+                from benchmax.envs.base_env import RolloutResult
+
+                rollout_result = _run_async(
+                    env.run_rollout(
+                        rollout_id="validate-local-rollout",
+                        model=llm_model or "default",
+                        base_url=local_llm_base_url,
+                        api_key=local_llm_api_key,
+                        task=preprocessed.get("task") or {},
+                        timeout=900.0,
+                    ),
+                    timeout=930.0,
+                )
+                if not isinstance(rollout_result, RolloutResult):
+                    print(
+                        f"  \u2717 run_rollout returned {type(rollout_result).__name__},"
+                        " expected RolloutResult"
+                    )
+                    failed += 1
+                else:
+                    bad_reward = {
+                        key: value
+                        for key, value in rollout_result.reward.items()
+                        if not isinstance(value, (int, float)) or not math.isfinite(value)
+                    }
+                    if bad_reward:
+                        print(f"  \u2717 run_rollout bad reward values: {bad_reward}")
+                        failed += 1
+                    else:
+                        print(
+                            "  \u2713 run_rollout OK "
+                            f"(reward={rollout_result.reward}, "
+                            f"truncated={rollout_result.truncated})"
+                        )
+                        passed += 1
+            except Exception as exc:
+                print(f"  \u2717 run_rollout failed: {type(exc).__name__}: {exc}")
+                failed += 1
+
+    # 5d. compute_group_reward (group-relative scoring) ----------------------
     # Only envs that override the BaseEnv no-op have group logic to check. The
     # trainer batches a whole rollout GROUP into this call, so feed it a small
     # group: the same example sampled twice, with distinct answers so any
@@ -846,7 +905,14 @@ def validate_env(
     if local:
         try:
             local_passed, local_failed = _run_local_checks(
-                env_class, env_args, train_dataset, eval_dataset, local_modules
+                env_class,
+                env_args,
+                train_dataset,
+                eval_dataset,
+                local_modules,
+                llm_base_url,
+                llm_api_key,
+                llm_model,
             )
         finally:
             # _run_local_checks owns the shared validation loop; close it here
