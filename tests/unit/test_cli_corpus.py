@@ -149,7 +149,7 @@ def test_corpus_list_shows_names_and_cap(monkeypatch, capsys):
     _install_client(monkeypatch, rows=[_Row("id1", "alpha"), _Row("id2", "beta")])
     assert corpus._cmd_corpus_list(_ns_list()) == 0
     out = capsys.readouterr().out
-    assert "2/5 corpora" in out and "alpha" in out and "beta" in out
+    assert "2/20 corpora" in out and "alpha" in out and "beta" in out
 
 
 def test_corpus_list_empty(monkeypatch, capsys):

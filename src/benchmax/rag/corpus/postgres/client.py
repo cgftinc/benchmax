@@ -181,7 +181,7 @@ class CorpusClient:
             raise AuthenticationError(message)
 
         if response.status_code == 400:
-            if "Maximum of 5 corpora" in message:
+            if "Maximum of 20 corpora" in message:
                 raise CorpusLimitError()
             if "Chunk limit exceeded" in message:
                 raise CorpusAPIError(message, 400)
@@ -204,7 +204,7 @@ class CorpusClient:
             Corpus object with id, name, timestamps
 
         Raises:
-            CorpusLimitError: If max 5 corpora limit reached
+            CorpusLimitError: If max 20 corpora limit reached
             AuthenticationError: If API key is invalid
         """
         response = self._request("POST", "/v1/corpora", json={"name": name})

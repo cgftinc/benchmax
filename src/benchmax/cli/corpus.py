@@ -110,7 +110,7 @@ def _cmd_corpus_list(args: argparse.Namespace) -> int:
     if not corpora:
         print("No corpora yet. Create one: castform corpus ingest <folder>")
         return 0
-    print(f"{len(corpora)}/5 corpora:")
+    print(f"{len(corpora)}/20 corpora:")
     for c in corpora:
         print(f"  {c.name}  (id: {c.id})")
     return 0
@@ -206,7 +206,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     p_ing.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_ing.set_defaults(func=_cmd_corpus_ingest)
 
-    p_ls = corpus_sub.add_parser("list", help="List your corpora (and the 5-corpus cap)")
+    p_ls = corpus_sub.add_parser("list", help="List your corpora (and the 20-corpus cap)")
     p_ls.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_ls.set_defaults(func=_cmd_corpus_list)
 

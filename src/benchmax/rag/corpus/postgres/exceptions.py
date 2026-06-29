@@ -24,10 +24,10 @@ class AuthenticationError(CorpusAPIError):
 
 
 class CorpusLimitError(CorpusAPIError):
-    """Maximum corpus limit (5) reached."""
+    """Maximum corpus limit (20) reached."""
 
     def __init__(self, existing_corpora: list[Corpus] | None = None):
-        super().__init__("Maximum of 5 corpora per user reached", 400)
+        super().__init__("Maximum of 20 corpora per user reached", 400)
         self.existing_corpora = existing_corpora or []
 
 
