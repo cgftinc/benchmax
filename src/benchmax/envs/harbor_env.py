@@ -99,15 +99,19 @@ class HarborEnv(BaseEnv):
 
         payload = json.loads(result_path.read_text(encoding="utf-8"))
         reward = payload.get("reward") or payload.get("rewards") or {"reward": 0.0}
+        failed = bool(payload.get("failed", False))
+        if failed:
+            reward = {"reward": 0.0}
         return RolloutResult(
             messages=list(payload.get("messages") or []),
             reward={str(k): float(v) for k, v in reward.items()},
             task=payload.get("task", task),
-            truncated=bool(payload.get("truncated", False)),
+            truncated=bool(payload.get("truncated", False)) or failed,
             tool_calls_total=int(payload.get("tool_calls_total", 0) or 0),
             tool_calls_failed=int(payload.get("tool_calls_failed", 0) or 0),
             artifacts={
                 "trial_dir": payload.get("trial_dir", str(tmp_path)),
+                **({"failed": True} if failed else {}),
                 **dict(payload.get("artifacts") or {}),
             },
         )
