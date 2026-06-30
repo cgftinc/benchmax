@@ -593,6 +593,57 @@ def test_validate_examples_env_class_bundles_to_bytes(monkeypatch):
         assert kw["env_metadata_path"] is None
 
 
+def test_validate_examples_full_messages_surfaces_transcript(monkeypatch):
+    """full_messages=True asks stream_rollout to capture_messages and surfaces
+    the streamed transcript on each ExampleValidation (so `castform validate
+    --json` can carry real completions for a reward audit)."""
+    client = RolloutClient(api_key="k")
+
+    captured: list[dict[str, Any]] = []
+    transcript = [{"role": "assistant", "content": "the answer"}]
+
+    def _fake_stream_rollout(**kwargs):
+        captured.append(kwargs)
+        return {"success": True, "rewards": {"r": 1.0}, "messages": transcript}
+
+    monkeypatch.setattr(client, "stream_rollout", _fake_stream_rollout)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}],
+        env_class=_make_smoke_env(),
+        n=1,
+        full_messages=True,
+        verbose=False,
+    )
+
+    assert result.ok
+    assert captured[0]["capture_messages"] is True
+    assert result.examples[0].messages == transcript
+
+
+def test_validate_examples_omits_messages_without_full_messages(monkeypatch):
+    """Default (full_messages=False) → capture_messages off, messages stays None."""
+    client = RolloutClient(api_key="k")
+
+    captured: list[dict[str, Any]] = []
+
+    def _fake_stream_rollout(**kwargs):
+        captured.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(client, "stream_rollout", _fake_stream_rollout)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}],
+        env_class=_make_smoke_env(),
+        n=1,
+        verbose=False,
+    )
+
+    assert captured[0]["capture_messages"] is False
+    assert result.examples[0].messages is None
+
+
 def test_validate_examples_env_class_conflicts_with_explicit_env(monkeypatch):
     """env_class is mutually exclusive with explicit paths/bytes."""
     client = RolloutClient(api_key="k")

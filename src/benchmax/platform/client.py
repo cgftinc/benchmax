@@ -72,6 +72,10 @@ class ExampleValidation:
     ok: bool
     error: str | None = None
     rewards: dict[str, float] | None = None
+    # Full streamed transcript for this rollout when the caller asked for it
+    # (full_messages=True); None otherwise. Lets `castform validate --json`
+    # surface real completions for a reward audit, not just scores.
+    messages: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -1234,6 +1238,7 @@ class RolloutClient:
                     llm_model=llm_model,
                     max_turns=max_turns,
                     max_tool_calls=max_tool_calls,
+                    capture_messages=full_messages,
                     full_messages=full_messages,
                 )
                 ok = bool(final.get("success"))
@@ -1247,6 +1252,9 @@ class RolloutClient:
                         # Surface the per-rollout reward components (dropped here
                         # before — they're what `castform validate` displays).
                         rewards=final.get("rewards"),
+                        # Captured only when full_messages=True (capture_messages
+                        # above); lets --json carry the real transcript for audit.
+                        messages=final.get("messages"),
                     )
                 )
             except (RolloutError, RuntimeError) as exc:

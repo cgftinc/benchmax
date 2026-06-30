@@ -1,10 +1,10 @@
 """RAG search environment (written by `castform setup --template rag`).
 
 Post-trains a model to answer questions by SEARCHING a corpus (BM25/lexical) and
-citing its sources. The search tool and the 5-component reward — answer
-correctness + conciseness (LLM judge), citation recall + precision, and search
-efficiency — come from `SearchEnv`; this subclass only supplies the corpus and
-the judge. Edit the three constants below for your task.
+citing its sources. The search tool and stock multi-component reward come from
+`SearchEnv`; this subclass supplies the corpus, judge, and rollout budget. Edit
+the constants below for your task, and audit the reward on real transcripts before
+a serious launch.
 
 Data: `train_dataset.jsonl` / `eval_dataset.jsonl` with `{question, answer,
 reference_chunks}` rows — generate them from your corpus with
@@ -33,16 +33,16 @@ CORPUS_NAME = "my-corpus"
 JUDGE_MODEL = "gpt-5.4-mini"
 
 # Search-call budget per rollout; the system prompt advertises this same number.
-# The ROLLOUT budget is separate and defaults LOWER (max_turns=4 / max_tool_calls=8),
-# and the trainer ignores this value — so to actually use all N searches, raise it.
-# Each search = one turn + one tool call; the final answer is INLINE (one extra TURN,
-# not a tool call) → max_turns = N+1, max_tool_calls = N. For N=10:
-#   castform validate --max-turns 11 --max-tool-calls 10   # both settable on validate
-#   castform launch   --set max_turns=11                   # launch knob; see --list-args
-# At launch only max_turns is a documented `--set` knob (max_tool_calls isn't — it
-# defaults to 8; run `castform launch --list-args` for the live set). If training caps
-# tool calls at 8 (< N), lower MAX_SEARCH_CALLS to fit.
-MAX_SEARCH_CALLS = 10
+# Keep it <= 8 unless `castform launch --list-args` shows a higher launch tool-call
+# cap. The rollout budget is separate and defaults lower (max_turns=4 /
+# max_tool_calls=8), and the trainer ignores this value — so to actually use all N
+# searches, set the rollout budget explicitly. Each search = one turn + one tool
+# call; the final answer is inline (one extra TURN, not a tool call). For N=6:
+#   castform validate --max-turns 7 --max-tool-calls 6   # both settable on validate
+#   castform launch   --set max_turns=7                  # launch knob; see --list-args
+# Tool output counts toward `max_rollout_len` across all turns, so trim result text
+# or raise the launch budget if you increase this.
+MAX_SEARCH_CALLS = 6
 
 
 class CustomSearchEnv(SearchEnv):

@@ -232,7 +232,13 @@ def _report_to_dict(report) -> dict:
         "local_failed": report.local_failed,
         "remote_ran": report.remote_ran,
         "examples": [
-            {"index": e.index, "ok": e.ok, "error": e.error, "rewards": e.rewards}
+            {
+                "index": e.index,
+                "ok": e.ok,
+                "error": e.error,
+                "rewards": e.rewards,
+                "messages": e.messages,
+            }
             for e in (remote.examples if remote else [])
         ],
         "warnings": [
@@ -336,7 +342,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             group_reward_samples=args.group_samples,
             llm_model=args.model,
             # Rollout budget — raise both to match an env that advertises a larger
-            # search/tool budget (e.g. SearchEnv MAX_SEARCH_CALLS=10) so the rollout
+            # search/tool budget (e.g. SearchEnv MAX_SEARCH_CALLS=6) so the rollout
             # isn't truncated below what the system prompt instructs.
             max_turns=args.max_turns,
             max_tool_calls=args.max_tool_calls,
@@ -418,8 +424,8 @@ def register(sub: argparse._SubParsersAction) -> None:
         type=int,
         default=4,
         help="Max conversation turns per rollout (default: 4). Raise it to match a "
-        "multi-turn env's budget — e.g. a SearchEnv with MAX_SEARCH_CALLS=10 needs "
-        "~11 — or the rollout truncates below what the system prompt instructs",
+        "multi-turn env's budget — e.g. a SearchEnv with MAX_SEARCH_CALLS=6 needs "
+        "~7 — or the rollout truncates below what the system prompt instructs",
     )
     p.add_argument(
         "--max-tool-calls",

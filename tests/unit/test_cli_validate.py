@@ -187,6 +187,24 @@ def test_validate_json(monkeypatch, capsys):
     assert '"rewards"' in out and '"acc": 1.0' in out
 
 
+def test_validate_json_includes_messages(monkeypatch, capsys):
+    # --json carries the captured transcript when full_messages surfaced it, so a
+    # reward audit can read real completions, not just scores.
+    transcript = [{"role": "assistant", "content": "answer text"}]
+    report = _report(
+        examples=[
+            ExampleValidation(
+                index=0, ok=True, rewards={"acc": 1.0}, messages=transcript
+            ),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns(json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"messages"' in out and "answer text" in out
+
+
 def test_env_arg_parsing():
     assert validate._parse_env_args(["a=1", "b=hi", "c=true"]) == {
         "a": 1,
@@ -219,7 +237,7 @@ def test_validate_pip_repeatable_in_parser():
 
 def test_validate_turn_budget_forwards_to_rollout(monkeypatch):
     # --max-turns / --max-tool-calls must reach validate_env so a deep-search env
-    # (e.g. SearchEnv MAX_SEARCH_CALLS=10) can be validated at the budget the prompt
+    # (e.g. SearchEnv MAX_SEARCH_CALLS=6) can be validated at the budget the prompt
     # advertises, instead of the truncating 4/8 default.
     captured: dict = {}
 

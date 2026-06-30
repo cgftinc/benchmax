@@ -72,13 +72,19 @@ load those two files. Keep that layout.
 4. **Review & decide** — the **iterate-or-launch** point. Read the rewards: if
    they don't discriminate (the constant-reward warning, or every rollout scores
    alike), the rows may be too easy/hard for the model — fix the reward or data
-   and re-validate. Otherwise, launch. **Keep the user posted while you iterate** —
-   narrate what you're changing and why you're re-validating. Each `validate` runs
-   **real remote rollouts (~30–60s each)**, so a full fix-and-re-validate loop can
-   take **10+ minutes**; tell the user the wait is expected, not a hang.
+   and re-validate. For RAG, inspect real transcripts too: a green scorecard can
+   still hide no-answer completions, brittle citation matching, or a judge that
+   gives partial credit to vague hedges. Otherwise, launch. **Keep the user posted
+   while you iterate** — narrate what you're changing and why you're re-validating.
+   Each `validate` runs **real remote rollouts (~30–60s each)**, so a full
+   fix-and-re-validate loop can take **10+ minutes**; tell the user the wait is
+   expected, not a hang.
 5. **Launch** (`launch-run` skill): `castform launch`. Validates, uploads, and
    launches a GPU run; prints the run URL. (Spends credits.)
 6. **Monitor** (`view-progress` skill): `castform runs status/scalars/logs <id>`.
+   Use eval curves and stored rollout inspection, not only the latest train reward:
+   train can rise while eval falls, and the best checkpoint may be before the final
+   step.
 
 ## Reward functions — get these right
 
@@ -88,10 +94,20 @@ Rewards are the training signal; robust rewards matter more than anything else.
 - **All reward components are SUMMED** into one scalar per rollout (the trainer
   adds the values of the dict `compute_reward` returns). Scale them so the sum is
   meaningful — a `{"correct": 1.0, "format": 0.1}` weights format at ~10%.
+- **Gate secondary bonuses on the primary objective.** If the answer is wrong or
+  missing, citation/style/brevity/tool-use rewards should usually pay `0` (or be
+  multiplied by correctness). Otherwise the model can learn to bank bonuses while
+  failing the task.
 - **Prefer comparative rewards** for qualitative/LLM-judge scoring: compare the
   completion against `ground_truth`, or use `compute_group_reward` to *rank*
   completions within a group rather than score them absolutely. Ranking is far
-  more stable than an absolute 1–10 judge score.
+  more stable than an absolute 1–10 judge score. A "finer" absolute LLM judge often
+  collapses back to the same 0/1 decisions; use pairwise/listwise ranking when you
+  need tie-breaking resolution.
+- **For RAG, audit the reward before launch.** Extract only a committed
+  `<answer>...</answer>` block (never score the model's whole reasoning as an
+  answer), match citations robustly across corpus source formats, and treat
+  conciseness/search-efficiency as optional shaping after correctness is live.
 
 ## Dependencies — bundle them at upload
 
@@ -112,14 +128,16 @@ automatically; if you call the SDK directly, pass them to `upload_training_run`.
   `recommended_max_*` (it never passes the env class to the limit resolver). Set the
   budget explicitly: `castform validate --max-turns N --max-tool-calls N` (both
   settable) and `castform launch --set max_turns=N`. ⚠ At launch `max_tool_calls` is
-  **not** a `--set` knob (stays 8), so a SearchEnv with `MAX_SEARCH_CALLS=10` is capped
-  at 8 tool calls in training — keep `MAX_SEARCH_CALLS` ≤ 8 unless `--list-args` shows a
+  **not** a `--set` knob (stays 8), so a SearchEnv above that is capped
+  in training — keep `MAX_SEARCH_CALLS` ≤ 8 unless `--list-args` shows a
   higher cap.
 - **The launch token budget is `max_rollout_len`** (total tokens across the whole
   rollout, all turns) — **not** `max_response_len`. The server rejects unknown
   arg names. `castform launch --list-args` shows the live, accepted set. Set it
   generously: a rollout that hits the budget is truncated and **dropped from the
-  loss**, so too small a value silently wastes rollouts.
+  loss**, so too small a value silently wastes rollouts. For search envs, budget
+  for `MAX_SEARCH_CALLS × tool-output-size`; a large per-search result string
+  across many turns can hit the cap even when each single tool response looks safe.
 - **Companion-server envs** (an env that talks to a separate game/sim server, e.g.
   a Showdown-style env) need that server provisioned alongside the rollout — the
   `SkypilotProvisioner` pattern. This is manual today and is the biggest

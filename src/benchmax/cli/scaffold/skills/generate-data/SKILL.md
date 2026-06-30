@@ -102,6 +102,19 @@ needed to replace an existing `run.py`.) For **small docs** that error with "No
 eligible chunks", lower the eligibility floor:
 `castform data qa-gen … --min-chunk-chars 120` (default 400).
 
+`reference_chunks[].metadata` is corpus-dependent. A Notion/handbook export may
+carry page-id hashes and title paths; a flat docs folder may only have filenames;
+provider corpora may expose different source fields. Do not hard-code citation
+reward logic to one exact `metadata.file` string without checking the generated rows.
+For RAG rewards, design source matching around the identifiers your corpus actually
+emits: id/hash, title/path, and file path when available.
+
+Treat generated metadata as hints, not universal labels. In particular,
+`linking_hints.confidence == 0` can be a default sentinel from the metadata linker,
+not proof the row is mislabeled; spot-check rows before using it as a prune rule.
+Likewise, fields such as `query_style_observed` or `retrieval_difficulty` are useful
+for sampling and analysis only after you verify their semantics on your corpus.
+
 > **`validate` green ≠ working retrieval.** The search tool swallows errors into a
 > string, so a rag env can validate green against an empty/unreachable corpus.
 > Confirm the search tool returns real chunks (not an `Error:` / `No results`

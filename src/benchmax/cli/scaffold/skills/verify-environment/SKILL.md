@@ -24,13 +24,14 @@ iterating.
 ```bash
 castform validate                 # uses run.py + train_dataset.jsonl in this dir
 castform validate --examples 3    # roll out more examples
-castform validate --max-turns 11 --max-tool-calls 10   # raise the rollout budget for a multi-turn/search env
+castform validate --max-turns 7 --max-tool-calls 6     # raise the rollout budget for a 6-search env
+castform validate --full-messages --json               # transcript + rewards for audits
 castform validate --json          # machine-readable
 ```
 
 > **Multi-turn / search envs: raise the budget.** Rollouts default to `max_turns=4` /
-> `max_tool_calls=8`. An env whose prompt advertises more (a `SearchEnv` with
-> `MAX_SEARCH_CALLS=10`) is **truncated** below that — the scorecard looks flat/weak for
+> `max_tool_calls=8`. An env whose prompt advertises more searches than the rollout
+> budget allows is **truncated** below that — the scorecard looks flat/weak for
 > no obvious reason. Validate at a budget that matches: `castform validate --max-turns M
 > --max-tool-calls S` where `S = MAX_SEARCH_CALLS` and `M = S + 1` (the inline answer
 > adds a turn, not a tool call). (At launch the turn budget is `--set max_turns=M`; see
@@ -51,6 +52,10 @@ point:
 > **Baseline is green — iterate or launch?**
 > - *Iterate* — improve the reward / data / env and re-validate (still no GPU).
 > - *Launch* — go to the **launch-run** skill (`castform launch` spends credits).
+
+For RAG and other judged tasks, green also means you audited the reward on real
+transcripts. The scorecard can be green while a component is redundant, a judge is
+too lenient, or citations are being scored against the wrong source identifier.
 
 > A strong cheap model can score *uniformly high* on a tiny sample and trip the
 > `⚠ rewards DON'T vary` check even when your reward is fine — that means the rows
@@ -103,6 +108,9 @@ point:
   - `group reward` — `mean …` (ran), `not run` (no `compute_group_reward`, or the
     server skipped it — expected, not an error), or `⚠ FAILED — …` (it raised or
     broke its contract).
+    If a group-only component looks constant in an ungrouped per-example view, verify
+    the actual `group reward` line before treating it as a blocker; group-relative
+    rewards only have signal across sibling rollouts.
 - **the bottom line** — one recommendation, and *that's the real verdict* (it keys
   off variance + errors, not just the exit code):
   - `→ GREEN baseline` — usable; iterate or launch.
@@ -141,6 +149,37 @@ If validate looks suspiciously clean, confirm it's really exercising your reward
 temporarily make `compute_reward` `raise` (or return a wrong shape) and re-run —
 the error should surface under the `⚠ reward errors` check. Revert once you've
 seen it.
+
+### Audit the reward, not just the exit code
+
+Before launch, especially for RAG, run a small transcript audit:
+
+```bash
+castform validate --examples 6 --full-messages --json > validate-audit.json
+```
+
+Read several real completions and answer these questions:
+
+- **Does each component discriminate?** `std > 0` is necessary but not enough; a
+  component that is always `0`, always `1`, or perfectly duplicates the primary
+  score is not adding useful signal.
+- **Is the primary answer score strict enough?** Check the partial-credit bucket.
+  Verbose hedges, question restatements, or answers without the required details
+  should not get soft credit just because they are topical.
+- **For answer-tagged envs, missing `<answer>` means no answer.** Do not score the
+  model's full reasoning as correctness when it never committed an answer.
+- **For RAG, inspect retrieved chunks and cited sources.** Confirm search returned
+  real chunks, the model cites the identifiers it actually saw, and your citation
+  matcher accepts valid id/hash/title/path variants without rewarding hallucinated
+  sources.
+- **Gate bonuses on correctness.** Wrong answers should not earn citation,
+  conciseness, or style rewards. Partial answers should get only partial secondary
+  credit.
+
+If a validate report comes back with `ok: false` and empty examples after a worker
+setup/file error rather than a reward error, rerun once before redesigning the env;
+transient worker setup flakes can erase the aggregate even when most rollouts
+actually completed.
 
 ## Output format — report the baseline the same way every time
 

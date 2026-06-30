@@ -68,6 +68,11 @@ def test_setup_codex_writes_agents_skills(tmp_path):
         assert (tmp_path / ".agents" / "skills" / name / "SKILL.md").exists()
     assert ".agents/skills" in (tmp_path / "AGENTS.md").read_text()
     assert ".claude/skills" not in (tmp_path / "AGENTS.md").read_text()
+    assert "Gate secondary bonuses" in (tmp_path / "AGENTS.md").read_text()
+    view_progress = (
+        tmp_path / ".agents" / "skills" / "view-progress" / "SKILL.md"
+    ).read_text()
+    assert "external-eval" in view_progress
 
 
 def test_setup_default_shows_grouped_summary(tmp_path, capsys):
@@ -138,6 +143,7 @@ def test_setup_template_rag_writes_searchenv(tmp_path):
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
     run_py = (tmp_path / "run.py").read_text()
     assert "class CustomSearchEnv(SearchEnv)" in run_py
+    assert "MAX_SEARCH_CALLS = 6" in run_py
     mod = _load_module_from_file(tmp_path / "run.py")
     env_cls = discover_env_class(mod)  # imported SearchEnv is ignored (other module)
     assert env_cls.__name__ == "CustomSearchEnv"
@@ -185,5 +191,3 @@ def test_getting_started_uses_one_prompt_model(tmp_path):
     assert "work through them in order" not in gs.lower()
     assert "how to reward it" not in gs
     assert "Quick commands" in gs
-
-

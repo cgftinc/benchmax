@@ -11,7 +11,7 @@ import cloudpickle
 import pytest
 
 from benchmax.rag.corpus.search_client import SearchClient
-from benchmax.envs.postgres_search.search_env import SearchEnv
+from benchmax.envs.postgres_search.search_env import SearchEnv, _extract_answer_block
 
 JUDGE_ARGS = {
     "judge_base_url": "http://judge.test/v1",
@@ -338,6 +338,63 @@ class TestComputeReward:
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
+    def test_secondary_rewards_scaled_by_partial_correctness(self, mock_eval):
+        # correctness=conciseness=0.5 (same judge mock). Every secondary bonus
+        # multiplies by correctness, so a half-right answer earns half its
+        # citation/brevity reward — they can't trade off against being right.
+        mock_eval.return_value = {"score": 0.5}
+        env = _make_env(
+            w_correctness=1.0,
+            w_conciseness=0.5,
+            w_citation_recall=1.0,
+            w_citation_precision=1.0,
+        )
+        result = asyncio.run(
+            env.compute_reward(
+                "r1",
+                _msgs("<answer>partial [Source: doc_a]</answer>"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "full",
+                    "reference_chunks": [
+                        {"content": "...", "metadata": {"file": "doc_a"}}
+                    ],
+                },
+            )
+        )
+        assert result["answer_correctness"] == pytest.approx(0.5)  # not gated
+        assert result["conciseness"] == pytest.approx(0.125)  # 0.5 * 0.5 * 0.5
+        assert result["citation_recall"] == pytest.approx(0.5)  # 1.0 * 1.0 * 0.5
+        assert result["citation_precision"] == pytest.approx(0.5)  # 1.0 * 1.0 * 0.5
+
+    @patch(
+        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
+        new_callable=AsyncMock,
+    )
+    def test_citations_zeroed_when_answer_wrong(self, mock_eval):
+        # correctness=0 → perfect citations still earn 0 (gated on correctness).
+        mock_eval.return_value = {"score": 0.0}
+        env = _make_env(w_citation_recall=1.0, w_citation_precision=1.0)
+        result = asyncio.run(
+            env.compute_reward(
+                "r1",
+                _msgs("<answer>wrong [Source: doc_a]</answer>"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "right",
+                    "reference_chunks": [
+                        {"content": "...", "metadata": {"file": "doc_a"}}
+                    ],
+                },
+            )
+        )
+        assert result["citation_recall"] == 0.0
+        assert result["citation_precision"] == 0.0
+
+    @patch(
+        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
+        new_callable=AsyncMock,
+    )
     def test_search_efficiency_within_chunk_baseline(self, mock_eval):
         mock_eval.return_value = {"score": 1.0}
         env = _make_env(max_search_calls=3)
@@ -482,6 +539,48 @@ class TestCitationScoring:
         )
         assert recall == pytest.approx(1.0)
         assert precision == pytest.approx(1.0)
+
+
+class TestExtractAnswerBlock:
+    def test_normal_closed_block(self):
+        assert _extract_answer_block("reasoning <answer>42</answer>") == "42"
+
+    def test_no_tag_returns_empty(self):
+        # A completion with no <answer> opener scores as no answer — never its
+        # full reasoning text.
+        assert _extract_answer_block("just reasoning, never committed") == ""
+
+    def test_last_block_wins_on_self_correction(self):
+        # Multiple openers → the LAST committed block (a self-correction wins).
+        text = "<answer>first guess</answer> on reflection <answer>final</answer>"
+        assert _extract_answer_block(text) == "final"
+
+    def test_forgives_missing_close_tag(self):
+        # An unclosed final block → everything after the last opener.
+        assert (
+            _extract_answer_block("thinking... <answer>committed but unclosed")
+            == "committed but unclosed"
+        )
+
+    def test_empty_text_returns_empty(self):
+        assert _extract_answer_block("") == ""
+
+    def test_stray_literal_answer_tag_does_not_hijack(self):
+        # A real, closed answer followed by prose mentioning "<answer>" must
+        # NOT be hijacked by the literal tag — otherwise the trailing fragment
+        # is scored and a correct answer reads as wrong (correctness 0).
+        text = (
+            "<answer>The capital is Paris. [Source: doc_a]</answer> "
+            "let me know if you want it outside <answer> tags"
+        )
+        assert _extract_answer_block(text) == "The capital is Paris. [Source: doc_a]"
+
+    def test_closed_block_preferred_over_trailing_unclosed_opener(self):
+        # A committed (closed) answer wins over a later unclosed opener.
+        assert (
+            _extract_answer_block("<answer>committed</answer> aside: <answer> draft")
+            == "committed"
+        )
 
 
 class TestDatasetPreprocess:

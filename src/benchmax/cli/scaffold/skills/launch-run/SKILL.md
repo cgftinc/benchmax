@@ -22,8 +22,9 @@ castform launch --name my-run --set model=Qwen/Qwen3.5-4B
 It prints the run URL and a `castform runs status …` command to track it. Then go
 to the **view-progress** skill.
 
-The defaults are sensible — for a first run you usually set only `model`. Tune the
-rest only when you have a reason (see Going deeper).
+The defaults are sensible for a first smoke run — for a serious RAG run, also set
+the rollout budget and think about epochs. If eval starts falling while train keeps
+rising, the best checkpoint is likely before the final step.
 
 ## Going deeper
 
@@ -51,17 +52,42 @@ authoritative at runtime):
 |---|---|---|
 | `model` | `Qwen/Qwen3.5-4B` | model id; selects the trainer config (e.g. also `Qwen/Qwen3.5-35B-A3B`). |
 | `learning_rate` | `1e-5` | Adam learning rate (slime `--lr`). |
-| `num_epochs` | `5` | passes over the train set (small by default for fast first-run feedback). |
+| `num_epochs` | `5` | passes over the train set. For RAG, 3 is often a safer first serious run than training deep into an overfit tail; watch eval and keep the best checkpoint, not just the final. |
 | `group_size` | `9` | rollouts per prompt for GRPO; drives **both** train and eval rollout counts. |
 | `lora_rank` | `128` | LoRA adapter rank (trainable-parameter count). |
 | `lora_alpha` | `256` | LoRA scaling factor; convention is `2 × lora_rank`. |
-| `max_rollout_len` | model-derived | total tokens across the WHOLE rollout (all turns), not a per-response cap; `> 16384` risks OOM. **`max_response_len` is not a thing** — the server rejects it. Over-budget rollouts are truncated and dropped from the loss, so set it generously. |
+| `max_rollout_len` | model-derived | total tokens across the WHOLE rollout (all turns), not a per-response cap; `> 16384` risks OOM. **`max_response_len` is not a thing** — the server rejects it. Over-budget rollouts are truncated and dropped from the loss, so set it generously while keeping search output compact. |
 | `max_turns` | `4` (trainer default) | max turns per rollout; set it explicitly if your env is multi-turn (the trainer ignores the env's `recommended_max_turns`). |
 
 **Tool calls cap at 8 at launch — and you can't raise them.** Unlike `castform validate`
 (which takes `--max-tool-calls`), launch exposes only `max_turns` as a `--set` knob;
 `max_tool_calls` is fixed at 8. A multi-turn / search env that needs more is silently
 truncated in training — keep `MAX_SEARCH_CALLS` ≤ 8 (see design-environment's Tools / turns).
+
+For search/RAG, budget the transcript, not just the final answer. Tool outputs count
+against `max_rollout_len` across all turns: `MAX_SEARCH_CALLS × per-search output`
+can push a run into truncation or OOM even when each individual search result is
+reasonable. Prefer a smaller default search budget, trimmed per-chunk bodies, and a
+`max_rollout_len` you chose after checking `castform launch --list-args`.
+
+### Epochs, checkpoints, and overfitting
+
+Read eval, not train, as the launch succeeds. A healthy train curve can keep rising
+while eval peaks and then falls; in that case the final checkpoint is worse than an
+earlier one. For RAG, start with fewer epochs when the validation curve from a prior
+run showed a peak before the end, and record the best eval step in your run notes.
+
+The CLI may not expose checkpoint listing/serving for a non-final step yet. If eval
+peaks early, do not assume the platform is serving the final model you want; use the
+run URL or support/internal tooling to confirm checkpoint availability before calling
+the run "done."
+
+### Auth and long-running launches
+
+Device-login sessions can expire during overnight investigation. If a launch or
+follow-up `runs` command starts failing auth after a long pause, refresh with
+`castform login` (or use `PLATFORM_API_KEY` for headless runs) and retry the read or
+launch operation.
 
 Server-controlled fields — `save`, `load`, `global_batch_size`, the eval mirrors —
 are **not settable**: the launch handler fills them in and rejects caller input

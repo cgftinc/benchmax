@@ -831,12 +831,12 @@ def validate_env(
         llm_model: Override the validation model for the remote rollout.
         max_turns: Max conversation turns per remote rollout (default 4). Raise it
             to match an env that advertises a larger budget (e.g. a SearchEnv with
-            ``MAX_SEARCH_CALLS=10`` needs ``max_turns`` ~11 — one turn per search
+            ``MAX_SEARCH_CALLS=6`` needs ``max_turns`` ~7 — one turn per search
             plus the answer) so the rollout isn't truncated below what the prompt
             instructs. The trainer ignores the env's own ``recommended_max_*``.
         max_tool_calls: Max tool calls across the whole rollout (default 8). Raise
             it alongside ``max_turns`` for tool-heavy envs (each search is one tool
-            call, so ``MAX_SEARCH_CALLS=10`` needs ``max_tool_calls`` >= 10).
+            call, so ``MAX_SEARCH_CALLS=6`` needs ``max_tool_calls`` >= 6).
         verbose: Print progress + the roll-up summary (default True).
 
     Returns:

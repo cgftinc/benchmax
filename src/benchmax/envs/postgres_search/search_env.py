@@ -3,8 +3,8 @@
 Provides 5 reward components:
 1. **answer_correctness** — LLM judge scores factual accuracy (0, 0.5, 1.0)
 2. **conciseness** — LLM judge scores brevity (gated on correctness)
-3. **citation_recall** — fraction of reference sources cited
-4. **citation_precision** — fraction of cited sources that are relevant
+3. **citation_recall** — fraction of reference sources cited (gated on correctness)
+4. **citation_precision** — fraction of cited sources that are relevant (gated on correctness)
 5. **search_efficiency** — shaped bonus based on search count vs. gold chunk count
 """
 
@@ -39,18 +39,28 @@ logger = logging.getLogger(__name__)
 
 _CITATION_RE = re.compile(r"\[Source:\s*([^\]]+)\]", re.IGNORECASE)
 
-_ANSWER_TAG_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
+_ANSWER_BLOCK_RE = re.compile(r"<answer\s*>(.*?)</answer\s*>", re.IGNORECASE | re.DOTALL)
+_ANSWER_OPEN_RE = re.compile(r"<answer\s*>", re.IGNORECASE)
 
 
 def _extract_answer_block(text: str) -> str:
-    """Extract content from <answer> tags; return "" if no answer tag is present.
+    """Extract the model's committed answer from <answer> tags.
 
-    Strict variant of ``reward_helpers.extract_answer_block``: a completion
-    without an explicit ``<answer>`` block scores as no answer rather than
-    falling back to the full text.
+    Strict + last-committed: returns "" when the model never opens an
+    <answer> tag, so its reasoning is never scored as the answer. Prefers the
+    LAST properly-closed <answer>...</answer> block — a self-correction wins,
+    and a stray literal "<answer>" later in the prose can't hijack scoring.
+    Only when no block is closed does it forgive a missing close tag and take
+    everything after the final opener (a truncated final answer).
     """
-    match = _ANSWER_TAG_RE.search(text or "")
-    return match.group(1).strip() if match else ""
+    text = text or ""
+    blocks = list(_ANSWER_BLOCK_RE.finditer(text))
+    if blocks:
+        return blocks[-1].group(1).strip()
+    opens = list(_ANSWER_OPEN_RE.finditer(text))
+    if not opens:
+        return ""
+    return text[opens[-1].end() :].strip()
 
 # Match Python-style `{name}` placeholders with word-char names only —
 # leaves JSON-like literals (e.g. `{"answer": "X"}`) and unknown keys
@@ -317,20 +327,21 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
                 response=answer,
             )
 
-            correctness_ok = correctness_raw > 0
+            # Gate every secondary bonus on correctness (0 / 0.5 / 1.0): a wrong
+            # or missing answer earns no citation/brevity reward, and a partial
+            # answer earns only partial bonuses — so brevity/citations can't
+            # trade off against being right. (search_efficiency already scales
+            # this way.)
+            correctness = clip01(correctness_raw)
             rewards: dict[str, float] = {
-                "answer_correctness": self._w_correctness * clip01(correctness_raw),
-                "conciseness": (
-                    self._w_conciseness * clip01(conciseness_raw)
-                    if correctness_ok
-                    else 0.0
-                ),
+                "answer_correctness": self._w_correctness * correctness,
+                "conciseness": self._w_conciseness * clip01(conciseness_raw) * correctness,
             }
 
-            # 2. Citation recall / precision
+            # 2. Citation recall / precision (gated on correctness)
             recall, precision = self._score_citations(answer, reference_chunks)
-            rewards["citation_recall"] = self._w_citation_recall * recall
-            rewards["citation_precision"] = self._w_citation_precision * precision
+            rewards["citation_recall"] = self._w_citation_recall * recall * correctness
+            rewards["citation_precision"] = self._w_citation_precision * precision * correctness
 
             # 3. Search efficiency (shaped by search count vs. gold chunk baseline)
             calls = count_search_calls(messages)
