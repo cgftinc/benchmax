@@ -630,6 +630,33 @@ def test_example_gold_reads_question_key():
     assert validate._example_gold({"prompt": "P", "ground_truth": "G"}) == ("P", "G")
 
 
+def test_row_question_and_gold_shared_helper():
+    # The shared dataset-shape parser (used by runs + validate) — its own edge tests.
+    from benchmax.cli._project import row_question_and_gold
+
+    assert row_question_and_gold({"prompt": "P", "ground_truth": "G"}) == ("P", "G")
+    assert row_question_and_gold({"question": "Q", "answer": "A"}) == ("Q", "A")
+    # chat-list prompt → last user turn
+    assert row_question_and_gold(
+        {
+            "prompt": [
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "u"},
+            ],
+            "answer": "A",
+        }
+    ) == ("u", "A")
+    # ground_truth wins over answer; a falsy-but-real gold (0) is preserved
+    assert row_question_and_gold(
+        {"question": "Q", "ground_truth": 0, "answer": "x"}
+    ) == (
+        "Q",
+        0,
+    )
+    assert row_question_and_gold("not a dict") == (None, None)
+    assert row_question_and_gold({}) == (None, None)
+
+
 def test_validate_config_non_int_knob_fails_loudly(monkeypatch):
     # A str budget in VALIDATE_CONFIG must fail loudly here, not crash deep in the SDK.
     monkeypatch.setattr(

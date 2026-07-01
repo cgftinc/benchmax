@@ -135,9 +135,12 @@ def fmt_value(value: Any) -> str:
 
 
 def truncate(text: object, n: int) -> str:
-    """Collapse whitespace and clip to ``n`` chars (…-suffixed) for one-line display."""
-    text = " ".join(str(text or "").split())
-    return text if len(text) <= n else text[: n - 1] + "…"
+    """Collapse whitespace and clip to ``n`` chars (…-suffixed) for one-line display.
+
+    ``None`` → ``""``, but a falsy-yet-real value is preserved (a gold answer of
+    ``0`` must render as ``0``, not blank)."""
+    s = " ".join(("" if text is None else str(text)).split())
+    return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def final_answer(messages: list | None) -> str | None:

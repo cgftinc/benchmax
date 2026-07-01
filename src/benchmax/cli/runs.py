@@ -21,7 +21,7 @@ from benchmax.cli._output import (
     render_table,
     truncate,
 )
-from benchmax.cli._project import ProjectError, _load_jsonl
+from benchmax.cli._project import ProjectError, _load_jsonl, row_question_and_gold
 
 
 def _run_url(run_id: str) -> str:
@@ -42,10 +42,10 @@ def _user_prompt(messages: list | None) -> str | None:
 
 
 def _gold_index(dataset_paths: list[str]) -> dict[str, object]:
-    """normalized prompt text → gold, from the first readable local dataset.
+    """normalized question text → gold, from the first readable local dataset.
 
     Gold isn't in the rollout payload; join it back from the local jsonl by
-    prompt text (the env built the rollout prompt from the row's ``prompt``)."""
+    question text (the env built the rollout prompt from the row's question)."""
     for path in dataset_paths:
         p = Path(path)
         if not p.exists():
@@ -56,16 +56,7 @@ def _gold_index(dataset_paths: list[str]) -> dict[str, object]:
             continue
         index: dict[str, object] = {}
         for r in rows:
-            # Generic datasets key the question under 'prompt'; the flagship RAG
-            # datasets (qa-gen output) use 'question' / 'answer'. Accept both.
-            q = r.get("prompt")
-            if not q:
-                q = r.get("question")
-            if isinstance(q, list):
-                q = _user_prompt(q)
-            gold = r.get("ground_truth")
-            if gold is None:
-                gold = r.get("answer")
+            q, gold = row_question_and_gold(r)
             if isinstance(q, str) and gold is not None:
                 index[" ".join(q.split())] = gold
         if index:
@@ -74,21 +65,13 @@ def _gold_index(dataset_paths: list[str]) -> dict[str, object]:
 
 
 def _match_gold(prompt_text: str | None, index: dict[str, object]) -> object:
-    """Best-effort gold lookup: exact normalized match, else the LONGEST dataset
-    question that appears inside the rollout prompt (the prompt may wrap the
-    question in a template). Longest-wins so 'reset password' can't shadow the
-    more specific 'reset password on mobile'; one-directional so a short prompt
-    can't spuriously match a longer question."""
+    """Gold lookup by EXACT normalized question match. Deliberately not fuzzy: the
+    flagship env's rollout user turn IS the raw dataset question (exact hits), and a
+    substring/containment fallback confidently attaches the WRONG gold when the
+    rollout's true question isn't in the local file — worse than showing none."""
     if not prompt_text or not index:
         return None
-    key = " ".join(prompt_text.split())
-    if key in index:
-        return index[key]
-    best_k, best_v = "", None
-    for k, v in index.items():
-        if k and k in key and len(k) > len(best_k):
-            best_k, best_v = k, v
-    return best_v
+    return index.get(" ".join(prompt_text.split()))
 
 
 def _print_run(run: dict) -> None:

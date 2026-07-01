@@ -39,6 +39,33 @@ class LoadedProject:
     validate_config: dict[str, Any]
 
 
+def row_question_and_gold(row: Any) -> tuple[object, object]:
+    """``(question, gold)`` from a dataset row, across the on-disk shapes.
+
+    Question: ``prompt`` (a chat-list prompt → its last user turn) else ``question``.
+    Gold: ``ground_truth`` else ``answer``. One definition so ``runs rollout`` and
+    ``validate --reward-audit`` can't drift when a dataset field is renamed (see the
+    ``castform-dataset-ondisk-shapes`` note)."""
+    if not isinstance(row, dict):
+        return None, None
+    q = row.get("prompt")
+    if not q:
+        q = row.get("question")
+    if isinstance(q, list):  # chat-style prompt → last user turn
+        q = next(
+            (
+                m.get("content")
+                for m in reversed(q)
+                if isinstance(m, dict) and m.get("role") == "user" and m.get("content")
+            ),
+            None,
+        )
+    gold = row.get("ground_truth")
+    if gold is None:
+        gold = row.get("answer")
+    return q, gold
+
+
 def _read_config(module: ModuleType, name: str) -> dict[str, Any]:
     """A module-level config dict (``LAUNCH_CONFIG`` / ``VALIDATE_CONFIG``) from
     run.py — the knobs the file bakes in so the run reproduces without remembering

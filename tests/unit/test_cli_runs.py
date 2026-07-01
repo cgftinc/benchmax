@@ -300,8 +300,11 @@ def test_gold_join_helpers(tmp_path):
         == "one"
     )
     idx = {"a b c": "GOLD"}
-    assert runs._match_gold("a b c", idx) == "GOLD"  # exact
-    assert runs._match_gold("prefix a b c suffix", idx) == "GOLD"  # containment
+    assert runs._match_gold("a b c", idx) == "GOLD"  # exact (whitespace-normalized)
+    assert runs._match_gold("  a   b c ", idx) == "GOLD"  # normalization
+    assert (
+        runs._match_gold("prefix a b c suffix", idx) is None
+    )  # NOT fuzzy — no wrong gold
     assert runs._match_gold("unrelated", idx) is None
     assert runs._match_gold(None, idx) is None
 
@@ -318,10 +321,10 @@ def test_gold_index_reads_question_key(tmp_path):
     }  # was empty before the fix (keyed on 'prompt')
 
 
-def test_match_gold_longest_wins_no_substring_shadow(tmp_path):
-    # When one question is a substring of another, the LONGER (more specific) wins,
-    # and a bare substring can't shadow it.
+def test_match_gold_exact_only_no_false_positive():
+    # Exact-only join: a prompt that merely CONTAINS a dataset question must NOT
+    # attach that question's gold (the confidently-wrong-gold regression).
     idx = {"reset password": "SHORT", "reset password on mobile": "LONG"}
-    assert runs._match_gold("help: reset password on mobile please", idx) == "LONG"
-    # reverse direction no longer matches (prompt shorter than the question)
-    assert runs._match_gold("reset", idx) is None
+    assert runs._match_gold("reset password", idx) == "SHORT"
+    assert runs._match_gold("reset password on mobile", idx) == "LONG"
+    assert runs._match_gold("how do I reset password expiry policy?", idx) is None

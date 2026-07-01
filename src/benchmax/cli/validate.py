@@ -22,7 +22,7 @@ import sys
 from benchmax.cli._client import handle_errors
 from benchmax.cli._output import final_answer, fmt_value, print_json, truncate
 from benchmax.cli._preflight import print_project_error
-from benchmax.cli._project import ProjectError, load_project
+from benchmax.cli._project import ProjectError, load_project, row_question_and_gold
 from benchmax.cli._providers import provider_choices, resolve_pip_dependencies
 from benchmax.platform.client import _VALIDATION_MODEL, _mean_rewards
 
@@ -229,23 +229,8 @@ def _constant_total(ok_rewards: list[dict]) -> float | None:
 
 def _example_gold(row: dict | None) -> tuple[object, object]:
     """(question, gold) from a local dataset row — the ground truth the scorecard
-    hides. Handles a string prompt or a chat-list prompt; gold from
-    ``ground_truth`` (or ``answer``)."""
-    if not isinstance(row, dict):
-        return None, None
-    # Generic datasets key the question under 'prompt'; the flagship RAG datasets
-    # (qa-gen output, which this audit most often runs on) use 'question' / 'answer'.
-    q = row.get("prompt")
-    if not q:
-        q = row.get("question")
-    if isinstance(q, list):  # chat-style prompt → last user turn
-        q = next(
-            (m.get("content") for m in reversed(q) if m.get("role") == "user"), None
-        )
-    gold = row.get("ground_truth")
-    if gold is None:
-        gold = row.get("answer")
-    return q, gold
+    hides. Delegates to the shared dataset-shape parser."""
+    return row_question_and_gold(row)
 
 
 def _numeric(reward: dict, key: str) -> float | None:
