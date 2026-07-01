@@ -681,3 +681,74 @@ def test_read_config_rejects_non_dict():
     assert _read_config(m, "VALIDATE_CONFIG") == {}  # None (unset) → {}
     m.OK = {"a": 1}
     assert _read_config(m, "OK") == {"a": 1}
+
+
+# --- inconsistent reward shape (ragged keys across examples) --------------
+
+
+def test_inconsistent_components_helper():
+    # 'cite' present in only 1 of 2 rollouts → ragged; 'acc' in both → not flagged.
+    assert validate._inconsistent_components(
+        [{"acc": 1.0, "cite": 0.3}, {"acc": 0.0}]
+    ) == [("cite", 1)]
+    assert (
+        validate._inconsistent_components([{"a": 1.0}, {"a": 0.0}]) == []
+    )  # consistent
+    assert validate._inconsistent_components([{"a": 1.0}]) == []  # <2 rollouts
+
+
+def test_validate_flags_inconsistent_reward_shape(monkeypatch, capsys):
+    # A soft ⚠ (report still passes) when a component is missing from some rollouts.
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"acc": 1.0, "cite": 0.3}),
+            ExampleValidation(index=1, ok=True, rewards={"acc": 0.0}),  # 'cite' missing
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0  # soft warning, not a failure
+    out = capsys.readouterr().out
+    assert "reward shape inconsistent" in out
+    assert "'cite' in 1/2" in out
+
+
+def test_validate_json_includes_inconsistent_shape_warning(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"acc": 1.0, "cite": 0.3}),
+            ExampleValidation(index=1, ok=True, rewards={"acc": 0.0}),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns(json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"inconsistent_reward_shape"' in out and '"component": "cite"' in out
+    assert '"present": 1' in out
+
+
+def test_reward_audit_shows_inconsistent_shape(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(
+                index=0,
+                ok=True,
+                rewards={"answer_correctness": 1.0, "cite": 0.3},
+                messages=[{"role": "assistant", "content": "a"}],
+            ),
+            ExampleValidation(
+                index=1,
+                ok=True,
+                rewards={"answer_correctness": 0.0},  # 'cite' missing
+                messages=[{"role": "assistant", "content": "b"}],
+            ),
+        ],
+        group=None,
+    )
+    monkeypatch.setattr(validate, "load_project", lambda **k: _RagProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: report)
+    assert validate._cmd_validate(_validate_ns(reward_audit=True)) == 0
+    out = capsys.readouterr().out
+    assert "inconsistent reward shape" in out
+    assert "cite: present in 1/2" in out

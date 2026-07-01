@@ -154,6 +154,19 @@ def _print_checks(remote, ok_rewards: list[dict]) -> None:
     else:
         print(_check("✓", "rewards vary across rollouts"))
 
+    # Ragged shape: a component missing from some rollouts. Soft warning (doesn't
+    # fail the report) — the summed reward is composed differently across rollouts.
+    ragged = _inconsistent_components(ok_rewards)
+    if ragged:
+        detail = ", ".join(f"{name!r} in {c}/{len(ok_rewards)}" for name, c in ragged)
+        print(
+            _check(
+                "⚠",
+                "reward shape inconsistent",
+                f"{detail} (missing keys skew the summed reward)",
+            )
+        )
+
     group = remote.group_reward
     if group is None:
         print(_check("·", "group reward", "not run (no compute_group_reward)"))
@@ -221,6 +234,23 @@ def _constant_total(ok_rewards: list[dict]) -> float | None:
         for r in ok_rewards
     ]
     return totals[0] if len(set(totals)) == 1 else None
+
+
+def _inconsistent_components(ok_rewards: list[dict]) -> list[tuple[str, int]]:
+    """Reward components present in SOME but not ALL ok rollouts — a ragged shape.
+    The trainer SUMS the reward dict, so a key missing from a rollout silently
+    changes that rollout's reward composition (usually an early-return, a
+    caught-mid-computation exception, or a conditional key — almost always a bug).
+    Returns ``(component, count_present)`` sorted by name; needs >=2 rollouts."""
+    n = len(ok_rewards)
+    if n < 2:
+        return []
+    out: list[tuple[str, int]] = []
+    for k in sorted({k for r in ok_rewards for k in r}):
+        present = sum(1 for r in ok_rewards if k in r)
+        if 0 < present < n:
+            out.append((k, present))
+    return out
 
 
 # --- reward audit (--reward-audit): the pre-launch reward inspection -------------
@@ -339,6 +369,16 @@ def _print_reward_audit(remote, ok_rewards: list[dict], *, dataset, pip_deps) ->
         if corr_key is None:
             print("  (no correctness component detected — redundancy check skipped)")
 
+    ragged = _inconsistent_components(ok_rewards)
+    if ragged:
+        print()
+        print(
+            "  ⚠ inconsistent reward shape — the trainer sums the dict, so a key "
+            "missing\n    from some rollouts skews the reward (usually a reward bug):"
+        )
+        for name, c in ragged:
+            print(f"    {name}: present in {c}/{n_ok} rollouts")
+
     print()
     examples = remote.examples
     print(f"  transcripts ({len(examples)} rolled out)")
@@ -390,6 +430,15 @@ def _report_to_dict(report, *, audit: bool = False, dataset=None) -> dict:
                 "rollouts": len(ok_rewards),
             }
             for name, value in _constant_components(ok_rewards)
+        ]
+        + [
+            {
+                "kind": "inconsistent_reward_shape",
+                "component": name,
+                "present": present,
+                "rollouts": len(ok_rewards),
+            }
+            for name, present in _inconsistent_components(ok_rewards)
         ],
         "group_reward": (
             None
