@@ -1,23 +1,22 @@
 """Integration tests for the async Postgres corpus client (asearch / _arequest / HTTP2).
 
-Hits the real Corpora API — requires credentials and a stable, non-empty test corpus.
-These exercise the async provider interaction added on ``qa-gen-async-refactor``:
-real-``await`` ``_arequest`` over the HTTP/2 client, ``asearch`` query construction +
-response parse, and sync/async parity vs ``search``. ``asearch_with_chunks`` /
-``asearch_related`` ride the same ``_arequest`` transport, so they are covered
-transitively (a dedicated related-path test needs an ingested corpus + local
-ChunkCollection fixture — see HARDENING-FOLLOWUPS.md).
+Hits the real Corpora API using the local castform CLI session (or PLATFORM_API_KEY).
+Exercises the async provider interaction added on qa-gen-async-refactor: real-``await``
+``_arequest`` over the HTTP/2 client, ``asearch`` query construction + response parse, and
+sync/async parity vs ``search``. ``asearch_with_chunks`` / ``asearch_related`` ride the same
+``_arequest`` transport, so they are covered transitively.
 
-Run with:
+Run against staging with the local CLI session (after ``castform login``):
 
-    PLATFORM_API_KEY=... BENCHMAX_TEST_CORPUS_ID=... CASTFORM_BASE_DOMAIN=castform.dev \
+    CASTFORM_BASE_DOMAIN=castform.dev \
+    CASTFORM_CREDENTIALS_PATH=~/.castform/staging-credentials.json \
         uv run pytest -m integration tests/integration/test_async_corpus_client.py -v
 
-Credentials / target:
-- ``PLATFORM_API_KEY``        — platform API key sent as the Bearer token.
-- ``BENCHMAX_TEST_CORPUS_ID`` — id of a stable, non-empty corpus to search.
-- base URL derives from ``benchmax.config.platform_url()`` (``CASTFORM_BASE_DOMAIN`` /
-  ``CASTFORM_PLATFORM_URL``); defaults to ``https://api.castform.com``.
+Auth: ``token_provider`` defaults to ``benchmax.platform.credentials.platform_bearer``,
+which resolves ``PLATFORM_API_KEY`` / ``ACT_AS_TOKEN_PATH`` or the cached ``~/.castform``
+session (session support requires the current ``platform.credentials`` — present on main).
+Skips if no creds resolve. Corpus: auto-discovered via ``list_corpora()`` (override with
+``BENCHMAX_TEST_CORPUS_ID``; query via ``BENCHMAX_TEST_QUERY``, default ``"the"``).
 """
 
 from __future__ import annotations
@@ -28,10 +27,9 @@ import os
 import pytest
 
 from benchmax import config
+from benchmax.platform.credentials import platform_bearer
 from benchmax.rag.corpus.postgres.client import CorpusClient
 
-_api_key = os.environ.get("PLATFORM_API_KEY", "")
-_corpus_id = os.environ.get("BENCHMAX_TEST_CORPUS_ID", "")
 _base_url = os.environ.get("CASTFORM_CORPORA_URL") or config.platform_url()
 _query = os.environ.get("BENCHMAX_TEST_QUERY", "the")
 
@@ -39,15 +37,25 @@ pytestmark = pytest.mark.integration
 
 
 def _skip_if_no_creds() -> None:
-    if not _api_key or not _corpus_id:
-        pytest.skip(
-            "PLATFORM_API_KEY and BENCHMAX_TEST_CORPUS_ID required for corpus "
-            "integration tests"
-        )
+    """Skip unless ``platform_bearer`` resolves a token (env key or local CLI session)."""
+    try:
+        token = platform_bearer()
+    except Exception as exc:  # noqa: BLE001 — any failure means no usable creds
+        pytest.skip(f"no platform creds ({exc}); run `castform login`")
+    if not token:
+        pytest.skip("no platform creds; run `castform login` or set PLATFORM_API_KEY")
 
 
 def _client() -> CorpusClient:
-    return CorpusClient(base_url=_base_url, token_provider=lambda: _api_key)
+    return CorpusClient(base_url=_base_url, token_provider=platform_bearer)
+
+
+def _resolve_corpus_id(client: CorpusClient) -> str | None:
+    override = os.environ.get("BENCHMAX_TEST_CORPUS_ID")
+    if override:
+        return override
+    corpora = client.list_corpora()
+    return corpora[0].id if corpora else None
 
 
 class TestAsyncCorpusClient:
@@ -57,7 +65,10 @@ class TestAsyncCorpusClient:
         _skip_if_no_creds()
         client = _client()
         try:
-            result = await client.asearch(_corpus_id, _query, limit=5)
+            corpus_id = _resolve_corpus_id(client)
+            if not corpus_id:
+                pytest.skip("no corpus available to search")
+            result = await client.asearch(corpus_id, _query, limit=5)
         finally:
             await client.aclose()
 
@@ -74,8 +85,11 @@ class TestAsyncCorpusClient:
         _skip_if_no_creds()
         client = _client()
         try:
-            sync_result = client.search(_corpus_id, _query, limit=5)
-            async_result = await client.asearch(_corpus_id, _query, limit=5)
+            corpus_id = _resolve_corpus_id(client)
+            if not corpus_id:
+                pytest.skip("no corpus available to search")
+            sync_result = client.search(corpus_id, _query, limit=5)
+            async_result = await client.asearch(corpus_id, _query, limit=5)
         finally:
             await client.aclose()
             client.close()
@@ -93,10 +107,13 @@ class TestAsyncCorpusClient:
         sync-per-thread path."""
         _skip_if_no_creds()
         client = _client()
-        queries = [f"{_query} {i}" for i in range(10)]
         try:
+            corpus_id = _resolve_corpus_id(client)
+            if not corpus_id:
+                pytest.skip("no corpus available to search")
+            queries = [f"{_query} {i}" for i in range(10)]
             results = await asyncio.gather(
-                *(client.asearch(_corpus_id, q, limit=3) for q in queries)
+                *(client.asearch(corpus_id, q, limit=3) for q in queries)
             )
         finally:
             await client.aclose()
