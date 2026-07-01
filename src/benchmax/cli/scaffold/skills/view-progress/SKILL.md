@@ -131,9 +131,23 @@ diagnostic/error logs. If reward looks odd, inspect stored rollouts instead.
 
 ### Investigate stored rollouts
 
-The CLI may not yet wrap the rich rollout inspection endpoints, but the platform
-stores them. Use the SDK's bearer and raw GETs when you need actual answers and
-per-component rewards from a completed run:
+To read actual answers and per-component rewards from a completed run, use the
+built-in rollout commands (no raw HTTP needed):
+
+```bash
+castform runs rollouts <run-id> --mode eval            # example groups + latest mean reward
+castform runs rollouts <run-id> --example <EXAMPLE ID> # one example's rollouts across steps
+castform runs rollout  <run-id> <ROLLOUT ID>           # transcript + per-component rewards + gold
+castform runs rollout  <run-id> <ROLLOUT ID> --view    # same, opened in the HTML viewer
+```
+
+`runs rollout` joins the **gold/ground truth** back from your local
+`eval_dataset.jsonl` (then `train_dataset.jsonl`) by prompt text — pass `--dataset`
+to point at a specific file. Add `--json` to any of them for the raw payload.
+
+These wrap the platform read endpoints (`/rollouts/summary`, `/rollouts/heatmap`,
+`/rollouts/<id>/details`). For external-eval comparison (below) and per-step
+component averages, drop to raw GETs with the SDK bearer:
 
 ```python
 import httpx
@@ -146,39 +160,9 @@ c = httpx.Client(
     headers={"Authorization": f"Bearer {platform_bearer()}"},
     timeout=60,
 )
-
-summary = c.get(f"/v1/train/runs/{run_id}/rollouts/summary", params={"mode": "eval"}).json()
-groups = (
-    summary.get("data") or summary.get("items") or summary.get("results") or []
-    if isinstance(summary, dict)
-    else summary
-)
-prompt_id = groups[0]["promptMessageId"]
-heatmap = c.get(
-    f"/v1/train/runs/{run_id}/rollouts/heatmap",
-    params={"mode": "eval", "promptMessageId": prompt_id},
-).json()
-rollouts = (
-    heatmap.get("data") or heatmap.get("items") or heatmap.get("results") or []
-    if isinstance(heatmap, dict)
-    else heatmap
-)
-details = c.get(
-    f"/v1/train/runs/{run_id}/rollouts/{rollouts[0]['id']}/details"
-).json()
 ```
 
-Useful endpoints:
-
-- `/rollouts/summary?mode=eval&page=&limit=` — examples plus reward history by step.
-- `/rollouts/heatmap?mode=eval&promptMessageId=...` — rollout ids for one example
-  across steps.
-- `/rollouts/<rolloutId>/details` — full transcript, per-component rewards, total
-  reward, and step.
-
-Details may not include the gold answer or expected sources; match the full prompt
-back to local `eval_dataset.jsonl` when you need ground truth. If
-`component-averages` only shows latest-step data, use scalar histories such as
+If `component-averages` only shows latest-step data, use scalar histories such as
 `reward_stats/<component>/reward/mean` or average `details.rewards[]` yourself.
 
 ### Debug answer quality
