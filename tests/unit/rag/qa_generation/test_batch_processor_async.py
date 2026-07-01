@@ -1,9 +1,9 @@
-"""Step-2 async path of batch_processor + role-scoped context semaphores.
+"""Step-2 async path of batch_processor + model-scoped context semaphores.
 
 Covers: ``call_openai_async`` taking the real-``await`` path for an async client,
-``batch_process_async`` honoring an externally-supplied (role-scoped) semaphore as
+``batch_process_async`` honoring an externally-supplied (model-scoped) semaphore as
 a global bound, index-aligned ``None``-on-failure + ordering, and
-``PipelineContext.llm_semaphore`` lazy per-role/per-loop construction.
+``PipelineContext.model_semaphore`` lazy per-model/per-loop construction.
 """
 
 from __future__ import annotations

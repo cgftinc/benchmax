@@ -17,7 +17,6 @@ from benchmax.platform.credentials import TokenProvider, platform_bearer
 
 from .exceptions import (
     AuthenticationError,
-    ChunkLimitError,
     CorpusAPIError,
     CorpusLimitError,
     CorpusNotFoundError,
@@ -456,7 +455,7 @@ class CorpusClient:
             print(f"     ID: {corpus.id}")
             print(f"     Created: {corpus.created_at}")
 
-        print(f"\n  0. Cancel operation")
+        print("\n  0. Cancel operation")
         print()
 
         while True:
