@@ -27,6 +27,9 @@ class _FakeAsyncClient:
     def __init__(self) -> None:
         self.closed = 0
 
+    def is_closed(self) -> bool:
+        return self.closed > 0
+
     async def close(self) -> None:
         self.closed += 1
 
@@ -73,14 +76,33 @@ async def test_cleanup_runs_even_when_work_queue_raises():
     assert all(c.closed == 1 for c in comps.values())
 
 
-async def test_generator_aclose_clears_cache_and_closes_clients():
+async def test_generator_aclose_closes_loop_bound_client():
     gen = DirectLLMGenerator(client=None, linker=None, cfg=None)
-    c1, c2 = _FakeAsyncClient(), _FakeAsyncClient()
-    gen._async_clients = {1: c1, 2: c2}
+    fake = _FakeAsyncClient()
+    gen._async_client = fake
+    gen._async_client_loop = object()
 
     await gen.aclose()
 
-    assert gen._async_clients == {}
-    assert c1.closed == 1 and c2.closed == 1
+    assert gen._async_client is None
+    assert gen._async_client_loop is None
+    assert fake.closed == 1
     # idempotent: a second call is a no-op, not an error
     await gen.aclose()
+    assert fake.closed == 1
+
+
+async def test_get_async_client_rebuilds_after_close():
+    """#3: the getter compares the loop object + is_closed(), so a closed client is
+    rebuilt rather than handed back stale."""
+    gen = DirectLLMGenerator(
+        client=None,
+        linker=None,
+        cfg=types.SimpleNamespace(api_key="x", base_url="http://localhost"),
+    )
+    c1 = gen._get_async_client()
+    assert gen._get_async_client() is c1  # cached within the same loop
+    await c1.close()
+    c2 = gen._get_async_client()  # rebuilt because the cached client was closed
+    assert c2 is not c1
+    await c2.close()

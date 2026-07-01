@@ -394,26 +394,36 @@ class DirectLLMGenerator:
         self.client = client
         self.linker = linker
         self.cfg = cfg
-        # Lazily-built AsyncOpenAI clients keyed by running-loop id (an
-        # AsyncOpenAI binds its httpx pool to the loop it is first used on, and
-        # each Pipeline.run is one asyncio.run / one loop).
-        self._async_clients: dict[int, AsyncOpenAI] = {}
+        # Lazily-built AsyncOpenAI client bound to the running loop (an AsyncOpenAI
+        # binds its httpx pool to the loop it is first used on, and each Pipeline.run
+        # is one asyncio.run / one loop). Rebuilt on loop change or close.
+        self._async_client: AsyncOpenAI | None = None
+        self._async_client_loop: asyncio.AbstractEventLoop | None = None
 
     def _get_async_client(self) -> AsyncOpenAI:
-        """Return the per-loop ``AsyncOpenAI`` client, building it on first use."""
+        """Return the loop-bound ``AsyncOpenAI`` client, building it on first use.
+
+        Rebuilds on loop change or close, comparing the loop *object* (``id(loop)``
+        is reused after a loop is GC'd, so a bare id can alias a dead loop)."""
         loop = asyncio.get_running_loop()
-        key = id(loop)
-        client = self._async_clients.get(key)
-        if client is None:
+        client = self._async_client
+        stale = (
+            client is None
+            or client.is_closed()
+            or self._async_client_loop is not loop
+        )
+        if stale:
             client = AsyncOpenAI(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
-            self._async_clients[key] = client
+            self._async_client = client
+            self._async_client_loop = loop
         return client
 
     async def aclose(self) -> None:
-        """Close any per-loop AsyncOpenAI clients built during the run (best-effort)."""
-        clients = list(self._async_clients.values())
-        self._async_clients.clear()
-        for client in clients:
+        """Close the loop-bound AsyncOpenAI client built during the run (best-effort)."""
+        client = self._async_client
+        self._async_client = None
+        self._async_client_loop = None
+        if client is not None and not client.is_closed():
             try:
                 await client.close()
             except Exception:  # noqa: BLE001 — best-effort cleanup
@@ -437,18 +447,19 @@ class DirectLLMGenerator:
         """
         generated: list[GeneratedQA] = []
         for pt in await self._prepare_tasks(tasks, context):
-            completion = await asyncio.to_thread(
-                _create_chat_completion_with_fallback,
-                self.client,
-                model=self.cfg.model,
-                messages=[
-                    {"role": "system", "content": pt.system_prompt},
-                    {"role": "user", "content": pt.prompt},
-                ],
-                max_completion_tokens=self.cfg.max_completion_tokens,
-                timeout=self.cfg.timeout,
-                temperature=1.0,
-            )
+            async with context.model_semaphore(self.cfg.model, self.cfg.base_url):
+                completion = await asyncio.to_thread(
+                    _create_chat_completion_with_fallback,
+                    self.client,
+                    model=self.cfg.model,
+                    messages=[
+                        {"role": "system", "content": pt.system_prompt},
+                        {"role": "user", "content": pt.prompt},
+                    ],
+                    max_completion_tokens=self.cfg.max_completion_tokens,
+                    timeout=self.cfg.timeout,
+                    temperature=1.0,
+                )
             raw_text = completion.choices[0].message.content or ""
             question, answer, chunks_used = _parse_qa_response(raw_text)
             if not question or not answer:

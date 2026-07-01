@@ -133,28 +133,37 @@ class HopCountValidityFilter:
             api_key=cfg.judge_api_key or "disabled",
             base_url=cfg.judge_base_url or None,
         )
-        # Lazily-built per-loop AsyncOpenAI judge clients (see _get_async_judge_client).
-        self._async_judge_clients: dict[int, AsyncOpenAI] = {}
+        # Lazily-built loop-bound AsyncOpenAI judge client (see _get_async_judge_client).
+        self._async_judge_client: AsyncOpenAI | None = None
+        self._async_judge_client_loop: asyncio.AbstractEventLoop | None = None
 
     def _get_async_judge_client(self) -> AsyncOpenAI:
-        """Per-loop AsyncOpenAI judge client, built on first use."""
+        """Loop-bound AsyncOpenAI judge client, built on first use. Rebuilds on loop
+        change or close, comparing the loop object (not id(loop), which aliases after
+        GC)."""
         loop = asyncio.get_running_loop()
-        key = id(loop)
-        client = self._async_judge_clients.get(key)
-        if client is None:
+        client = self._async_judge_client
+        stale = (
+            client is None
+            or client.is_closed()
+            or self._async_judge_client_loop is not loop
+        )
+        if stale:
             client = AsyncOpenAI(
                 api_key=self.cfg.judge_api_key or "disabled",
                 base_url=self.cfg.judge_base_url or None,
             )
-            self._async_judge_clients[key] = client
+            self._async_judge_client = client
+            self._async_judge_client_loop = loop
         return client
 
     async def aclose(self) -> None:
-        """Close any per-loop AsyncOpenAI judge clients built during the run
+        """Close the loop-bound AsyncOpenAI judge client built during the run
         (best-effort)."""
-        clients = list(self._async_judge_clients.values())
-        self._async_judge_clients.clear()
-        for client in clients:
+        client = self._async_judge_client
+        self._async_judge_client = None
+        self._async_judge_client_loop = None
+        if client is not None and not client.is_closed():
             try:
                 await client.close()
             except Exception:  # noqa: BLE001 — best-effort cleanup
@@ -297,9 +306,12 @@ class HopCountValidityFilter:
                 # primary_only mode: testing whether the primary chunk alone suffices.
                 # If it does, this is a single-hop question — skip the multi-hop
                 # validator entirely and let it pass through to other filters.
-                result = await asyncio.to_thread(
-                    self._judge_subset, question, answer, subset, stats
-                )
+                async with context.model_semaphore(
+                    self.cfg.judge_model, self.cfg.judge_base_url
+                ):
+                    result = await asyncio.to_thread(
+                        self._judge_subset, question, answer, subset, stats
+                    )
                 if result["answerable"]:
                     logger.debug(
                         "hop_count_validity: question is single-hop (primary chunk alone "
@@ -327,9 +339,12 @@ class HopCountValidityFilter:
                 )
             )
 
-            result = await asyncio.to_thread(
-                self._judge_subset, question, answer, subset, stats
-            )
+            async with context.model_semaphore(
+                self.cfg.judge_model, self.cfg.judge_base_url
+            ):
+                result = await asyncio.to_thread(
+                    self._judge_subset, question, answer, subset, stats
+                )
             contribution_level = (
                 str(result.get("contribution_level", "")).lower().strip()
             )

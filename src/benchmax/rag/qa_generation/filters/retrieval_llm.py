@@ -76,28 +76,37 @@ class RetrievalLLMFilter:
             api_key=cfg.judge_api_key,
             base_url=cfg.judge_base_url,
         )
-        # Lazily-built per-loop AsyncOpenAI judge clients (see _get_async_judge_client).
-        self._async_judge_clients: dict[int, AsyncOpenAI] = {}
+        # Lazily-built loop-bound AsyncOpenAI judge client (see _get_async_judge_client).
+        self._async_judge_client: AsyncOpenAI | None = None
+        self._async_judge_client_loop: asyncio.AbstractEventLoop | None = None
 
     def _get_async_judge_client(self) -> AsyncOpenAI:
-        """Per-loop AsyncOpenAI judge client, built on first use."""
+        """Loop-bound AsyncOpenAI judge client, built on first use. Rebuilds on loop
+        change or close, comparing the loop object (not id(loop), which aliases after
+        GC)."""
         loop = asyncio.get_running_loop()
-        key = id(loop)
-        client = self._async_judge_clients.get(key)
-        if client is None:
+        client = self._async_judge_client
+        stale = (
+            client is None
+            or client.is_closed()
+            or self._async_judge_client_loop is not loop
+        )
+        if stale:
             client = AsyncOpenAI(
                 api_key=self.cfg.judge_api_key,
                 base_url=self.cfg.judge_base_url,
             )
-            self._async_judge_clients[key] = client
+            self._async_judge_client = client
+            self._async_judge_client_loop = loop
         return client
 
     async def aclose(self) -> None:
-        """Close any per-loop AsyncOpenAI judge clients built during the run
+        """Close the loop-bound AsyncOpenAI judge client built during the run
         (best-effort)."""
-        clients = list(self._async_judge_clients.values())
-        self._async_judge_clients.clear()
-        for client in clients:
+        client = self._async_judge_client
+        self._async_judge_client = None
+        self._async_judge_client_loop = None
+        if client is not None and not client.is_closed():
             try:
                 await client.close()
             except Exception:  # noqa: BLE001 — best-effort cleanup
@@ -157,13 +166,16 @@ class RetrievalLLMFilter:
                 if item.filter_verdict is not None and not item.is_passed:
                     continue
                 try:
-                    verdict = await asyncio.to_thread(
-                        self._evaluate_item,
-                        item,
-                        max_refinements=max_refinements,
-                        rewrite_cfg=rewrite_cfg,
-                        search_mode=search_mode,
-                    )
+                    async with context.model_semaphore(
+                        self.cfg.judge_model, self.cfg.judge_base_url
+                    ):
+                        verdict = await asyncio.to_thread(
+                            self._evaluate_item,
+                            item,
+                            max_refinements=max_refinements,
+                            rewrite_cfg=rewrite_cfg,
+                            search_mode=search_mode,
+                        )
                 except Exception:
                     logger.exception("RetrievalLLMFilter failed for one item")
                     query = resolve_retrieval_query(item.qa, rewrite_cfg=rewrite_cfg)
