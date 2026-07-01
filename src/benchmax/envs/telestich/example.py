@@ -30,7 +30,9 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
+from benchmax.envs.telestich import telestich_env as telestich_env_mod
 from benchmax.envs.telestich.telestich_env import TelestichEnv
+from benchmax.rubrics import rubric as rubric_mod
 
 # ══════════════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -46,9 +48,8 @@ from benchmax.envs.telestich.telestich_env import TelestichEnv
 from benchmax import config
 
 API_KEY = os.environ.get("CASTFORM_API_KEY", "")
-# Defaults to the platform key — the same auth-service validates it at the LLM
-# proxy. Only used here for local dataset-gen; the in-training judge key is
-# overridden by the trainer's act-as JWT, so its literal value is ignored.
+# Local dataset generation only — NOT passed to the env's judge (it resolves its
+# bearer via the platform act-as seam; see constructor_args below).
 LLM_API_KEY = os.environ.get("CASTFORM_LLM_API_KEY") or API_KEY
 LLM_BASE_URL = config.llm_url()
 BASE_URL = config.platform_url()
@@ -565,6 +566,7 @@ if __name__ == "__main__":
 
     from benchmax.platform.client import TrainerClient
     from benchmax.platform.training_run import upload_training_run
+    from benchmax.platform.validation import validate_env
 
     if not API_KEY:
         raise SystemExit("Set CASTFORM_API_KEY before running this example.")
@@ -597,8 +599,38 @@ if __name__ == "__main__":
         print(f"Smoke run: generated {len(examples)} examples — 1 train, 1 eval.\n")
 
     # 2. Bundle the env class and upload everything to platform storage.
+    # Bundle config, defined once so the pre-flight validation below exercises
+    # the EXACT same env_args / by-value modules / deps as the launch.
+    #  - local_modules: ship env + rubric by value (the platform's installed
+    #    benchmax may not contain this version of these modules).
+    #  - judge_api_key="": satisfies the constructor without leaking a key; the
+    #    judge resolves its bearer at runtime via the platform act-as seam.
+    constructor_args = {"judge_base_url": LLM_BASE_URL, "judge_api_key": ""}
+    local_modules = [telestich_env_mod, rubric_mod]
+    pip_dependencies = ["english_words", "openai", "pronouncing", "wordfreq"]
+
+    # 2. Pre-flight: validate locally + a remote smoke rollout before spending a
+    #    launch. The remote leg catches bundle/instantiation failures the local
+    #    checks can't (e.g. the worker's benchmax missing this env module).
+    print("\nValidating env (local contract + remote smoke) ...")
+    if not validate_env(
+        env_class=TelestichEnv,
+        env_args=constructor_args,
+        train_dataset=train_data[:5],
+        eval_dataset=eval_data[:2],
+        local_modules=local_modules,
+        pip_dependencies=pip_dependencies,
+        api_key=API_KEY,
+        base_url=BASE_URL,
+        llm_base_url=LLM_BASE_URL,
+        llm_api_key="",
+        remote_examples=2,
+    ):
+        raise SystemExit("Env validation failed — aborting before launch (see output above).")
+
+    # 3. Bundle the env class and upload everything to platform storage.
     run_name = f"telestich-{'full' if full_run else 'example'}-{uuid.uuid4().hex[:8]}"
-    print(f"Uploading bundle + datasets as {run_name!r} ...")
+    print(f"\nUploading bundle + datasets as {run_name!r} ...")
     uploaded = upload_training_run(
         env_class=TelestichEnv,
         train_dataset=train_data,
@@ -606,11 +638,9 @@ if __name__ == "__main__":
         run_name=run_name,
         api_key=API_KEY,
         base_url=BASE_URL,
-        constructor_args={
-            "judge_base_url": LLM_BASE_URL,
-            "judge_api_key": LLM_API_KEY,
-        },
-        pip_dependencies=["english_words", "openai", "pronouncing", "wordfreq"],
+        local_modules=local_modules,
+        constructor_args=constructor_args,
+        pip_dependencies=pip_dependencies,
     )
     for label, path in (
         ("env_cls", uploaded.env_cls_path),
@@ -620,7 +650,7 @@ if __name__ == "__main__":
     ):
         print(f"  {label:<14}: {path}")
 
-    # 3. Launch the training run. ``simple`` is the deployed 4B/gpu4 template.
+    # 4. Launch the training run. ``simple`` is the deployed 4B/gpu4 template.
     print("\nLaunching training run ...")
     with TrainerClient(api_key=API_KEY, base_url=BASE_URL) as trainer:
         run_id = trainer.launch_training_run(
@@ -630,7 +660,8 @@ if __name__ == "__main__":
             train_dataset_path=uploaded.train_dataset_path,
             eval_dataset_path=uploaded.eval_dataset_path,
             name=run_name,
-            launcher_args={"max_response_len": 4000},
+            # num_epochs: passes over the train set (platform default is 5).
+            launcher_args={"max_response_len": 4000, "num_epochs": 10},
         )
 
     print(f"\n✓ Launched run_id={run_id}")

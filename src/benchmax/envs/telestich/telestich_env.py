@@ -8,17 +8,18 @@ each line. Reward, per rollout in a GRPO group (see ``compute_group_reward``):
      count — and must NOT write the hidden word in the body. Fail → reward 0,
      no judge called.
   2. QUALITY (one judge call per group, via benchmax.rubrics): the shared
-     `evaluate_rubric_ranking` ranks the group's valid poems with the example's
-     GREAT reference poem inserted blind as `ground_truth`; each poem's score in
-     [0,1] is anchored to that reference's rank — above the great bar -> [0.5,1],
-     below -> [0,0.3]. (Single anchor for now; multi-anchor is a future TODO.)
-  3. ADJUSTMENTS (deterministic): discount reused ending words (anti
-     mode-collapse), add a rhyme/length form bonus, and add a winner-anchored
-     conciseness bonus (only top performers; shorter/fewer-tool-calls scores
-     higher) — all logged as components.
+     multi-anchor `evaluate_rubric_ranking` ranks the group's valid poems with
+     BOTH reference poems inserted blind — acceptable as a floor, great as the
+     bar — placing each poem in a band: below acceptable -> [0,0.1) ("below"),
+     acceptable..great -> [0.1,0.5] ("mid"), above great -> [0.5,1.0] ("above").
+  3. BONUSES (deterministic, all POSITIVE and quality-scaled, so the total reward
+     is >= 0): ending-word diversity (anti mode-collapse, mid+above buckets), a
+     rhyme/length form bonus, and a conciseness bonus awarded only to the top
+     occupied band — rewarding a good poem that reached its answer quickly (short
+     overall rollout, plus a small tool-call-thrift part).
 
-The final reward = quality + form + conciseness − reuse_penalty
-(the component values sum to it).
+The final reward = quality + diversity + form + conciseness
+(the component values sum to it; every component is >= 0).
 """
 
 import logging
@@ -26,6 +27,7 @@ import math
 import random
 import re
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -47,35 +49,50 @@ logger = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════════
 JUDGE_MODEL = "gpt-5.4"
 
-# Quality is scored by the shared rubric-ranking judge (benchmax.rubrics): one
-# judge call ranks the group's poems with a reference poem inserted blind as
-# `ground_truth`; each poem's score in [0,1] is anchored to the reference's rank
-# (above it -> [0.5,1.0], tied -> 0.5, below -> [0,0.3]). We anchor on the
-# example's GREAT poem — the bar we ultimately want the model to reach.
-ANCHOR_KIND = "great_refs"   # which reference set is the ground_truth anchor
-                             # (flip to "acceptable_refs" to put the bar mid-distribution)
+# Quality is scored by the shared MULTI-ANCHOR rubric judge (benchmax.rubrics):
+# one judge call ranks the group's valid poems with BOTH of the example's
+# reference poems inserted blind — `acceptable` as a floor, `great` as the bar.
+# A poem's score falls in one of three bands by where it ranks vs the anchors:
+#     below acceptable   -> [0, 0.1)    "below" bucket  (degenerate / sub-par)
+#     acceptable..great   -> [0.1, 0.5]  "mid" bucket
+#     above great         -> [0.5, 1.0]  "above" bucket
+# The floor anchor gives quality an absolute zero-point: an all-bad group ranks
+# below acceptable -> everyone near 0 (pure relative ranking can't do this).
+ACCEPTABLE_EDGE = 0.1    # score earned by tying the acceptable (floor) anchor
+GREAT_EDGE = 0.5         # score earned by tying the great (bar) anchor
+QUALITY_GATE = ACCEPTABLE_EDGE   # secondary BONUSES require quality >= this
+                                 # (i.e. mid/above buckets); below it earns no bonus
+QUALITY_FLOOR = 0.01     # clearing correctness is worth a hair more than being
+                         # gated: the worst-ranked valid poem still beats a
+                         # gated poem's 0, so the model always sees gradient for
+                         # producing a correct telestich at all
 QUALITY_RUBRIC = Rubric(
     title="poetic quality",
     description=(
         "Judge the poem's craft only (the acrostic is already verified): coherence "
         "(reads as one deliberate poem, not interchangeable lines), concrete vivid "
         "imagery, faithfulness to the requested theme/voice/tone, natural un-forced "
-        "line endings (not bent just to hit a letter), no nonsense lines, no template lock."
+        "line endings (not bent just to hit a letter), no nonsense lines, no template "
+        "lock. Prefer economy — every line should earn its place; penalize padding, "
+        "filler, and prose run-on lines that read like an essay rather than a poem."
     ),
     type="positive",
 )
 
-W_REUSE = 0.50   # weight of the ending-word reuse discount
-W_FORM = 0.15    # weight of the rhyme/length form bonus
-W_CONCISE = 0.15   # conciseness bonus — small + quality-scaled, so it only breaks
-                   # ties among similar-quality top performers, never lifts a weak poem
-WINNER_EPS = 0.15  # "top performers" = within this of the group's best quality
+# Secondary terms are all SCALED BY QUALITY, so a weak poem can't farm them.
+W_FORM = 0.15        # rhyme density (en) / line-length uniformity (zh)
+W_DIVERSITY = 0.50   # unique-ending bonus (anti mode-collapse); mid+above buckets only
 
-_TOOL_CALL_RE = re.compile(r"<tool_call\b", re.IGNORECASE)
-
-
-def _count_tool_calls(text: str) -> int:
-    return len(_TOOL_CALL_RE.findall(text or ""))
+# Conciseness — a POSITIVE bonus (like diversity: quality-scaled), awarded only
+# to the TOP occupied band (mid/above) so we reward a GOOD poem that also reached
+# its answer quickly. Two parts: overall rollout length (the bulk) and tool-call
+# thrift (a small part). A long-winded or tool-heavy top poem just earns less of
+# it; gated / below-bucket poems earn none — so every component stays >= 0.
+W_CONCISE = 0.15            # max conciseness bonus (quality-scaled)
+CONCISE_TOOL_WEIGHT = 0.2   # tool thrift is a small part; rollout length is the rest
+CALL_DECAY = 0.35           # tool efficiency = exp(-CALL_DECAY * n_tool_calls)
+LEN_BUDGET_BASE = 1500      # completion-char budget = BASE + PER_LINE * acrostic_len;
+LEN_BUDGET_PER_LINE = 600   # at/under budget = full length-efficiency, decaying above
 
 # ══════════════════════════════════════════════════════════════════════
 # PARSING
@@ -223,6 +240,14 @@ def word_bank(letter: str, k: int = 30) -> list[str]:
 # ══════════════════════════════════════════════════════════════════════
 # HARD RULES
 # ══════════════════════════════════════════════════════════════════════
+# A telestich line must be an actual poetic line, not the bare acrostic spelled
+# vertically. These floors kill the degenerate "one char/word per line" hack
+# (e.g. 挚/友/如/镜) with a wide margin — in the great-ref poems the SHORTEST
+# real line is 11 CJK chars (zh) / 6 words (en), so legit poems never trip these.
+MIN_ZH_LINE_CHARS = 4
+MIN_EN_LINE_WORDS = 3
+
+
 def check_hard_rules(poem: str | None, target: str) -> dict:
     """Deterministic gate. correct == True iff valid telestich AND not cheating.
     `reason` names the first rule that failed (empty string when correct)."""
@@ -248,17 +273,49 @@ def check_hard_rules(poem: str | None, target: str) -> dict:
         got = last_char(lines[i], language)
         if got != chars[i]:
             return result(False, f"line {i + 1} ends '{got}', expected '{chars[i]}'")
-        if language != "zh" and not is_valid_word(last_word(lines[i])):
-            return result(False, f"line {i + 1} ends on non-word '{last_word(lines[i])}'")
+        if language == "zh":
+            # reject the acrostic spelled vertically (one char per line)
+            cjk = len(_CJK_RE.findall(lines[i]))
+            if cjk < MIN_ZH_LINE_CHARS:
+                return result(False, f"line {i + 1} too short ({cjk} chars) — not a poem line")
+        else:
+            if not is_valid_word(last_word(lines[i])):
+                return result(False, f"line {i + 1} ends on non-word '{last_word(lines[i])}'")
+            if len(lines[i].split()) < MIN_EN_LINE_WORDS:
+                return result(False, f"line {i + 1} too short — not a poem line")
     if cheated:
         return result(False, "hidden word written in the poem body")
     return result(True, "")
 
 
+def _gate_category(reason: str) -> str:
+    """Collapse a specific gate reason (e.g. "line 2 ends 'l', expected 'u'") into
+    a short bucket so the group log shows counts-by-kind, not one entry per line."""
+    r = reason.lower()
+    if "no poem" in r:
+        return "no-poem"
+    if "empty target" in r:
+        return "bad-target"
+    if "line count" in r:
+        return "wrong-line-count"
+    if "expected" in r:
+        return "wrong-ending-letter"
+    if "non-word" in r:
+        return "non-word-ending"
+    if "too short" in r:
+        return "line-too-short"
+    if "hidden word" in r:
+        return "cheated"
+    return "other"
+
+
 # ══════════════════════════════════════════════════════════════════════
 # FORM  (rhyme density for EN, line-length uniformity for ZH)
 # ══════════════════════════════════════════════════════════════════════
-def _english_rhyme_density(lines: list[str]) -> float:
+def _rhyme_analysis(lines: list[str]) -> tuple[float, list[list[int]], list[str], list[int]]:
+    """(density, clusters, endings, idx). density = largest rhyme cluster size /
+    #lines-with-pronunciations. clusters = connected groups of mutually-rhyming
+    line indices; endings = ending word per line; idx = lines with pronunciations."""
     endings = [_MARKUP_WRAPPER_RE.sub("", last_word(line)) for line in lines]
     parts, idx = {}, []
     for i, w in enumerate(endings):
@@ -267,7 +324,7 @@ def _english_rhyme_density(lines: list[str]) -> float:
             parts[i] = [pronouncing.rhyming_part(p) for p in phones]
             idx.append(i)
     if len(idx) < 2:
-        return 0.0
+        return 0.0, [], endings, idx
     adj = {i: set() for i in idx}
     for a in range(len(idx)):
         for b in range(a + 1, len(idx)):
@@ -287,9 +344,13 @@ def _english_rhyme_density(lines: list[str]) -> float:
             visited.add(x)
             comp.append(x)
             stack.extend(adj[x])
-        clusters.append(comp)
+        clusters.append(sorted(comp))
     largest = max((len(c) for c in clusters if len(c) >= 2), default=0)
-    return largest / len(idx)
+    return largest / len(idx), clusters, endings, idx
+
+
+def _english_rhyme_density(lines: list[str]) -> float:
+    return _rhyme_analysis(lines)[0]
 
 
 def _mandarin_length_uniformity(lines: list[str]) -> float:
@@ -305,15 +366,35 @@ def form_score(lines: list[str], language: str) -> float:
     return _mandarin_length_uniformity(lines) if language == "zh" else _english_rhyme_density(lines)
 
 
+def form_detail(lines: list[str], language: str) -> str:
+    """Human-readable explanation of the form score — which lines rhyme (en) or
+    the line-length profile (zh)."""
+    if language == "zh":
+        lengths = [len(_CJK_RE.findall(line)) for line in lines]
+        nz = [n for n in lengths if n > 0]
+        modal = Counter(nz).most_common(1)[0][0] if nz else 0
+        match = sum(1 for n in nz if n == modal)
+        return f"CJK lengths {lengths}, modal {modal} → {match}/{len(nz)} lines uniform"
+    density, clusters, endings, idx = _rhyme_analysis(lines)
+    rhyming = [c for c in clusters if len(c) >= 2]
+    groups = "; ".join(
+        "+".join(f"L{i + 1}:{endings[i]}" for i in c) for c in rhyming
+    ) or "no rhyming pairs"
+    unmatched = [f"L{i + 1}:{endings[i]}" for i in idx
+                 if not any(i in c for c in rhyming)]
+    largest = max((len(c) for c in rhyming), default=0)
+    tail = f"; unmatched {unmatched}" if unmatched else ""
+    return f"largest rhyme {largest}/{len(idx)} → {density:.2f} | {groups}{tail}"
+
+
 # ══════════════════════════════════════════════════════════════════════
 # DIVERSITY
 # ══════════════════════════════════════════════════════════════════════
-def ending_reuse_scores(poems: list[str]) -> list[float]:
-    """Per-poem reuse score in [0,1]: mean over the poem's ending words of the
-    fraction of *other* poems that also use that word. 0 = all endings unique
-    to this poem; 1 = every ending it uses is shared by every sibling.
-    Discourages the whole group leaning on the same crutch words (ski/hi/free).
-    """
+def ending_reuse_detail(poems: list[str]) -> tuple[list[float], list[list[tuple[str, int]]]]:
+    """(scores, details). Per-poem reuse score in [0,1]: mean over the poem's
+    ending words of the fraction of *other* poems that also use that word. 0 =
+    all endings unique to this poem; 1 = every ending shared by every sibling.
+    details[i] = [(ending_word, n_other_poems_sharing_it)] for logging."""
     n = len(poems)
     endings = []
     for p in poems:
@@ -328,13 +409,18 @@ def ending_reuse_scores(poems: list[str]) -> list[float]:
     for ews in endings:
         for w in set(ews):
             doc_freq[w] += 1
-    scores = []
+    scores, details = [], []
     for ews in endings:
+        details.append([(w, doc_freq[w] - 1) for w in ews])
         if not ews or n < 2:
             scores.append(0.0)
         else:
             scores.append(sum((doc_freq[w] - 1) / (n - 1) for w in ews) / len(ews))
-    return scores
+    return scores, details
+
+
+def ending_reuse_scores(poems: list[str]) -> list[float]:
+    return ending_reuse_detail(poems)[0]
 
 
 def duplicate_divisors(poems: list[str], threshold: float = 0.85) -> list[float]:
@@ -352,9 +438,55 @@ def duplicate_divisors(poems: list[str], threshold: float = 0.85) -> list[float]
     return [float(counts[c]) for c in cluster_of]
 
 
-# Quality scoring lives in the shared rubric-ranking judge — see QUALITY_RUBRIC
-# / ANCHOR_KIND above and TelestichEnv._quality (uses benchmax.rubrics.
-# evaluate_rubric_ranking). No custom judge prompt / band math here anymore.
+# ══════════════════════════════════════════════════════════════════════
+# PER-ROLLOUT RECORD
+# ══════════════════════════════════════════════════════════════════════
+@dataclass
+class _Rollout:
+    """One rollout's parsed state + scoring, carried through the pipeline so the
+    final assembly and logging read straight off it (see compute_group_reward)."""
+    idx: int
+    rollout_id: str
+    completion_len: int          # chars of the whole completion (reasoning + answer)
+    poem: str                    # parsed <answer> poem ("" if none)
+    poem_len: int
+    lines: list[str]
+    language: str
+    n_tool_calls: int
+    valid: bool                  # passed the hard-rules gate
+    reason: str                  # first failed rule ("" when valid)
+    quality: float = 0.0         # raw rubric band score
+    q: float = 0.0               # quality after the duplicate divisor (used everywhere)
+    bucket: str = "gated"        # gated | below | mid | above
+    reuse: float = 0.0           # ending-word reuse vs siblings (0=unique, 1=all shared)
+    ending_detail: str = ""      # per-ending share counts, for the breakdown log
+    len_eff: float = 0.0         # conciseness efficiency factors in [0,1] (logged)
+    tool_eff: float = 0.0
+    components: dict = field(default_factory=dict)
+
+
+def _bucket(q: float) -> str:
+    """Map a quality score to its band bucket."""
+    if q < ACCEPTABLE_EDGE:
+        return "below"
+    if q < GREAT_EDGE:
+        return "mid"
+    return "above"
+
+
+def _first_ref(refs: Any) -> str | None:
+    """First non-empty reference poem from a refs list, or None."""
+    items = [r for r in (refs or []) if r and str(r).strip()]
+    return items[0] if items else None
+
+
+_TOOL_CALL_RE = re.compile(r"<tool_call\b", re.IGNORECASE)
+
+
+def _count_tool_calls(completion: str) -> int:
+    """Count tool-call attempts in the completion (includes rejected over-budget
+    ones, which the env's own counter caps out — this is what flags waste)."""
+    return len(_TOOL_CALL_RE.findall(completion or ""))
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -376,27 +508,30 @@ single word or short Chinese phrase — never a sentence.
 each line spelling X (a telestich), not to repeating the word X at each \
 line end.
 
-Process:
+Process (keep your thinking SHORT — a few lines of notes, then the poem):
 1. Spell out the target word letter by letter (or character by character). \
 Count — that's how many lines.
-2. You have 2 tool calls total. Use word_bank for letters where \
-you struggle to think of ending words — prioritize the hardest letters. \
-(For Chinese poems, the tool is not available — rely on your own vocabulary.)
-3. Pick one ending word per line. Build each line as a natural phrase around \
-that ending word.
-4. Verify each ending word's last letter/character, confirm they spell the target.
-5. Output the poem in <answer></answer> tags. Plain text only. Stop after \
+2. You have 2 tool calls total. Use word_bank only for the hardest letters \
+where you can't readily think of ending words. (For Chinese poems, the tool is \
+not available — rely on your own vocabulary.)
+3. Pick ONE ending word per line and commit. Build each line as a natural \
+phrase around it.
+4. Output the poem in <answer></answer> tags. Plain text only. Stop after \
 </answer>.
 
-Be concise — total output length is penalized among top poems, so don't \
-ramble. Use your tool calls only on the letters you find hardest.
+Be concise. Reaching a correct answer quickly is rewarded, and a rollout that \
+rambles until it runs out of room and never reaches <answer> earns nothing. So \
+do NOT enumerate long candidate lists, do NOT second-guess or re-derive, and do \
+NOT restate the rules. Choose your ending words in a line or two and write the \
+poem.
 
 Rules:
 1. Exactly as many lines as letters/characters in the target word.
 2. Every ending word must be a real word — no invented words, no standalone \
 letters tacked on.
-3. Each line is a complete, meaningful phrase. The poem should be coherent \
-and match the requested theme.
+3. Each line is a complete, meaningful phrase — keep lines tight and \
+image-dense (a poetic line, not a long prose sentence). The poem should be \
+coherent and match the requested theme.
 4. Write the poem in the same language as the request.
 5. Do NOT include the hidden target word anywhere in the poem itself — the \
 whole point is that it's hidden in the ending letters.
@@ -412,7 +547,7 @@ coherence.
 line; aim for uniform 5- or 7-character lines, or whatever length fits the \
 hidden word naturally).
 
-English example:
+Example:
 
 User: breakup poem where the last letters spell brave
 
@@ -424,24 +559,15 @@ of mornings spent pretending not to remember
 that love like ours was never just an idea
 now I just sit alone and stare at the tv
 and wonder if you ever meant to keep your promise
-</answer>
-
-中文例子:
-
-User: 写一首关于思念的藏尾诗，尾字拼出"月光"
-
-月-光 = 2个字，2行。主题：思念。
-
-<answer>
-独坐窗前望明月
-故人远去似流光
 </answer>"""
 
-    def __init__(self, *, judge_base_url: str, judge_api_key: str,
+    def __init__(self, *, judge_base_url: str, judge_api_key: str = "",
                  judge_timeout: float = 90.0, max_tool_calls: int = 2,
                  **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._judge_base_url = judge_base_url
+        # Empty → judge bearer resolves via the platform act-as seam
+        # (resolve_judge_key). Don't bake a literal key into constructor_args.
         self._judge_api_key = judge_api_key
         self._judge_timeout = judge_timeout
         self._max_tool_calls = max_tool_calls
@@ -486,11 +612,14 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
     async def compute_reward(self, rollout_id, messages, task, **kwargs) -> dict[str, float]:
         return {}  # all logic is group-level (compute_group_reward)
 
-    async def _quality(self, prompt: str, poems: list[str], anchor: str | None) -> list[float]:
-        """Quality via the shared rubric-ranking judge: one call ranks `poems`
-        with `anchor` inserted blind as ground_truth; returns scores in [0,1]
-        (aligned with `poems`) anchored to the anchor's rank — above it
-        -> [0.5,1.0], below -> [0,0.3]. On judge error the rubric returns 0s."""
+    async def _quality(self, prompt: str, poems: list[str],
+                       anchors: list[str], band_edges: list[float],
+                       anchor_labels: list[str] | None = None) -> list[float]:
+        """Quality via the shared MULTI-ANCHOR rubric judge: one call ranks `poems`
+        with the anchors (acceptable floor + great bar) inserted blind, returning
+        band scores in [0,1] aligned with `poems`. On judge error the rubric
+        returns 0s. With no anchors it degrades to pure relative ranking.
+        `anchor_labels` only name the anchors in the rubric's debug log."""
         res = await evaluate_rubric_ranking(
             rubric=QUALITY_RUBRIC,
             question=prompt,
@@ -498,94 +627,180 @@ User: 写一首关于思念的藏尾诗，尾字拼出"月光"
             model_name=JUDGE_MODEL,
             base_url=self._judge_base_url,
             api_key=self._judge_api_key,
-            ground_truth=anchor,
             timeout=self._judge_timeout,
+            anchors=anchors or None,
+            band_edges=band_edges or None,
+            anchor_labels=anchor_labels or None,
         )
         return res["scores"]
+
+    async def _score_quality(self, prompt: str, valid: list[_Rollout],
+                             acceptable: str | None, great: str | None) -> None:
+        """Rank the valid poems against the acceptable + great anchors; write each
+        record's band `quality`, duplicate-adjusted `q`, and `bucket`."""
+        anchors, edges, labels = [], [], []
+        if acceptable:
+            anchors.append(acceptable)
+            edges.append(ACCEPTABLE_EDGE)
+            labels.append("baseline")
+        if great:
+            anchors.append(great)
+            edges.append(GREAT_EDGE)
+            labels.append("great")
+        scores = await self._quality(prompt, [r.poem for r in valid], anchors, edges, labels)
+        dup = duplicate_divisors([r.poem for r in valid])
+        for local, r in enumerate(valid):
+            # floor at QUALITY_FLOOR: a correct poem ranked dead-last earns 0 from
+            # the band scorer, which is indistinguishable from a gated poem.
+            r.quality = max(QUALITY_FLOOR, scores[local])
+            r.q = r.quality / dup[local]    # near-duplicate whole poems shared down
+            r.bucket = _bucket(r.q)
+
+    def _apply_secondary(self, rolls: list[_Rollout], valid: list[_Rollout],
+                         budget: int) -> None:
+        """Compute every rollout's reward components onto its record:
+        form + diversity (quality-scaled bonuses, valid poems) and conciseness
+        (a hard penalty on every rollout)."""
+        if valid:
+            reuse, reuse_detail = ending_reuse_detail([r.poem for r in valid])
+            for local, r in enumerate(valid):
+                r.reuse = reuse[local]
+                r.ending_detail = ", ".join(
+                    f"{w}(shared×{c})" if c else f"{w}(unique)" for w, c in reuse_detail[local]
+                )
+
+        # conciseness bonus targets only the TOP occupied band (above, else mid);
+        # if every poem is below the floor there is no band worth rewarding.
+        top_bucket = next((b for b in ("above", "mid")
+                           if any(r.bucket == b for r in valid)), None)
+
+        for r in rolls:
+            # efficiency factors in [0,1]: 1 = answered within budget / no tools
+            r.len_eff = math.exp(-max(0.0, r.completion_len / budget - 1.0))
+            r.tool_eff = math.exp(-CALL_DECAY * r.n_tool_calls)
+
+            if not r.valid:
+                r.components = {"quality": 0.0, "form": 0.0, "diversity": 0.0,
+                                "conciseness": 0.0}
+                continue
+            form_bonus = W_FORM * r.q * form_score(r.lines, r.language)
+            # diversity is gated to the mid+above buckets (quality >= floor)
+            div_bonus = (W_DIVERSITY * r.q * (1.0 - r.reuse)
+                         if r.q >= QUALITY_GATE else 0.0)
+            # conciseness: top-band poems only, quality-scaled, reward reaching the
+            # answer quickly (short rollout, plus a small tool-thrift part)
+            if r.bucket == top_bucket:
+                eff = (1.0 - CONCISE_TOOL_WEIGHT) * r.len_eff + CONCISE_TOOL_WEIGHT * r.tool_eff
+                concise = W_CONCISE * r.q * eff
+            else:
+                concise = 0.0
+            r.components = {"quality": round(r.q, 4),
+                            "form": round(form_bonus, 4),
+                            "diversity": round(div_bonus, 4),
+                            "conciseness": round(concise, 4)}
+
+    def _fmt_rollout(self, r: _Rollout, budget: int) -> str:
+        """One path-revealing log line per rollout."""
+        total = sum(r.components.values())
+        meta = (f"completion_len={r.completion_len}/{budget} poem_len={r.poem_len} "
+                f"lines={len(r.lines)} tools={r.n_tool_calls}")
+        if not r.valid:
+            return f"[TelestichEnv] reward={total:+.3f} GATED ({r.reason}) | {meta}"
+        return (f"[TelestichEnv] reward={total:+.3f} {r.bucket.upper()} "
+                f"q={r.quality:.3f}->{r.q:.3f} reuse={r.reuse:.2f} "
+                f"len_eff={r.len_eff:.2f} | {meta} | {r.components}")
+
+    def _explain_rollout(self, r: _Rollout, budget: int) -> str:
+        """Multi-line WHY-breakdown for a poem that passed correctness — spells
+        out how each component reached its value (which lines rhyme, which
+        endings are shared, why conciseness was charged)."""
+        c = r.components
+        if r.q >= QUALITY_GATE:
+            div_line = (f"  diversity = {c['diversity']:+.4f} = W_DIVERSITY({W_DIVERSITY}) × "
+                        f"q({r.q:.3f}) × (1 − reuse {r.reuse:.2f}); endings: {r.ending_detail}")
+        else:
+            div_line = (f"  diversity = {c['diversity']:+.4f} (none — q {r.q:.3f} below the "
+                        f"{QUALITY_GATE} floor, bucket={r.bucket})")
+        if c["conciseness"]:
+            conc_line = (f"  conciseness = {c['conciseness']:+.4f} = W_CONCISE({W_CONCISE}) × "
+                         f"q({r.q:.3f}) × [{1 - CONCISE_TOOL_WEIGHT:g}×len_eff({r.len_eff:.2f}) "
+                         f"+ {CONCISE_TOOL_WEIGHT:g}×tool_eff({r.tool_eff:.2f})]; "
+                         f"completion {r.completion_len}/{budget}, {r.n_tool_calls} tools")
+        else:
+            conc_line = (f"  conciseness = +0.0000 (none — not in the top band "
+                         f"'{r.bucket}', conciseness rewards only the best poems)")
+        return (
+            f"[TelestichEnv][why] poem {r.rollout_id} — {r.bucket.upper()} bucket, "
+            f"reward={sum(c.values()):+.3f}\n"
+            f"  quality   = {c['quality']:+.4f}  (judge band {r.quality:.3f}"
+            f"{f', ÷dup→{r.q:.3f}' if abs(r.q - r.quality) > 1e-9 else ''})\n"
+            f"  form      = {c['form']:+.4f} = W_FORM({W_FORM}) × q({r.q:.3f}) × "
+            f"form_score({form_score(r.lines, r.language):.2f}) | {form_detail(r.lines, r.language)}\n"
+            f"{div_line}\n"
+            f"{conc_line}"
+        )
 
     async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kwargs):
         task = tasks[0] or {}
         target = str(task.get("ground_truth") or "")
         prompt = str(task.get("prompt") or "")
-        anchor = (list(task.get(ANCHOR_KIND) or []) or [None])[0]  # great poem (blind ground_truth)
-        n = len(rollout_ids)
+        acceptable = _first_ref(task.get("acceptable_refs"))
+        great = _first_ref(task.get("great_refs"))
+        language = detect_language(target)
+        budget = LEN_BUDGET_BASE + LEN_BUDGET_PER_LINE * max(1, len(target.strip()))
 
-        # ── Stage 1: hard rules (deterministic) ──
-        poems, gate, form, reasons = [], [], [], []
-        for messages in messages_list:
-            poem = final_poem(messages) or ""
-            chk = check_hard_rules(poem, target)
-            poems.append(poem)
-            gate.append(chk["correct"])
-            reasons.append(chk["reason"])
-            form.append(form_score(chk["lines"], chk["language"]) if chk["correct"] else 0.0)
+        # ── Stage 0: parse each rollout once into a record ──
+        rolls = [self._build_rollout(i, rollout_ids[i], messages_list[i], target)
+                 for i in range(len(rollout_ids))]
+        valid = [r for r in rolls if r.valid]
+        n_gated = len(rolls) - len(valid)
+        logger.info(
+            f"[TelestichEnv] group target={target!r} ({language}) — "
+            f"{len(valid)}/{len(rolls)} passed correctness "
+            f"(anchors: baseline={'Y' if acceptable else 'N'}, great={'Y' if great else 'N'})")
+        if n_gated:
+            # counts-by-kind, worst-offender first, so failures read at a glance
+            cats = Counter(_gate_category(r.reason) for r in rolls if not r.valid)
+            breakdown = ", ".join(f"{cat} {ct}" for cat, ct in cats.most_common())
+            logger.info(f"[TelestichEnv]   stage1 gated {n_gated}: {breakdown}")
 
-        valid = [i for i in range(n) if gate[i]]
-        logger.info(f"[TelestichEnv] group target={target!r} ({detect_language(target)}) "
-                    f"n={n}: stage 1 hard rules -> {len(valid)}/{n} valid")
-
-        # ── Stage 2: quality via the shared rubric-ranking judge, anchored to
-        # the example's GREAT poem (the bar to cross) ──
-        quality = [0.0] * n
+        # ── Stage 1+2: quality via the multi-anchor rubric → band score + bucket ──
         if valid:
-            logger.info(f"[TelestichEnv] stage 2 judging {len(valid)} valid poems "
-                        f"(anchor={'great-poem' if anchor else 'none'})")
-            scores = await self._quality(prompt, [poems[i] for i in valid], anchor)
-            for local, i in enumerate(valid):
-                quality[i] = scores[local]
-            logger.info(f"[TelestichEnv] stage 2 quality scores: "
-                        f"{[round(quality[i], 3) for i in valid]}")
+            await self._score_quality(prompt, valid, acceptable, great)
+            occ = Counter(r.bucket for r in valid)
+            logger.info(f"[TelestichEnv] stage2 quality: buckets "
+                        f"below={occ['below']} mid={occ['mid']} above={occ['above']}")
 
-        # ── Stage 3: adjustments (deterministic) ──
-        reuse = [0.0] * n
-        if valid:
-            r = ending_reuse_scores([poems[i] for i in valid])
-            for local, i in enumerate(valid):
-                reuse[i] = r[local]
-        dup = [1.0] * n
-        if valid:
-            d = duplicate_divisors([poems[i] for i in valid])
-            for local, i in enumerate(valid):
-                dup[i] = d[local]
+        # ── Stage 3: secondary terms (form, diversity, conciseness) onto records ──
+        self._apply_secondary(rolls, valid, budget)
 
-        # Conciseness for the group's "top performers" only (relative: within
-        # WINNER_EPS of the best quality, at any anchor scale). Among them,
-        # shorter output / fewer tool calls scores higher. Scaled by quality
-        # below, so a low-quality top-of-a-bad-group earns almost nothing.
-        lengths = [len(extract_completion_text(m) or "") for m in messages_list]
-        tool_counts = [_count_tool_calls(extract_completion_text(m)) for m in messages_list]
-        qmax = max((quality[i] for i in valid), default=0.0)
-        winners = [i for i in valid if quality[i] > 0 and quality[i] >= qmax - WINNER_EPS]
-        conciseness = [0.0] * n
-        if winners:
-            len_anchor = sum(lengths[i] for i in winners) / len(winners)
-            call_anchor = sum(tool_counts[i] for i in winners) / len(winners)
-            for i in winners:
-                len_ineff = 1 - math.exp(-max(0.0, lengths[i] / len_anchor - 1.0)) if len_anchor else 0.0
-                if call_anchor:
-                    call_ineff = 1 - math.exp(-max(0.0, tool_counts[i] / call_anchor - 1.0))
-                else:
-                    call_ineff = 1.0 if tool_counts[i] else 0.0
-                # scaled by quality so a weak "winner" earns little — keeps it a
-                # tiebreaker among genuinely good poems, not a lever to lift junk
-                conciseness[i] = W_CONCISE * quality[i] * (1.0 - 0.5 * (len_ineff + call_ineff))
-
+        # ── Stage 4: assemble + log ──
+        # Path A (flow): one summary line per rollout (gated + valid alike).
+        # Path B (why): a full component breakdown for poems that passed the gate.
         out = []
-        for i in range(n):
-            if not gate[i]:
-                with rollout_context(rollout_ids[i]):
-                    logger.info(f"[TelestichEnv] reward=0.000 gated out: {reasons[i]}")
-                out.append({"quality": 0.0, "reuse_penalty": 0.0, "form": 0.0, "conciseness": 0.0})
-                continue
-            q = quality[i] / dup[i]                       # near-duplicate whole poems shared down
-            reuse_pen = W_REUSE * reuse[i] * q            # discount reused ending words
-            form_bonus = W_FORM * form[i]                 # rhyme / length bonus
-            comp = {"quality": round(q, 4),
-                    "reuse_penalty": round(-reuse_pen, 4),
-                    "form": round(form_bonus, 4),
-                    "conciseness": round(conciseness[i], 4)}  # shorter top-performers
-            with rollout_context(rollout_ids[i]):
-                logger.info(f"[TelestichEnv] reward={sum(comp.values()):.3f} {comp} "
-                            f"(reuse={reuse[i]:.2f} dup={dup[i]:.0f} winner={i in winners})")
-            out.append(comp)
+        for r in rolls:
+            with rollout_context(r.rollout_id):
+                logger.info(self._fmt_rollout(r, budget))
+                if r.valid:
+                    logger.info(self._explain_rollout(r, budget))
+            out.append(r.components)
         return out
+
+    def _build_rollout(self, idx: int, rollout_id: str, messages: Messages,
+                       target: str) -> _Rollout:
+        """Stage 0: parse a rollout's completion once into a record."""
+        completion = extract_completion_text(messages) or ""
+        poem = final_poem(messages) or ""
+        chk = check_hard_rules(poem, target)
+        return _Rollout(
+            idx=idx,
+            rollout_id=rollout_id,
+            completion_len=len(completion),
+            poem=poem,
+            poem_len=len(poem),
+            lines=chk["lines"],
+            language=chk["language"],
+            n_tool_calls=_count_tool_calls(completion),
+            valid=chk["correct"],
+            reason=chk["reason"],
+        )
