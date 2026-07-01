@@ -21,6 +21,7 @@ import sys
 
 from benchmax.cli._client import handle_errors
 from benchmax.cli._output import fmt_value, print_json
+from benchmax.cli._preflight import print_project_error
 from benchmax.cli._project import ProjectError, load_project
 from benchmax.cli._providers import provider_choices, resolve_pip_dependencies
 from benchmax.platform.client import _VALIDATION_MODEL, _mean_rewards
@@ -311,7 +312,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             eval_file=args.eval,
         )
     except ProjectError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print_project_error(exc)
         return 1
 
     # The SDK streams rollout events to stdout regardless. In --json mode keep
