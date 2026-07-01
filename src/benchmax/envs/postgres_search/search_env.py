@@ -43,7 +43,7 @@ _ANSWER_BLOCK_RE = re.compile(r"<answer\s*>(.*?)</answer\s*>", re.IGNORECASE | r
 _ANSWER_OPEN_RE = re.compile(r"<answer\s*>", re.IGNORECASE)
 
 
-def _extract_answer_block(text: str) -> str:
+def extract_answer_block(text: str) -> str:
     """Extract the model's committed answer from <answer> tags.
 
     Strict + last-committed: returns "" when the model never opens an
@@ -52,6 +52,11 @@ def _extract_answer_block(text: str) -> str:
     and a stray literal "<answer>" later in the prose can't hijack scoring.
     Only when no block is closed does it forgive a missing close tag and take
     everything after the final opener (a truncated final answer).
+
+    Public reward helper: a scaffold ``run.py`` imports this to score answers
+    inline. NOTE this is the strict extractor — do NOT use
+    ``reward_helpers.extract_answer_block``, which falls back to the full
+    completion when there's no tag (scores reasoning as the answer).
     """
     text = text or ""
     blocks = list(_ANSWER_BLOCK_RE.finditer(text))
@@ -61,6 +66,10 @@ def _extract_answer_block(text: str) -> str:
     if not opens:
         return ""
     return text[opens[-1].end() :].strip()
+
+
+# Underscore alias kept for internal call sites / tests that import the old name.
+_extract_answer_block = extract_answer_block
 
 # Match Python-style `{name}` placeholders with word-char names only —
 # leaves JSON-like literals (e.g. `{"answer": "X"}`) and unknown keys
@@ -83,7 +92,7 @@ def _render_template(template: str, **vars: Any) -> str:
     )
 
 
-_CORRECTNESS_RUBRIC = Rubric(
+CORRECTNESS_RUBRIC = Rubric(
     title="Answer correctness",
     description=(
         "Response correctly answers the question and is "
@@ -96,7 +105,7 @@ _CORRECTNESS_RUBRIC = Rubric(
     },
 )
 
-_CONCISENESS_RUBRIC = Rubric(
+CONCISENESS_RUBRIC = Rubric(
     title="Answer conciseness",
     description=(
         "Response is concise and avoids unnecessary verbosity "
@@ -108,6 +117,151 @@ _CONCISENESS_RUBRIC = Rubric(
 MAX_TOOL_OUTPUT_CHARS = 10000
 TOOL_OUTPUT_TRUNCATION_SUFFIX = "\n...[truncated due to character limit]"
 SEARCH_EFFICIENCY_DECAY_RATE = 0.2
+
+
+# ----------------------------------------------------------------------------
+# Reward helpers — the reward *arithmetic* lives in the env's compute_reward
+# (and, for the scaffold, in run.py so it's visible/editable); these free
+# functions are the reusable pieces it calls by name. The heavy plumbing (the
+# HTTP judge, the citation matcher) stays here so run.py stays short.
+# ----------------------------------------------------------------------------
+
+
+async def judge_answer_quality(
+    *,
+    question: str,
+    ground_truth: str,
+    response: str,
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: float = 30.0,
+    correctness_rubric: Rubric = CORRECTNESS_RUBRIC,
+    conciseness_rubric: Rubric = CONCISENESS_RUBRIC,
+) -> tuple[float, float]:
+    """LLM judge → ``(correctness, conciseness)``, both in [0, 1].
+
+    Empty response → ``(0.0, 0.0)``. The two rubric calls run concurrently. This
+    is the heavy HTTP leg of the reward — a scaffold ``run.py`` calls it as a
+    one-liner and does the weighting/gating arithmetic itself. Pass custom
+    rubrics to change what "correct"/"concise" mean.
+    """
+    if not response.strip():
+        return (0.0, 0.0)
+    try:
+        correctness_task = evaluate_single_rubric(
+            rubric=correctness_rubric,
+            question=question,
+            ground_truth=ground_truth,
+            response=response,
+            model_name=model,
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+        )
+        conciseness_task = evaluate_single_rubric(
+            rubric=conciseness_rubric,
+            question=question,
+            ground_truth=ground_truth,
+            response=response,
+            model_name=model,
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+        )
+        correctness_result, conciseness_result = await asyncio.gather(
+            correctness_task, conciseness_task
+        )
+        return (
+            clip01(correctness_result.get("score", 0.0)),
+            clip01(conciseness_result.get("score", 0.0)),
+        )
+    except Exception:
+        return (0.0, 0.0)
+
+
+def canonicalize_source_id(source_id: str) -> str:
+    """Normalize a citation/source id (default: whitespace-strip → exact match).
+
+    Pass a custom callable to :func:`score_citations` for corpus-specific,
+    robust matching (id-hash / title / path). The default is exact-path *by
+    design* — the design-environment skill covers when to override it."""
+    return str(source_id or "").strip()
+
+
+def parse_citations(
+    text: str, *, canonicalize: Callable[[str], str] = canonicalize_source_id
+) -> set[str]:
+    """Parse ``[Source: <id>]`` citations from the model's answer."""
+    ids: set[str] = set()
+    for match in _CITATION_RE.finditer(text or ""):
+        cid = canonicalize(match.group(1).strip())
+        if cid:
+            ids.add(cid)
+    return ids
+
+
+def extract_reference_ids(
+    reference_chunks: list[dict[str, Any]],
+    *,
+    canonicalize: Callable[[str], str] = canonicalize_source_id,
+) -> set[str]:
+    """Document-level source ids from the gold reference chunks (``file`` /
+    ``file_path`` metadata)."""
+    ids: set[str] = set()
+    for chunk in reference_chunks:
+        if not isinstance(chunk, dict):
+            continue
+        md = chunk.get("metadata", {})
+        if not isinstance(md, dict):
+            continue
+        file_id = str(md.get("file") or md.get("file_path") or "").strip()
+        if file_id:
+            ids.add(canonicalize(file_id))
+    return ids
+
+
+def score_citations(
+    answer_text: str,
+    reference_chunks: list[dict[str, Any]],
+    *,
+    canonicalize: Callable[[str], str] = canonicalize_source_id,
+) -> tuple[float, float]:
+    """``(recall, precision)`` of the answer's citations vs the gold chunks, by
+    exact source-id match. No gold → ``(0, 0)``. Pass ``canonicalize=`` to make
+    matching corpus-robust."""
+    ref_ids = extract_reference_ids(reference_chunks, canonicalize=canonicalize)
+    cited_ids = parse_citations(answer_text, canonicalize=canonicalize)
+    if not ref_ids:
+        return 0.0, 0.0
+    overlap = cited_ids & ref_ids
+    recall = len(overlap) / len(ref_ids)
+    precision = len(overlap) / len(cited_ids) if cited_ids else 0.0
+    return recall, precision
+
+
+def score_search_efficiency(
+    *,
+    calls: int,
+    correctness: float,
+    reference_chunk_count: int,
+    max_search_calls: int,
+    weight: float,
+    decay_rate: float = SEARCH_EFFICIENCY_DECAY_RATE,
+) -> float:
+    """Bonus for a CORRECT answer that doesn't over-search past ~``ref_chunks + 2``.
+
+    ``0`` when the answer is incorrect (``correctness <= 0``) or the run is over
+    the hard ``max_search_calls`` budget. ``correctness`` is the raw judge score
+    (it both gates and scales)."""
+    if correctness <= 0:
+        return 0.0
+    if not search_within_budget(calls, max_search_calls):
+        return 0.0
+    baseline_calls = reference_chunk_count + 2
+    excess_calls = max(0, calls - baseline_calls)
+    decay = math.exp(-decay_rate * excess_calls)
+    return weight * correctness * decay
 
 
 class SearchEnv(BaseEnv):
@@ -436,43 +590,17 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         ground_truth: str,
         response: str,
     ) -> tuple[float, float]:
-        """Evaluate correctness + conciseness concurrently.
-
-        Returns (correctness_score, conciseness_score) both in [0, 1].
-        """
-        if not response.strip():
-            return (0.0, 0.0)
-
-        try:
-            correctness_task = evaluate_single_rubric(
-                rubric=_CORRECTNESS_RUBRIC,
-                question=question,
-                ground_truth=ground_truth,
-                response=response,
-                model_name=self._judge_model,
-                base_url=self._judge_base_url,
-                api_key=self._judge_token_provider(),
-                timeout=self._judge_timeout,
-            )
-            conciseness_task = evaluate_single_rubric(
-                rubric=_CONCISENESS_RUBRIC,
-                question=question,
-                ground_truth=ground_truth,
-                response=response,
-                model_name=self._judge_model,
-                base_url=self._judge_base_url,
-                api_key=self._judge_token_provider(),
-                timeout=self._judge_timeout,
-            )
-            correctness_result, conciseness_result = await asyncio.gather(
-                correctness_task, conciseness_task
-            )
-            return (
-                clip01(correctness_result.get("score", 0.0)),
-                clip01(conciseness_result.get("score", 0.0)),
-            )
-        except Exception:
-            return (0.0, 0.0)
+        """Evaluate correctness + conciseness — delegates to the free
+        :func:`judge_answer_quality` helper with this env's judge config."""
+        return await judge_answer_quality(
+            question=question,
+            ground_truth=ground_truth,
+            response=response,
+            model=self._judge_model,
+            base_url=self._judge_base_url,
+            api_key=self._judge_token_provider(),
+            timeout=self._judge_timeout,
+        )
 
     # ------------------------------------------------------------------
     # Citation scoring
@@ -485,69 +613,43 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         correctness_raw: float,
         reference_chunk_count: int,
     ) -> float:
-        """Reward correct answers that do not search much past the gold chunk baseline."""
-        if correctness_raw <= 0:
-            return 0.0
-        if not search_within_budget(calls, self._max_search_calls):
-            return 0.0
-
-        baseline_calls = reference_chunk_count + 2
-        excess_calls = max(0, calls - baseline_calls)
-        decay = math.exp(-SEARCH_EFFICIENCY_DECAY_RATE * excess_calls)
-        return self._w_search_efficiency * correctness_raw * decay
+        """Reward correct answers that don't search past the gold-chunk baseline —
+        delegates to the free :func:`score_search_efficiency` helper."""
+        return score_search_efficiency(
+            calls=calls,
+            correctness=correctness_raw,
+            reference_chunk_count=reference_chunk_count,
+            max_search_calls=self._max_search_calls,
+            weight=self._w_search_efficiency,
+        )
 
     def _score_citations(
         self,
         answer_text: str,
         reference_chunks: list[dict[str, Any]],
     ) -> tuple[float, float]:
-        """Score citation recall and precision via exact source match.
-
-        Returns (recall, precision).
-        """
-        ref_ids = self._extract_reference_ids(reference_chunks)
-        cited_ids = self._parse_citations(answer_text)
-
-        if not ref_ids:
-            return 0.0, 0.0
-
-        overlap = cited_ids & ref_ids
-        recall = len(overlap) / len(ref_ids)
-        precision = len(overlap) / len(cited_ids) if cited_ids else 0.0
-        return recall, precision
+        """Citation (recall, precision) via the free :func:`score_citations`
+        helper, honoring a subclass's ``_canonicalize_id`` override."""
+        return score_citations(
+            answer_text, reference_chunks, canonicalize=self._canonicalize_id
+        )
 
     def _extract_reference_ids(
         self, reference_chunks: list[dict[str, Any]]
     ) -> set[str]:
-        """Extract document-level source IDs from reference chunks.
-
-        Default uses the ``file`` metadata key. Override in subclasses
-        for corpus-specific ID extraction.
-        """
-        ids: set[str] = set()
-        for chunk in reference_chunks:
-            if not isinstance(chunk, dict):
-                continue
-            md = chunk.get("metadata", {})
-            if not isinstance(md, dict):
-                continue
-            file_id = str(md.get("file") or md.get("file_path") or "").strip()
-            if file_id:
-                ids.add(self._canonicalize_id(file_id))
-        return ids
+        """Document-level source IDs from reference chunks (uses ``_canonicalize_id``,
+        which subclasses may override for corpus-specific extraction)."""
+        return extract_reference_ids(
+            reference_chunks, canonicalize=self._canonicalize_id
+        )
 
     def _parse_citations(self, text: str) -> set[str]:
-        """Parse [Source: <id>] citations from model answer."""
-        ids: set[str] = set()
-        for match in _CITATION_RE.finditer(text or ""):
-            cid = self._canonicalize_id(match.group(1).strip())
-            if cid:
-                ids.add(cid)
-        return ids
+        """Parse ``[Source: <id>]`` citations, honoring ``_canonicalize_id``."""
+        return parse_citations(text, canonicalize=self._canonicalize_id)
 
     def _canonicalize_id(self, source_id: str) -> str:
         """Normalize a source ID. Override for corpus-specific rules."""
-        return str(source_id or "").strip()
+        return canonicalize_source_id(source_id)
 
     # ------------------------------------------------------------------
     # Helpers

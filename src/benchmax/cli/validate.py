@@ -517,6 +517,20 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     full_messages = args.full_messages or reward_audit
     pip_deps = resolve_pip_dependencies(args.pip, project.env_class, args.provider)
 
+    # Resolve each rollout knob: explicit CLI flag → run.py VALIDATE_CONFIG → default.
+    # The config block lets a multi-turn env bake in its budget so `castform
+    # validate` reproduces the intended run without remembering flags.
+    vc = project.validate_config
+
+    def _cfg(cli_val, key, default):
+        return cli_val if cli_val is not None else vc.get(key, default)
+
+    max_turns = _cfg(args.max_turns, "max_turns", 4)
+    max_tool_calls = _cfg(args.max_tool_calls, "max_tool_calls", 8)
+    examples = _cfg(args.examples, "examples", 2)
+    group_samples = _cfg(args.group_samples, "group_samples", 2)
+    model = args.model if args.model is not None else vc.get("model")
+
     # The SDK streams rollout events to stdout regardless. In --json (and audit)
     # mode keep stdout clean (machine-readable / the report) by routing that stream
     # to stderr; we emit only the JSON object / scorecard on stdout below.
@@ -539,14 +553,15 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             pip_dependencies=pip_deps,
             local=args.local_only,
             api_key=None,  # device session via the bearer seam
-            remote_examples=args.examples,
-            group_reward_samples=args.group_samples,
-            llm_model=args.model,
+            remote_examples=examples,
+            group_reward_samples=group_samples,
+            llm_model=model,
             # Rollout budget — raise both to match an env that advertises a larger
             # search/tool budget (e.g. SearchEnv MAX_SEARCH_CALLS=6) so the rollout
-            # isn't truncated below what the system prompt instructs.
-            max_turns=args.max_turns,
-            max_tool_calls=args.max_tool_calls,
+            # isn't truncated below what the system prompt instructs. Resolved from
+            # the CLI flag, else run.py's VALIDATE_CONFIG, else the default.
+            max_turns=max_turns,
+            max_tool_calls=max_tool_calls,
             # --verbose adds validate_env's own summary on top; default off.
             verbose=args.verbose,
             # --full-messages prints untruncated tool/transcript text — needed to
@@ -565,7 +580,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     _print_report(
         report,
         env_label=f"{project.env_class.__name__} · {source}",
-        model=args.model or _VALIDATION_MODEL,
+        model=model or _VALIDATION_MODEL,
         train_label=args.train,
         reward_audit=reward_audit,
         dataset=project.train_dataset,
@@ -617,28 +632,33 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--model", help="LLM model for the rollout subset (default: cheap nano)"
     )
     p.add_argument(
-        "--examples", type=int, default=2, help="Examples to roll out (default: 2)"
+        "--examples",
+        type=int,
+        default=None,
+        help="Examples to roll out (default: run.py VALIDATE_CONFIG, else 2)",
     )
     p.add_argument(
         "--group-samples",
         type=int,
-        default=2,
-        help="Group-reward sibling count (default: 2)",
+        default=None,
+        help="Group-reward sibling count (default: VALIDATE_CONFIG, else 2)",
     )
     p.add_argument(
         "--max-turns",
         type=int,
-        default=4,
-        help="Max conversation turns per rollout (default: 4). Raise it to match a "
-        "multi-turn env's budget — e.g. a SearchEnv with MAX_SEARCH_CALLS=6 needs "
-        "~7 — or the rollout truncates below what the system prompt instructs",
+        default=None,
+        help="Max conversation turns per rollout (default: run.py VALIDATE_CONFIG, "
+        "else 4). Raise it to match a multi-turn env's budget — e.g. a SearchEnv "
+        "with MAX_SEARCH_CALLS=6 needs ~7 — or the rollout truncates below what the "
+        "system prompt instructs",
     )
     p.add_argument(
         "--max-tool-calls",
         type=int,
-        default=8,
-        help="Max tool calls per rollout (default: 8). Each search is one tool "
-        "call, so raise it alongside --max-turns for tool-heavy envs",
+        default=None,
+        help="Max tool calls per rollout (default: run.py VALIDATE_CONFIG, else 8). "
+        "Each search is one tool call, so raise it alongside --max-turns for "
+        "tool-heavy envs",
     )
     p.add_argument(
         "--local-only",

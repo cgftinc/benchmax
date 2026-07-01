@@ -221,17 +221,23 @@ made-up pages learns nothing about their real handbook.
 #### RAG — search a corpus and cite sources
 
 `castform setup --template rag` writes a `SearchEnv` subclass with a search tool and
-a stock multi-component reward (answer correctness, conciseness via an LLM judge,
-citations, and search efficiency). Treat that reward as a baseline to audit, not a
-law of nature. Before a real launch, inspect transcripts and decide whether to
-override pieces for your corpus:
+a multi-component reward (answer correctness, conciseness via an LLM judge,
+citations, and search efficiency). The reward is spelled out **inline in the run.py's
+`compute_reward`** — the weights (`W_*`), the correctness gate, and the arithmetic
+are right there to read and edit; the heavy pieces (`judge_answer_quality`,
+`score_citations`, `score_search_efficiency`, `extract_answer_block`) are named
+helpers imported from `benchmax.envs.postgres_search.search_env`. Treat that reward
+as a baseline to audit, not a law of nature (`castform validate --reward-audit`).
+Before a real launch, inspect transcripts and edit the run.py for your corpus:
 
 - **Answer extraction:** only score a committed `<answer>` block. Missing tags
   should score as no answer, and a final answer block should beat an earlier draft.
-- **Citations:** the stock matcher is exact-source oriented. Real corpora often have
-  duplicate titles, page-id hashes, bare-id citations, or several valid pages for
-  the same fact. Prefer source keys that match by id/hash/title/path, and credit
-  citations to any valid retrieved source rather than only the single gold label.
+- **Citations:** the stock matcher is exact-source oriented (`score_citations`
+  defaults to whitespace-strip). Real corpora often have duplicate titles, page-id
+  hashes, bare-id citations, or several valid pages for the same fact. Pass a custom
+  matcher — `score_citations(answer, chunks, canonicalize=lambda s: ...)` — to match
+  by id/hash/title/path, and credit citations to any valid retrieved source rather
+  than only the single gold label.
 - **Correctness gate:** multiply citation, brevity, and style bonuses by
   correctness so a wrong answer cannot bank source-format rewards.
 - **Conciseness:** an LLM conciseness judge may be sparse and expensive. A

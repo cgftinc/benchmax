@@ -33,6 +33,18 @@ class LoadedProject:
     from_file: (
         bool  # loaded from a run.py path (pickle env by value) vs an importable module
     )
+    # Optional module-level config dicts baked into run.py so a run is
+    # reproducible from the file (validate/launch read these; CLI flags override).
+    launch_config: dict[str, Any]
+    validate_config: dict[str, Any]
+
+
+def _read_config(module: ModuleType, name: str) -> dict[str, Any]:
+    """A module-level config dict (``LAUNCH_CONFIG`` / ``VALIDATE_CONFIG``) from
+    run.py — the knobs the file bakes in so the run reproduces without remembering
+    CLI flags. Missing or non-dict → ``{}`` (the config block is optional)."""
+    value = getattr(module, name, None)
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _load_module_from_file(path: Path) -> ModuleType:
@@ -135,4 +147,6 @@ def load_project(
         eval_dataset=eval_dataset,
         module=module,
         from_file=from_file,
+        launch_config=_read_config(module, "LAUNCH_CONFIG"),
+        validate_config=_read_config(module, "VALIDATE_CONFIG"),
     )

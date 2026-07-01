@@ -640,3 +640,87 @@ class TestPickle:
         assert restored._default_mode == "lexical"
         result = asyncio.run(restored._search_tool(query="test"))
         assert "result one" in result
+
+
+# --- free reward helpers (imported by a scaffold run.py) --------------------
+
+from benchmax.envs.postgres_search.search_env import (  # noqa: E402
+    canonicalize_source_id,
+    extract_answer_block,
+    extract_reference_ids,
+    judge_answer_quality,
+    parse_citations,
+    score_citations,
+    score_search_efficiency,
+)
+
+
+class TestFreeRewardHelpers:
+    def test_extract_answer_block_public_name(self):
+        # public name is the same strict extractor as the underscore alias
+        assert extract_answer_block("<answer>x</answer>") == "x"
+        assert extract_answer_block("no tag") == ""
+        assert extract_answer_block is _extract_answer_block
+
+    def test_score_citations_recall_precision(self):
+        chunks = [
+            {"metadata": {"file": "a"}},
+            {"metadata": {"file": "b"}},
+        ]
+        recall, precision = score_citations("cite [Source: a]", chunks)
+        assert recall == pytest.approx(0.5)  # 1 of 2 gold cited
+        assert precision == pytest.approx(1.0)  # the 1 cite is valid
+
+    def test_score_citations_no_gold_is_zero(self):
+        assert score_citations("[Source: a]", []) == (0.0, 0.0)
+
+    def test_score_citations_custom_canonicalize(self):
+        # a corpus-robust matcher (case-insensitive) can be injected
+        chunks = [{"metadata": {"file": "DocA"}}]
+        recall, _ = score_citations(
+            "[Source: doca]", chunks, canonicalize=lambda s: s.strip().lower()
+        )
+        assert recall == pytest.approx(1.0)
+
+    def test_parse_and_reference_id_helpers(self):
+        assert parse_citations("x [Source: p ] y") == {"p"}
+        assert extract_reference_ids([{"metadata": {"file_path": " q "}}]) == {"q"}
+        assert canonicalize_source_id("  z  ") == "z"
+
+    def test_score_search_efficiency_gates_and_decays(self):
+        # incorrect → 0; within baseline → full weight; over budget → 0
+        assert score_search_efficiency(
+            calls=1, correctness=0.0, reference_chunk_count=1,
+            max_search_calls=5, weight=0.1,
+        ) == 0.0
+        assert score_search_efficiency(
+            calls=2, correctness=1.0, reference_chunk_count=1,
+            max_search_calls=5, weight=0.1,
+        ) == pytest.approx(0.1)  # baseline = 1 + 2 = 3, 2 calls → no decay
+        assert score_search_efficiency(
+            calls=99, correctness=1.0, reference_chunk_count=1,
+            max_search_calls=5, weight=0.1,
+        ) == 0.0  # over the hard budget
+
+    def test_judge_answer_quality_free_helper(self):
+        with patch(
+            "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
+            new_callable=AsyncMock,
+        ) as mock_eval:
+            mock_eval.return_value = {"score": 0.5}
+            c, con = asyncio.run(
+                judge_answer_quality(
+                    question="Q", ground_truth="G", response="A",
+                    model="m", base_url="u", api_key="k",
+                )
+            )
+            assert c == pytest.approx(0.5) and con == pytest.approx(0.5)
+
+    def test_judge_answer_quality_empty_response_is_zero(self):
+        c, con = asyncio.run(
+            judge_answer_quality(
+                question="Q", ground_truth="G", response="   ",
+                model="m", base_url="u", api_key="k",
+            )
+        )
+        assert (c, con) == (0.0, 0.0)

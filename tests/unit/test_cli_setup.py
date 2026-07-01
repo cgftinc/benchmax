@@ -144,11 +144,22 @@ def test_setup_template_rag_writes_searchenv(tmp_path):
     run_py = (tmp_path / "run.py").read_text()
     assert "class CustomSearchEnv(SearchEnv)" in run_py
     assert "MAX_SEARCH_CALLS = 6" in run_py
+    # Self-contained: the reward arithmetic + weights are visible/editable in the
+    # file, and the run's budgets are baked in so it reproduces without CLI flags.
+    assert "async def compute_reward" in run_py
+    assert "W_CORRECTNESS" in run_py
+    assert "VALIDATE_CONFIG = {" in run_py
+    assert "LAUNCH_CONFIG = {" in run_py
     mod = _load_module_from_file(tmp_path / "run.py")
     env_cls = discover_env_class(mod)  # imported SearchEnv is ignored (other module)
     assert env_cls.__name__ == "CustomSearchEnv"
     assert issubclass(env_cls, SearchEnv)
     assert isinstance(env_cls(), SearchEnv)  # no-arg construct, no network
+    # The config blocks are what validate/launch read (LoadedProject surfaces them).
+    from benchmax.cli._project import _read_config
+
+    assert _read_config(mod, "VALIDATE_CONFIG")["max_turns"] == 7
+    assert _read_config(mod, "LAUNCH_CONFIG")["max_rollout_len"] == 16384
 
 
 def test_setup_template_rag_writes_run_py_no_datasets(tmp_path):

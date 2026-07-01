@@ -84,6 +84,8 @@ class _FakeProject:
     eval_dataset = [{"prompt": "y"}]
     module = None
     from_file = True
+    launch_config: dict = {}
+    validate_config: dict = {}
 
 
 class _FakeClient:
@@ -210,3 +212,95 @@ def test_launch_preflight_honors_set_max_turns(monkeypatch):
     # default when --set max_turns is omitted
     assert launch._cmd_launch(_launch_ns(set=None)) == 0
     assert captured["max_turns"] == 4
+
+
+# --- LAUNCH_CONFIG: run.py bakes in launcher args + type -------------------
+
+
+def _config_project(**cfg):
+    class _P(_FakeProject):
+        launch_config = cfg
+
+    return _P()
+
+
+class _CapturingClient(_FakeClient):
+    captured: dict = {}
+
+    def launch_training_run(self, **kw):
+        _CapturingClient.captured = kw
+        return "run-123"
+
+
+def _patch_launch(monkeypatch, project):
+    monkeypatch.setattr(launch, "load_project", lambda **k: project)
+    monkeypatch.setattr(launch, "TrainerClient", _CapturingClient)
+    monkeypatch.setattr(
+        "benchmax.platform.validation.validate_env",
+        lambda **k: type("R", (), {"ok": True})(),
+    )
+    monkeypatch.setattr(
+        "benchmax.platform.training_run.upload_training_run", lambda **k: _Uploaded()
+    )
+    monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+
+
+def test_launch_config_supplies_launcher_args(monkeypatch):
+    _patch_launch(monkeypatch, _config_project(max_turns=7, max_rollout_len=2000))
+    assert launch._cmd_launch(_launch_ns(set=None)) == 0
+    la = _CapturingClient.captured["launcher_args"]
+    assert la["max_turns"] == 7 and la["max_rollout_len"] == 2000
+
+
+def test_launch_cli_set_overrides_config(monkeypatch):
+    _patch_launch(monkeypatch, _config_project(max_turns=7))
+    assert launch._cmd_launch(_launch_ns(set=["max_turns=11"])) == 0
+    assert _CapturingClient.captured["launcher_args"]["max_turns"] == 11
+
+
+def test_launch_config_type_used_when_flag_omitted(monkeypatch):
+    _patch_launch(monkeypatch, _config_project(type="simple-cpu"))
+    assert launch._cmd_launch(_launch_ns(type=None, set=None)) == 0
+    assert _CapturingClient.captured["training_run_type"] == "simple-cpu"
+
+
+def test_launch_config_max_turns_reaches_preflight(monkeypatch):
+    captured: dict = {}
+
+    def _fake_validate(**k):
+        captured["max_turns"] = k.get("max_turns")
+        return type("R", (), {"ok": True})()
+
+    monkeypatch.setattr(launch, "load_project", lambda **k: _config_project(max_turns=9))
+    monkeypatch.setattr(launch, "TrainerClient", _CapturingClient)
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _fake_validate)
+    monkeypatch.setattr(
+        "benchmax.platform.training_run.upload_training_run", lambda **k: _Uploaded()
+    )
+    monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+    assert launch._cmd_launch(_launch_ns(set=None)) == 0
+    assert captured["max_turns"] == 9  # preflight smoke-tests at the config budget
+
+
+def test_launcher_args_from_config_unknown_key_warns_and_skips(capsys):
+    from benchmax.cli.launch import _launcher_args_from_config
+
+    out = _launcher_args_from_config(SPECS, {"max_turns": 5, "bogus_knob": 1})
+    assert out == {"max_turns": 5}  # unknown skipped
+    assert "unknown launch arg 'bogus_knob'" in capsys.readouterr().err
+
+
+def test_launcher_args_from_config_out_of_range_fails():
+    from benchmax.cli.launch import _launcher_args_from_config
+
+    with pytest.raises(SystemExit, match="above max"):
+        _launcher_args_from_config(SPECS, {"max_rollout_len": 99999})
+
+
+def test_launcher_args_from_config_ignores_reserved_keys():
+    from benchmax.cli.launch import _launcher_args_from_config
+
+    # type/name/model are resolved separately, not sent as launcher args
+    assert _launcher_args_from_config(SPECS, {"type": "simple", "max_turns": 4}) == {
+        "max_turns": 4
+    }

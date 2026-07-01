@@ -70,6 +70,29 @@ can push a run into truncation or OOM even when each individual search result is
 reasonable. Prefer a smaller default search budget, trimmed per-chunk bodies, and a
 `max_rollout_len` you chose after checking `castform launch --list-args`.
 
+### Bake the config into run.py (reproducible launches)
+
+A `run.py` can carry a `LAUNCH_CONFIG` dict (and `VALIDATE_CONFIG` for the
+pre-launch check) that `castform launch` / `castform validate` read, so the run
+reproduces from the file without remembering flags — a `--set` / CLI flag still
+overrides per invocation:
+
+```python
+LAUNCH_CONFIG = {
+    "max_turns": 7,             # trainer ignores recommended_max_*; bake it here
+    "max_rollout_len": 16384,   # whole-rollout token budget
+    "num_epochs": 3,
+    # "type": "simple",         # gpu pool; "simple-cpu" for a smoke run
+}
+VALIDATE_CONFIG = {"max_turns": 7, "max_tool_calls": 6, "examples": 6}
+```
+
+The launcher keys must be real `--set` args (`--list-args`) — an unknown key is
+skipped with a warning, not sent. `max_tool_calls` is **not** a launch arg (stays 8),
+so keep it out of `LAUNCH_CONFIG`; it *is* honored in `VALIDATE_CONFIG`. This is the
+fix for the `MAX_SEARCH_CALLS` ↔ `--max-turns` sync footgun — set the budget once, in
+the file, next to `MAX_SEARCH_CALLS`.
+
 ### Epochs, checkpoints, and overfitting
 
 Read eval, not train, as the launch succeeds. A healthy train curve can keep rising
