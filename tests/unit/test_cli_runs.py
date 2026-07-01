@@ -294,7 +294,7 @@ def test_runs_rollout_gold_not_found_is_graceful(monkeypatch, capsys, tmp_path):
 def test_gold_join_helpers(tmp_path):
     assert runs._user_prompt([{"role": "user", "content": "hi"}]) == "hi"
     assert (
-        runs._final_answer(
+        runs.final_answer(
             [{"role": "assistant", "content": "one"}, {"role": "user", "content": "q"}]
         )
         == "one"

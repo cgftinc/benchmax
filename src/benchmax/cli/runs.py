@@ -14,7 +14,13 @@ from pathlib import Path
 
 from benchmax import config
 from benchmax.cli._client import handle_errors, trainer_client
-from benchmax.cli._output import fmt_value, print_json, render_table
+from benchmax.cli._output import (
+    final_answer,
+    fmt_value,
+    print_json,
+    render_table,
+    truncate,
+)
 from benchmax.cli._project import ProjectError, _load_jsonl
 
 
@@ -22,13 +28,8 @@ def _run_url(run_id: str) -> str:
     return f"{config.web_app_url()}/train/{run_id}"
 
 
-def _trunc(text: object, n: int) -> str:
-    """Collapse whitespace and clip to ``n`` chars for one-line table cells."""
-    text = " ".join(str(text or "").split())
-    return text if len(text) <= n else text[: n - 1] + "…"
-
-
 # --- stored-rollout helpers (runs rollouts / rollout) -----------------------
+# `truncate` + `final_answer` are shared with the validate audit (benchmax.cli._output).
 
 
 def _user_prompt(messages: list | None) -> str | None:
@@ -37,14 +38,6 @@ def _user_prompt(messages: list | None) -> str | None:
         if isinstance(m, dict) and m.get("role") == "user" and m.get("content"):
             c = m["content"]
             return c if isinstance(c, str) else str(c)
-    return None
-
-
-def _final_answer(messages: list | None) -> str | None:
-    """The last assistant-turn content — the model's committed answer."""
-    for m in reversed(messages or []):
-        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("content"):
-            return m["content"]
     return None
 
 
@@ -272,7 +265,7 @@ def _cmd_runs_rollouts(args: argparse.Namespace) -> int:
             [
                 g.get("promptMessageId", ""),
                 fmt_value(last) if last is not None else "-",
-                _trunc(g.get("promptText"), 60),
+                truncate(g.get("promptText"), 60),
             ]
         )
     render_table(["EXAMPLE ID", "MEAN REWARD", "PROMPT"], rows)
@@ -331,12 +324,12 @@ def _cmd_runs_rollout(args: argparse.Namespace) -> int:
         f"total {fmt_value(details.get('totalReward'))})"
     )
     if prompt:
-        print(f"\nQ:    {_trunc(prompt, 400)}")
+        print(f"\nQ:    {truncate(prompt, 400)}")
     if gold is not None:
-        print(f"gold: {_trunc(gold, 400)}")
+        print(f"gold: {truncate(gold, 400)}")
     else:
         print("gold: (not found locally — pass --dataset to join ground truth)")
-    answer = _final_answer(details.get("messages"))
+    answer = final_answer(details.get("messages"))
     if answer:
         print(f"\nanswer:\n{answer}")
     rewards = details.get("rewards") or []

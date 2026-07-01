@@ -20,7 +20,7 @@ import json
 import sys
 
 from benchmax.cli._client import handle_errors
-from benchmax.cli._output import fmt_value, print_json
+from benchmax.cli._output import final_answer, fmt_value, print_json, truncate
 from benchmax.cli._preflight import print_project_error
 from benchmax.cli._project import ProjectError, load_project
 from benchmax.cli._providers import provider_choices, resolve_pip_dependencies
@@ -224,20 +224,7 @@ def _constant_total(ok_rewards: list[dict]) -> float | None:
 
 
 # --- reward audit (--reward-audit): the pre-launch reward inspection -------------
-
-
-def _trunc(text: str, n: int) -> str:
-    """Collapse whitespace and clip to ``n`` chars for one-line display."""
-    text = " ".join(str(text).split())
-    return text if len(text) <= n else text[: n - 1] + "…"
-
-
-def _final_answer(messages: list | None) -> str | None:
-    """The last assistant message's content — what the model actually answered."""
-    for m in reversed(messages or []):
-        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("content"):
-            return m["content"]
-    return None
+# `truncate` + `final_answer` are shared with `runs rollout` (benchmax.cli._output).
 
 
 def _example_gold(row: dict | None) -> tuple[object, object]:
@@ -380,12 +367,12 @@ def _print_reward_audit(remote, ok_rewards: list[dict], *, dataset, pip_deps) ->
         )
         print(f"  ── example {ex.index}  ·  reward {fmt_value(total)} ──")
         if q is not None:
-            print(f"     Q:    {_trunc(q, 200)}")
+            print(f"     Q:    {truncate(q, 200)}")
         if gold is not None:
-            print(f"     gold: {_trunc(gold, 200)}")
+            print(f"     gold: {truncate(gold, 200)}")
         if ex.ok:
-            ans = _final_answer(ex.messages)
-            print(f"     ans:  {_trunc(ans, 300) if ans else '(no answer captured)'}")
+            ans = final_answer(ex.messages)
+            print(f"     ans:  {truncate(ans, 300) if ans else '(no answer captured)'}")
             print(f"     rewards: {_fmt_rewards(ex.rewards)}")
         else:
             print(f"     ✗ failed: {ex.error}")
