@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 
 _CITATION_RE = re.compile(r"\[Source:\s*([^\]]+)\]", re.IGNORECASE)
 
-_ANSWER_BLOCK_RE = re.compile(r"<answer\s*>(.*?)</answer\s*>", re.IGNORECASE | re.DOTALL)
+_ANSWER_BLOCK_RE = re.compile(
+    r"<answer\s*>(.*?)</answer\s*>", re.IGNORECASE | re.DOTALL
+)
 _ANSWER_OPEN_RE = re.compile(r"<answer\s*>", re.IGNORECASE)
 
 
@@ -489,13 +491,17 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             correctness = clip01(correctness_raw)
             rewards: dict[str, float] = {
                 "answer_correctness": self._w_correctness * correctness,
-                "conciseness": self._w_conciseness * clip01(conciseness_raw) * correctness,
+                "conciseness": self._w_conciseness
+                * clip01(conciseness_raw)
+                * correctness,
             }
 
             # 2. Citation recall / precision (gated on correctness)
             recall, precision = self._score_citations(answer, reference_chunks)
             rewards["citation_recall"] = self._w_citation_recall * recall * correctness
-            rewards["citation_precision"] = self._w_citation_precision * precision * correctness
+            rewards["citation_precision"] = (
+                self._w_citation_precision * precision * correctness
+            )
 
             # 3. Search efficiency (shaped by search count vs. gold chunk baseline)
             calls = count_search_calls(messages)

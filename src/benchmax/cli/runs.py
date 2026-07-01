@@ -63,7 +63,11 @@ def _gold_index(dataset_paths: list[str]) -> dict[str, object]:
             continue
         index: dict[str, object] = {}
         for r in rows:
+            # Generic datasets key the question under 'prompt'; the flagship RAG
+            # datasets (qa-gen output) use 'question' / 'answer'. Accept both.
             q = r.get("prompt")
+            if not q:
+                q = r.get("question")
             if isinstance(q, list):
                 q = _user_prompt(q)
             gold = r.get("ground_truth")
@@ -77,17 +81,21 @@ def _gold_index(dataset_paths: list[str]) -> dict[str, object]:
 
 
 def _match_gold(prompt_text: str | None, index: dict[str, object]) -> object:
-    """Best-effort gold lookup: exact normalized match, else containment either
-    way (the rollout prompt may wrap the row's prompt in a template)."""
+    """Best-effort gold lookup: exact normalized match, else the LONGEST dataset
+    question that appears inside the rollout prompt (the prompt may wrap the
+    question in a template). Longest-wins so 'reset password' can't shadow the
+    more specific 'reset password on mobile'; one-directional so a short prompt
+    can't spuriously match a longer question."""
     if not prompt_text or not index:
         return None
     key = " ".join(prompt_text.split())
     if key in index:
         return index[key]
+    best_k, best_v = "", None
     for k, v in index.items():
-        if k and (k in key or key in k):
-            return v
-    return None
+        if k and k in key and len(k) > len(best_k):
+            best_k, best_v = k, v
+    return best_v
 
 
 def _print_run(run: dict) -> None:
@@ -281,7 +289,11 @@ def _cmd_runs_rollout(args: argparse.Namespace) -> int:
         details = client.get_rollout_details(args.run_id, args.rollout_id)
 
     prompt = _user_prompt(details.get("promptMessages"))
-    datasets = [args.dataset] if args.dataset else ["eval_dataset.jsonl", "train_dataset.jsonl"]
+    datasets = (
+        [args.dataset]
+        if args.dataset
+        else ["eval_dataset.jsonl", "train_dataset.jsonl"]
+    )
     gold = _match_gold(prompt, _gold_index(datasets))
 
     if args.view:

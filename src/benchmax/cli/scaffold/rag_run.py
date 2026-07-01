@@ -25,6 +25,7 @@ trainer image; only your own local modules need bundling.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from benchmax import config
@@ -75,6 +76,8 @@ REWARD_KEYS = (
     "citation_precision",
     "search_efficiency",
 )
+
+logger = logging.getLogger(__name__)
 
 
 class CustomSearchEnv(SearchEnv):
@@ -138,13 +141,16 @@ class CustomSearchEnv(SearchEnv):
                 model=self._judge_model,
                 base_url=self._judge_base_url,
                 api_key=self._judge_token_provider(),
+                timeout=self._judge_timeout,
             )
             correctness = clip01(correctness_raw)  # the gate: 0 / 0.5 / 1.0
 
             # Citations: exact source-id match by default. For a corpus with duplicate
-            # pages or bare-id citations, pass canonicalize= to score_citations (or
-            # override _canonicalize_id) — see the design-environment skill.
-            recall, precision = score_citations(answer, reference_chunks)
+            # pages or bare-id citations, override _canonicalize_id (threaded below)
+            # or pass a canonicalize= callable — see the design-environment skill.
+            recall, precision = score_citations(
+                answer, reference_chunks, canonicalize=self._canonicalize_id
+            )
             calls = count_search_calls(messages)
 
             return {
@@ -161,7 +167,9 @@ class CustomSearchEnv(SearchEnv):
                 ),
             }
         except (KeyError, ValueError, TypeError, AttributeError):
-            # A reward bug must not crash the rollout — score 0 and move on.
+            # A reward bug must not crash the rollout — score 0, but LOG it: a
+            # silent all-zero reward is the hardest reward bug to diagnose.
+            logger.exception("[CustomSearchEnv] compute_reward failed")
             return zeros
 
 

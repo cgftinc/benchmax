@@ -198,7 +198,10 @@ def test_runs_rollouts_summary_table(monkeypatch, capsys):
             {
                 "promptMessageId": "ex1",
                 "promptText": "where do I add the exception?",
-                "rewardHistory": [{"step": 0, "meanReward": 0.2}, {"step": 20, "meanReward": 0.7}],
+                "rewardHistory": [
+                    {"step": 0, "meanReward": 0.2},
+                    {"step": 20, "meanReward": 0.7},
+                ],
             }
         ],
         mode_average={"avg": 0.55},
@@ -227,13 +230,17 @@ def test_runs_rollouts_example_heatmap(monkeypatch, capsys):
 
 def test_runs_rollout_details_with_gold(monkeypatch, capsys, tmp_path):
     ds = tmp_path / "eval.jsonl"
-    ds.write_text('{"prompt": "where do I add the exception?", "ground_truth": "edit /etc/docker"}\n')
+    ds.write_text(
+        '{"prompt": "where do I add the exception?", "ground_truth": "edit /etc/docker"}\n'
+    )
     _patch(
         monkeypatch,
         rollout_details={
             "step": 139,
             "totalReward": 0.85,
-            "promptMessages": [{"role": "user", "content": "where do I add the exception?"}],
+            "promptMessages": [
+                {"role": "user", "content": "where do I add the exception?"}
+            ],
             "messages": [
                 {"role": "user", "content": "where do I add the exception?"},
                 {"role": "assistant", "content": "edit /etc/docker and reload"},
@@ -278,17 +285,43 @@ def test_runs_rollout_gold_not_found_is_graceful(monkeypatch, capsys, tmp_path):
         },
     )
     # dataset path that doesn't exist → no gold, but must not crash
-    assert runs._cmd_runs_rollout(_rollout_ns(dataset=str(tmp_path / "nope.jsonl"))) == 0
+    assert (
+        runs._cmd_runs_rollout(_rollout_ns(dataset=str(tmp_path / "nope.jsonl"))) == 0
+    )
     assert "not found locally" in capsys.readouterr().out
 
 
 def test_gold_join_helpers(tmp_path):
     assert runs._user_prompt([{"role": "user", "content": "hi"}]) == "hi"
-    assert runs._final_answer(
-        [{"role": "assistant", "content": "one"}, {"role": "user", "content": "q"}]
-    ) == "one"
+    assert (
+        runs._final_answer(
+            [{"role": "assistant", "content": "one"}, {"role": "user", "content": "q"}]
+        )
+        == "one"
+    )
     idx = {"a b c": "GOLD"}
     assert runs._match_gold("a b c", idx) == "GOLD"  # exact
     assert runs._match_gold("prefix a b c suffix", idx) == "GOLD"  # containment
     assert runs._match_gold("unrelated", idx) is None
     assert runs._match_gold(None, idx) is None
+
+
+def test_gold_index_reads_question_key(tmp_path):
+    # Flagship RAG datasets key on 'question'/'answer' (no 'prompt'/'ground_truth').
+    ds = tmp_path / "eval.jsonl"
+    ds.write_text(
+        '{"question": "what is X?", "answer": "X is Y", "reference_chunks": []}\n'
+    )
+    idx = runs._gold_index([str(ds)])
+    assert idx == {
+        "what is X?": "X is Y"
+    }  # was empty before the fix (keyed on 'prompt')
+
+
+def test_match_gold_longest_wins_no_substring_shadow(tmp_path):
+    # When one question is a substring of another, the LONGER (more specific) wins,
+    # and a bare substring can't shadow it.
+    idx = {"reset password": "SHORT", "reset password on mobile": "LONG"}
+    assert runs._match_gold("help: reset password on mobile please", idx) == "LONG"
+    # reverse direction no longer matches (prompt shorter than the question)
+    assert runs._match_gold("reset", idx) is None

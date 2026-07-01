@@ -51,7 +51,9 @@ def _check_launcher_value(spec: LaunchArgSpec, key: str, value, *, source: str) 
         and isinstance(value, (int, float))
         and value > spec.warn_above
     ):
-        print(f"⚠ {key}={value} exceeds the soft cap {spec.warn_above}", file=sys.stderr)
+        print(
+            f"⚠ {key}={value} exceeds the soft cap {spec.warn_above}", file=sys.stderr
+        )
 
 
 def _build_launcher_args(specs: list[LaunchArgSpec], pairs: list[str] | None) -> dict:

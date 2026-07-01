@@ -42,9 +42,18 @@ class LoadedProject:
 def _read_config(module: ModuleType, name: str) -> dict[str, Any]:
     """A module-level config dict (``LAUNCH_CONFIG`` / ``VALIDATE_CONFIG``) from
     run.py — the knobs the file bakes in so the run reproduces without remembering
-    CLI flags. Missing or non-dict → ``{}`` (the config block is optional)."""
+    CLI flags. Absent → ``{}`` (the block is optional); present-but-not-a-dict is a
+    user error we fail loudly on rather than silently drop (a dropped budget wastes
+    GPU with no explanation)."""
     value = getattr(module, name, None)
-    return dict(value) if isinstance(value, dict) else {}
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ProjectError(
+            f"{name} must be a dict (got {type(value).__name__}); it bakes the "
+            "validate/launch knobs into run.py. Fix or remove it."
+        )
+    return dict(value)
 
 
 def _load_module_from_file(path: Path) -> ModuleType:

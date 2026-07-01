@@ -215,7 +215,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     env_writes: list[bool] = []
     if args.template == "rag" and not args.no_template:
         # Datasets come from `castform data qa-gen`; existing run.py failed fast above.
-        env_writes.append(w(target / "run.py", (root / "rag_run.py").read_text("utf-8")))
+        env_writes.append(
+            w(target / "run.py", (root / "rag_run.py").read_text("utf-8"))
+        )
 
     if args.verbose:
         print("\n".join(log))

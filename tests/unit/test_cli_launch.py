@@ -271,7 +271,9 @@ def test_launch_config_max_turns_reaches_preflight(monkeypatch):
         captured["max_turns"] = k.get("max_turns")
         return type("R", (), {"ok": True})()
 
-    monkeypatch.setattr(launch, "load_project", lambda **k: _config_project(max_turns=9))
+    monkeypatch.setattr(
+        launch, "load_project", lambda **k: _config_project(max_turns=9)
+    )
     monkeypatch.setattr(launch, "TrainerClient", _CapturingClient)
     monkeypatch.setattr("benchmax.platform.validation.validate_env", _fake_validate)
     monkeypatch.setattr(

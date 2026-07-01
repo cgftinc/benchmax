@@ -152,7 +152,9 @@ class TestInit:
         # RAG prompts frequently include JSON few-shot examples. The regex
         # substitution should leave them untouched instead of crashing.
         class CustomEnv(SearchEnv):
-            SYSTEM_PROMPT_TEMPLATE = 'Example: {"answer": "X"} for {corpus_description}.'
+            SYSTEM_PROMPT_TEMPLATE = (
+                'Example: {"answer": "X"} for {corpus_description}.'
+            )
 
         assert (
             CustomEnv.render_system_prompt(
@@ -689,18 +691,33 @@ class TestFreeRewardHelpers:
 
     def test_score_search_efficiency_gates_and_decays(self):
         # incorrect → 0; within baseline → full weight; over budget → 0
+        assert (
+            score_search_efficiency(
+                calls=1,
+                correctness=0.0,
+                reference_chunk_count=1,
+                max_search_calls=5,
+                weight=0.1,
+            )
+            == 0.0
+        )
         assert score_search_efficiency(
-            calls=1, correctness=0.0, reference_chunk_count=1,
-            max_search_calls=5, weight=0.1,
-        ) == 0.0
-        assert score_search_efficiency(
-            calls=2, correctness=1.0, reference_chunk_count=1,
-            max_search_calls=5, weight=0.1,
+            calls=2,
+            correctness=1.0,
+            reference_chunk_count=1,
+            max_search_calls=5,
+            weight=0.1,
         ) == pytest.approx(0.1)  # baseline = 1 + 2 = 3, 2 calls → no decay
-        assert score_search_efficiency(
-            calls=99, correctness=1.0, reference_chunk_count=1,
-            max_search_calls=5, weight=0.1,
-        ) == 0.0  # over the hard budget
+        assert (
+            score_search_efficiency(
+                calls=99,
+                correctness=1.0,
+                reference_chunk_count=1,
+                max_search_calls=5,
+                weight=0.1,
+            )
+            == 0.0
+        )  # over the hard budget
 
     def test_judge_answer_quality_free_helper(self):
         with patch(
@@ -710,8 +727,12 @@ class TestFreeRewardHelpers:
             mock_eval.return_value = {"score": 0.5}
             c, con = asyncio.run(
                 judge_answer_quality(
-                    question="Q", ground_truth="G", response="A",
-                    model="m", base_url="u", api_key="k",
+                    question="Q",
+                    ground_truth="G",
+                    response="A",
+                    model="m",
+                    base_url="u",
+                    api_key="k",
                 )
             )
             assert c == pytest.approx(0.5) and con == pytest.approx(0.5)
@@ -719,8 +740,12 @@ class TestFreeRewardHelpers:
     def test_judge_answer_quality_empty_response_is_zero(self):
         c, con = asyncio.run(
             judge_answer_quality(
-                question="Q", ground_truth="G", response="   ",
-                model="m", base_url="u", api_key="k",
+                question="Q",
+                ground_truth="G",
+                response="   ",
+                model="m",
+                base_url="u",
+                api_key="k",
             )
         )
         assert (c, con) == (0.0, 0.0)

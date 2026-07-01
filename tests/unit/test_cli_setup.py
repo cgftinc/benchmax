@@ -202,3 +202,46 @@ def test_getting_started_uses_one_prompt_model(tmp_path):
     assert "work through them in order" not in gs.lower()
     assert "how to reward it" not in gs
     assert "Quick commands" in gs
+
+
+def test_rag_scaffold_reward_threads_canonicalize_and_timeout(tmp_path, monkeypatch):
+    """The scaffold's inline compute_reward must honor a _canonicalize_id override
+    (citations) and the env's judge_timeout — behavior the inherited SearchEnv had,
+    which a naive inline reward silently drops (review findings #0, #6)."""
+    import asyncio
+
+    from benchmax.cli._project import _load_module_from_file, discover_env_class
+
+    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
+    mod = _load_module_from_file(tmp_path / "run.py")
+    env_cls = discover_env_class(mod)
+
+    env = env_cls.__new__(env_cls)  # skip network __init__
+    env._judge_model = "m"
+    env._judge_base_url = "u"
+    env._judge_timeout = 99.0
+    env._judge_token_provider = lambda: "k"
+    env._max_search_calls = 6
+    env._w_search_efficiency = 0.1
+    # A corpus-specific matcher (case-insensitive) — proves _canonicalize_id is threaded.
+    env._canonicalize_id = lambda s: str(s or "").strip().lower()
+
+    captured: dict = {}
+
+    async def _fake_judge(**kw):
+        captured.update(kw)
+        return (1.0, 1.0)
+
+    monkeypatch.setattr(mod, "judge_answer_quality", _fake_judge)
+
+    msgs = [{"role": "assistant", "content": "<answer>x [Source: DOCA]</answer>"}]
+    task = {
+        "question": "Q",
+        "ground_truth": "x",
+        "reference_chunks": [{"metadata": {"file": "doca"}}],
+    }
+    reward = asyncio.run(env.compute_reward("r", msgs, task))
+
+    assert captured["timeout"] == 99.0  # #6: env judge_timeout threaded
+    # #0: "DOCA" cite matched gold "doca" via the injected lowercasing canonicalizer
+    assert reward["citation_recall"] > 0

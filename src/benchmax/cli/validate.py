@@ -246,7 +246,11 @@ def _example_gold(row: dict | None) -> tuple[object, object]:
     ``ground_truth`` (or ``answer``)."""
     if not isinstance(row, dict):
         return None, None
+    # Generic datasets key the question under 'prompt'; the flagship RAG datasets
+    # (qa-gen output, which this audit most often runs on) use 'question' / 'answer'.
     q = row.get("prompt")
+    if not q:
+        q = row.get("question")
     if isinstance(q, list):  # chat-style prompt → last user turn
         q = next(
             (m.get("content") for m in reversed(q) if m.get("role") == "user"), None
@@ -361,19 +365,13 @@ def _print_reward_audit(remote, ok_rewards: list[dict], *, dataset, pip_deps) ->
                 ).rstrip()
             )
         if corr_key is None:
-            print(
-                "  (no correctness component detected — redundancy check skipped)"
-            )
+            print("  (no correctness component detected — redundancy check skipped)")
 
     print()
     examples = remote.examples
     print(f"  transcripts ({len(examples)} rolled out)")
     for ex in examples:
-        row = (
-            dataset[ex.index]
-            if dataset and 0 <= ex.index < len(dataset)
-            else None
-        )
+        row = dataset[ex.index] if dataset and 0 <= ex.index < len(dataset) else None
         q, gold = _example_gold(row)
         total = sum(
             v
@@ -522,13 +520,19 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     # validate` reproduces the intended run without remembering flags.
     vc = project.validate_config
 
-    def _cfg(cli_val, key, default):
-        return cli_val if cli_val is not None else vc.get(key, default)
+    def _int_cfg(cli_val, key, default):
+        """Resolve an int knob (CLI flag → VALIDATE_CONFIG → default), validating
+        the config value's type — a str budget in run.py would otherwise crash
+        deep in the SDK instead of failing loudly here."""
+        val = cli_val if cli_val is not None else vc.get(key, default)
+        if not isinstance(val, int) or isinstance(val, bool):
+            raise SystemExit(f"VALIDATE_CONFIG['{key}'] must be an int, got {val!r}")
+        return val
 
-    max_turns = _cfg(args.max_turns, "max_turns", 4)
-    max_tool_calls = _cfg(args.max_tool_calls, "max_tool_calls", 8)
-    examples = _cfg(args.examples, "examples", 2)
-    group_samples = _cfg(args.group_samples, "group_samples", 2)
+    max_turns = _int_cfg(args.max_turns, "max_turns", 4)
+    max_tool_calls = _int_cfg(args.max_tool_calls, "max_tool_calls", 8)
+    examples = _int_cfg(args.examples, "examples", 2)
+    group_samples = _int_cfg(args.group_samples, "group_samples", 2)
     model = args.model if args.model is not None else vc.get("model")
 
     # The SDK streams rollout events to stdout regardless. In --json (and audit)

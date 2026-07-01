@@ -223,7 +223,9 @@ def test_validate_pip_forwards_to_sandbox(monkeypatch):
 
     def _capture(**k):
         captured.update(k)
-        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
 
     monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
     monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
@@ -246,7 +248,9 @@ def test_validate_turn_budget_forwards_to_rollout(monkeypatch):
 
     def _capture(**k):
         captured.update(k)
-        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
 
     monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
     monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
@@ -260,7 +264,9 @@ def test_validate_turn_budget_defaults_in_parser():
     # _cmd_validate resolves None → config → the 4/8 fallback.
     args = build_parser().parse_args(["validate"])
     assert args.max_turns is None and args.max_tool_calls is None
-    args = build_parser().parse_args(["validate", "--max-turns", "11", "--max-tool-calls", "12"])
+    args = build_parser().parse_args(
+        ["validate", "--max-turns", "11", "--max-tool-calls", "12"]
+    )
     assert args.max_turns == 11 and args.max_tool_calls == 12
 
 
@@ -277,10 +283,13 @@ def test_validate_config_supplies_budget_when_flag_omitted(monkeypatch):
 
     def _capture(**k):
         captured.update(k)
-        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
 
     monkeypatch.setattr(
-        validate, "load_project",
+        validate,
+        "load_project",
         lambda **k: _validate_config_project(max_turns=9, max_tool_calls=7, examples=5),
     )
     monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
@@ -297,13 +306,17 @@ def test_validate_cli_flag_overrides_config(monkeypatch):
 
     def _capture(**k):
         captured.update(k)
-        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
 
     monkeypatch.setattr(
         validate, "load_project", lambda **k: _validate_config_project(max_turns=9)
     )
     monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
-    validate._cmd_validate(_validate_ns(max_turns=3))  # explicit flag wins over config 9
+    validate._cmd_validate(
+        _validate_ns(max_turns=3)
+    )  # explicit flag wins over config 9
     assert captured["max_turns"] == 3
 
 
@@ -312,11 +325,15 @@ def test_validate_falls_back_to_default_without_config_or_flag(monkeypatch):
 
     def _capture(**k):
         captured.update(k)
-        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
 
     monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
     monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
-    validate._cmd_validate(_validate_ns(max_turns=None, max_tool_calls=None, examples=None))
+    validate._cmd_validate(
+        _validate_ns(max_turns=None, max_tool_calls=None, examples=None)
+    )
     assert captured["max_turns"] == 4 and captured["max_tool_calls"] == 8
     assert captured["remote_examples"] == 2
 
@@ -329,7 +346,9 @@ def test_validate_provider_injects_sdk(monkeypatch):
 
     def _capture(**k):
         captured.update(k)
-        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
 
     monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
     monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
@@ -384,9 +403,7 @@ def test_recommendation_varying_reward_has_no_hint():
 
 
 def _skill_text(name: str) -> str:
-    skill = (
-        Path(validate.__file__).parent / "scaffold/skills" / name / "SKILL.md"
-    )
+    skill = Path(validate.__file__).parent / "scaffold/skills" / name / "SKILL.md"
     return skill.read_text("utf-8")
 
 
@@ -482,7 +499,9 @@ def test_constant_total_helper():
     assert validate._constant_total([{"a": 0.0}, {"b": 0.0}]) == 0.0  # ragged, both 0
     assert validate._constant_total([{"a": 1.0}, {"a": 2.0}]) is None  # varies
     assert validate._constant_total([{"a": 0.0}]) is None  # <2 rollouts
-    assert validate._constant_total([{"p": True}, {"p": False}]) == 0.0  # bools excluded
+    assert (
+        validate._constant_total([{"p": True}, {"p": False}]) == 0.0
+    )  # bools excluded
 
 
 # --- reward audit (--reward-audit) --------------------------------------
@@ -522,9 +541,7 @@ def test_reward_audit_shows_components_gold_and_answers(monkeypatch, capsys):
         group=None,
     )
     monkeypatch.setattr(validate, "load_project", lambda **k: _RagProject())
-    monkeypatch.setattr(
-        "benchmax.platform.validation.validate_env", lambda **k: report
-    )
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: report)
     assert validate._cmd_validate(_validate_ns(reward_audit=True)) == 0
     out = capsys.readouterr().out
     assert "reward audit" in out
@@ -560,9 +577,7 @@ def test_reward_audit_json_carries_audit_and_gold(monkeypatch, capsys):
         group=None,
     )
     monkeypatch.setattr(validate, "load_project", lambda **k: _RagProject())
-    monkeypatch.setattr(
-        "benchmax.platform.validation.validate_env", lambda **k: report
-    )
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: report)
     assert validate._cmd_validate(_validate_ns(reward_audit=True, json=True)) == 0
     out = capsys.readouterr().out
     assert '"audit"' in out
@@ -603,3 +618,39 @@ def test_audit_marks_group_components_na():
     rows, _ = validate._audit_components(ok_rewards, {"rank"})
     notes = {r["component"]: r["note"] for r in rows}
     assert "group-scored" in notes["rank"]  # not flagged "constant"
+
+
+# --- review fixes: dataset-shape + config validation --------------------
+
+
+def test_example_gold_reads_question_key():
+    # RAG rows key the question under 'question' (+ 'answer' for gold); generic
+    # rows use 'prompt'/'ground_truth'. Both must yield a question + gold.
+    assert validate._example_gold({"question": "Q?", "answer": "A"}) == ("Q?", "A")
+    assert validate._example_gold({"prompt": "P", "ground_truth": "G"}) == ("P", "G")
+
+
+def test_validate_config_non_int_knob_fails_loudly(monkeypatch):
+    # A str budget in VALIDATE_CONFIG must fail loudly here, not crash deep in the SDK.
+    monkeypatch.setattr(
+        validate, "load_project", lambda **k: _validate_config_project(max_turns="7")
+    )
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: None)
+    with pytest.raises(SystemExit, match="must be an int"):
+        validate._cmd_validate(_validate_ns(max_turns=None))
+
+
+def test_read_config_rejects_non_dict():
+    import types
+
+    from benchmax.cli._project import ProjectError, _read_config
+
+    m = types.ModuleType("m")
+    m.LAUNCH_CONFIG = [1, 2]  # not a dict → fail loudly
+    with pytest.raises(ProjectError, match="must be a dict"):
+        _read_config(m, "LAUNCH_CONFIG")
+    assert _read_config(m, "MISSING") == {}  # absent → {}
+    m.VALIDATE_CONFIG = None
+    assert _read_config(m, "VALIDATE_CONFIG") == {}  # None (unset) → {}
+    m.OK = {"a": 1}
+    assert _read_config(m, "OK") == {"a": 1}
