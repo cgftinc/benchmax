@@ -348,6 +348,11 @@ class PostgresChunkSource:
 
         return self._sorted_related(related_map)
 
+    async def aclose(self) -> None:
+        """Close the underlying corpus client's async transport (best-effort).
+        Call from within the event loop that used it."""
+        await self._client.aclose()
+
     @staticmethod
     def _accumulate_related(
         related_map: dict[str, dict],

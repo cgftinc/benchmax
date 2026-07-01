@@ -1778,7 +1778,7 @@ class Pipeline:
         (prepare) and the post-processing (dedup/format/stats) stay sync.
         """
         return self._run_coro(
-            self._arun_work_queue(
+            self._arun_work_queue_with_cleanup(
                 source=source,
                 generator=generator,
                 guard_filter=guard_filter,
@@ -1788,6 +1788,44 @@ class Pipeline:
                 context=context,
             )
         )
+
+    async def _arun_work_queue_with_cleanup(
+        self,
+        *,
+        source: Any,
+        generator: QuestionGenerator,
+        guard_filter: DeterministicGuardsFilter,
+        filter_stage_names: list[str],
+        filter_chain: list[EvaluatorFilter],
+        transformer: QuestionTransformer,
+        context: PipelineContext,
+    ) -> tuple[list[GeneratedQA], list[GeneratedQA], int, list[GeneratedQA]]:
+        """Run the async work queue, then close every per-loop async client built
+        during the run (corpus ``AsyncClient`` + ``AsyncOpenAI`` generator/judge
+        clients). ``asyncio.run`` mints a fresh loop per ``Pipeline.run`` and nothing
+        else closes these, so without this a long-lived host (wizard, ``castform
+        validate``, notebook) leaks one transport set per run."""
+        try:
+            return await self._arun_work_queue(
+                source=source,
+                generator=generator,
+                guard_filter=guard_filter,
+                filter_stage_names=filter_stage_names,
+                filter_chain=filter_chain,
+                transformer=transformer,
+                context=context,
+            )
+        finally:
+            for comp in (generator, transformer, guard_filter, *filter_chain, source):
+                aclose = getattr(comp, "aclose", None)
+                if aclose is None:
+                    continue
+                try:
+                    await aclose()
+                except Exception:  # noqa: BLE001 — best-effort cleanup
+                    logger.debug(
+                        "Error closing async client during cleanup", exc_info=True
+                    )
 
     @staticmethod
     def _run_coro(coro: Any) -> Any:

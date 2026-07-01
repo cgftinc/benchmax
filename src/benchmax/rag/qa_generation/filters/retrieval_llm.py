@@ -92,6 +92,17 @@ class RetrievalLLMFilter:
             self._async_judge_clients[key] = client
         return client
 
+    async def aclose(self) -> None:
+        """Close any per-loop AsyncOpenAI judge clients built during the run
+        (best-effort)."""
+        clients = list(self._async_judge_clients.values())
+        self._async_judge_clients.clear()
+        for client in clients:
+            try:
+                await client.close()
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                logger.debug("Error closing async judge client", exc_info=True)
+
     def _resolve_search_mode(self, context: PipelineContext) -> str | None:
         """Use the best search mode available on the corpus backend."""
         profile = getattr(context, "profile", None)
