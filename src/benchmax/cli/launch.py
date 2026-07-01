@@ -17,6 +17,7 @@ import warnings
 from benchmax import config
 from benchmax.cli._client import handle_errors
 from benchmax.cli._output import print_json
+from benchmax.cli._preflight import print_project_error
 from benchmax.cli._project import ProjectError, load_project
 from benchmax.cli._providers import provider_choices, resolve_pip_dependencies
 from benchmax.cli.validate import _parse_env_args
@@ -98,7 +99,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
                 require_eval=True,
             )
         except ProjectError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            print_project_error(exc)
             return 1
 
         env_args = _parse_env_args(args.env_arg)

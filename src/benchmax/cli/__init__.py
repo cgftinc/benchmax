@@ -18,6 +18,7 @@ from benchmax.cli import (
     control,
     corpus,
     data,
+    doctor,
     help,
     launch,
     runs,
@@ -43,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     data.register(sub)
     corpus.register(sub)
     setup.register(sub)
+    doctor.register(sub)
 
     # `guide` renders the getting-started walkthrough (the renderer lives in
     # ``benchmax.cli.help``). Named `guide`, not `quickstart`, because `setup`
