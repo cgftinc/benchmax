@@ -114,6 +114,7 @@ def _validate_ns(**over) -> argparse.Namespace:
         local_only=False,
         verbose=False,
         full_messages=False,
+        reward_audit=False,
         json=False,
     )
     base.update(over)
@@ -421,3 +422,121 @@ def test_constant_total_helper():
     assert validate._constant_total([{"a": 1.0}, {"a": 2.0}]) is None  # varies
     assert validate._constant_total([{"a": 0.0}]) is None  # <2 rollouts
     assert validate._constant_total([{"p": True}, {"p": False}]) == 0.0  # bools excluded
+
+
+# --- reward audit (--reward-audit) --------------------------------------
+
+
+class _RagProject:
+    """A project whose dataset carries gold, indexable by rollout index."""
+
+    env_class = type("E", (), {})
+    train_dataset = [
+        {"prompt": "where do I add the exception?", "ground_truth": "edit /etc/docker"},
+        {"prompt": "second question", "ground_truth": "the second gold answer"},
+    ]
+    eval_dataset = []
+    module = None
+    from_file = True
+
+
+def test_reward_audit_shows_components_gold_and_answers(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(
+                index=0,
+                ok=True,
+                rewards={"answer_correctness": 1.0, "citation_recall": 0.3},
+                messages=[{"role": "assistant", "content": "edit /etc/docker now"}],
+            ),
+            ExampleValidation(
+                index=1,
+                ok=True,
+                rewards={"answer_correctness": 0.0, "citation_recall": 0.0},
+                messages=[{"role": "assistant", "content": "no idea, sorry"}],
+            ),
+        ],
+        group=None,
+    )
+    monkeypatch.setattr(validate, "load_project", lambda **k: _RagProject())
+    monkeypatch.setattr(
+        "benchmax.platform.validation.validate_env", lambda **k: report
+    )
+    assert validate._cmd_validate(_validate_ns(reward_audit=True)) == 0
+    out = capsys.readouterr().out
+    assert "reward audit" in out
+    # per-component stats + the real question/gold/answer
+    assert "answer_correctness" in out and "citation_recall" in out
+    assert "gold: edit /etc/docker" in out
+    assert "edit /etc/docker now" in out  # the model's captured answer
+
+
+def test_reward_audit_implies_full_messages_capture(monkeypatch):
+    # --reward-audit alone must ask validate_env to capture transcripts, else the
+    # audit has no answers to show.
+    captured: dict = {}
+
+    def _capture(**k):
+        captured.update(k)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={"a": 1.0})],
+            group=None,
+        )
+
+    monkeypatch.setattr(validate, "load_project", lambda **k: _RagProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
+    validate._cmd_validate(_validate_ns(reward_audit=True))
+    assert captured["full_messages"] is True
+
+
+def test_reward_audit_json_carries_audit_and_gold(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"answer_correctness": 1.0}),
+        ],
+        group=None,
+    )
+    monkeypatch.setattr(validate, "load_project", lambda **k: _RagProject())
+    monkeypatch.setattr(
+        "benchmax.platform.validation.validate_env", lambda **k: report
+    )
+    assert validate._cmd_validate(_validate_ns(reward_audit=True, json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"audit"' in out
+    assert '"correctness_component": "answer_correctness"' in out
+    assert '"gold": "edit /etc/docker"' in out
+
+
+def test_mirrors_correctness_flags_redundant_not_independent():
+    # A component that is constant within each correctness stratum mirrors it;
+    # one that varies within a stratum (recall) does not.
+    corr = [1.0, 1.0, 0.0, 0.0]
+    dup = [0.5, 0.5, 0.0, 0.0]  # 0.5 * correctness → redundant
+    recall = [0.3, 0.1, 0.0, 0.0]  # varies within the correct stratum → real signal
+    assert validate._mirrors_correctness(dup, corr) is True
+    assert validate._mirrors_correctness(recall, corr) is False
+    # correctness that never varies can't be a basis for the check
+    assert validate._mirrors_correctness([0.5, 0.5], [1.0, 1.0]) is False
+
+
+def test_audit_components_notes():
+    ok_rewards = [
+        {"answer_correctness": 1.0, "dup": 0.5, "recall": 0.3, "fmt": 0.1},
+        {"answer_correctness": 1.0, "dup": 0.5, "recall": 0.1, "fmt": 0.1},
+        {"answer_correctness": 0.0, "dup": 0.0, "recall": 0.0, "fmt": 0.1},
+        {"answer_correctness": 0.0, "dup": 0.0, "recall": 0.0, "fmt": 0.1},
+    ]
+    rows, corr_key = validate._audit_components(ok_rewards, set())
+    assert corr_key == "answer_correctness"
+    notes = {r["component"]: r["note"] for r in rows}
+    assert notes["answer_correctness"] == "primary (gate)"
+    assert "mirrors correctness" in notes["dup"]
+    assert "constant" in notes["fmt"]
+    assert notes["recall"] == ""  # discriminates independently
+
+
+def test_audit_marks_group_components_na():
+    ok_rewards = [{"acc": 1.0, "rank": 0.0}, {"acc": 0.0, "rank": 0.0}]
+    rows, _ = validate._audit_components(ok_rewards, {"rank"})
+    notes = {r["component"]: r["note"] for r in rows}
+    assert "group-scored" in notes["rank"]  # not flagged "constant"

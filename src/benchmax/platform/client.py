@@ -1222,11 +1222,15 @@ class RolloutClient:
             )
 
         per_example: list[ExampleValidation] = []
+        # A transient worker/sandbox error (e.g. a missing worker_args.json at
+        # setup) is infra flake, not an env bug — retry the rollout once before
+        # recording a failure, so one flake doesn't fail the whole validate.
+        worker_retries = 1
         for i, example in enumerate(sample):
             if verbose:
                 print(_info(f"\n  Example {i} — {json.dumps(example)[:120]}"))
             try:
-                final = self.stream_rollout(
+                rollout_kwargs = dict(
                     raw_example=example,
                     env_cls_path=env_cls_path,
                     env_metadata_path=env_metadata_path,
@@ -1241,6 +1245,17 @@ class RolloutClient:
                     capture_messages=full_messages,
                     full_messages=full_messages,
                 )
+                final = self.stream_rollout(**rollout_kwargs)
+                for _ in range(worker_retries):
+                    if final.get("event") != "worker_error":
+                        break
+                    if verbose:
+                        print(
+                            _info(
+                                f"  Example {i}: transient worker error — retrying once"
+                            )
+                        )
+                    final = self.stream_rollout(**rollout_kwargs)
                 ok = bool(final.get("success"))
                 per_example.append(
                     ExampleValidation(

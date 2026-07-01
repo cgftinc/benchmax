@@ -644,6 +644,52 @@ def test_validate_examples_omits_messages_without_full_messages(monkeypatch):
     assert result.examples[0].messages is None
 
 
+def test_validate_examples_retries_transient_worker_error(monkeypatch):
+    """A one-off worker_error (infra flake) is retried once and then succeeds —
+    it must not fail the example."""
+    client = RolloutClient(api_key="k")
+
+    calls = {"n": 0}
+
+    def _fake_stream_rollout(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"event": "worker_error", "error": "worker_args.json not found"}
+        return {"event": "rollout_completed", "success": True, "rewards": {"r": 1.0}}
+
+    monkeypatch.setattr(client, "stream_rollout", _fake_stream_rollout)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}], env_class=_make_smoke_env(), n=1, verbose=False
+    )
+
+    assert calls["n"] == 2  # first (flaked) + one retry
+    assert result.ok
+    assert result.examples[0].ok
+
+
+def test_validate_examples_persistent_worker_error_fails_after_retry(monkeypatch):
+    """A worker_error that persists through the retry is recorded as a failure —
+    the retry is bounded (one extra attempt), not infinite."""
+    client = RolloutClient(api_key="k")
+
+    calls = {"n": 0}
+
+    def _fake_stream_rollout(**kwargs):
+        calls["n"] += 1
+        return {"event": "worker_error", "error": "sandbox setup failed"}
+
+    monkeypatch.setattr(client, "stream_rollout", _fake_stream_rollout)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}], env_class=_make_smoke_env(), n=1, verbose=False
+    )
+
+    assert calls["n"] == 2  # original + exactly one retry, then give up
+    assert not result.ok
+    assert result.examples[0].error
+
+
 def test_validate_examples_env_class_conflicts_with_explicit_env(monkeypatch):
     """env_class is mutually exclusive with explicit paths/bytes."""
     client = RolloutClient(api_key="k")

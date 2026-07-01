@@ -152,17 +152,25 @@ seen it.
 
 ### Audit the reward, not just the exit code
 
-Before launch, especially for RAG, run a small transcript audit:
+Before launch, especially for RAG, run the built-in reward audit:
 
 ```bash
-castform validate --examples 6 --full-messages --json > validate-audit.json
+castform validate --examples 6 --reward-audit          # the audit, human-readable
+castform validate --examples 6 --reward-audit --json    # same, machine-readable
 ```
 
-Read several real completions and answer these questions:
+`--reward-audit` implies `--full-messages`, so it prints, per rollout, the real
+**question / gold / answer / per-component rewards**, plus a per-component table with
+`avg`/`std` and a `note` that flags each component as **constant** (no gradient),
+**mirrors correctness** (redundant — constant within every correctness stratum, so it
+adds no signal beyond the primary), **group-scored** (N/A per-example), or **primary
+(gate)**. Raise `--examples` for a sharper read (more rollouts → the strata carry more
+weight). Read the completions and answer these questions:
 
 - **Does each component discriminate?** `std > 0` is necessary but not enough; a
-  component that is always `0`, always `1`, or perfectly duplicates the primary
-  score is not adding useful signal.
+  component that is always `0`, always `1` (the `note` flags this as constant), or
+  perfectly duplicates the primary score (flagged *mirrors correctness*) is not adding
+  useful signal.
 - **Is the primary answer score strict enough?** Check the partial-credit bucket.
   Verbose hedges, question restatements, or answers without the required details
   should not get soft credit just because they are topical.
@@ -176,10 +184,10 @@ Read several real completions and answer these questions:
   conciseness, or style rewards. Partial answers should get only partial secondary
   credit.
 
-If a validate report comes back with `ok: false` and empty examples after a worker
-setup/file error rather than a reward error, rerun once before redesigning the env;
-transient worker setup flakes can erase the aggregate even when most rollouts
-actually completed.
+`castform validate` now retries a rollout once on a transient worker/sandbox setup
+error (e.g. a missing `worker_args.json`), so a single infra flake no longer fails the
+whole report. If a report still comes back failed after a worker/file error rather than
+a reward error, rerun before redesigning the env — the flake may simply have recurred.
 
 ## Output format — report the baseline the same way every time
 
