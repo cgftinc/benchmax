@@ -239,9 +239,17 @@ class CorpusClient:
     async def _arequest(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         """Async twin of ``_request`` — same retry/backoff and 429 handling, with
         ``await asyncio.sleep`` instead of ``time.sleep`` so the loop stays free."""
+        try:
+            bearer = self.token_provider()
+        except RuntimeError as exc:
+            # The seam (platform_bearer) raises when no credential resolves; surface
+            # it as an auth error so callers catch it like any other Corpora failure.
+            raise AuthenticationError(
+                f"No Castform platform credential available for the Corpora API: {exc}"
+            ) from exc
         headers = {
             **kwargs.pop("headers", {}),
-            "Authorization": f"Bearer {self.token_provider()}",
+            "Authorization": f"Bearer {bearer}",
         }
         retries = max(1, int(self.max_retries))
         client = self._get_async_client()
