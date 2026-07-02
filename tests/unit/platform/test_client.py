@@ -49,7 +49,6 @@ def test_launch_training_run_posts_to_train_runs_launch():
 
     trainer = _make_trainer_with_transport(handler)
     run_id = trainer.launch_training_run(
-        training_run_type="simple",
         env_cls_path="x/env-cls.pkl",
         env_metadata_path="x/env-metadata.json",
         train_dataset_path="x/train.jsonl",
@@ -79,7 +78,6 @@ def test_launch_training_run_surfaces_server_warnings():
     trainer = _make_trainer_with_transport(handler)
     with pytest.warns(UserWarning, match=r"max_rollout_len.*16384"):
         run_id = trainer.launch_training_run(
-            training_run_type="simple",
             env_cls_path="x/env-cls.pkl",
             env_metadata_path="x/env-metadata.json",
             train_dataset_path="x/train.jsonl",
@@ -88,7 +86,7 @@ def test_launch_training_run_surfaces_server_warnings():
     assert run_id == "run-warn"
 
 
-def test_launch_training_run_sends_training_run_type_in_body():
+def test_launch_training_run_omits_training_run_type_from_body():
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -99,15 +97,44 @@ def test_launch_training_run_sends_training_run_type_in_body():
 
     trainer = _make_trainer_with_transport(handler)
     trainer.launch_training_run(
-        training_run_type="simple-r5",
         env_cls_path="a",
         env_metadata_path="b",
         train_dataset_path="c",
         eval_dataset_path="d",
     )
 
-    assert captured["body"]["type"] == "simple-r5"
+    assert "type" not in captured["body"]
     assert captured["body"]["args"]["env_cls_path"] == "a"
+
+
+def test_launch_training_run_rejects_training_run_type_kwarg():
+    trainer = _make_trainer_with_transport(
+        lambda request: httpx.Response(200, json={"runId": "unused"})
+    )
+
+    with pytest.raises(TypeError, match="training_run_type"):
+        trainer.launch_training_run(
+            training_run_type="simple-cpu",
+            env_cls_path="a",
+            env_metadata_path="b",
+            train_dataset_path="c",
+            eval_dataset_path="d",
+        )
+
+
+def test_launch_training_run_rejects_trainer_ref_kwarg():
+    trainer = _make_trainer_with_transport(
+        lambda request: httpx.Response(200, json={"runId": "unused"})
+    )
+
+    with pytest.raises(TypeError, match="trainer_ref"):
+        trainer.launch_training_run(
+            trainer_ref="main",
+            env_cls_path="a",
+            env_metadata_path="b",
+            train_dataset_path="c",
+            eval_dataset_path="d",
+        )
 
 
 def test_launch_training_run_reads_run_id_not_experiment_id():
@@ -119,7 +146,6 @@ def test_launch_training_run_reads_run_id_not_experiment_id():
     trainer = _make_trainer_with_transport(handler)
     assert (
         trainer.launch_training_run(
-            training_run_type="simple",
             env_cls_path="a",
             env_metadata_path="b",
             train_dataset_path="c",

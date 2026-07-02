@@ -126,7 +126,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
                 )
                 return 1
             reply = input(
-                f"Launch '{run_name}' (type={args.type}) — incurs GPU cost. Continue? [y/N] "
+                f"Launch '{run_name}' — incurs GPU cost. Continue? [y/N] "
             )
             if reply.strip().lower() not in ("y", "yes"):
                 print("Aborted.")
@@ -177,7 +177,6 @@ def _cmd_launch(args: argparse.Namespace) -> int:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             run_id = client.launch_training_run(
-                training_run_type=args.type,
                 name=run_name,
                 launcher_args=launcher_args or None,
                 **dataclasses.asdict(uploaded),
@@ -211,11 +210,6 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--eval", default="eval_dataset.jsonl", help="Eval dataset (jsonl)")
     p.add_argument("--name", help="Run name (default: the env class name)")
-    p.add_argument(
-        "--type",
-        default="simple",
-        help="Training run type: simple (GPU) or simple-cpu (smoke)",
-    )
     p.add_argument(
         "--env-arg", action="append", metavar="KEY=VALUE", help="Env constructor arg"
     )
