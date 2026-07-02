@@ -642,7 +642,7 @@ if __name__ == "__main__":
     ):
         print(f"  {label:<14}: {path}")
 
-    # 4. Launch the training run. The `model` arg selects the trainer YAML/pool
+    # 4. Launch the training run. The model arg selects the trainer YAML/pool
     #    server-side (Qwen3.5-4B→gpu4, Qwen3.5-35B-A3B→gpu8).
     print(f"\nLaunching training run (model={MODEL}) ...")
     with TrainerClient(api_key="", base_url=BASE_URL) as trainer:

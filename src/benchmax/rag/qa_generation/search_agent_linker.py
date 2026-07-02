@@ -8,6 +8,7 @@ selected.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import logging
@@ -169,7 +170,53 @@ class SearchAgentLinker:
             return metadata_bundle
 
         try:
-            return self._link_with_llm(primary_chunk, hop_count, n_secondaries, reasoning_mode)
+            return self._link_with_llm(
+                primary_chunk, hop_count, n_secondaries, reasoning_mode
+            )
+        except Exception:
+            logger.exception("SearchAgentLinker LLM linking failed")
+            if self._cfg.fallback_to_metadata:
+                metadata_bundle.structural_hints["llm_fallback"] = True
+                return metadata_bundle
+            raise
+
+    async def alink(
+        self,
+        primary_chunk: Any,
+        *,
+        target_hop_count: int | None = None,
+        corpus_pool: list[Any] | None = None,
+        reasoning_mode: str = "",
+        context: Any = None,
+    ) -> AnchorBundle:
+        """Async twin of :meth:`link`. Awaits the metadata linker's async path;
+        the LLM search-agent branch (rollout + replay search) stays sync, offloaded
+        to a worker thread so it doesn't block the event loop."""
+        hop_count = target_hop_count or 2
+        n_secondaries = hop_count - 1
+
+        metadata_bundle = await self._metadata_linker.alink(
+            primary_chunk,
+            target_hop_count=target_hop_count,
+            corpus_pool=corpus_pool,
+            reasoning_mode=reasoning_mode,
+            context=context,
+        )
+
+        confidence = metadata_bundle.structural_hints.get("confidence", 0.0)
+        use_llm = random.random() < self._search_agent_pct or confidence < 0.5
+
+        if not use_llm:
+            return metadata_bundle
+
+        try:
+            return await asyncio.to_thread(
+                self._link_with_llm,
+                primary_chunk,
+                hop_count,
+                n_secondaries,
+                reasoning_mode,
+            )
         except Exception:
             logger.exception("SearchAgentLinker LLM linking failed")
             if self._cfg.fallback_to_metadata:
@@ -395,7 +442,9 @@ class SearchAgentLinker:
         for _, _, chunk, tokens in ranked:
             too_similar = False
             for prev in selected_tokens:
-                sim = len(tokens & prev) / len(tokens | prev) if tokens and prev else 0.0
+                sim = (
+                    len(tokens & prev) / len(tokens | prev) if tokens and prev else 0.0
+                )
                 if sim > 0.8:
                     too_similar = True
                     break
@@ -468,16 +517,20 @@ class SearchAgentLinker:
 
 
 _TOOL_CALL_RE = re.compile(
-    r'<tool_call>\s*(.*?)\s*</tool_call>', re.DOTALL,
+    r"<tool_call>\s*(.*?)\s*</tool_call>",
+    re.DOTALL,
 )
 _EVIDENCE_CHAIN_RE = re.compile(
-    r"<evidence_chain>(.*?)</evidence_chain>", re.DOTALL,
+    r"<evidence_chain>(.*?)</evidence_chain>",
+    re.DOTALL,
 )
 _CHUNK_ROLE_RE = re.compile(
-    r'<chunk[^>]*role="secondary"[^>]*>(.*?)</chunk>', re.DOTALL,
+    r'<chunk[^>]*role="secondary"[^>]*>(.*?)</chunk>',
+    re.DOTALL,
 )
 _CONNECTION_RE = re.compile(
-    r"<connection>(.*?)</connection>", re.DOTALL,
+    r"<connection>(.*?)</connection>",
+    re.DOTALL,
 )
 
 

@@ -66,7 +66,6 @@ truncated in training — keep `MAX_SEARCH_CALLS` ≤ 8 (see design-environment'
 Server-controlled fields — `save`, `load`, `global_batch_size`, the eval mirrors —
 are **not settable**: the launch handler fills them in and rejects caller input
 that carries them. (`rollout_batch_size` is derived too, not a launch arg.)
-
 The run type is platform-internal. `castform launch` uses the standard GPU
 training pool; lifecycle smoke tests should use `castform validate` instead of a
 launch-only CPU template.

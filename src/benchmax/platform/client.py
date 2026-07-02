@@ -419,7 +419,7 @@ class TrainerClient:
         name: str | None = None,
         launcher_args: dict[str, Any] | None = None,
     ) -> str:
-        """Launch a new training run using the standard platform job template.
+        """Launch a new training run.
 
         Args:
             env_cls_path: Path to the environment class pickle (.pkl file)
