@@ -268,7 +268,7 @@ class GroundingLLMFilter:
                     data.item.generation_metadata.get("refinement_count", 0)
                 )
                 verdict = self._error_verdict(
-                    data.query,
+                    str(data.item.qa.get("question", "")),
                     refinements=refinements,
                     max_refinements=max_refinements,
                 )
