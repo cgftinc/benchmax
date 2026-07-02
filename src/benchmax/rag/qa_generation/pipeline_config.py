@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
+import os
 import random
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -638,6 +640,59 @@ class GenerationTask:
     failed_answer: str = ""
 
 
+# Per-model async concurrency caps (Step 2). The contended resource is the
+# serving deployment, so LLM calls are bounded per (base_url, model): two stages
+# on the same model+endpoint share one cap (no double-counting a single backend);
+# different models get independent caps matched to each model's serving knee.
+# Search (the corpus DB, autoscaling — not a model) has its own cap. Static caps
+# are a stopgap pending an adaptive throttle.
+#   BENCHMAX_MODEL_MAX_CONCURRENCY="gpt-5.4=20,gpt-5.4-mini=60"  per-model override
+#   BENCHMAX_LLM_MAX_CONCURRENCY=40                              default per model
+#   BENCHMAX_SEARCH_MAX_CONCURRENCY=40                           search cap
+_GLOBAL_LLM_CONCURRENCY_ENV = "BENCHMAX_LLM_MAX_CONCURRENCY"
+_MODEL_CONCURRENCY_ENV = "BENCHMAX_MODEL_MAX_CONCURRENCY"
+_SEARCH_CONCURRENCY_ENV = "BENCHMAX_SEARCH_MAX_CONCURRENCY"
+_DEFAULT_CONCURRENCY = 40
+
+
+def _resolve_int_env(name: str, default: int) -> int:
+    """Positive int from env ``name``; unset/invalid/≤0 → ``default``."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _parse_model_concurrency_overrides() -> dict[str, int]:
+    """Parse ``BENCHMAX_MODEL_MAX_CONCURRENCY`` ('model=N,other=M') → {model: N}.
+    Malformed or non-positive entries are skipped."""
+    overrides: dict[str, int] = {}
+    for pair in os.environ.get(_MODEL_CONCURRENCY_ENV, "").split(","):
+        name, sep, val = pair.partition("=")
+        if not sep:
+            continue
+        try:
+            limit = int(val.strip())
+        except (TypeError, ValueError):
+            continue
+        if name.strip() and limit > 0:
+            overrides[name.strip()] = limit
+    return overrides
+
+
+def _resolve_model_concurrency(model: str) -> int:
+    """Per-model cap: an explicit override for this model, else the global LLM
+    default (``BENCHMAX_LLM_MAX_CONCURRENCY``)."""
+    overrides = _parse_model_concurrency_overrides()
+    if model in overrides:
+        return overrides[model]
+    return _resolve_int_env(_GLOBAL_LLM_CONCURRENCY_ENV, _DEFAULT_CONCURRENCY)
+
+
 @dataclass
 class PipelineContext:
     """Shared runtime context for pipeline components.
@@ -661,6 +716,40 @@ class PipelineContext:
     state: dict[str, Any] = field(default_factory=dict)
     profile: Any = None  # CorpusProfile | None (Any to avoid circular import)
     metrics: Any = None  # PipelineMetrics | None (Any to avoid circular import)
+    # Async semaphores keyed by (loop id, …). Built lazily on the running loop
+    # (see ``model_semaphore`` / ``search_semaphore``); empty until the async work
+    # queue runs, so the context stays picklable across the prepare/run boundary.
+    _async_sems: dict = field(default_factory=dict, repr=False, compare=False)
+
+    def model_semaphore(
+        self, model: str, base_url: str | None = None
+    ) -> asyncio.Semaphore:
+        """Lazily-built ``asyncio.Semaphore`` bounding in-flight LLM calls to one
+        serving deployment, keyed per running loop + (base_url, model).
+
+        Two stages on the same model+endpoint share it (one cap per backend);
+        different models get independent caps. Keyed per running loop so each
+        ``asyncio.run`` (one per ``Pipeline.run``) gets fresh semaphores."""
+        loop = asyncio.get_running_loop()
+        key = (id(loop), "llm", str(base_url or ""), str(model or ""))
+        sem = self._async_sems.get(key)
+        if sem is None:
+            sem = asyncio.Semaphore(_resolve_model_concurrency(str(model or "")))
+            self._async_sems[key] = sem
+        return sem
+
+    def search_semaphore(self) -> asyncio.Semaphore:
+        """Lazily-built ``asyncio.Semaphore`` bounding concurrent corpus searches,
+        independent of the LLM caps (the corpus DB autoscales on its own)."""
+        loop = asyncio.get_running_loop()
+        key = (id(loop), "search")
+        sem = self._async_sems.get(key)
+        if sem is None:
+            sem = asyncio.Semaphore(
+                _resolve_int_env(_SEARCH_CONCURRENCY_ENV, _DEFAULT_CONCURRENCY)
+            )
+            self._async_sems[key] = sem
+        return sem
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.state.get(key, default)

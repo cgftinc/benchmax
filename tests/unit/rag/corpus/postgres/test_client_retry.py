@@ -27,6 +27,18 @@ def test_missing_credential_surfaces_as_auth_error():
         client._request("GET", "/health")
 
 
+async def test_missing_credential_surfaces_as_auth_error_async():
+    """Async twin: _arequest must wrap a raising token_provider as AuthenticationError
+    too, mirroring _request — the async corpus path is the one qa-gen actually uses."""
+
+    def _no_cred() -> str:
+        raise RuntimeError("No Castform platform credential available")
+
+    client = CorpusClient(base_url="https://corpora.invalid", token_provider=_no_cred)
+    with pytest.raises(AuthenticationError, match="No Castform platform credential"):
+        await client._arequest("GET", "/health")
+
+
 def _resp(status: int, headers: dict | None = None) -> httpx.Response:
     return httpx.Response(status, headers=headers or {}, json={"ok": True})
 

@@ -164,6 +164,89 @@ class MetadataChunkLinker:
             },
         )
 
+    async def alink(
+        self,
+        primary_chunk: Any,
+        *,
+        target_hop_count: int | None = None,
+        corpus_pool: list[Any] | None = None,
+        reasoning_mode: str = "",
+        context: Any,
+    ) -> AnchorBundle:
+        """Async twin of :meth:`link` — identical query/select/retry/dedup logic,
+        async corpus search (``_asearch_and_filter``) bounded by the run's search
+        semaphore. ``context`` carries the per-loop semaphore."""
+        hop_count = target_hop_count or 2
+        n_secondaries = min(hop_count - 1, self.config.max_secondaries)
+        if n_secondaries <= 0:
+            return self._empty_bundle(primary_chunk, hop_count)
+
+        overrides = self._resolve_mode_overrides(reasoning_mode, primary_chunk)
+
+        # Primary attempt: header + entity queries.
+        queries = self._generate_queries(primary_chunk)
+        if not queries:
+            return self._empty_bundle(primary_chunk, hop_count)
+
+        candidates = await self._asearch_and_filter(
+            primary_chunk, queries, overrides, context
+        )
+        secondary_chunks = self._select_diverse(candidates, n_secondaries)
+
+        # Retry with content-derived queries if confidence is low.
+        confidence = self._compute_confidence(secondary_chunks, n_secondaries)
+        retried = False
+        if confidence < self.config.retry_confidence:
+            retry_queries = self._generate_content_queries(primary_chunk)
+            retry_queries = [q for q in retry_queries if q not in queries]
+            if retry_queries:
+                retry_candidates = await self._asearch_and_filter(
+                    primary_chunk, retry_queries, overrides, context
+                )
+                # Merge: existing candidates first, then new ones.
+                seen = {getattr(c, "hash", id(c)) for c in candidates}
+                for rc in retry_candidates:
+                    h = getattr(rc, "hash", id(rc))
+                    if h not in seen:
+                        candidates.append(rc)
+                        seen.add(h)
+                secondary_chunks = self._select_diverse(candidates, n_secondaries)
+                queries = queries + retry_queries
+                confidence = self._compute_confidence(secondary_chunks, n_secondaries)
+                retried = True
+
+        # Register used hashes for cross-question dedup.
+        primary_h = getattr(primary_chunk, "hash", None)
+        if primary_h:
+            self._used_hashes.add(primary_h)
+        for chunk in secondary_chunks:
+            h = getattr(chunk, "hash", None)
+            if h:
+                self._used_hashes.add(h)
+
+        self._enrich_profile(queries, candidates)
+
+        # Demote hop count to match actual secondaries found.
+        actual_hop_count = len(secondary_chunks) + 1
+        demoted_hops = actual_hop_count < hop_count
+
+        return AnchorBundle(
+            primary_chunk=primary_chunk,
+            secondary_chunks=secondary_chunks,
+            target_hop_count=min(hop_count, actual_hop_count),
+            structural_hints={
+                "linker": "metadata",
+                "confidence": confidence,
+                "search_mode": self.profile.best_search_mode,
+                "queries_used": queries,
+                "candidates_found": len(candidates),
+                "retried": retried,
+                "hop_demoted": demoted_hops,
+                "requested_hop_count": hop_count,
+                "reasoning_mode": reasoning_mode,
+            },
+        )
+
     def reset_used_hashes(self) -> None:
         """Clear cross-question dedup state (e.g. between batches)."""
         self._used_hashes.clear()
@@ -182,7 +265,36 @@ class MetadataChunkLinker:
         search_results = self._search(
             primary_chunk, queries, search_mode_override=overrides.prefer_search_mode
         )
+        return self._filter_rank_candidates(primary_chunk, search_results, overrides)
 
+    async def _asearch_and_filter(
+        self,
+        primary_chunk: Any,
+        queries: list[str],
+        overrides: _ModeOverrides,
+        context: Any,
+    ) -> list[Any]:
+        """Async twin of ``_search_and_filter``: async corpus search bounded by the
+        run's search semaphore, then the shared CPU filter/rank."""
+        search_results = await self._asearch(
+            primary_chunk,
+            queries,
+            context,
+            search_mode_override=overrides.prefer_search_mode,
+        )
+        return self._filter_rank_candidates(primary_chunk, search_results, overrides)
+
+    def _filter_rank_candidates(
+        self,
+        primary_chunk: Any,
+        search_results: list[dict[str, Any]],
+        overrides: _ModeOverrides,
+    ) -> list[Any]:
+        """Wiki-inject → filter → coherence floor → composite rank → mode rerank.
+
+        Pure CPU; shared by the sync (``_search_and_filter``) and async
+        (``_asearch_and_filter``) search paths.
+        """
         # Inject wiki-co-occurring chunks into the search results so they
         # enter the candidate pool even when BM25 doesn't return them.
         if self.wiki_index is not None:
@@ -208,7 +320,9 @@ class MetadataChunkLinker:
                     for wh in wiki_hashes:
                         chunk_obj = self.source.collection.get_chunk_by_hash(wh)
                         if chunk_obj is not None:
-                            search_results.append({"chunk": chunk_obj, "max_score": 0.0})
+                            search_results.append(
+                                {"chunk": chunk_obj, "max_score": 0.0}
+                            )
 
         # Filter: same-file, min chars, dedup, used hashes.
         # Returns (chunk, search_score) pairs to preserve relevance signal.
@@ -229,7 +343,10 @@ class MetadataChunkLinker:
             )
             if overrides.min_coherence > 0 and jaccard < overrides.min_coherence:
                 continue
-            if self.config.max_primary_similarity > 0 and jaccard > self.config.max_primary_similarity:  # noqa: E501
+            if (
+                self.config.max_primary_similarity > 0
+                and jaccard > self.config.max_primary_similarity
+            ):  # noqa: E501
                 continue
             scored.append((chunk, search_score, jaccard))
 
@@ -276,7 +393,8 @@ class MetadataChunkLinker:
             # Normalise weights to sum to 1 when wiki bonus applies.
             base_weight = 1.0 - wiki_bonus
             composite = (
-                base_weight * (
+                base_weight
+                * (
                     0.4 * (search_score / max_search)
                     + 0.3 * jaccard
                     + 0.3 * entity_ratio
@@ -322,11 +440,16 @@ class MetadataChunkLinker:
         primary_hash = getattr(primary_chunk, "hash", None)
         if primary_hash and primary_hash in self.profile.chunk_entity_index:
             graph_entities = self.profile.chunk_entity_index[primary_hash]
-            disc_lower = {e.name.lower() for e in discriminative if e.type != "code_pattern"}
+            disc_lower = {
+                e.name.lower() for e in discriminative if e.type != "code_pattern"
+            }
             found_entities = [e for e in graph_entities if e.lower() in disc_lower]
         else:
             for entity in discriminative:
-                if entity.type != "code_pattern" and entity.name.lower() in content_lower:
+                if (
+                    entity.type != "code_pattern"
+                    and entity.name.lower() in content_lower
+                ):
                     found_entities.append(entity.name)
 
         # Code patterns: still need regex to extract matched tokens
@@ -463,6 +586,42 @@ class MetadataChunkLinker:
                 top_k=oversample_k,
             )
 
+    async def _asearch(
+        self,
+        primary_chunk: Any,
+        queries: list[str],
+        context: Any,
+        search_mode_override: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Async twin of ``_search``: same mode selection + oversampling, async
+        corpus I/O via ``asearch_related``, bounded by the run's search semaphore
+        so concurrent batches don't overrun the corpus backend."""
+        if search_mode_override and search_mode_override in self.profile.search_modes:
+            mode = search_mode_override
+        else:
+            mode = self.profile.best_search_mode
+        search_mode = mode if mode != "lexical" else None
+        # Oversample to give the diversity filter room to work.
+        oversample_k = self.config.max_candidates * 3
+        async with context.search_semaphore():
+            try:
+                return await self.source.asearch_related(
+                    primary_chunk,
+                    queries,
+                    top_k=oversample_k,
+                    mode=search_mode,
+                )
+            except Exception:
+                logger.debug(
+                    "asearch_related failed with mode=%s, retrying without mode",
+                    search_mode,
+                )
+                return await self.source.asearch_related(
+                    primary_chunk,
+                    queries,
+                    top_k=oversample_k,
+                )
+
     # ------------------------------------------------------------------
     # Candidate filtering & ranking
     # ------------------------------------------------------------------
@@ -482,7 +641,9 @@ class MetadataChunkLinker:
         min_chars = self.config.min_chunk_chars
 
         filter_same = (
-            filter_same_file if filter_same_file is not None else self.config.filter_same_file
+            filter_same_file
+            if filter_same_file is not None
+            else self.config.filter_same_file
         )
 
         candidates: list[tuple[Any, float]] = []
@@ -557,7 +718,9 @@ class MetadataChunkLinker:
     # Reasoning-mode resolution & reranking
     # ------------------------------------------------------------------
 
-    def _resolve_mode_overrides(self, reasoning_mode: str, primary_chunk: Any) -> _ModeOverrides:
+    def _resolve_mode_overrides(
+        self, reasoning_mode: str, primary_chunk: Any
+    ) -> _ModeOverrides:
         """Map reasoning_mode to concrete pipeline overrides."""
         mode = reasoning_mode.strip().lower() if reasoning_mode else ""
         defaults = _ModeOverrides(
@@ -568,7 +731,9 @@ class MetadataChunkLinker:
         if mode == "temporal":
             if _has_date_metadata(primary_chunk):
                 return replace(defaults, prefer_date_diversity=True)
-            logger.debug("temporal mode: primary chunk lacks date metadata; using factual")
+            logger.debug(
+                "temporal mode: primary chunk lacks date metadata; using factual"
+            )
             return defaults
 
         if mode == "inference":
@@ -591,12 +756,16 @@ class MetadataChunkLinker:
                     filter_same_file=False,
                     prefer_index_proximity=True,
                 )
-            logger.debug("sequential mode: primary chunk lacks file+index; using factual")
+            logger.debug(
+                "sequential mode: primary chunk lacks file+index; using factual"
+            )
             return defaults
 
         return defaults  # factual or unrecognized
 
-    def _rerank_by_date_diversity(self, primary_chunk: Any, candidates: list[Any]) -> list[Any]:
+    def _rerank_by_date_diversity(
+        self, primary_chunk: Any, candidates: list[Any]
+    ) -> list[Any]:
         """Boost candidates whose date differs from the primary chunk.
 
         Uses a weighted combination: original rank (from coherence) is
