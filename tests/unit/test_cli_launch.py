@@ -112,7 +112,6 @@ def _launch_ns(**over):
         env_arg=None,
         set=None,
         name=None,
-        type="simple",
         yes=True,
         skip_validate=False,
         pip=["mydep"],

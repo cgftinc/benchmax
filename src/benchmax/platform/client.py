@@ -360,7 +360,6 @@ class TrainerClient:
     Example:
         client = TrainerClient(api_key="sk_...", base_url="http://localhost:3000")
         run_id = client.launch_training_run(
-            training_run_type="simple",
             env_cls_path="envs/run-abc/abc123/env-cls.pkl",
             env_metadata_path="envs/run-abc/abc123/env-metadata.json",
             train_dataset_path="datasets/run-abc/def456/train.jsonl",
@@ -413,7 +412,6 @@ class TrainerClient:
 
     def launch_training_run(
         self,
-        training_run_type: str,
         env_cls_path: str,
         env_metadata_path: str,
         train_dataset_path: str,
@@ -421,12 +419,9 @@ class TrainerClient:
         name: str | None = None,
         launcher_args: dict[str, Any] | None = None,
     ) -> str:
-        """Launch a new training run from a job template.
+        """Launch a new training run.
 
         Args:
-            training_run_type: Job template selector. ``"simple"`` (GPU pool —
-                gpu4 for 4B, gpu8 for 35B) or ``"simple-cpu"`` (CPU-only smoke
-                pool, no GPU).
             env_cls_path: Path to the environment class pickle (.pkl file)
             env_metadata_path: Path to the environment metadata JSON file
             train_dataset_path: Path to the training dataset
@@ -453,7 +448,7 @@ class TrainerClient:
         response = self._http_client.post(
             "/v1/train/runs/launch",
             json={
-                "type": training_run_type,
+                "type": "simple",
                 "name": name,
                 "args": args,
             },

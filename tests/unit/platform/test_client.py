@@ -49,7 +49,6 @@ def test_launch_training_run_posts_to_train_runs_launch():
 
     trainer = _make_trainer_with_transport(handler)
     run_id = trainer.launch_training_run(
-        training_run_type="simple",
         env_cls_path="x/env-cls.pkl",
         env_metadata_path="x/env-metadata.json",
         train_dataset_path="x/train.jsonl",
@@ -79,35 +78,12 @@ def test_launch_training_run_surfaces_server_warnings():
     trainer = _make_trainer_with_transport(handler)
     with pytest.warns(UserWarning, match=r"max_rollout_len.*16384"):
         run_id = trainer.launch_training_run(
-            training_run_type="simple",
             env_cls_path="x/env-cls.pkl",
             env_metadata_path="x/env-metadata.json",
             train_dataset_path="x/train.jsonl",
             eval_dataset_path="x/eval.jsonl",
         )
     assert run_id == "run-warn"
-
-
-def test_launch_training_run_sends_training_run_type_in_body():
-    captured: dict[str, Any] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        import json
-
-        captured["body"] = json.loads(request.content.decode())
-        return httpx.Response(200, json={"runId": "r1"})
-
-    trainer = _make_trainer_with_transport(handler)
-    trainer.launch_training_run(
-        training_run_type="simple-r5",
-        env_cls_path="a",
-        env_metadata_path="b",
-        train_dataset_path="c",
-        eval_dataset_path="d",
-    )
-
-    assert captured["body"]["type"] == "simple-r5"
-    assert captured["body"]["args"]["env_cls_path"] == "a"
 
 
 def test_launch_training_run_reads_run_id_not_experiment_id():
@@ -119,7 +95,6 @@ def test_launch_training_run_reads_run_id_not_experiment_id():
     trainer = _make_trainer_with_transport(handler)
     assert (
         trainer.launch_training_run(
-            training_run_type="simple",
             env_cls_path="a",
             env_metadata_path="b",
             train_dataset_path="c",
