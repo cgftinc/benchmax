@@ -86,6 +86,57 @@ def test_launch_training_run_surfaces_server_warnings():
     assert run_id == "run-warn"
 
 
+def test_launch_training_run_omits_training_run_type_from_body():
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"runId": "r1"})
+
+    trainer = _make_trainer_with_transport(handler)
+    trainer.launch_training_run(
+        env_cls_path="a",
+        env_metadata_path="b",
+        train_dataset_path="c",
+        eval_dataset_path="d",
+    )
+
+    assert "type" not in captured["body"]
+    assert captured["body"]["args"]["env_cls_path"] == "a"
+
+
+def test_launch_training_run_rejects_training_run_type_kwarg():
+    trainer = _make_trainer_with_transport(
+        lambda request: httpx.Response(200, json={"runId": "unused"})
+    )
+
+    with pytest.raises(TypeError, match="training_run_type"):
+        trainer.launch_training_run(
+            training_run_type="simple-cpu",
+            env_cls_path="a",
+            env_metadata_path="b",
+            train_dataset_path="c",
+            eval_dataset_path="d",
+        )
+
+
+def test_launch_training_run_rejects_trainer_ref_kwarg():
+    trainer = _make_trainer_with_transport(
+        lambda request: httpx.Response(200, json={"runId": "unused"})
+    )
+
+    with pytest.raises(TypeError, match="trainer_ref"):
+        trainer.launch_training_run(
+            trainer_ref="main",
+            env_cls_path="a",
+            env_metadata_path="b",
+            train_dataset_path="c",
+            eval_dataset_path="d",
+        )
+
+
 def test_launch_training_run_reads_run_id_not_experiment_id():
     """Regression guard: server returns {runId}, not {experimentId}."""
 

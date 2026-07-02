@@ -209,3 +209,32 @@ def test_launch_preflight_honors_set_max_turns(monkeypatch):
     # default when --set max_turns is omitted
     assert launch._cmd_launch(_launch_ns(set=None)) == 0
     assert captured["max_turns"] == 4
+
+
+def test_launch_help_hides_training_run_type():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers()
+    launch.register(subparsers)
+
+    help_text = subparsers.choices["launch"].format_help()
+    assert "--type" not in help_text
+    assert "Training run type" not in help_text
+    assert "--trainer-ref" not in help_text
+
+
+def test_launch_rejects_training_run_type_arg():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    launch.register(subparsers)
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["launch", "--type", "simple-cpu"])
+
+
+def test_launch_rejects_trainer_ref_arg():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    launch.register(subparsers)
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["launch", "--trainer-ref", "main"])

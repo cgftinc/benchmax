@@ -430,7 +430,6 @@ class TrainerClient:
             launcher_args: Extra launcher args forwarded to the server
                 (e.g. {"max_rollout_len": 4000}). The 4 required paths
                 above always take precedence.
-
         Returns:
             The training run ID.
 
@@ -445,13 +444,13 @@ class TrainerClient:
             "train_dataset_path": train_dataset_path,
             "eval_dataset_path": eval_dataset_path,
         }
+        body: dict[str, Any] = {
+            "name": name,
+            "args": args,
+        }
         response = self._http_client.post(
             "/v1/train/runs/launch",
-            json={
-                "type": "simple",
-                "name": name,
-                "args": args,
-            },
+            json=body,
         )
         self._handle_response_errors(response)
         body = response.json()
