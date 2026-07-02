@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import textwrap
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,10 +15,9 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-logger = logging.getLogger(__name__)
-
 from benchmax import config
 
+from .credentials import TokenProvider, resolve_token_provider
 from .exceptions import (
     AuthenticationError,
     JobLaunchError,
@@ -27,6 +27,8 @@ from .exceptions import (
     RolloutStreamError,
     TrainerError,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -57,11 +59,19 @@ class LaunchArgSpec:
 
 @dataclass(frozen=True)
 class ExampleValidation:
-    """Per-example outcome from RolloutClient.validate_examples."""
+    """Per-example outcome from RolloutClient.validate_examples.
+
+    ``rewards`` carries the rollout's final reward components — the per-rollout
+    final rewards for a per-example entry, and the **mean** of the group
+    rollouts' final rewards for the group entry (index ``-1``). None when the
+    rollout failed or the server reported no reward values. Surfacing these is
+    what lets ``castform validate`` show numbers, not just pass/fail.
+    """
 
     index: int
     ok: bool
     error: str | None = None
+    rewards: dict[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -74,10 +84,17 @@ class ValidationResult:
     """
 
     examples: list[ExampleValidation]
+    # Outcome of the compute_group_reward contract check, run on the real
+    # smoke-rollout transcripts. None when the env has no group reward, the
+    # env class wasn't supplied, or the check was skipped (deps not installed
+    # locally — it runs on the trainer instead). Its index is -1.
+    group_reward: ExampleValidation | None = None
 
     @property
     def ok(self) -> bool:
-        return all(ex.ok for ex in self.examples)
+        rollouts_ok = all(ex.ok for ex in self.examples)
+        group_ok = self.group_reward is None or self.group_reward.ok
+        return rollouts_ok and group_ok
 
     def __bool__(self) -> bool:
         return self.ok
@@ -110,12 +127,51 @@ def _file_hash(content: bytes, length: int = 8) -> str:
     return hashlib.sha256(content).hexdigest()[:length]
 
 
+def _mean_rewards(reward_dicts: list[Any]) -> dict[str, float] | None:
+    """Mean of each reward component across rollouts. None if no numeric values.
+
+    Bools are excluded (``bool`` is an ``int`` subclass but not a reward).
+    """
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for rewards in reward_dicts:
+        if not isinstance(rewards, dict):
+            continue
+        for key, value in rewards.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                sums[key] = sums.get(key, 0.0) + float(value)
+                counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    return {key: sums[key] / counts[key] for key in sums}
+
+
+class _BearerAuth(httpx.Auth):
+    """Resolve the platform bearer per request via ``token_provider``.
+
+    Built once but called on every request, so the auth header is never frozen
+    at construction — a rotating/expiring device or act-as token is picked up
+    each call (the "token expires mid-run" bug ``credentials.py`` warns about).
+    """
+
+    def __init__(self, token_provider: TokenProvider) -> None:
+        self._token_provider = token_provider
+
+    def auth_flow(self, request: httpx.Request):
+        request.headers["Authorization"] = f"Bearer {self._token_provider()}"
+        yield request
+
+
 @dataclass
 class StorageClient:
     """Client for uploading files to storage via pre-signed URLs.
 
     Uses the ``GET /api/storage/upload-url`` endpoint to obtain a pre-signed
     upload URL, then PUTs the file content directly to that URL.
+
+    ``api_key`` is optional: when omitted the bearer resolves per request via
+    the credential seam (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``). Pass
+    ``api_key`` to override, or ``token_provider`` for a custom per-call source.
 
     Example:
         client = StorageClient(api_key="sk_...", base_url="http://localhost:3000")
@@ -127,19 +183,22 @@ class StorageClient:
         print(f"Uploaded to {result['blobPath']}")
     """
 
-    api_key: str
+    api_key: str | None = None
     base_url: str = field(default_factory=config.platform_url)
     timeout: float = 60.0
     # SAS-URL PUTs are bounded by file size, not API latency. Default to
     # 30 minutes so multi-GB datasets don't time out at the platform-API timeout.
     upload_timeout: float = 1800.0
+    token_provider: TokenProvider | None = None
+    _token_provider: TokenProvider = field(init=False, repr=False)
     _http_client: httpx.Client = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Initialize HTTP client with auth headers."""
+        """Initialize HTTP client; auth resolves per request, never baked here."""
+        self._token_provider = resolve_token_provider(self.api_key, self.token_provider)
         self._http_client = httpx.Client(
             base_url=self.base_url,
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            auth=_BearerAuth(self._token_provider),
             timeout=self.timeout,
         )
 
@@ -294,6 +353,10 @@ class StorageClient:
 class TrainerClient:
     """Client for launching and managing training runs.
 
+    ``api_key`` is optional: when omitted the bearer resolves per request via
+    the credential seam (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``). Pass
+    ``api_key`` to override, or ``token_provider`` for a custom per-call source.
+
     Example:
         client = TrainerClient(api_key="sk_...", base_url="http://localhost:3000")
         run_id = client.launch_training_run(
@@ -306,16 +369,19 @@ class TrainerClient:
         print(f"Launched: {run_id}")
     """
 
-    api_key: str
+    api_key: str | None = None
     base_url: str = field(default_factory=config.platform_url)
     timeout: float = 30.0
+    token_provider: TokenProvider | None = None
+    _token_provider: TokenProvider = field(init=False, repr=False)
     _http_client: httpx.Client = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Initialize HTTP client with auth headers."""
+        """Initialize HTTP client; auth resolves per request, never baked here."""
+        self._token_provider = resolve_token_provider(self.api_key, self.token_provider)
         self._http_client = httpx.Client(
             base_url=self.base_url,
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            auth=_BearerAuth(self._token_provider),
             timeout=self.timeout,
         )
 
@@ -358,15 +424,16 @@ class TrainerClient:
         """Launch a new training run from a job template.
 
         Args:
-            training_run_type: Job template selector. Currently ``"simple"``
-                (gpu4 pool) or ``"simple-r5"`` (gpu4-r5 smoke-test pool).
+            training_run_type: Job template selector. ``"simple"`` (GPU pool —
+                gpu4 for 4B, gpu8 for 35B) or ``"simple-cpu"`` (CPU-only smoke
+                pool, no GPU).
             env_cls_path: Path to the environment class pickle (.pkl file)
             env_metadata_path: Path to the environment metadata JSON file
             train_dataset_path: Path to the training dataset
             eval_dataset_path: Path to the evaluation dataset
             name: Optional name for the training run
             launcher_args: Extra launcher args forwarded to the server
-                (e.g. {"max_response_len": 4000}). The 4 required paths
+                (e.g. {"max_rollout_len": 4000}). The 4 required paths
                 above always take precedence.
 
         Returns:
@@ -393,8 +460,11 @@ class TrainerClient:
         )
         self._handle_response_errors(response)
         body = response.json()
+        # Surface soft-cap / OOM-risk warnings via the warnings module (shown by
+        # default in notebooks/REPL) — a bare logger.warning is swallowed unless
+        # the caller configured logging.
         for warning in body.get("warnings", []) or []:
-            logger.warning("launch warning: %s", warning)
+            warnings.warn(f"launch warning: {warning}", stacklevel=2)
         return body["runId"]
 
     def list_launch_args(self) -> list[LaunchArgSpec]:
@@ -460,6 +530,75 @@ class TrainerClient:
                 bits.append(f"enum={spec.enum}")
             print(header + (f"  [{', '.join(bits)}]" if bits else ""))
             print(f"      {spec.description}")
+
+    # --- Run-lifecycle reads (CLI: `castform runs ...`) -------------------
+    # Thin GETs over platform REST. The CLI formats; these just return the
+    # decoded JSON. Auth posture differs per route — see each docstring.
+
+    def list_runs(self, *, include_config: bool = False) -> list[dict[str, Any]]:
+        """GET /v1/train/runs — the caller's runs. Hard auth: 401 if logged out."""
+        params = {"includeConfig": "true"} if include_config else None
+        response = self._http_client.get("/v1/train/runs", params=params)
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_run(self, run_id: str, *, include_config: bool = False) -> dict[str, Any]:
+        """GET /v1/train/runs/{id} — optionalAuth (public runs readable logged-out)."""
+        params = {"includeConfig": "true"} if include_config else None
+        response = self._http_client.get(f"/v1/train/runs/{run_id}", params=params)
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_run_details(self, run_id: str) -> dict[str, Any]:
+        """GET /v1/train/runs/{id}/details — adds latestStep, modes[], errorCount."""
+        response = self._http_client.get(f"/v1/train/runs/{run_id}/details")
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_run_events(self, run_id: str) -> list[dict[str, Any]]:
+        """GET /v1/train/runs/{id}/events — lifecycle/artifact/diagnostic, oldest first."""
+        response = self._http_client.get(f"/v1/train/runs/{run_id}/events")
+        self._handle_response_errors(response)
+        return response.json().get("events", [])
+
+    def get_run_scalars(
+        self, run_id: str, mode: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """GET /v1/train/runs/{id}/scalars?mode= — {scalarName: [{step, value}]}.
+
+        ``mode`` is required by the server (400 if omitted). Discover the valid
+        set from :meth:`get_run_details` — ``modes`` is dynamic per run, not a
+        fixed enum. An unknown mode returns ``{}`` (not an error).
+        """
+        response = self._http_client.get(
+            f"/v1/train/runs/{run_id}/scalars", params={"mode": mode}
+        )
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_environment_logs(
+        self, run_id: str, *, rollout_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """GET /v1/train/runs/{id}/environment-logs — run-level logs, or one
+        rollout's when ``rollout_id`` is given."""
+        params = {"rolloutId": rollout_id} if rollout_id else None
+        response = self._http_client.get(
+            f"/v1/train/runs/{run_id}/environment-logs", params=params
+        )
+        self._handle_response_errors(response)
+        return response.json().get("logs", [])
+
+    def cancel_run(self, run_id: str) -> dict[str, Any]:
+        """POST /v1/train/runs/{id}/cancel — owner-only (403 otherwise).
+
+        A launched run (has a launcher job) gets a ``training.cancelling`` event
+        and its launcher job cancelled ("Job cancellation requested"); a run with
+        no job is marked complete directly with no cancelling event
+        ("Marked as complete"). Returns the ``{success, message}`` body.
+        """
+        response = self._http_client.post(f"/v1/train/runs/{run_id}/cancel")
+        self._handle_response_errors(response)
+        return response.json()
 
 
 # Server URLs are resolved lazily via callables so env-var changes after
@@ -716,23 +855,32 @@ class RolloutClient:
        raw file contents; they will be base64-encoded and sent inline.
 
     Args:
-        api_key:    Platform API key (``sk_``); forwarded as the Bearer token
-                    platform-service validates.
+        api_key:    Platform API key forwarded as the Bearer token
+                    platform-service validates. Optional — when omitted the
+                    bearer resolves per request via the credential seam
+                    (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``).
         server_url: Base URL of platform-service. Defaults to
                     ``config.platform_url()``; the ``/v1/rollout/stream`` path is
                     appended per request.
         timeout:    Per-request timeout in seconds (default 300 — rollouts can be slow).
+        token_provider: Custom per-call bearer source; overrides the seam when
+                    ``api_key`` is unset.
     """
 
     _TERMINAL = {"rollout_completed", "worker_error", "cancelled", "error"}
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str | None = None,
         server_url: str | None = None,
         timeout: float = 300.0,
+        *,
+        token_provider: TokenProvider | None = None,
     ) -> None:
-        self._api_key = api_key
+        # Bearer resolves per request (see stream_rollout): explicit api_key →
+        # token_provider → platform_bearer seam. Optional so a logged-in/CI
+        # caller need not pass one.
+        self._token_provider = resolve_token_provider(api_key, token_provider)
         # Resolve at construction time, not import time, so env-var changes
         # take effect (mirrors StorageClient/TrainerClient default_factory pattern).
         # Target platform-service (the API-key gate), not the rollout-service
@@ -834,6 +982,12 @@ class RolloutClient:
             env_metadata_bytes,
         )
 
+        # Resolve the platform bearer once, per request (never frozen at
+        # construction): a rotating/expiring device or act-as token is picked
+        # up each call. Used for the platform-service header below AND, when the
+        # LLM leg hits the platform's own endpoint, as that leg's key.
+        bearer = self._token_provider()
+
         # Resolve LLM URL lazily. The platform key is only auto-forwarded when
         # the LLM endpoint is the platform's own LLM service — pointing at a
         # third-party host (Azure OpenAI, Anthropic) requires an explicit
@@ -842,7 +996,7 @@ class RolloutClient:
         resolved_llm_url = llm_base_url or platform_llm_url
         if not llm_api_key:
             if resolved_llm_url == platform_llm_url:
-                llm_api_key = self._api_key
+                llm_api_key = bearer
             else:
                 raise ValueError(
                     "llm_api_key is required when llm_base_url points outside the "
@@ -870,7 +1024,7 @@ class RolloutClient:
         # platform-service mounts the proxy at /v1/rollout/stream; it validates
         # the platform key and forwards to rollout-service with an act_as JWT.
         url = f"{self._server_url}/v1/rollout/stream"
-        headers = {"Authorization": f"Bearer {self._api_key}"}
+        headers = {"Authorization": f"Bearer {bearer}"}
 
         with httpx.stream(
             "POST",
@@ -960,7 +1114,11 @@ class RolloutClient:
         llm_api_key: str = "",
         llm_model: str = _VALIDATION_MODEL,
         max_turns: int = 4,
+        max_tool_calls: int = 8,
+        check_group_reward: bool = True,
+        group_reward_samples: int = 2,
         verbose: bool = True,
+        full_messages: bool = False,
     ) -> ValidationResult:
         """Run rollouts on the first *n* examples and report pass/fail.
 
@@ -991,6 +1149,19 @@ class RolloutClient:
                                 ``llm_base_url`` points outside the platform LLM
                                 endpoint (stream_rollout refuses to forward the
                                 platform key to a third-party host).
+            check_group_reward: After the rollouts, run a REAL same-example
+                                group through rollout-service (one example,
+                                samples_per_example=N) so the env's
+                                ``compute_group_reward`` executes server-side in
+                                the trainer image, over co-located siblings —
+                                the trainer/external-eval path. A server-side
+                                failure (raise or contract violation) comes back
+                                as ``group_reward_error`` and fails validation.
+                                Only fires when ``env_class`` is given and the
+                                env overrides the method.
+            group_reward_samples: Size of that group (the batch's
+                                ``samples_per_example``). Costs this many extra
+                                rollouts; ignored unless the group check runs.
             verbose:            Print colored progress to stdout (default True for
                                 interactive/notebook UX). Set False for programmatic
                                 callers that consume the returned ValidationResult.
@@ -1026,6 +1197,18 @@ class RolloutClient:
             env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes
         )
 
+        # compute_group_reward runs on a whole rollout GROUP, which the
+        # per-example smoke above never forms (each is a group of 1). Run a real
+        # same-example group server-side (run_group, below) so the env method
+        # executes on the trainer's path; the server reports any failure as
+        # group_reward_error. Needs the env_class, and is pointless unless the
+        # env overrides the no-op default.
+        want_group = False
+        if check_group_reward and env_class is not None:
+            from .validation import overrides_compute_group_reward
+
+            want_group = overrides_compute_group_reward(env_class)
+
         sample = examples[:n]
         if verbose:
             print(
@@ -1050,6 +1233,8 @@ class RolloutClient:
                     llm_api_key=llm_api_key,
                     llm_model=llm_model,
                     max_turns=max_turns,
+                    max_tool_calls=max_tool_calls,
+                    full_messages=full_messages,
                 )
                 ok = bool(final.get("success"))
                 per_example.append(
@@ -1059,6 +1244,9 @@ class RolloutClient:
                         error=None
                         if ok
                         else (final.get("error") or "rollout reported success=False"),
+                        # Surface the per-rollout reward components (dropped here
+                        # before — they're what `castform validate` displays).
+                        rewards=final.get("rewards"),
                     )
                 )
             except (RolloutError, RuntimeError) as exc:
@@ -1066,7 +1254,56 @@ class RolloutClient:
                     print(_err(f"  Example {i} failed: {exc}"))
                 per_example.append(ExampleValidation(index=i, ok=False, error=str(exc)))
 
-        result = ValidationResult(examples=per_example)
+        group_reward: ExampleValidation | None = None
+        if want_group and sample and group_reward_samples >= 1:
+            # Faithful check: run a REAL same-example group through
+            # rollout-service (one example, samples_per_example=N) so the env's
+            # compute_group_reward runs server-side in the trainer image, over
+            # co-located siblings — exactly the trainer/external-eval path. A
+            # server-side failure comes back as group_reward_error per rollout.
+            if verbose:
+                print(
+                    _info(
+                        f"\n  Group reward — {group_reward_samples} server-side "
+                        "sibling(s) of example 0"
+                    )
+                )
+            try:
+                events = self.run_group(
+                    sample[0],
+                    samples=group_reward_samples,
+                    env_cls_path=env_cls_path,
+                    env_metadata_path=env_metadata_path,
+                    env_cls_bytes=env_cls_bytes,
+                    env_metadata_bytes=env_metadata_bytes,
+                    llm_base_url=llm_base_url,
+                    llm_api_key=llm_api_key,
+                    llm_model=llm_model,
+                    max_turns=max_turns,
+                    max_tool_calls=max_tool_calls,
+                    verbose=verbose,
+                )
+                group_reward = self._assess_group_events(
+                    events, group_reward_samples, verbose
+                )
+            except RolloutNotFound:
+                # The batch proxy (/v1/rollout/batch/stream) isn't deployed on
+                # this server yet — skip rather than fail, so the SDK can land
+                # ahead of platform-service. group_reward stays None; the offline
+                # local check still covered shape.
+                if verbose:
+                    print(
+                        _info(
+                            "  compute_group_reward: skipped — server has no "
+                            "/rollout/batch/stream yet"
+                        )
+                    )
+            except (RolloutError, RuntimeError) as exc:
+                if verbose:
+                    print(_err(f"  group reward check failed: {exc}"))
+                group_reward = ExampleValidation(index=-1, ok=False, error=str(exc))
+
+        result = ValidationResult(examples=per_example, group_reward=group_reward)
         if verbose:
             print()
             if result.ok:
@@ -1079,3 +1316,170 @@ class RolloutClient:
                 )
 
         return result
+
+    def run_group(
+        self,
+        example: dict[str, Any],
+        *,
+        samples: int,
+        env_cls_path: str | None = None,
+        env_metadata_path: str | None = None,
+        env_cls_bytes: bytes | None = None,
+        env_metadata_bytes: bytes | None = None,
+        llm_base_url: str | None = None,
+        llm_api_key: str = "",
+        llm_model: str = _VALIDATION_MODEL,
+        max_turns: int = 4,
+        max_tool_calls: int = 8,
+        verbose: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Run ONE example as a real ``samples``-member group; return its
+        ``rollout_completed`` events.
+
+        Submits a one-row batch with ``samples_per_example=samples`` to
+        ``/v1/rollout/batch/stream``. rollout-service co-locates the siblings on
+        one worker and runs ``env.compute_group_reward`` over them — the same
+        path the trainer/external-eval use, in the trainer image. Each event
+        carries ``success``, ``rewards`` and (on a server new enough to report
+        it) ``group_reward_error``. Raises the same typed errors as
+        ``stream_rollout`` on a non-200.
+        """
+        env = self._build_env(
+            env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes
+        )
+        # Resolve the platform bearer once, per request (never frozen at
+        # construction) — used for the request header below AND, when the LLM leg
+        # hits the platform's own endpoint, as that leg's key. Mirrors stream_rollout.
+        bearer = self._token_provider()
+
+        # The platform key is only auto-forwarded to the platform's own LLM host
+        # (see stream_rollout for the no-leak rationale).
+        platform_llm_url = config.llm_url()
+        resolved_llm_url = llm_base_url or platform_llm_url
+        if not llm_api_key:
+            if resolved_llm_url == platform_llm_url:
+                llm_api_key = bearer
+            else:
+                raise ValueError(
+                    "llm_api_key is required when llm_base_url points outside the "
+                    f"platform LLM endpoint ({platform_llm_url}). Refusing to "
+                    "forward the platform API key to a third-party host."
+                )
+
+        payload = {
+            "dataset_bytes": base64.b64encode(json.dumps(example).encode()).decode(),
+            "is_dataset_standardized": False,
+            # One example → one group; compute_group_reward needs all siblings
+            # co-located on a single worker anyway. Pin to 1 so rollout-service
+            # doesn't spin up extra workers that get an empty partition and crash.
+            "concurrent_workers": 1,
+            "env": env,
+            "llm": {
+                "base_url": resolved_llm_url,
+                "api_key": llm_api_key,
+                "model": llm_model,
+            },
+            "options": {
+                "max_turns": max_turns,
+                "max_tool_calls": max_tool_calls,
+                "samples_per_example": samples,
+            },
+        }
+        # platform-service mounts the batch proxy at /v1/rollout/batch/stream; it
+        # validates the platform key and forwards to rollout-service with an
+        # act_as JWT, same as the single /v1/rollout/stream proxy.
+        url = f"{self._server_url}/v1/rollout/batch/stream"
+        headers = {"Authorization": f"Bearer {bearer}"}
+
+        completed: list[dict[str, Any]] = []
+        with httpx.stream(
+            "POST", url, json=payload, headers=headers, timeout=self._timeout
+        ) as response:
+            if response.status_code != 200:
+                body = response.read().decode()
+                if response.status_code in (401, 403):
+                    raise AuthenticationError(body[:300], response.status_code)
+                if response.status_code == 404:
+                    raise RolloutNotFound(body[:300], response.status_code)
+                if 500 <= response.status_code < 600:
+                    raise RolloutServerError(body[:300], response.status_code)
+                raise RolloutError(body[:300], response.status_code)
+
+            for event in _iter_sse(response):
+                etype = event.get("event")
+                if etype == "batch_started":
+                    if verbose:
+                        print(
+                            _info(
+                                f"  group batch started ({event.get('total')} rollouts)"
+                            )
+                        )
+                elif etype == "rollout_completed":
+                    completed.append(event)
+                elif etype == "worker_error":
+                    # A sandbox process crashed. Non-fatal to the group on its
+                    # own — the verdict comes from the rollout_completed events
+                    # (_assess_group_events fails if none succeeded). Surfaced
+                    # for visibility, not raised.
+                    if verbose:
+                        print(_err(f"  worker_error: {str(event.get('error'))[:200]}"))
+                elif etype == "error":
+                    raise RolloutError(str(event.get("error"))[:300], 500)
+                elif etype in ("batch_completed", "cancelled"):
+                    break
+        return completed
+
+    def _assess_group_events(
+        self,
+        events: list[dict[str, Any]],
+        samples: int,
+        verbose: bool,
+    ) -> ExampleValidation:
+        """Turn a group's ``rollout_completed`` events into a pass/fail verdict.
+
+        Fails when the server reported a ``group_reward_error`` for any sibling
+        — compute_group_reward raised or violated its contract (see
+        rollout-service's ``_compute_group_rewards_safe``). Also fails if every
+        group rollout failed (nothing to assess). Index -1.
+
+        Note: a server that predates ``group_reward_error`` can't report a
+        failure, so a green verdict there means "no failure observed", not
+        "verified" — the offline local check still covers shape regardless.
+        """
+        errors = [
+            e["group_reward_error"] for e in events if e.get("group_reward_error")
+        ]
+        if errors:
+            msg = str(errors[0])
+            if verbose:
+                print(_err(f"  compute_group_reward FAILED server-side: {msg}"))
+            return ExampleValidation(index=-1, ok=False, error=msg)
+
+        succeeded = [e for e in events if e.get("success")]
+        if not succeeded:
+            first = next(
+                (e.get("error") for e in events if e.get("error")),
+                "no successful group rollouts",
+            )
+            if verbose:
+                print(
+                    _err(
+                        "  group reward not validated — all group rollouts "
+                        f"failed: {first}"
+                    )
+                )
+            return ExampleValidation(
+                index=-1, ok=False, error=f"all group rollouts failed: {first}"
+            )
+
+        # Mean of the succeeded siblings' final rewards — the numbers the group
+        # path computed and used to discard before.
+        mean = _mean_rewards([e.get("rewards") for e in succeeded])
+        if verbose:
+            print(
+                _ok(
+                    "  compute_group_reward OK server-side on a group of "
+                    f"{len(succeeded)}"
+                )
+            )
+        return ExampleValidation(index=-1, ok=True, rewards=mean)

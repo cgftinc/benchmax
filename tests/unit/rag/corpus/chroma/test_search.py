@@ -8,10 +8,20 @@ import cloudpickle
 import pytest
 
 from benchmax.rag.corpus.chroma.search import ChromaSearch
+from benchmax.rag.corpus.search_schema.search_exceptions import (
+    LocalEmbeddingDownloadDisallowedError,
+)
 
 
-def _make_search(modes=None, embed_fn=None) -> ChromaSearch:
-    """Build a ChromaSearch with a fake ChromaClient injected."""
+def _make_search(modes=None, embed_fn=None, ef_name="chroma-cloud-qwen") -> ChromaSearch:
+    """Build a ChromaSearch with a fake ChromaClient injected.
+
+    ``ef_name`` is the collection's configured embedding function: defaults to a
+    hosted server-side EF (dense-safe). Pass ``"default"`` (all-MiniLM, would
+    download) or ``None`` (no EF) to exercise the unsafe path.
+    """
+    from types import SimpleNamespace
+
     from benchmax.rag.corpus.chroma.client import ChromaClient
 
     cs = ChromaSearch(
@@ -37,7 +47,11 @@ def _make_search(modes=None, embed_fn=None) -> ChromaSearch:
     client.rrf_oversample = 20
     client.rrf_max_candidates = 200
     client._raw_client = None
-    client._collection = None
+    cfg = {"embedding_function": {"name": ef_name}} if ef_name is not None else {}
+    client._collection = SimpleNamespace(
+        _model=SimpleNamespace(configuration_json=cfg)
+    )
+    client.get_collection = lambda: client._collection
     client._embed_dim = None
     client._total_count = None
     client.search_api = False
@@ -91,6 +105,37 @@ class TestSearch:
         cs = _make_search(modes={"vector"})
         with pytest.raises(ValueError, match="does not support mode 'hybrid'"):
             cs.search("query", mode="hybrid")
+
+    def test_unsafe_dense_uses_lexical_at_inference(self):
+        """Default-EF collection + BM25: the search tool uses BM25, no download.
+
+        Mirrors a rollout/inference search against a default (all-MiniLM)
+        collection — embedding would download a model, so we use lexical instead.
+        """
+        cs = _make_search(modes={"vector", "lexical", "hybrid"}, ef_name="default")
+        cs._client.search_api = True
+        seen = {}
+        cs._client.search_api_raw = lambda **kw: seen.update(kw) or [
+            {"id": "1", "content": "bm25 result", "metadata": {}, "score": 0.9},
+        ]
+        results = cs.search("query", mode="auto")
+        assert results[0]["content"] == "bm25 result"
+        assert seen["mode"] == "lexical"  # never vector/hybrid -> no embed
+
+    def test_unsafe_dense_without_bm25_raises_at_inference(self):
+        """Default-EF, vector-only collection: refuse rather than download."""
+        cs = _make_search(modes={"vector"}, ef_name="default")
+        with pytest.raises(LocalEmbeddingDownloadDisallowedError):
+            cs.search("query", mode="auto")
+
+    def test_explicit_vector_on_unsafe_collection_degrades(self):
+        """Even an explicit vector request degrades to BM25 when unsafe."""
+        cs = _make_search(modes={"vector", "lexical"}, ef_name="default")
+        cs._client.search_api = True
+        seen = {}
+        cs._client.search_api_raw = lambda **kw: seen.update(kw) or []
+        cs.search("query", mode="vector")
+        assert seen["mode"] == "lexical"
 
 
 class TestEmbed:

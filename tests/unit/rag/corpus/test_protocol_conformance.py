@@ -244,6 +244,12 @@ def _fake_pinecone_source() -> PineconeChunkSource:
         def zero_vector(self):
             return [0.0] * self._vector_dim
 
+        def vector_type(self):
+            return "dense"
+
+        def namespace_vector_count(self):
+            return 2
+
         def match_content(self, match):
             return str((getattr(match, "metadata", {}) or {}).get("content", ""))
 

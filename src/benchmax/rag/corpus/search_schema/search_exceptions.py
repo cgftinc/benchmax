@@ -43,3 +43,21 @@ class UnsupportedSearchModeError(ValueError):
             f"[{backend}] unsupported search mode '{mode}'. "
             f"Supported modes: {sorted(supported_modes)}"
         )
+
+
+class LocalEmbeddingDownloadDisallowedError(RuntimeError):
+    """Raised when serving a search would download a client-side embedding model.
+
+    The collection has no server-side (hosted) embedding function and no BM25
+    index, and the caller supplied no ``embed_fn`` — so embedding a text query
+    would make chromadb download and run a local model (e.g. all-MiniLM). We
+    refuse rather than trigger that download.
+    """
+
+    def __init__(self, backend: str, collection: str):
+        super().__init__(
+            f"[{backend}] collection {collection!r} has no server-side embedding "
+            "function and no BM25 index, so search would download a local "
+            "embedding model. Re-ingest the corpus with a hosted embedder "
+            "(chroma-cloud-qwen) or a BM25 index, or supply an embed_fn."
+        )

@@ -39,6 +39,26 @@ def _make_filter() -> GroundingLLMFilter:
     return GroundingLLMFilter(chunk_source=MagicMock(), cfg=cfg)
 
 
+def test_keyless_filter_resolves_judge_key_via_seam(monkeypatch):
+    """An empty judge_api_key resolves the platform bearer via the credential
+    seam (PLATFORM_API_KEY here) instead of building the judge client with an
+    empty key that would 401."""
+    from unittest.mock import MagicMock
+
+    from benchmax.rag.qa_generation.pipeline_config import GroundingLLMFilterConfig
+
+    monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
+    monkeypatch.setenv("PLATFORM_API_KEY", "sk_seam")
+    cfg = GroundingLLMFilterConfig(
+        enabled=True,
+        judge_api_key="",  # keyless → seam
+        judge_base_url="http://test",
+        batch_enabled=False,
+    )
+    filt = GroundingLLMFilter(chunk_source=MagicMock(), cfg=cfg)
+    assert filt.judge_client.api_key == "sk_seam"
+
+
 class TestGroundingRemovedChunksTracking:
     def test_non_supporting_chunk_tracked_in_removed(self):
         """Chunks not in supporting_chunk_ids are moved to removed_reference_chunks."""

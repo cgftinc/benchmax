@@ -18,6 +18,7 @@ from typing import Any
 
 from openai import AsyncOpenAI, OpenAI
 
+from benchmax.platform.credentials import resolve_judge_key
 from benchmax.rag.qa_generation.batch_processor import batch_process_async
 from benchmax.rag.qa_generation.pipeline_config import PipelineContext
 from benchmax.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
@@ -117,11 +118,6 @@ class HopCountValidityFilter:
     def __init__(self, *, cfg: HopCountValidityConfig) -> None:
         self.cfg = cfg
         if cfg.enabled:
-            if not cfg.judge_api_key:
-                raise ValueError(
-                    "HopCountValidityFilter: judge_api_key must be set. "
-                    "Pass the API key for your LLM provider (e.g. cfg.platform.api_key)."
-                )
             if not cfg.judge_base_url:
                 raise ValueError(
                     "HopCountValidityFilter: judge_base_url must be set. "
@@ -129,8 +125,14 @@ class HopCountValidityFilter:
                     "Without it, requests go to the OpenAI default endpoint, which does not "
                     "recognise the default judge_model."
                 )
+            # Empty judge_api_key resolves the platform bearer via the credential
+            # seam (raises loudly if no credential is available at all).
+            api_key = resolve_judge_key(cfg.judge_api_key, cfg.judge_base_url)
+        else:
+            api_key = cfg.judge_api_key or "disabled"
+        self._judge_api_key = api_key
         self.judge_client = OpenAI(
-            api_key=cfg.judge_api_key or "disabled",
+            api_key=api_key,
             base_url=cfg.judge_base_url or None,
         )
         # Lazily-built loop-bound AsyncOpenAI judge client (see _get_async_judge_client).
@@ -150,7 +152,7 @@ class HopCountValidityFilter:
         )
         if stale:
             client = AsyncOpenAI(
-                api_key=self.cfg.judge_api_key or "disabled",
+                api_key=self._judge_api_key,
                 base_url=self.cfg.judge_base_url or None,
             )
             self._async_judge_client = client

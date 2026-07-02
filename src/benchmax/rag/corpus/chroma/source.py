@@ -17,6 +17,7 @@ from tqdm.auto import tqdm
 from benchmax.rag.chunkers.models import Chunk, ChunkCollection
 from benchmax.rag.corpus.search_schema.search_exceptions import (
     InvalidSearchSpecError,
+    LocalEmbeddingDownloadDisallowedError,
     UnsupportedSearchModeError,
 )
 from benchmax.rag.corpus.search_schema.search_types import (
@@ -564,7 +565,7 @@ class ChromaChunkSource:
 
         Picks the best available mode: hybrid > lexical > vector.
         """
-        modes = self._search_capabilities["modes"]
+        modes = self._current_modes()
         if "hybrid" in modes:
             vector = self.embed_query(text_query)
             return self.search(
@@ -597,6 +598,19 @@ class ChromaChunkSource:
             )
         )
 
+    def _current_modes(self) -> set[SearchMode]:
+        """Return live search modes, refreshing capabilities after lazy init.
+
+        ``get_collection()`` is cached/idempotent; calling it ensures any
+        capability downgrade (e.g. a collection lacking a BM25 index) has been
+        applied before we read modes. ``_search_capabilities`` is frozen at
+        construction — before that lazy init — so re-sync it from the client.
+        """
+        self._chroma.get_collection()
+        self._search_capabilities["modes"] = cast(set[SearchMode], self._chroma.modes)
+        self._search_capabilities["ranking"] = set(self._chroma.ranking)
+        return self._search_capabilities["modes"]
+
     def search_related(
         self,
         source: Chunk,
@@ -625,10 +639,34 @@ class ChromaChunkSource:
         source_file = self._files.chunk_file_path(source) if file_aware else None
         source_idx = self._files.chunk_index(source) if file_aware else None
 
-        # Pick best mode
-        modes = self._search_capabilities["modes"]
-        use_hybrid = "hybrid" in modes
-        use_lexical = "lexical" in modes
+        # Refresh capabilities before choosing a mode: the backing collection may
+        # lack a BM25 index, in which case modes was downgraded to vector-only.
+        modes = self._current_modes()
+
+        has_lexical = "lexical" in modes
+        has_hybrid = "hybrid" in modes
+
+        # Hard rule: never let chromadb embed a query with a client-side model
+        # (it downloads all-MiniLM and crawls in constrained executors). When a
+        # dense embed isn't safe — no embed_fn and no Chroma-hosted server-side
+        # embedding function — use the BM25 lexical index if the collection has
+        # one, otherwise refuse. This covers every requested mode, including the
+        # linker's "inference" preference for vector.
+        if not self._chroma.dense_embed_is_safe():
+            if not has_lexical:
+                raise LocalEmbeddingDownloadDisallowedError(
+                    "chroma", self._chroma.collection_name
+                )
+            use_hybrid = False
+            use_lexical = True
+        elif mode == "lexical":
+            use_hybrid = False
+            use_lexical = has_lexical
+        elif mode == "vector":
+            use_hybrid = use_lexical = False
+        else:  # "hybrid", None, or unrecognized -> best available
+            use_hybrid = has_hybrid
+            use_lexical = has_lexical
 
         # Batch-embed all queries when embed_fn available and vectors needed
         vectors: list[list[float]] | None = None

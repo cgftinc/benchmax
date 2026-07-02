@@ -12,7 +12,6 @@ import pytest
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.types import Messages, ToolDefinition
 from benchmax.platform import (
-    StorageClient,
     UploadedTrainingRun,
     upload_training_run,
 )
@@ -205,14 +204,31 @@ def test_upload_training_run_writes_jsonl_one_object_per_line():
     assert [json.loads(line) for line in eval_lines] == [{"b": 3}]
 
 
-def test_upload_training_run_requires_api_key_or_storage_client():
-    with pytest.raises(ValueError, match="api_key or storage_client"):
-        upload_training_run(
-            env_class=MinimalEnv,
-            train_dataset=[],
-            eval_dataset=[],
-            run_name="test",
-        )
+def test_upload_training_run_api_key_optional_resolves_via_seam(monkeypatch):
+    """api_key is optional: with neither api_key nor storage_client, the built
+    StorageClient gets api_key=None and resolves the bearer per request via the
+    seam (ACT_AS_TOKEN_PATH / PLATFORM_API_KEY) — no upfront guard."""
+    captured: dict[str, Any] = {}
+
+    def _fake_storage_client(*, api_key, base_url):
+        captured["api_key"] = api_key
+        captured["base_url"] = base_url
+        return FakeStorageClient()
+
+    monkeypatch.setattr(
+        "benchmax.platform.training_run.StorageClient", _fake_storage_client
+    )
+
+    result = upload_training_run(
+        env_class=MinimalEnv,
+        train_dataset=[{"a": 1}],
+        eval_dataset=[{"a": 1}],
+        run_name="test",
+        local_modules=[_TEST_MODULE],
+    )
+
+    assert captured["api_key"] is None  # no guard; bearer resolves at request time
+    assert isinstance(result, UploadedTrainingRun)
 
 
 def test_upload_training_run_rejects_unsafe_run_name():

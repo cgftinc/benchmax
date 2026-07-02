@@ -13,6 +13,7 @@ from typing import Any
 from openai import AsyncOpenAI, OpenAI
 from tqdm.auto import tqdm
 
+from benchmax.platform.credentials import resolve_judge_key
 from benchmax.rag.qa_generation.anchor_selector import AnchorBundle
 from benchmax.rag.qa_generation.batch_processor import BatchResult, batch_process_async
 from benchmax.rag.qa_generation.pipeline_config import (
@@ -413,7 +414,10 @@ class DirectLLMGenerator:
             or self._async_client_loop is not loop
         )
         if stale:
-            client = AsyncOpenAI(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+            client = AsyncOpenAI(
+                api_key=resolve_judge_key(self.cfg.api_key, self.cfg.base_url),
+                base_url=self.cfg.base_url,
+            )
             self._async_client = client
             self._async_client_loop = loop
         return client

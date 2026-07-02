@@ -36,6 +36,8 @@ class PineconeSearch:
         embed_model: Pinecone hosted embedding model name. Ignored
             when ``embed_fn`` is provided.
         field_mapping: Maps Pinecone metadata keys to internal names.
+        content_field: Pinecone metadata key holding the chunk text — sugar
+            over ``field_mapping`` for BYO indexes that don't use ``content``.
         token_provider: Optional override — a callable resolving the key per
             call, or a literal key (string sugar). Defaults to reading
             ``PINECONE_API_KEY``.
@@ -50,6 +52,7 @@ class PineconeSearch:
         embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
         embed_model: str = "multilingual-e5-large",
         field_mapping: dict[str, str] | None = None,
+        content_field: str | None = None,
         token_provider: str | TokenProvider | None = None,
     ) -> None:
         self._index_name = index_name
@@ -58,6 +61,7 @@ class PineconeSearch:
         self._embed_fn = embed_fn
         self._embed_model = embed_model
         self._field_mapping = field_mapping
+        self._content_field = content_field
         self._token_provider = as_token_provider(
             token_provider, env_token("PINECONE_API_KEY")
         )
@@ -75,6 +79,7 @@ class PineconeSearch:
                 embed_fn=self._embed_fn,
                 embed_model=self._embed_model,
                 field_mapping=self._field_mapping,
+                content_field=self._content_field,
             )
         return self._client
 

@@ -23,7 +23,7 @@ from benchmax.rag.corpus.search_schema.search_types import (
 
 from .files import FileAwareness
 from .filter_mapper import to_turbopuffer_filters
-from .namespace import TpufNamespace
+from .namespace import TpufNamespace, resolve_content_attr
 
 _DEFAULT_RELATED_SEARCH_MODE: SearchMode = "lexical"
 _HYBRID_FUSION_RRF_K = 60.0
@@ -50,10 +50,15 @@ class TpufChunkSource:
         api_key: Turbopuffer API key
         namespace: Turbopuffer namespace name
         region: Turbopuffer region (default "aws-us-east-1")
-        content_attr: List of Turbopuffer attribute names to use as the chunk's
-            searchable text content. Defaults to ["content"]. For pre-existing
-            namespaces, supply the BM25-indexed field(s), e.g. ["description"]
-            or ["title", "content"].
+        content_attr: Low-level escape hatch — list of Turbopuffer attribute
+            names to use as the chunk's searchable text content (multi-field
+            schemas, e.g. ["title", "content"]). For the common single-column
+            case, prefer ``content_field``. Defaults to ["content"].
+        content_field: Turbopuffer attribute holding the chunk text — the
+            canonical way to point at your text column for pre-existing
+            namespaces that don't use ``content``. Must be BM25-indexed for
+            lexical search. Raises if ``content_attr`` is also supplied with
+            a different value.
         vector_attr: Name of the vector attribute in the namespace. Defaults to
             "vector". Set this if your namespace stores embeddings under a
             different attribute name.
@@ -64,11 +69,11 @@ class TpufChunkSource:
         >>> source.populate_from_folder("./docs", embed_fn=my_embed_fn)
         >>> chunks = source.sample_chunks(n=10, min_chars=400)
 
-        >>> # Pre-existing namespace with known BM25-indexed fields
+        >>> # Pre-existing namespace whose text lives under another key
         >>> source = TpufChunkSource(
         ...     api_key="tpuf_...",
         ...     namespace="product-catalog",
-        ...     content_attr=["description"],
+        ...     content_field="description",
         ... )
     """
 
@@ -81,12 +86,13 @@ class TpufChunkSource:
         embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
         vector_attr: str = "vector",
         distance_metric: str = "cosine_distance",
+        content_field: str | None = None,
     ) -> None:
         self._client = TpufNamespace(
             api_key=api_key,
             namespace=namespace,
             region=region,
-            content_attr=content_attr,
+            content_attr=resolve_content_attr(content_attr, content_field),
             embed_fn=embed_fn,
             vector_attr=vector_attr,
             distance_metric=distance_metric,

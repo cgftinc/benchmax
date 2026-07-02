@@ -155,6 +155,23 @@ class FakeClient:
     def zero_vector(self) -> list[float]:
         return [0.0] * self._vector_dim
 
+    def vector_type(self) -> str:
+        return "dense"
+
+    def namespace_vector_count(self) -> int:
+        return sum(len(m) for m in self._index.matches_per_call)
+
+    def _all_matches(self) -> list:
+        return [m for batch in self._index.matches_per_call for m in batch]
+
+    def sample_ids(self, n: int) -> list[str]:
+        ids = [m.id for m in self._all_matches()]
+        return ids[:n]
+
+    def fetch_by_ids_raw(self, ids: list[str]) -> list[dict]:
+        wanted = set(ids)
+        return [self.match_to_raw(m) for m in self._all_matches() if m.id in wanted]
+
     def match_content(self, match) -> str:
         metadata = getattr(match, "metadata", {}) or {}
         content_key = self._pc_field("content")

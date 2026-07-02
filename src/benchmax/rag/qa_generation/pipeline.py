@@ -77,6 +77,7 @@ from benchmax.rag.qa_generation.scoring import (
 from benchmax.rag.qa_generation.transformers import BaseQuestionTransformer
 from benchmax.rag.qa_generation.transformers.dedup import IncrementalDeduplicator
 from benchmax.platform.client import RolloutClient
+from benchmax.platform.credentials import resolve_judge_key, resolve_token_provider
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,9 @@ _SUPPORTED_FILTER_STAGES = (
 
 
 def _build_openai_client(*, api_key: str, base_url: str) -> OpenAI:
-    return OpenAI(api_key=api_key, base_url=base_url)
+    # An empty key resolves the platform bearer per the credential seam (cached
+    # session / ACT_AS_TOKEN_PATH / PLATFORM_API_KEY); an explicit key wins.
+    return OpenAI(api_key=resolve_judge_key(api_key, base_url), base_url=base_url)
 
 
 def _is_retryable_openai_error(exc: Exception) -> bool:
@@ -256,12 +259,12 @@ def _build_linker(
         metadata_linker = _build_metadata_linker(
             cfg, source, profile, wiki_index=wiki_index
         )
-        _pf_api_key = cfg.platform.api_key
         search_client = PostgresSearch(
             corpus_name=cfg.corpus.corpus_name,
             base_url=cfg.platform.base_url,
             corpus_id=cfg.corpus.corpus_id or None,
-            token_provider=lambda: _pf_api_key,
+            # Explicit key wins; empty → the credential seam (cached session).
+            token_provider=resolve_token_provider(cfg.platform.api_key),
         )
         llm_cfg = cfg.generation.llm_direct
         return SearchAgentLinker(
@@ -1491,7 +1494,10 @@ class Pipeline:
             from benchmax.rag.qa_generation.wiki_builder import WikiBuilder  # noqa: PLC0415
 
             wiki_client = _OpenAI(
-                api_key=cfg.wiki_preprocessing.api_key,
+                # Empty key → credential seam (this block only runs when enabled).
+                api_key=resolve_judge_key(
+                    cfg.wiki_preprocessing.api_key, cfg.wiki_preprocessing.base_url
+                ),
                 base_url=cfg.wiki_preprocessing.base_url or None,
             )
             wiki_builder = WikiBuilder(cfg.wiki_preprocessing, wiki_client)

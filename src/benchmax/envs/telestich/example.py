@@ -12,13 +12,15 @@ Run it from the benchmax project root (the ``telestich`` extra pulls in the
 env's word-list / rhyme dependencies):
 
     cd core/benchmax
-    CASTFORM_API_KEY=sk_... \
-        uv run --extra telestich python -m benchmax.envs.telestich.example
+    uv run --extra telestich python -m benchmax.envs.telestich.example
 
-(``CASTFORM_LLM_API_KEY`` is optional — it defaults to ``CASTFORM_API_KEY``.)
+Auth is the device-auth session (``ensure_session()`` opens a browser login if
+``~/.castform`` has no valid session) — no API key needed. ``CASTFORM_API_KEY``
+/ ``CASTFORM_LLM_API_KEY`` are only consulted by the offline dataset-generation
+helpers, not the launch path.
 
-By default this is a 2-example smoke run. Set ``TELESTICH_FULL_RUN=1`` to launch
-a real run on the full seed dataset (~90/10 train/eval split).
+This launches a real training run on the full committed seed dataset
+(~90/10 train/eval split).
 """
 
 import asyncio
@@ -42,7 +44,7 @@ from benchmax.rubrics import rubric as rubric_mod
 #
 # Defaults route through ``benchmax.config``: the prod LLM endpoint is
 # ``https://llm.castform.com/v1`` and the platform control plane is
-# ``https://api.castform.com``. Point at staging or a different env by setting
+# ``https://api.castform.com``. Point at a different environment by setting
 # ``CASTFORM_BASE_DOMAIN`` (or override URLs individually via
 # ``CASTFORM_PLATFORM_URL`` / ``CASTFORM_LLM_URL``).
 from benchmax import config
@@ -59,6 +61,12 @@ EXPERIMENT_PREFIX = "telestich"
 DATASET_PATH = str(Path(__file__).parent / "telestich_dataset.jsonl")
 NUM_EXAMPLES = 400
 CONCURRENCY = 15
+# Trainer model — the launch `model` arg selects the trainer YAML (and thus the GPU
+# pool) server-side. Supported: "Qwen/Qwen3.5-4B" (gpu4) or "Qwen/Qwen3.5-35B-A3B"
+# (gpu8). Override via TELESTICH_MODEL.
+MODEL = os.environ.get("TELESTICH_MODEL", "Qwen/Qwen3.5-4B")
+# Run name — defaults to a unique telestich-full-<uuid>. Override via TELESTICH_RUN_NAME.
+RUN_NAME = os.environ.get("TELESTICH_RUN_NAME", "")
 
 # (model, weight). Weights reflect observed reliability on our checks:
 # - Both grok models leak banned example words and rubber-stamp the CoT self-check.
@@ -535,21 +543,12 @@ def load_dataset(path):
 
 # ── Dataset loading for the trainer ──
 def get_dataset():
-    """Load existing dataset, generate more if needed to reach NUM_EXAMPLES."""
+    """Load the curated English dataset IN ORDER. The file is already English-only
+    (no Mandarin filter needed) and ordered to favor simpler examples first, so we
+    do NOT shuffle — the order IS the curriculum — and do NOT generate; the
+    committed file is the source of truth."""
     existing = load_dataset(DATASET_PATH)
-    have = len(existing)
-    need = NUM_EXAMPLES - have
-
-    if need > 0:
-        print(f"Have {have}/{NUM_EXAMPLES} examples, generating {need} more...")
-        asyncio.run(generate_dataset(need, DATASET_PATH, concurrency=CONCURRENCY))
-        # Reload the full file (existing + newly appended)
-        existing = load_dataset(DATASET_PATH)
-        print(f"Dataset now has {len(existing)} examples")
-    else:
-        print(f"Dataset complete: {have} examples")
-
-    random.shuffle(existing)
+    print(f"Dataset: {len(existing)} examples (curriculum order preserved)")
     return existing
 
 
@@ -561,52 +560,43 @@ def get_dataset():
 # alongside the pickle so a UI can show "what code is in this env" without
 # unpickling.
 if __name__ == "__main__":
-    import tempfile
     import uuid
 
+    from benchmax.platform import ensure_session
     from benchmax.platform.client import TrainerClient
     from benchmax.platform.training_run import upload_training_run
     from benchmax.platform.validation import validate_env
 
-    if not API_KEY:
-        raise SystemExit("Set CASTFORM_API_KEY before running this example.")
+    # Device-auth session bootstrap: browser login if no credential resolves.
+    # After this the platform bearer comes from ~/.castform — no API key needed,
+    # so we pass api_key="" to the platform calls below (resolves via the seam).
+    ensure_session()
 
     print(f"Platform URL: {BASE_URL}")
     print(f"LLM URL:      {LLM_BASE_URL}\n")
 
-    # 1. Build the dataset.
-    #    Full run (TELESTICH_FULL_RUN=1): the committed seed dataset, topped up
-    #    to NUM_EXAMPLES via the platform LLM if short, split ~90/10 train/eval.
-    #    Default: a 2-example smoke that just exercises gen -> bundle -> upload
-    #    -> launch (and the key-less judge path), not a real training job.
-    full_run = bool(os.environ.get("TELESTICH_FULL_RUN"))
-    if full_run:
-        examples = get_dataset()
-        if len(examples) < 2:
-            raise SystemExit(f"Need >=2 examples for a full run, got {len(examples)}.")
-        n_eval = max(1, len(examples) // 10)  # ~10% held out for eval
-        eval_data, train_data = examples[:n_eval], examples[n_eval:]
-        print(f"Full run: {len(train_data)} train / {len(eval_data)} eval.\n")
-    else:
-        with tempfile.TemporaryDirectory() as tmp:
-            gen_path = Path(tmp) / "gen.jsonl"
-            print(f"Generating 2 examples via {LLM_BASE_URL} ...")
-            asyncio.run(generate_dataset(n=2, path=str(gen_path), concurrency=2))
-            examples = load_dataset(str(gen_path))
-        if len(examples) < 2:
-            raise SystemExit(f"Needed 2 examples, only got {len(examples)}.")
-        train_data, eval_data = examples[:1], examples[1:2]
-        print(f"Smoke run: generated {len(examples)} examples — 1 train, 1 eval.\n")
+    # 1. Build the dataset from the committed seed file (curriculum order). Hold out a
+    #    representative eval set at random; keep TRAIN in curriculum order (simpler first)
+    #    so the difficulty ramp is preserved.
+    examples = get_dataset()
+    if len(examples) < 2:
+        raise SystemExit(f"Need >=2 examples, got {len(examples)}.")
+    n_eval = max(1, len(examples) // 10)
+    eval_idx = set(random.sample(range(len(examples)), n_eval))
+    eval_data = [e for i, e in enumerate(examples) if i in eval_idx]
+    train_data = [e for i, e in enumerate(examples) if i not in eval_idx]
+    print(f"{len(train_data)} train (curriculum order) / {len(eval_data)} eval.\n")
 
     # 2. Bundle the env class and upload everything to platform storage.
     # Bundle config, defined once so the pre-flight validation below exercises
     # the EXACT same env_args / by-value modules / deps as the launch.
     #  - local_modules: ship env + rubric by value (the platform's installed
     #    benchmax may not contain this version of these modules).
-    #  - judge_api_key="": satisfies the constructor without leaking a key; the
-    #    judge resolves its bearer at runtime via the platform act-as seam.
-    constructor_args = {"judge_base_url": LLM_BASE_URL, "judge_api_key": ""}
+    #  - judge bearer resolves at runtime via the device-auth / platform seam.
+    constructor_args = {"judge_base_url": LLM_BASE_URL}
     local_modules = [telestich_env_mod, rubric_mod]
+    # All three are still required (is_valid_word → correctness; pronouncing →
+    # rhyme). Removing word_bank did NOT free any of them.
     pip_dependencies = ["english_words", "openai", "pronouncing", "wordfreq"]
 
     # 2. Pre-flight: validate locally + a remote smoke rollout before spending a
@@ -620,23 +610,25 @@ if __name__ == "__main__":
         eval_dataset=eval_data[:2],
         local_modules=local_modules,
         pip_dependencies=pip_dependencies,
-        api_key=API_KEY,
+        api_key="",  # session bearer via ensure_session()
         base_url=BASE_URL,
         llm_base_url=LLM_BASE_URL,
         llm_api_key="",
         remote_examples=2,
     ):
-        raise SystemExit("Env validation failed — aborting before launch (see output above).")
+        raise SystemExit(
+            "Env validation failed — aborting before launch (see output above)."
+        )
 
     # 3. Bundle the env class and upload everything to platform storage.
-    run_name = f"telestich-{'full' if full_run else 'example'}-{uuid.uuid4().hex[:8]}"
+    run_name = RUN_NAME or f"telestich-full-{uuid.uuid4().hex[:8]}"
     print(f"\nUploading bundle + datasets as {run_name!r} ...")
     uploaded = upload_training_run(
         env_class=TelestichEnv,
         train_dataset=train_data,
         eval_dataset=eval_data,
         run_name=run_name,
-        api_key=API_KEY,
+        api_key="",  # session bearer via ensure_session()
         base_url=BASE_URL,
         local_modules=local_modules,
         constructor_args=constructor_args,
@@ -650,9 +642,10 @@ if __name__ == "__main__":
     ):
         print(f"  {label:<14}: {path}")
 
-    # 4. Launch the training run. ``simple`` is the deployed 4B/gpu4 template.
-    print("\nLaunching training run ...")
-    with TrainerClient(api_key=API_KEY, base_url=BASE_URL) as trainer:
+    # 4. Launch the training run. training_run_type="simple" + the `model` arg select
+    #    the trainer YAML/pool server-side (Qwen3.5-4B→gpu4, Qwen3.5-35B-A3B→gpu8).
+    print(f"\nLaunching training run (model={MODEL}) ...")
+    with TrainerClient(api_key="", base_url=BASE_URL) as trainer:
         run_id = trainer.launch_training_run(
             training_run_type="simple",
             env_cls_path=uploaded.env_cls_path,
@@ -661,7 +654,10 @@ if __name__ == "__main__":
             eval_dataset_path=uploaded.eval_dataset_path,
             name=run_name,
             # num_epochs: passes over the train set (platform default is 5).
-            launcher_args={"max_response_len": 4000, "num_epochs": 10},
+            # max_rollout_len 3000: a brief reason + 1-2 tool rounds + poem fits well
+            # under this; lowered from 4000 to cut off in-head enumeration rambles
+            # sooner (they truncate to a 0-reward anyway).
+            launcher_args={"model": MODEL, "max_rollout_len": 3000, "num_epochs": 10},
         )
 
     print(f"\n✓ Launched run_id={run_id}")

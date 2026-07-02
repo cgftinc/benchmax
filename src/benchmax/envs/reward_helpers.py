@@ -162,10 +162,8 @@ def citation_score(
                 ref_ids.add(norm_sid)
             break
 
-    if not cited:
+    if not cited or not ref_ids:
         return {"precision": 0.0, "recall": 0.0}
-    if not ref_ids:
-        return {"precision": 1.0, "recall": 0.0}
 
     precision = len(cited & ref_ids) / len(cited)
     recall = len(cited & ref_ids) / len(ref_ids)
