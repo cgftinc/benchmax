@@ -268,11 +268,17 @@ def _numeric(reward: dict, key: str) -> float | None:
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
-def _correctness_key(components) -> str | None:
-    """The component representing answer correctness (the gate). Secondary
-    components are ``* correctness``, so redundancy is judged against this one.
-    Prefer an exact name, else any key containing 'correct'."""
+def _primary_reward_key(components, declared: str | None = None) -> str | None:
+    """The 'primary' / gate reward component — secondaries are judged for redundancy
+    against it. Prefer the env-declared ``PRIMARY_REWARD_KEY`` (when it's actually a
+    component), so a non-RAG env (e.g. a judge with a ``quality`` gate) anchors the
+    check too. Else fall back to a name heuristic (``answer_correctness`` /
+    ``correctness`` / any ``*correct*`` key) so a RAG env anchors with no
+    declaration. ``None`` (no declaration, no match) → the redundancy check is
+    skipped, not misfired."""
     keys = list(components)
+    if declared and declared in keys:
+        return declared
     for exact in ("answer_correctness", "correctness"):
         if exact in keys:
             return exact
@@ -301,14 +307,15 @@ def _mirrors_correctness(comp_vals: list[float], corr_vals: list[float]) -> bool
 
 
 def _audit_components(
-    ok_rewards: list[dict], group_names: set[str]
+    ok_rewards: list[dict], group_names: set[str], declared: str | None = None
 ) -> tuple[list[dict], str | None]:
-    """Per-component audit rows (avg/std/note) + the detected correctness key.
+    """Per-component audit rows (avg/std/note) + the detected primary-reward key.
 
     ``note`` flags a component as: group-scored (N/A per-example), constant (no
-    gradient), mirrors-correctness (redundant), or primary (the gate)."""
+    gradient), mirrors-primary (redundant), or primary (the gate). ``declared`` is
+    the env's ``PRIMARY_REWARD_KEY``, if any."""
     mean = _mean_rewards(ok_rewards) or {}
-    corr_key = _correctness_key(mean)
+    corr_key = _primary_reward_key(mean, declared)
     rows: list[dict] = []
     for k in sorted(mean):
         vals = [v for v in (_numeric(r, k) for r in ok_rewards) if v is not None]
@@ -329,7 +336,7 @@ def _audit_components(
             if len(pairs) >= 2 and _mirrors_correctness(
                 [v for _, v in pairs], [c for c, _ in pairs]
             ):
-                note = "mirrors correctness — no signal beyond it"
+                note = "mirrors the primary reward — no signal beyond it"
         rows.append({"component": k, "avg": mean[k], "std": std, "note": note})
     return rows, corr_key
 
@@ -341,13 +348,17 @@ def _group_component_names(remote) -> set[str]:
     return set()
 
 
-def _print_reward_audit(remote, ok_rewards: list[dict], *, dataset, pip_deps) -> None:
+def _print_reward_audit(
+    remote, ok_rewards: list[dict], *, dataset, pip_deps, primary_key=None
+) -> None:
     """The pre-launch reward audit: per-component discrimination + N real
     transcripts (question, gold, answer, rewards) — catching redundant/constant
     components and no-answer/hash-citation rollouts the scorecard hides."""
     print(_rule("reward audit"))
     n_ok = len(ok_rewards)
-    rows, corr_key = _audit_components(ok_rewards, _group_component_names(remote))
+    rows, corr_key = _audit_components(
+        ok_rewards, _group_component_names(remote), primary_key
+    )
     print(
         f"  {n_ok} ok rollout{'' if n_ok == 1 else 's'} · "
         f"{len(rows)} reward component{'' if len(rows) == 1 else 's'}"
@@ -367,7 +378,10 @@ def _print_reward_audit(remote, ok_rewards: list[dict], *, dataset, pip_deps) ->
                 ).rstrip()
             )
         if corr_key is None:
-            print("  (no correctness component detected — redundancy check skipped)")
+            print(
+                "  (no primary/gate reward component detected — redundancy check "
+                "skipped; declare PRIMARY_REWARD_KEY on the env to enable it)"
+            )
 
     ragged = _inconsistent_components(ok_rewards)
     if ragged:
@@ -403,7 +417,9 @@ def _print_reward_audit(remote, ok_rewards: list[dict], *, dataset, pip_deps) ->
             print(f"     ✗ failed: {ex.error}")
 
 
-def _report_to_dict(report, *, audit: bool = False, dataset=None) -> dict:
+def _report_to_dict(
+    report, *, audit: bool = False, dataset=None, probe=None, primary_key=None
+) -> dict:
     remote = report.remote
     ok_rewards = _ok_rewards(remote) if remote else []
     out = {
@@ -451,8 +467,10 @@ def _report_to_dict(report, *, audit: bool = False, dataset=None) -> dict:
         ),
     }
     if audit and remote:
-        rows, corr_key = _audit_components(ok_rewards, _group_component_names(remote))
-        out["audit"] = {"correctness_component": corr_key, "components": rows}
+        rows, corr_key = _audit_components(
+            ok_rewards, _group_component_names(remote), primary_key
+        )
+        out["audit"] = {"primary_component": corr_key, "components": rows}
         # Join gold by index (the rollout of example i uses dataset[i]) so the JSON
         # is a self-sufficient reward audit — gold isn't otherwise in the payload.
         for e in out["examples"]:
@@ -462,7 +480,20 @@ def _report_to_dict(report, *, audit: bool = False, dataset=None) -> dict:
                 else None
             )
             _, e["gold"] = _example_gold(row)
+    out["probe"] = probe  # env validate_probe result (None when not overridden)
     return out
+
+
+def _print_probe(probe: dict | None) -> None:
+    """Render the env's ``validate_probe`` result as a check row — nothing when the
+    env doesn't override it (``probe is None``)."""
+    if probe is None:
+        return
+    ok = probe.get("ok", True)
+    summary = probe.get("summary") or ", ".join(
+        f"{k}={v}" for k, v in probe.items() if k not in ("ok", "summary")
+    )
+    print(_check("✓" if ok else "⚠", "validate probe", summary))
 
 
 def _print_report(
@@ -474,6 +505,8 @@ def _print_report(
     reward_audit: bool = False,
     dataset=None,
     pip_deps=None,
+    probe=None,
+    primary_key=None,
 ) -> None:
     """Render the fixed scorecard: header → reward avg/std → checks → one line."""
     remote = report.remote
@@ -504,18 +537,25 @@ def _print_report(
     _print_rewards(ok_rewards)
     print()
     _print_checks(remote, ok_rewards)
+    _print_probe(probe)
     print()
     print("  ✓ validate passed" if report.ok else "  ✗ validate failed")
     print("  " + _recommendation(report, ok_rewards))
 
     if reward_audit:
         print()
-        _print_reward_audit(remote, ok_rewards, dataset=dataset, pip_deps=pip_deps)
+        _print_reward_audit(
+            remote,
+            ok_rewards,
+            dataset=dataset,
+            pip_deps=pip_deps,
+            primary_key=primary_key,
+        )
 
 
 @handle_errors
 def _cmd_validate(args: argparse.Namespace) -> int:
-    from benchmax.platform.validation import validate_env
+    from benchmax.platform.validation import run_validate_probe, validate_env
 
     try:
         project = load_project(
@@ -536,14 +576,14 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     full_messages = args.full_messages or reward_audit
     pip_deps = resolve_pip_dependencies(args.pip, project.env_class, args.provider)
 
-    # Resolve each rollout knob: explicit CLI flag → run.py VALIDATE_CONFIG → default.
+    # Resolve each rollout knob: explicit CLI flag → main.py VALIDATE_CONFIG → default.
     # The config block lets a multi-turn env bake in its budget so `castform
     # validate` reproduces the intended run without remembering flags.
     vc = project.validate_config
 
     def _int_cfg(cli_val, key, default):
         """Resolve an int knob (CLI flag → VALIDATE_CONFIG → default), validating
-        the config value's type — a str budget in run.py would otherwise crash
+        the config value's type — a str budget in main.py would otherwise crash
         deep in the SDK instead of failing loudly here."""
         val = cli_val if cli_val is not None else vc.get(key, default)
         if not isinstance(val, int) or isinstance(val, bool):
@@ -565,13 +605,16 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         else contextlib.nullcontext()
     )
 
+    # Hoisted so the env probe below can reconstruct the same env the rollout used.
+    env_args = _parse_env_args(args.env_arg)
+
     # Default: remote rollout subset (local=False) — runs compute_reward and
     # compute_group_reward for real, no local deps required. --local-only does
     # the offline contract checks instead (needs the env's deps installed here).
     with stream_sink:
         report = validate_env(
             env_class=project.env_class,
-            env_args=_parse_env_args(args.env_arg),
+            env_args=env_args,
             train_dataset=project.train_dataset,
             eval_dataset=project.eval_dataset or None,
             local_modules=[project.module] if project.from_file else None,
@@ -584,7 +627,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             # Rollout budget — raise both to match an env that advertises a larger
             # search/tool budget (e.g. SearchEnv MAX_SEARCH_CALLS=6) so the rollout
             # isn't truncated below what the system prompt instructs. Resolved from
-            # the CLI flag, else run.py's VALIDATE_CONFIG, else the default.
+            # the CLI flag, else main.py's VALIDATE_CONFIG, else the default.
             max_turns=max_turns,
             max_tool_calls=max_tool_calls,
             # --verbose adds validate_env's own summary on top; default off.
@@ -594,10 +637,26 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             # hollow green. --reward-audit implies it (captures answers to show).
             full_messages=full_messages,
         )
+        # Best-effort env probe (e.g. RAG retrieval gold-hit@k) — a COMMAND-layer
+        # gate, decoupled from --local-only so it fires on the default remote
+        # validate. Never fails the run; yields None (no row) unless the env
+        # overrides validate_probe. Inside stream_sink so any probe noise follows
+        # the report's stdout/stderr routing.
+        probe = run_validate_probe(project.env_class, env_args, project.eval_dataset)
+
+    # Env-declared gate for the reward-audit redundancy check (env-supplied, not a
+    # hardcoded 'correctness' key); None → the name heuristic / graceful skip.
+    primary_key = getattr(project.env_class, "PRIMARY_REWARD_KEY", None)
 
     if args.json:
         print_json(
-            _report_to_dict(report, audit=reward_audit, dataset=project.train_dataset)
+            _report_to_dict(
+                report,
+                audit=reward_audit,
+                dataset=project.train_dataset,
+                probe=probe,
+                primary_key=primary_key,
+            )
         )
         return 0 if report.ok else 1
     source = args.run_file if project.from_file else (args.module or "module")
@@ -610,6 +669,8 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         reward_audit=reward_audit,
         dataset=project.train_dataset,
         pip_deps=pip_deps,
+        probe=probe,
+        primary_key=primary_key,
     )
     return 0 if report.ok else 1
 
@@ -620,7 +681,8 @@ def register(sub: argparse._SubParsersAction) -> None:
         "validate", help="Verify an env on a real-rollout subset; show rewards + errors"
     )
     p.add_argument("--dir", default=".", help="Project directory (default: .)")
-    p.add_argument("--run-file", default="run.py", help="Env file (default: run.py)")
+    # Flag name stays --run-file for back-compat; the convention is now main.py.
+    p.add_argument("--run-file", default="main.py", help="Env file (default: main.py)")
     p.add_argument(
         "--module", help="Import an env from a module path instead of --run-file"
     )
@@ -643,14 +705,14 @@ def register(sub: argparse._SubParsersAction) -> None:
         metavar="DEP",
         help="Extra pip dependency for the rollout sandbox (repeatable). Needed "
         "for provider RAG envs whose search client imports a provider SDK "
-        "(e.g. turbopuffer) — the sandbox bundles only run.py + benchmax.",
+        "(e.g. turbopuffer) — the sandbox bundles only main.py + benchmax.",
     )
     p.add_argument(
         "--provider",
         choices=provider_choices(),
         help="Inject this provider's SDK into the rollout sandbox; does NOT "
         "configure the corpus (the env's search client reads its config from "
-        "run.py). Shorthand for the right --pip deps; differs from qa-gen's "
+        "main.py). Shorthand for the right --pip deps; differs from qa-gen's "
         "--provider, which reads a corpus.",
     )
     p.add_argument(
@@ -660,7 +722,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--examples",
         type=int,
         default=None,
-        help="Examples to roll out (default: run.py VALIDATE_CONFIG, else 2)",
+        help="Examples to roll out (default: main.py VALIDATE_CONFIG, else 2)",
     )
     p.add_argument(
         "--group-samples",
@@ -672,7 +734,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--max-turns",
         type=int,
         default=None,
-        help="Max conversation turns per rollout (default: run.py VALIDATE_CONFIG, "
+        help="Max conversation turns per rollout (default: main.py VALIDATE_CONFIG, "
         "else 4). Raise it to match a multi-turn env's budget — e.g. a SearchEnv "
         "with MAX_SEARCH_CALLS=6 needs ~7 — or the rollout truncates below what the "
         "system prompt instructs",
@@ -681,7 +743,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--max-tool-calls",
         type=int,
         default=None,
-        help="Max tool calls per rollout (default: run.py VALIDATE_CONFIG, else 8). "
+        help="Max tool calls per rollout (default: main.py VALIDATE_CONFIG, else 8). "
         "Each search is one tool call, so raise it alongside --max-turns for "
         "tool-heavy envs",
     )

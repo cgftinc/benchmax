@@ -1,7 +1,7 @@
 """Preflight: turn a missing-env-dependency ImportError into a copy-paste fix.
 
-``castform validate``/``launch`` import the project's ``run.py`` in-process (see
-:func:`benchmax.cli._project.load_project`). A ``run.py`` that uses a corpus-provider
+``castform validate``/``launch`` import the project's ``main.py`` in-process (see
+:func:`benchmax.cli._project.load_project`). A ``main.py`` that uses a corpus-provider
 backend (turbopuffer / pinecone / chroma) or the data-generation helpers imports a
 package that lives behind a ``castform[...]`` extra, not in base castform — so a base
 install fails with ``ModuleNotFoundError`` mid-import. Rather than surface a raw

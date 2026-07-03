@@ -644,7 +644,7 @@ class TestPickle:
         assert "result one" in result
 
 
-# --- free reward helpers (imported by a scaffold run.py) --------------------
+# --- free reward helpers (imported by a scaffold main.py) --------------------
 
 from benchmax.envs.postgres_search.search_env import (  # noqa: E402
     canonicalize_source_id,

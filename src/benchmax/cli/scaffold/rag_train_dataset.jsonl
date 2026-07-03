@@ -1,0 +1,2 @@
+{"question": "What is the capital of France?", "answer": "Paris", "reference_chunks": [{"content": "France is a country in Western Europe. Its capital and largest city is Paris.", "metadata": {"file": "geography.md"}}]}
+{"question": "Who wrote the play Hamlet?", "answer": "William Shakespeare", "reference_chunks": [{"content": "Hamlet is a tragedy written by William Shakespeare around 1600.", "metadata": {"file": "literature.md"}}]}

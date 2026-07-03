@@ -32,7 +32,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # Ship the `castform setup` scaffold templates in the wheel (read at runtime via
-# importlib.resources): docs (*.md), the starter run.py + datasets (*.py/*.jsonl),
+# importlib.resources): docs (*.md), the starter main.py + seed datasets (*.py/*.jsonl),
 # and the per-skill SKILL.md. Skill dirs are hyphenated (data, not Python packages).
 "benchmax.cli.scaffold" = ["*.md", "*.py", "*.jsonl", "skills/*/SKILL.md"]
 # Ship the `castform data view` HTML viewer (read at runtime via importlib.resources).
