@@ -454,10 +454,13 @@ def test_stream_rollout_resolves_bearer_and_llm_key_via_seam(monkeypatch):
     assert captured["payload"]["llm"]["api_key"] == "sk_seam"
 
 
-def test_stream_rollout_raises_without_any_credential(monkeypatch):
+def test_stream_rollout_raises_without_any_credential(monkeypatch, tmp_path):
     """No explicit key and no seam credential → fail loudly before the network."""
     monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
     monkeypatch.delenv("PLATFORM_API_KEY", raising=False)
+    # Isolate from a logged-in dev's ~/.castform/credentials.json fallback — else the
+    # resolver mints a real token and hits the network instead of failing loudly.
+    monkeypatch.setenv("CASTFORM_CREDENTIALS_PATH", str(tmp_path / "none.json"))
 
     client = RolloutClient(server_url="https://rollout.example")
     with pytest.raises(RuntimeError, match="No Castform platform credential"):

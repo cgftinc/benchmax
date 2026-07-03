@@ -75,7 +75,9 @@ def _build_launcher_args(specs: list[LaunchArgSpec], pairs: list[str] | None) ->
 
 
 # LAUNCH_CONFIG keys resolved on their own (not launcher args passed to the server).
-_LAUNCH_CONFIG_RESERVED = frozenset({"type", "name", "model"})
+# `model` is the TRAINING model and IS a real launcher arg — it must flow through to
+# the server, so it is NOT reserved. (`type` is a removed knob; filtered if present.)
+_LAUNCH_CONFIG_RESERVED = frozenset({"type", "name"})
 
 
 def _launcher_args_from_config(specs: list[LaunchArgSpec], config: dict) -> dict:
@@ -134,9 +136,11 @@ def _cmd_launch(args: argparse.Namespace) -> int:
             **_launcher_args_from_config(specs, lc),
             **_build_launcher_args(specs, args.set),
         }
-        # name/model resolve from the flag, else LAUNCH_CONFIG, else the default.
+        # name resolves from the flag, else LAUNCH_CONFIG, else the default.
         run_name = args.name or lc.get("name") or project.env_class.__name__.lower()
-        validate_model = args.model or lc.get("model")
+        # Pre-flight validate uses the cheap chat model from --model / VALIDATE_CONFIG
+        # (NOT LAUNCH_CONFIG's training model), matching `castform validate`.
+        validate_model = args.model or project.validate_config.get("model")
         # Resolve once so the pre-flight validate and the upload install the SAME
         # deps (--pip + the env's PIP_DEPENDENCIES slot + --provider's SDK).
         pip_deps = resolve_pip_dependencies(args.pip, project.env_class, args.provider)

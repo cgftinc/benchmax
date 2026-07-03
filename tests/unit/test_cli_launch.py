@@ -257,6 +257,33 @@ def test_launch_cli_set_overrides_config(monkeypatch):
     assert _CapturingClient.captured["launcher_args"]["max_turns"] == 11
 
 
+def test_launch_config_model_is_training_arg_not_preflight(monkeypatch):
+    """LAUNCH_CONFIG['model'] is the TRAINING model → sent to the server as a launcher
+    arg; the pre-flight validate model comes from VALIDATE_CONFIG/--model, not from
+    LAUNCH_CONFIG (regression: model was reserved out + reused as the validate model)."""
+    seen: dict = {}
+
+    def _fake_validate(**k):
+        seen["llm_model"] = k.get("llm_model")
+        return type("R", (), {"ok": True})()
+
+    monkeypatch.setattr(
+        launch, "load_project", lambda **k: _config_project(model="qwen-4b")
+    )
+    monkeypatch.setattr(launch, "TrainerClient", _CapturingClient)
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _fake_validate)
+    monkeypatch.setattr(
+        "benchmax.platform.training_run.upload_training_run", lambda **k: _Uploaded()
+    )
+    monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+
+    assert launch._cmd_launch(_launch_ns(model=None, set=None)) == 0
+    # training model reaches the server as a launcher arg
+    assert _CapturingClient.captured["launcher_args"]["model"] == "qwen-4b"
+    # pre-flight did NOT borrow the training model (no --model, empty VALIDATE_CONFIG)
+    assert seen["llm_model"] is None
+
+
 def test_launch_config_max_turns_reaches_preflight(monkeypatch):
     captured: dict = {}
 

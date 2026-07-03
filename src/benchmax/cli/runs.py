@@ -292,7 +292,7 @@ def _cmd_runs_rollout(args: argparse.Namespace) -> int:
         model = build_view_model(
             [record], source=f"rollout {args.rollout_id}", type_override="traces"
         )
-        out = write_html(model, Path(f"rollout-{args.rollout_id}.html"))
+        out = write_html(model, Path(f"rollout-{args.rollout_id}.html")).resolve()
         print(f"Wrote {out}")
         browser.maybe_open_browser(out.as_uri())
         return 0

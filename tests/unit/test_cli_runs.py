@@ -291,6 +291,30 @@ def test_runs_rollout_gold_not_found_is_graceful(monkeypatch, capsys, tmp_path):
     assert "not found locally" in capsys.readouterr().out
 
 
+def test_runs_rollout_view_writes_html_and_opens_absolute_uri(monkeypatch, tmp_path):
+    # Regression: --view wrote a RELATIVE path then called .as_uri(), which raises
+    # ValueError. It must resolve to an absolute file:// URI and not crash.
+    opened: dict = {}
+    monkeypatch.chdir(tmp_path)
+    _patch(
+        monkeypatch,
+        rollout_details={
+            "step": 7,
+            "totalReward": 0.5,
+            "promptMessages": [{"role": "user", "content": "Q?"}],
+            "messages": [{"role": "assistant", "content": "A"}],
+            "rewards": [{"name": "answer_correctness", "value": 1.0}],
+        },
+    )
+    monkeypatch.setattr(
+        "benchmax.platform.browser.maybe_open_browser",
+        lambda uri: opened.setdefault("uri", uri),
+    )
+    assert runs._cmd_runs_rollout(_rollout_ns(view=True)) == 0
+    assert (tmp_path / "rollout-ro1.html").exists()
+    assert opened["uri"].startswith("file://") and "rollout-ro1.html" in opened["uri"]
+
+
 def test_gold_join_helpers(tmp_path):
     assert runs._user_prompt([{"role": "user", "content": "hi"}]) == "hi"
     assert (
