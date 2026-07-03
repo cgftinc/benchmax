@@ -215,7 +215,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     env_writes: list[bool] = []
     if args.template == "rag" and not args.no_template:
         # Datasets come from `castform data qa-gen`; existing run.py failed fast above.
-        env_writes.append(w(target / "run.py", (root / "rag_run.py").read_text("utf-8")))
+        env_writes.append(
+            w(target / "run.py", (root / "rag_run.py").read_text("utf-8"))
+        )
 
     if args.verbose:
         print("\n".join(log))
@@ -241,6 +243,19 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             f"{target} has been set up for castform and your coding agent.", bold=True
         )
     )
+
+    if env_writes:  # rag template — its data path pulls deps beyond base castform
+        print()
+        print(
+            paint(
+                "  Note: the postgres rag env validates on base castform, but "
+                "`castform data qa-gen`\n  and non-postgres corpus backends need "
+                "extra deps — install with:\n"
+                "    uv pip install 'castform[rag]'  (or [turbopuffer] / [pinecone] "
+                "/ [chroma])",
+                _GREY,
+            )
+        )
 
     _print_get_started()
     return 0

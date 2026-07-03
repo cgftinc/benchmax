@@ -72,6 +72,10 @@ class ExampleValidation:
     ok: bool
     error: str | None = None
     rewards: dict[str, float] | None = None
+    # Full streamed transcript for this rollout when the caller asked for it
+    # (full_messages=True); None otherwise. Lets `castform validate --json`
+    # surface real completions for a reward audit, not just scores.
+    messages: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +148,20 @@ def _mean_rewards(reward_dicts: list[Any]) -> dict[str, float] | None:
     if not counts:
         return None
     return {key: sums[key] / counts[key] for key in sums}
+
+
+def _rollout_list(payload: Any) -> list[dict[str, Any]]:
+    """Normalize a rollout-list response to a list. The /rollouts/{summary,heatmap}
+    routes return either a bare list or an envelope under one of a few keys
+    (the web UI and the view-progress recipe both hedge on this)."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("data", "items", "results", "rollouts", "groups"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+    return []
 
 
 class _BearerAuth(httpx.Auth):
@@ -581,6 +599,86 @@ class TrainerClient:
         )
         self._handle_response_errors(response)
         return response.json().get("logs", [])
+
+    # --- Stored-rollout reads (CLI: `castform runs rollouts/rollout ...`) ---
+    # The rich per-rollout data the web UI shows — answers + per-component rewards
+    # — lives behind /rollouts/*; these wrap the reads the CLI/SDK had to hand-roll
+    # with raw httpx before. optionalAuth, like the other run reads. ``mode`` is
+    # ``train`` | ``eval`` | ``external-eval`` (pass ``external_eval_id`` for the last).
+
+    def get_rollout_summary(
+        self,
+        run_id: str,
+        *,
+        mode: str = "eval",
+        page: int = 1,
+        limit: int = 50,
+        external_eval_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """GET .../rollouts/summary — one row per example: ``promptMessageId``,
+        ``promptText`` (truncated server-side), ``rewardHistory[{step, meanReward}]``."""
+        params: dict[str, Any] = {"mode": mode, "page": page, "limit": limit}
+        if external_eval_id:
+            params["externalEvalId"] = external_eval_id
+        response = self._http_client.get(
+            f"/v1/train/runs/{run_id}/rollouts/summary", params=params
+        )
+        self._handle_response_errors(response)
+        return _rollout_list(response.json())
+
+    def get_rollout_heatmap(
+        self,
+        run_id: str,
+        prompt_message_id: str,
+        *,
+        mode: str = "eval",
+        external_eval_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """GET .../rollouts/heatmap — every rollout for one example across steps:
+        ``[{id, step, totalReward}]`` (eval re-runs the same prompt per checkpoint)."""
+        params: dict[str, Any] = {"mode": mode, "promptMessageId": prompt_message_id}
+        if external_eval_id:
+            params["externalEvalId"] = external_eval_id
+        response = self._http_client.get(
+            f"/v1/train/runs/{run_id}/rollouts/heatmap", params=params
+        )
+        self._handle_response_errors(response)
+        return _rollout_list(response.json())
+
+    def get_rollout_details(self, run_id: str, rollout_id: str) -> dict[str, Any]:
+        """GET .../rollouts/{rolloutId}/details — ``{promptMessages, messages,
+        rewards[{name,value}], totalReward, step}``. Gold/ground_truth is NOT in the
+        payload — join the local dataset by prompt text."""
+        response = self._http_client.get(
+            f"/v1/train/runs/{run_id}/rollouts/{rollout_id}/details"
+        )
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_rollout_mode_average(
+        self, run_id: str, *, mode: str = "eval", external_eval_id: str | None = None
+    ) -> dict[str, Any]:
+        """GET .../rollouts/mode-average — the headline ``{avg, ...}`` for a mode."""
+        params: dict[str, Any] = {"mode": mode}
+        if external_eval_id:
+            params["externalEvalId"] = external_eval_id
+        response = self._http_client.get(
+            f"/v1/train/runs/{run_id}/rollouts/mode-average", params=params
+        )
+        self._handle_response_errors(response)
+        return response.json()
+
+    def get_rollout_component_averages(
+        self, run_id: str, *, mode: str = "eval"
+    ) -> dict[str, Any]:
+        """GET .../rollouts/component-averages — latest-step per-component means
+        (can be all-null; for a trajectory use ``get_run_scalars`` instead)."""
+        response = self._http_client.get(
+            f"/v1/train/runs/{run_id}/rollouts/component-averages",
+            params={"mode": mode},
+        )
+        self._handle_response_errors(response)
+        return response.json()
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         """POST /v1/train/runs/{id}/cancel — owner-only (403 otherwise).
@@ -1212,11 +1310,15 @@ class RolloutClient:
             )
 
         per_example: list[ExampleValidation] = []
+        # A transient worker/sandbox error (e.g. a missing worker_args.json at
+        # setup) is infra flake, not an env bug — retry the rollout once before
+        # recording a failure, so one flake doesn't fail the whole validate.
+        worker_retries = 1
         for i, example in enumerate(sample):
             if verbose:
                 print(_info(f"\n  Example {i} — {json.dumps(example)[:120]}"))
             try:
-                final = self.stream_rollout(
+                rollout_kwargs = dict(
                     raw_example=example,
                     env_cls_path=env_cls_path,
                     env_metadata_path=env_metadata_path,
@@ -1228,8 +1330,20 @@ class RolloutClient:
                     llm_model=llm_model,
                     max_turns=max_turns,
                     max_tool_calls=max_tool_calls,
+                    capture_messages=full_messages,
                     full_messages=full_messages,
                 )
+                final = self.stream_rollout(**rollout_kwargs)
+                for _ in range(worker_retries):
+                    if final.get("event") != "worker_error":
+                        break
+                    if verbose:
+                        print(
+                            _info(
+                                f"  Example {i}: transient worker error — retrying once"
+                            )
+                        )
+                    final = self.stream_rollout(**rollout_kwargs)
                 ok = bool(final.get("success"))
                 per_example.append(
                     ExampleValidation(
@@ -1241,6 +1355,9 @@ class RolloutClient:
                         # Surface the per-rollout reward components (dropped here
                         # before — they're what `castform validate` displays).
                         rewards=final.get("rewards"),
+                        # Captured only when full_messages=True (capture_messages
+                        # above); lets --json carry the real transcript for audit.
+                        messages=final.get("messages"),
                     )
                 )
             except (RolloutError, RuntimeError) as exc:

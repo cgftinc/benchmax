@@ -68,6 +68,11 @@ def test_setup_codex_writes_agents_skills(tmp_path):
         assert (tmp_path / ".agents" / "skills" / name / "SKILL.md").exists()
     assert ".agents/skills" in (tmp_path / "AGENTS.md").read_text()
     assert ".claude/skills" not in (tmp_path / "AGENTS.md").read_text()
+    assert "Gate secondary bonuses" in (tmp_path / "AGENTS.md").read_text()
+    view_progress = (
+        tmp_path / ".agents" / "skills" / "view-progress" / "SKILL.md"
+    ).read_text()
+    assert "external-eval" in view_progress
 
 
 def test_setup_default_shows_grouped_summary(tmp_path, capsys):
@@ -138,11 +143,23 @@ def test_setup_template_rag_writes_searchenv(tmp_path):
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
     run_py = (tmp_path / "run.py").read_text()
     assert "class CustomSearchEnv(SearchEnv)" in run_py
+    assert "MAX_SEARCH_CALLS = 6" in run_py
+    # Self-contained: the reward arithmetic + weights are visible/editable in the
+    # file, and the run's budgets are baked in so it reproduces without CLI flags.
+    assert "async def compute_reward" in run_py
+    assert "W_CORRECTNESS" in run_py
+    assert "VALIDATE_CONFIG = {" in run_py
+    assert "LAUNCH_CONFIG = {" in run_py
     mod = _load_module_from_file(tmp_path / "run.py")
     env_cls = discover_env_class(mod)  # imported SearchEnv is ignored (other module)
     assert env_cls.__name__ == "CustomSearchEnv"
     assert issubclass(env_cls, SearchEnv)
     assert isinstance(env_cls(), SearchEnv)  # no-arg construct, no network
+    # The config blocks are what validate/launch read (LoadedProject surfaces them).
+    from benchmax.cli._project import _read_config
+
+    assert _read_config(mod, "VALIDATE_CONFIG")["max_turns"] == 7
+    assert _read_config(mod, "LAUNCH_CONFIG")["max_rollout_len"] == 16384
 
 
 def test_setup_template_rag_writes_run_py_no_datasets(tmp_path):
@@ -187,3 +204,44 @@ def test_getting_started_uses_one_prompt_model(tmp_path):
     assert "Quick commands" in gs
 
 
+def test_rag_scaffold_reward_threads_canonicalize_and_timeout(tmp_path, monkeypatch):
+    """The scaffold's inline compute_reward must honor a _canonicalize_id override
+    (citations) and the env's judge_timeout — behavior the inherited SearchEnv had,
+    which a naive inline reward silently drops (review findings #0, #6)."""
+    import asyncio
+
+    from benchmax.cli._project import _load_module_from_file, discover_env_class
+
+    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
+    mod = _load_module_from_file(tmp_path / "run.py")
+    env_cls = discover_env_class(mod)
+
+    env = env_cls.__new__(env_cls)  # skip network __init__
+    env._judge_model = "m"
+    env._judge_base_url = "u"
+    env._judge_timeout = 99.0
+    env._judge_token_provider = lambda: "k"
+    env._max_search_calls = 6
+    env._w_search_efficiency = 0.1
+    # A corpus-specific matcher (case-insensitive) — proves _canonicalize_id is threaded.
+    env._canonicalize_id = lambda s: str(s or "").strip().lower()
+
+    captured: dict = {}
+
+    async def _fake_judge(**kw):
+        captured.update(kw)
+        return (1.0, 1.0)
+
+    monkeypatch.setattr(mod, "judge_answer_quality", _fake_judge)
+
+    msgs = [{"role": "assistant", "content": "<answer>x [Source: DOCA]</answer>"}]
+    task = {
+        "question": "Q",
+        "ground_truth": "x",
+        "reference_chunks": [{"metadata": {"file": "doca"}}],
+    }
+    reward = asyncio.run(env.compute_reward("r", msgs, task))
+
+    assert captured["timeout"] == 99.0  # #6: env judge_timeout threaded
+    # #0: "DOCA" cite matched gold "doca" via the injected lowercasing canonicalizer
+    assert reward["citation_recall"] > 0

@@ -21,7 +21,8 @@ Write a single-turn `run.py` — a `BaseEnv` subclass — by filling in three th
 1. **`system_prompt`** — what the model is told it's doing.
 2. **`compute_reward`** — how a rollout is scored. Make it **discriminating** (it
    must give different scores to better/worse answers); a reward that never varies
-   gives training no gradient.
+   gives training no gradient. Keep the primary task (usually correctness) dominant
+   and gate secondary bonuses on it.
 3. the datasets — the **generate-data** skill (`castform setup` does not ship any).
 
 Start single-turn with no tools (`list_tools` returns `[]`). That's the right
@@ -100,17 +101,50 @@ def last_answer(messages) -> str:
 To join *every* assistant turn instead (multi-turn rollouts), use the shipped
 helper: `from benchmax.envs.reward_helpers import extract_completion_text`.
 
+For answer-tagged tasks (especially RAG), score only the answer the model commits
+inside `<answer>...</answer>`. Do **not** fall back to scoring the whole completion
+when tags are missing, or the model can earn correctness from its reasoning without
+ever answering. Prefer the last *closed* answer block so a self-correction wins
+while a stray literal `<answer>` later in the prose can't hijack scoring:
+
+```python
+import re
+
+_BLOCK = re.compile(r"<answer\s*>(.*?)</answer\s*>", re.I | re.S)
+_OPEN = re.compile(r"<answer\s*>", re.I)
+
+def extract_answer(text: str) -> str:
+    text = text or ""
+    blocks = list(_BLOCK.finditer(text))
+    if blocks:                       # last committed (closed) answer wins
+        return blocks[-1].group(1).strip()
+    opens = list(_OPEN.finditer(text))
+    if not opens:                    # never committed → no answer (score 0)
+        return ""
+    return text[opens[-1].end():].strip()   # forgive a missing close tag
+```
+
 ### Reward rules (these decide whether training works)
 
 - Return **positive** scores. Negatives destabilise training.
 - **Every component is summed** into one scalar — scale components so the sum
   reflects the priorities you want.
+- Gate secondary components on the primary one. If `correctness == 0`, citation,
+  style, brevity, and tool-use bonuses should normally be `0`; if correctness is
+  partial, multiply bonuses by that value so they cannot trade off against being
+  right.
 - Keep it **discriminating**: a reward that returns the same value for every
   rollout gives no gradient. If `validate`'s `⚠ … constant` check fires (a `std`
   of `0`), the reward or the data needs work (see generate-data's difficulty-filter).
 - For qualitative scoring, be **comparative**: judge against `ground_truth`, or
   use `compute_group_reward` to **rank** completions within the group. Ranking is
-  much more stable than an absolute LLM-judge score.
+  much more stable than an absolute LLM-judge score. A finer absolute rubric often
+  still collapses to the same 0/1 decisions, so it does **not** break GRPO ties; use
+  a true pairwise/listwise ranking prompt when you need resolution within a group.
+- Calibrate LLM judges on real answers before launch. Re-score a sample of
+  `0.5`/partial outputs by hand or with a stricter rubric; verbose hedges and
+  question restatements can look "partially correct" to a lenient judge and dull the
+  gradient.
 - `compute_group_reward` must return one `dict[str, float]` per rollout, all
   finite. Override it only when reward needs cross-rollout context.
 
@@ -158,11 +192,11 @@ helper: `from benchmax.envs.reward_helpers import extract_completion_text`.
   (both settable here) and `castform launch --set max_turns=N` (at launch only
   `max_turns` is a documented `--set` knob — `max_tool_calls` isn't, it defaults to 8;
   run `castform launch --list-args` for the live set). For a rag `SearchEnv`, match
-  `MAX_SEARCH_CALLS`
-  — each search is one turn + one tool call, and the answer is inline (one extra turn,
-  NOT a tool call), so `MAX_SEARCH_CALLS=10` → `--max-turns 11 --max-tool-calls 10`.
-  (Keep `MAX_SEARCH_CALLS` ≤ 8 if you need it honored in training — launch caps tool
-  calls at 8.) Note the limit in `run.py` so it isn't forgotten.
+  `MAX_SEARCH_CALLS`: each search is one turn + one tool call, and the answer is
+  inline (one extra turn, NOT a tool call), so budget `--max-turns S+1
+  --max-tool-calls S` for `S` searches. Keep `MAX_SEARCH_CALLS` ≤ 8 if you need it
+  honored in training; the scaffold defaults below that cap. Note the limit in
+  `run.py` so it isn't forgotten.
 
 ### RAG and traces environments (the two specializations)
 
@@ -187,9 +221,35 @@ made-up pages learns nothing about their real handbook.
 #### RAG — search a corpus and cite sources
 
 `castform setup --template rag` writes a `SearchEnv` subclass with a search tool and
-a 5-component reward (answer correctness + conciseness via an LLM judge, citation
-recall + precision, search efficiency). You usually edit only the corpus and the
-three constants; the system prompt is rendered by `SearchEnv.render_system_prompt`.
+a multi-component reward (answer correctness, conciseness via an LLM judge,
+citations, and search efficiency). The reward is spelled out **inline in the run.py's
+`compute_reward`** — the weights (`W_*`), the correctness gate, and the arithmetic
+are right there to read and edit; the heavy pieces (`judge_answer_quality`,
+`score_citations`, `score_search_efficiency`, `extract_answer_block`) are named
+helpers imported from `benchmax.envs.postgres_search.search_env`. Treat that reward
+as a baseline to audit, not a law of nature (`castform validate --reward-audit`).
+Before a real launch, inspect transcripts and edit the run.py for your corpus:
+
+- **Answer extraction:** only score a committed `<answer>` block. Missing tags
+  should score as no answer, and a final answer block should beat an earlier draft.
+- **Citations:** the stock matcher is exact-source oriented (`score_citations`
+  defaults to whitespace-strip). Real corpora often have duplicate titles, page-id
+  hashes, bare-id citations, or several valid pages for the same fact. Pass a custom
+  matcher — `score_citations(answer, chunks, canonicalize=lambda s: ...)` — to match
+  by id/hash/title/path, and credit citations to any valid retrieved source rather
+  than only the single gold label.
+- **Correctness gate:** multiply citation, brevity, and style bonuses by
+  correctness so a wrong answer cannot bank source-format rewards.
+- **Conciseness:** an LLM conciseness judge may be sparse and expensive. A
+  deterministic prose-length term, excluding citation labels, is often denser and
+  free.
+- **Search shaping:** a "fewer searches is better" bonus can fight multi-hop
+  exploration. Use the hard `MAX_SEARCH_CALLS` cap for safety; keep search
+  efficiency small or disable it when it under-explores.
+- **Tool-output budget:** large search responses across many turns count toward
+  `max_rollout_len`. If you let each search return thousands of characters, lower
+  `MAX_SEARCH_CALLS`, trim per-chunk bodies, or raise `max_rollout_len` after
+  checking `castform launch --list-args`.
 
 The template searches a **local CGFT corpus** (`PostgresSearch`, BM25). To search a
 **provider** corpus, swap the `search=` client. Provider keys + resource ids come

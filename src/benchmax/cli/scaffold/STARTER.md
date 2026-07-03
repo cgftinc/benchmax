@@ -87,7 +87,12 @@ stop and ask:
 | See accepted launch args | `castform launch --list-args` |
 | Launch a run (GPU) | `castform launch --set model=Qwen/Qwen3.5-4B` |
 | Status / progress | `castform runs status <id>` |
-| Reward curves | `castform runs scalars <id>` |
-| Logs | `castform runs logs <id>` |
+| Reward curves | `castform runs scalars <id> --mode eval --json` |
+| Env/error logs | `castform runs logs <id>` |
 | Stop a run | `castform stop <id>` |
 | Upload a dataset file | `castform data upload <file>` |
+
+`runs logs` is for environment and error logs; answer transcripts and
+per-component reward details live in stored rollouts today, so use the
+**view-progress** skill when a run's eval curve needs real answer-quality
+debugging.

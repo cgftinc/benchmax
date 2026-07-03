@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -280,6 +281,32 @@ def _cmd_data_traces(args: argparse.Namespace) -> int:
         print(f"Error: no traces fetched from project {project_id}.", file=sys.stderr)
         return 1
 
+    if args.preview:
+        # Recover the wizard's "preview imported traces" step: show the NORMALIZED
+        # traces before any filtering, and stop (don't build the train/eval set).
+        from benchmax.cli.dataview import build_view_model, write_html
+        from benchmax.platform.browser import maybe_open_browser
+
+        out_dir = Path(args.out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        records = [t.to_dict() for t in traces]
+        snapshot = out_dir / "traces_preview.jsonl"
+        _write_jsonl(snapshot, records)
+        html = out_dir / "traces_preview.html"
+        model = build_view_model(records, source=f"{project_id} (traces preview)", limit=0)
+        write_html(model, html)
+        n = len(records)
+        if args.json:
+            print_json(
+                {"preview": True, "count": n, "snapshot": str(snapshot), "html": str(html)}
+            )
+        else:
+            print(f"✓ preview: {n} normalized trace{'' if n == 1 else 's'} (not built into a dataset)")
+            print(f"  snapshot: {snapshot}")
+            print(f"  viewer:   {html}")
+        maybe_open_browser(html.resolve().as_uri())
+        return 0
+
     pipeline = TracesPipeline(
         traces=traces,
         system_prompt=args.system_prompt,
@@ -352,6 +379,52 @@ def _cmd_data_traces(args: argparse.Namespace) -> int:
             "run.py's dataset_preprocess to match."
         )
         print("  Next: castform setup   (then castform validate)")
+    return 0
+
+
+@handle_errors
+def _cmd_data_view(args: argparse.Namespace) -> int:
+    # Lazy import — `dataview` only pulls the traces models for trace files, and
+    # then only on demand; RAG/generic viewing stays free of the [traces] extra.
+    from benchmax.cli.dataview import load_view_model, write_html
+    from benchmax.platform.browser import maybe_open_browser
+
+    src = Path(args.file)
+    if not src.exists():
+        print(f"Error: file not found: {src}", file=sys.stderr)
+        return 1
+
+    try:
+        model = load_view_model(src, type_override=args.type, limit=args.limit)
+    except (OSError, UnicodeDecodeError) as exc:  # binary / unreadable file
+        print(f"Error: could not read {src}: {exc}", file=sys.stderr)
+        return 1
+
+    if args.out:
+        out = Path(args.out)
+    else:
+        # A persistent temp file (not auto-deleted) so the browser can open it;
+        # printed below so headless users can grab the path.
+        fd, tmp = tempfile.mkstemp(prefix="castform-view-", suffix=".html")
+        os.close(fd)
+        out = Path(tmp)
+    try:
+        write_html(model, out, view=args.view)
+    except OSError as exc:
+        print(f"Error: could not write {out}: {exc}", file=sys.stderr)
+        return 1
+
+    noun = "row" if model["total"] == 1 else "rows"
+    print(
+        f"✓ {model['kind']}/{model['variant']} — "
+        f"{model['shown']} of {model['total']} {noun}"
+    )
+    print(f"  {out}")
+    if model["capped"]:
+        print(f"  (capped at {args.limit}; re-run with --limit 0 to embed all)")
+
+    if not args.no_open:
+        maybe_open_browser(out.resolve().as_uri())
     return 0
 
 
@@ -437,5 +510,53 @@ def register(sub: argparse._SubParsersAction) -> None:
         help="Detect-only: print the full detected system prompt + tools and write "
         "nothing — confirm them before generating the dataset",
     )
+    p_tr.add_argument(
+        "--preview",
+        action="store_true",
+        help="Open the imported (normalized) traces in the browser and exit, "
+        "without building the train/eval dataset",
+    )
     p_tr.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_tr.set_defaults(func=_cmd_data_traces)
+
+    p_view = data_sub.add_parser(
+        "view",
+        help="Render a local dataset/traces JSONL as an HTML viewer (opens in your browser)",
+        description="Render a dataset, traces, corpus-chunk, or Claude session-transcript "
+        "JSONL as a self-contained HTML page and open it in the browser. The shape is "
+        "auto-detected; anything unrecognized falls back to a generic record table (never "
+        "errors). The path is always printed, so it works headless (open it yourself).",
+        epilog="Examples:\n"
+        "  castform data view dataset.jsonl\n"
+        "  castform data view traces.jsonl --view raw\n"
+        "  castform data view ~/.claude/projects/<proj>/<session-id>.jsonl   # a Claude session\n"
+        "  castform data view data.jsonl --type chunks --out chunks.html --no-open",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_view.add_argument("file", help="Local .jsonl dataset or traces file to view")
+    p_view.add_argument(
+        "--type",
+        choices=["rag", "traces", "chunks", "claude", "generic"],
+        default=None,
+        help="Force the classification (default: auto-detect from the first row; "
+        "`claude` = a Claude Code session transcript)",
+    )
+    p_view.add_argument(
+        "--view",
+        choices=["auto", "table", "messages", "raw"],
+        default="auto",
+        help="Initial display mode (default: auto — the detected kind's view)",
+    )
+    p_view.add_argument("--out", help="Write the HTML here (default: a temp file)")
+    p_view.add_argument(
+        "--limit",
+        type=int,
+        default=1000,
+        help="Max rows to embed (default: 1000; 0 = all)",
+    )
+    p_view.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Write the file but don't open a browser",
+    )
+    p_view.set_defaults(func=_cmd_data_view)

@@ -10,14 +10,68 @@ from __future__ import annotations
 
 import argparse
 import textwrap
+from pathlib import Path
 
 from benchmax import config
 from benchmax.cli._client import handle_errors, trainer_client
-from benchmax.cli._output import fmt_value, print_json, render_table
+from benchmax.cli._output import (
+    final_answer,
+    fmt_value,
+    print_json,
+    render_table,
+    truncate,
+)
+from benchmax.cli._project import ProjectError, _load_jsonl, row_question_and_gold
 
 
 def _run_url(run_id: str) -> str:
     return f"{config.web_app_url()}/train/{run_id}"
+
+
+# --- stored-rollout helpers (runs rollouts / rollout) -----------------------
+# `truncate` + `final_answer` are shared with the validate audit (benchmax.cli._output).
+
+
+def _user_prompt(messages: list | None) -> str | None:
+    """The last user-turn content from a promptMessages list."""
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("role") == "user" and m.get("content"):
+            c = m["content"]
+            return c if isinstance(c, str) else str(c)
+    return None
+
+
+def _gold_index(dataset_paths: list[str]) -> dict[str, object]:
+    """normalized question text → gold, from the first readable local dataset.
+
+    Gold isn't in the rollout payload; join it back from the local jsonl by
+    question text (the env built the rollout prompt from the row's question)."""
+    for path in dataset_paths:
+        p = Path(path)
+        if not p.exists():
+            continue
+        try:
+            rows = _load_jsonl(p)
+        except ProjectError:
+            continue
+        index: dict[str, object] = {}
+        for r in rows:
+            q, gold = row_question_and_gold(r)
+            if isinstance(q, str) and gold is not None:
+                index[" ".join(q.split())] = gold
+        if index:
+            return index
+    return {}
+
+
+def _match_gold(prompt_text: str | None, index: dict[str, object]) -> object:
+    """Gold lookup by EXACT normalized question match. Deliberately not fuzzy: the
+    flagship env's rollout user turn IS the raw dataset question (exact hits), and a
+    substring/containment fallback confidently attaches the WRONG gold when the
+    rollout's true question isn't in the local file — worse than showing none."""
+    if not prompt_text or not index:
+        return None
+    return index.get(" ".join(prompt_text.split()))
 
 
 def _print_run(run: dict) -> None:
@@ -150,6 +204,125 @@ def _cmd_runs_logs(args: argparse.Namespace) -> int:
     return 0
 
 
+@handle_errors
+def _cmd_runs_rollouts(args: argparse.Namespace) -> int:
+    with trainer_client() as client:
+        if args.example:
+            # One example's rollouts across steps (heatmap). Ids feed `runs rollout`.
+            rollouts = client.get_rollout_heatmap(
+                args.run_id, args.example, mode=args.mode
+            )
+            if args.json:
+                print_json(rollouts)
+                return 0
+            if not rollouts:
+                print(f"No rollouts for example {args.example} (mode={args.mode}).")
+                return 0
+            rows = [
+                [r.get("id", ""), r.get("step", ""), fmt_value(r.get("totalReward"))]
+                for r in rollouts
+            ]
+            render_table(["ROLLOUT ID", "STEP", "REWARD"], rows)
+            print(f"\nInspect one:  castform runs rollout {args.run_id} <ROLLOUT ID>")
+            return 0
+
+        summary = client.get_rollout_summary(
+            args.run_id, mode=args.mode, limit=args.limit
+        )
+        avg = client.get_rollout_mode_average(args.run_id, mode=args.mode)
+    if args.json:
+        print_json({"mode": args.mode, "mode_average": avg, "examples": summary})
+        return 0
+    if not summary:
+        print(f"No {args.mode} rollouts yet.")
+        return 0
+    mean = avg.get("avg") if isinstance(avg, dict) else None
+    head = f"Rollout examples (mode={args.mode}"
+    head += f", avg reward {fmt_value(mean)})" if mean is not None else ")"
+    print(head + ":")
+    rows = []
+    for g in summary:
+        hist = g.get("rewardHistory") or []
+        last = hist[-1].get("meanReward") if hist else None
+        rows.append(
+            [
+                g.get("promptMessageId", ""),
+                fmt_value(last) if last is not None else "-",
+                truncate(g.get("promptText"), 60),
+            ]
+        )
+    render_table(["EXAMPLE ID", "MEAN REWARD", "PROMPT"], rows)
+    print(
+        f"\nList an example's rollouts:  "
+        f"castform runs rollouts {args.run_id} --example <EXAMPLE ID>"
+    )
+    return 0
+
+
+@handle_errors
+def _cmd_runs_rollout(args: argparse.Namespace) -> int:
+    with trainer_client() as client:
+        details = client.get_rollout_details(args.run_id, args.rollout_id)
+
+    prompt = _user_prompt(details.get("promptMessages"))
+    datasets = (
+        [args.dataset]
+        if args.dataset
+        else ["eval_dataset.jsonl", "train_dataset.jsonl"]
+    )
+    gold = _match_gold(prompt, _gold_index(datasets))
+
+    if args.view:
+        from benchmax.cli.dataview import build_view_model, write_html
+        from benchmax.platform import browser
+
+        record = {
+            "id": args.rollout_id,
+            "messages": details.get("messages") or [],
+            "scores": {
+                r.get("name"): r.get("value") for r in details.get("rewards") or []
+            },
+            "metadata": {
+                "run_id": args.run_id,
+                "step": details.get("step"),
+                "total_reward": details.get("totalReward"),
+                "gold": gold,
+            },
+        }
+        model = build_view_model(
+            [record], source=f"rollout {args.rollout_id}", type_override="traces"
+        )
+        out = write_html(model, Path(f"rollout-{args.rollout_id}.html")).resolve()
+        print(f"Wrote {out}")
+        browser.maybe_open_browser(out.as_uri())
+        return 0
+
+    if args.json:
+        print_json({**details, "gold": gold})
+        return 0
+
+    print(
+        f"Rollout {args.rollout_id}  "
+        f"(step {details.get('step', '?')}, "
+        f"total {fmt_value(details.get('totalReward'))})"
+    )
+    if prompt:
+        print(f"\nQ:    {truncate(prompt, 400)}")
+    if gold is not None:
+        print(f"gold: {truncate(gold, 400)}")
+    else:
+        print("gold: (not found locally — pass --dataset to join ground truth)")
+    answer = final_answer(details.get("messages"))
+    if answer:
+        print(f"\nanswer:\n{answer}")
+    rewards = details.get("rewards") or []
+    if rewards:
+        print("\nper-component rewards:")
+        for r in rewards:
+            print(f"  {str(r.get('name', '')):<24} {fmt_value(r.get('value'))}")
+    return 0
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     """Attach the `runs` group to the top-level subparsers."""
     runs = sub.add_parser("runs", help="Inspect training runs")
@@ -185,3 +358,35 @@ def register(sub: argparse._SubParsersAction) -> None:
     p_logs.add_argument("--rollout-id", dest="rollout_id", help="Filter to one rollout")
     p_logs.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_logs.set_defaults(func=_cmd_runs_logs)
+
+    p_rollouts = runs_sub.add_parser(
+        "rollouts", help="List stored rollout examples (or one example's rollouts)"
+    )
+    p_rollouts.add_argument("run_id")
+    p_rollouts.add_argument(
+        "--mode", default="eval", help="train | eval | external-eval (default: eval)"
+    )
+    p_rollouts.add_argument(
+        "--example",
+        help="Show one example's rollouts across steps (its promptMessageId)",
+    )
+    p_rollouts.add_argument(
+        "--limit", type=int, default=50, help="Max examples to list (default: 50)"
+    )
+    p_rollouts.add_argument("--json", action="store_true", help="Emit raw JSON")
+    p_rollouts.set_defaults(func=_cmd_runs_rollouts)
+
+    p_rollout = runs_sub.add_parser(
+        "rollout", help="Show one stored rollout: transcript + rewards + gold"
+    )
+    p_rollout.add_argument("run_id")
+    p_rollout.add_argument("rollout_id")
+    p_rollout.add_argument(
+        "--dataset",
+        help="Local jsonl to join gold from (default: eval_dataset.jsonl, then train)",
+    )
+    p_rollout.add_argument(
+        "--view", action="store_true", help="Open the rollout in the HTML viewer"
+    )
+    p_rollout.add_argument("--json", action="store_true", help="Emit raw JSON")
+    p_rollout.set_defaults(func=_cmd_runs_rollout)

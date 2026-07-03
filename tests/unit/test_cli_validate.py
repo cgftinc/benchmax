@@ -93,6 +93,8 @@ class _FakeProject:
     eval_dataset = []
     module = None
     from_file = True
+    launch_config: dict = {}
+    validate_config: dict = {}
 
 
 def _validate_ns(**over) -> argparse.Namespace:
@@ -114,6 +116,7 @@ def _validate_ns(**over) -> argparse.Namespace:
         local_only=False,
         verbose=False,
         full_messages=False,
+        reward_audit=False,
         json=False,
     )
     base.update(over)
@@ -187,6 +190,24 @@ def test_validate_json(monkeypatch, capsys):
     assert '"rewards"' in out and '"acc": 1.0' in out
 
 
+def test_validate_json_includes_messages(monkeypatch, capsys):
+    # --json carries the captured transcript when full_messages surfaced it, so a
+    # reward audit can read real completions, not just scores.
+    transcript = [{"role": "assistant", "content": "answer text"}]
+    report = _report(
+        examples=[
+            ExampleValidation(
+                index=0, ok=True, rewards={"acc": 1.0}, messages=transcript
+            ),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns(json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"messages"' in out and "answer text" in out
+
+
 def test_env_arg_parsing():
     assert validate._parse_env_args(["a=1", "b=hi", "c=true"]) == {
         "a": 1,
@@ -202,7 +223,9 @@ def test_validate_pip_forwards_to_sandbox(monkeypatch):
 
     def _capture(**k):
         captured.update(k)
-        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
 
     monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
     monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
@@ -219,13 +242,15 @@ def test_validate_pip_repeatable_in_parser():
 
 def test_validate_turn_budget_forwards_to_rollout(monkeypatch):
     # --max-turns / --max-tool-calls must reach validate_env so a deep-search env
-    # (e.g. SearchEnv MAX_SEARCH_CALLS=10) can be validated at the budget the prompt
+    # (e.g. SearchEnv MAX_SEARCH_CALLS=6) can be validated at the budget the prompt
     # advertises, instead of the truncating 4/8 default.
     captured: dict = {}
 
     def _capture(**k):
         captured.update(k)
-        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
 
     monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
     monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
@@ -235,10 +260,82 @@ def test_validate_turn_budget_forwards_to_rollout(monkeypatch):
 
 
 def test_validate_turn_budget_defaults_in_parser():
+    # Parser default is None (unset) so run.py's VALIDATE_CONFIG can supply it;
+    # _cmd_validate resolves None → config → the 4/8 fallback.
     args = build_parser().parse_args(["validate"])
-    assert args.max_turns == 4 and args.max_tool_calls == 8
-    args = build_parser().parse_args(["validate", "--max-turns", "11", "--max-tool-calls", "12"])
+    assert args.max_turns is None and args.max_tool_calls is None
+    args = build_parser().parse_args(
+        ["validate", "--max-turns", "11", "--max-tool-calls", "12"]
+    )
     assert args.max_turns == 11 and args.max_tool_calls == 12
+
+
+def _validate_config_project(**config):
+    class _P(_FakeProject):
+        validate_config = config
+
+    return _P()
+
+
+def test_validate_config_supplies_budget_when_flag_omitted(monkeypatch):
+    # run.py VALIDATE_CONFIG fills max_turns/examples when the CLI omits them.
+    captured: dict = {}
+
+    def _capture(**k):
+        captured.update(k)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
+
+    monkeypatch.setattr(
+        validate,
+        "load_project",
+        lambda **k: _validate_config_project(max_turns=9, max_tool_calls=7, examples=5),
+    )
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
+    validate._cmd_validate(
+        _validate_ns(max_turns=None, max_tool_calls=None, examples=None)
+    )
+    assert captured["max_turns"] == 9
+    assert captured["max_tool_calls"] == 7
+    assert captured["remote_examples"] == 5
+
+
+def test_validate_cli_flag_overrides_config(monkeypatch):
+    captured: dict = {}
+
+    def _capture(**k):
+        captured.update(k)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
+
+    monkeypatch.setattr(
+        validate, "load_project", lambda **k: _validate_config_project(max_turns=9)
+    )
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
+    validate._cmd_validate(
+        _validate_ns(max_turns=3)
+    )  # explicit flag wins over config 9
+    assert captured["max_turns"] == 3
+
+
+def test_validate_falls_back_to_default_without_config_or_flag(monkeypatch):
+    captured: dict = {}
+
+    def _capture(**k):
+        captured.update(k)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
+
+    monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
+    validate._cmd_validate(
+        _validate_ns(max_turns=None, max_tool_calls=None, examples=None)
+    )
+    assert captured["max_turns"] == 4 and captured["max_tool_calls"] == 8
+    assert captured["remote_examples"] == 2
 
 
 def test_validate_provider_injects_sdk(monkeypatch):
@@ -249,7 +346,9 @@ def test_validate_provider_injects_sdk(monkeypatch):
 
     def _capture(**k):
         captured.update(k)
-        return _report(examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={})], group=None
+        )
 
     monkeypatch.setattr(validate, "load_project", lambda **k: _FakeProject())
     monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
@@ -304,9 +403,7 @@ def test_recommendation_varying_reward_has_no_hint():
 
 
 def _skill_text(name: str) -> str:
-    skill = (
-        Path(validate.__file__).parent / "scaffold/skills" / name / "SKILL.md"
-    )
+    skill = Path(validate.__file__).parent / "scaffold/skills" / name / "SKILL.md"
     return skill.read_text("utf-8")
 
 
@@ -402,4 +499,256 @@ def test_constant_total_helper():
     assert validate._constant_total([{"a": 0.0}, {"b": 0.0}]) == 0.0  # ragged, both 0
     assert validate._constant_total([{"a": 1.0}, {"a": 2.0}]) is None  # varies
     assert validate._constant_total([{"a": 0.0}]) is None  # <2 rollouts
-    assert validate._constant_total([{"p": True}, {"p": False}]) == 0.0  # bools excluded
+    assert (
+        validate._constant_total([{"p": True}, {"p": False}]) == 0.0
+    )  # bools excluded
+
+
+# --- reward audit (--reward-audit) --------------------------------------
+
+
+class _RagProject:
+    """A project whose dataset carries gold, indexable by rollout index."""
+
+    env_class = type("E", (), {})
+    train_dataset = [
+        {"prompt": "where do I add the exception?", "ground_truth": "edit /etc/docker"},
+        {"prompt": "second question", "ground_truth": "the second gold answer"},
+    ]
+    eval_dataset = []
+    module = None
+    from_file = True
+    launch_config: dict = {}
+    validate_config: dict = {}
+
+
+def test_reward_audit_shows_components_gold_and_answers(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(
+                index=0,
+                ok=True,
+                rewards={"answer_correctness": 1.0, "citation_recall": 0.3},
+                messages=[{"role": "assistant", "content": "edit /etc/docker now"}],
+            ),
+            ExampleValidation(
+                index=1,
+                ok=True,
+                rewards={"answer_correctness": 0.0, "citation_recall": 0.0},
+                messages=[{"role": "assistant", "content": "no idea, sorry"}],
+            ),
+        ],
+        group=None,
+    )
+    monkeypatch.setattr(validate, "load_project", lambda **k: _RagProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: report)
+    assert validate._cmd_validate(_validate_ns(reward_audit=True)) == 0
+    out = capsys.readouterr().out
+    assert "reward audit" in out
+    # per-component stats + the real question/gold/answer
+    assert "answer_correctness" in out and "citation_recall" in out
+    assert "gold: edit /etc/docker" in out
+    assert "edit /etc/docker now" in out  # the model's captured answer
+
+
+def test_reward_audit_implies_full_messages_capture(monkeypatch):
+    # --reward-audit alone must ask validate_env to capture transcripts, else the
+    # audit has no answers to show.
+    captured: dict = {}
+
+    def _capture(**k):
+        captured.update(k)
+        return _report(
+            examples=[ExampleValidation(index=0, ok=True, rewards={"a": 1.0})],
+            group=None,
+        )
+
+    monkeypatch.setattr(validate, "load_project", lambda **k: _RagProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", _capture)
+    validate._cmd_validate(_validate_ns(reward_audit=True))
+    assert captured["full_messages"] is True
+
+
+def test_reward_audit_json_carries_audit_and_gold(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"answer_correctness": 1.0}),
+        ],
+        group=None,
+    )
+    monkeypatch.setattr(validate, "load_project", lambda **k: _RagProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: report)
+    assert validate._cmd_validate(_validate_ns(reward_audit=True, json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"audit"' in out
+    assert '"correctness_component": "answer_correctness"' in out
+    assert '"gold": "edit /etc/docker"' in out
+
+
+def test_mirrors_correctness_flags_redundant_not_independent():
+    # A component that is constant within each correctness stratum mirrors it;
+    # one that varies within a stratum (recall) does not.
+    corr = [1.0, 1.0, 0.0, 0.0]
+    dup = [0.5, 0.5, 0.0, 0.0]  # 0.5 * correctness → redundant
+    recall = [0.3, 0.1, 0.0, 0.0]  # varies within the correct stratum → real signal
+    assert validate._mirrors_correctness(dup, corr) is True
+    assert validate._mirrors_correctness(recall, corr) is False
+    # correctness that never varies can't be a basis for the check
+    assert validate._mirrors_correctness([0.5, 0.5], [1.0, 1.0]) is False
+
+
+def test_audit_components_notes():
+    ok_rewards = [
+        {"answer_correctness": 1.0, "dup": 0.5, "recall": 0.3, "fmt": 0.1},
+        {"answer_correctness": 1.0, "dup": 0.5, "recall": 0.1, "fmt": 0.1},
+        {"answer_correctness": 0.0, "dup": 0.0, "recall": 0.0, "fmt": 0.1},
+        {"answer_correctness": 0.0, "dup": 0.0, "recall": 0.0, "fmt": 0.1},
+    ]
+    rows, corr_key = validate._audit_components(ok_rewards, set())
+    assert corr_key == "answer_correctness"
+    notes = {r["component"]: r["note"] for r in rows}
+    assert notes["answer_correctness"] == "primary (gate)"
+    assert "mirrors correctness" in notes["dup"]
+    assert "constant" in notes["fmt"]
+    assert notes["recall"] == ""  # discriminates independently
+
+
+def test_audit_marks_group_components_na():
+    ok_rewards = [{"acc": 1.0, "rank": 0.0}, {"acc": 0.0, "rank": 0.0}]
+    rows, _ = validate._audit_components(ok_rewards, {"rank"})
+    notes = {r["component"]: r["note"] for r in rows}
+    assert "group-scored" in notes["rank"]  # not flagged "constant"
+
+
+# --- review fixes: dataset-shape + config validation --------------------
+
+
+def test_example_gold_reads_question_key():
+    # RAG rows key the question under 'question' (+ 'answer' for gold); generic
+    # rows use 'prompt'/'ground_truth'. Both must yield a question + gold.
+    assert validate._example_gold({"question": "Q?", "answer": "A"}) == ("Q?", "A")
+    assert validate._example_gold({"prompt": "P", "ground_truth": "G"}) == ("P", "G")
+
+
+def test_row_question_and_gold_shared_helper():
+    # The shared dataset-shape parser (used by runs + validate) — its own edge tests.
+    from benchmax.cli._project import row_question_and_gold
+
+    assert row_question_and_gold({"prompt": "P", "ground_truth": "G"}) == ("P", "G")
+    assert row_question_and_gold({"question": "Q", "answer": "A"}) == ("Q", "A")
+    # chat-list prompt → last user turn
+    assert row_question_and_gold(
+        {
+            "prompt": [
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "u"},
+            ],
+            "answer": "A",
+        }
+    ) == ("u", "A")
+    # ground_truth wins over answer; a falsy-but-real gold (0) is preserved
+    assert row_question_and_gold(
+        {"question": "Q", "ground_truth": 0, "answer": "x"}
+    ) == (
+        "Q",
+        0,
+    )
+    assert row_question_and_gold("not a dict") == (None, None)
+    assert row_question_and_gold({}) == (None, None)
+
+
+def test_validate_config_non_int_knob_fails_loudly(monkeypatch):
+    # A str budget in VALIDATE_CONFIG must fail loudly here, not crash deep in the SDK.
+    monkeypatch.setattr(
+        validate, "load_project", lambda **k: _validate_config_project(max_turns="7")
+    )
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: None)
+    with pytest.raises(SystemExit, match="must be an int"):
+        validate._cmd_validate(_validate_ns(max_turns=None))
+
+
+def test_read_config_rejects_non_dict():
+    import types
+
+    from benchmax.cli._project import ProjectError, _read_config
+
+    m = types.ModuleType("m")
+    m.LAUNCH_CONFIG = [1, 2]  # not a dict → fail loudly
+    with pytest.raises(ProjectError, match="must be a dict"):
+        _read_config(m, "LAUNCH_CONFIG")
+    assert _read_config(m, "MISSING") == {}  # absent → {}
+    m.VALIDATE_CONFIG = None
+    assert _read_config(m, "VALIDATE_CONFIG") == {}  # None (unset) → {}
+    m.OK = {"a": 1}
+    assert _read_config(m, "OK") == {"a": 1}
+
+
+# --- inconsistent reward shape (ragged keys across examples) --------------
+
+
+def test_inconsistent_components_helper():
+    # 'cite' present in only 1 of 2 rollouts → ragged; 'acc' in both → not flagged.
+    assert validate._inconsistent_components(
+        [{"acc": 1.0, "cite": 0.3}, {"acc": 0.0}]
+    ) == [("cite", 1)]
+    assert (
+        validate._inconsistent_components([{"a": 1.0}, {"a": 0.0}]) == []
+    )  # consistent
+    assert validate._inconsistent_components([{"a": 1.0}]) == []  # <2 rollouts
+
+
+def test_validate_flags_inconsistent_reward_shape(monkeypatch, capsys):
+    # A soft ⚠ (report still passes) when a component is missing from some rollouts.
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"acc": 1.0, "cite": 0.3}),
+            ExampleValidation(index=1, ok=True, rewards={"acc": 0.0}),  # 'cite' missing
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0  # soft warning, not a failure
+    out = capsys.readouterr().out
+    assert "reward shape inconsistent" in out
+    assert "'cite' in 1/2" in out
+
+
+def test_validate_json_includes_inconsistent_shape_warning(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"acc": 1.0, "cite": 0.3}),
+            ExampleValidation(index=1, ok=True, rewards={"acc": 0.0}),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns(json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"inconsistent_reward_shape"' in out and '"component": "cite"' in out
+    assert '"present": 1' in out
+
+
+def test_reward_audit_shows_inconsistent_shape(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(
+                index=0,
+                ok=True,
+                rewards={"answer_correctness": 1.0, "cite": 0.3},
+                messages=[{"role": "assistant", "content": "a"}],
+            ),
+            ExampleValidation(
+                index=1,
+                ok=True,
+                rewards={"answer_correctness": 0.0},  # 'cite' missing
+                messages=[{"role": "assistant", "content": "b"}],
+            ),
+        ],
+        group=None,
+    )
+    monkeypatch.setattr(validate, "load_project", lambda **k: _RagProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: report)
+    assert validate._cmd_validate(_validate_ns(reward_audit=True)) == 0
+    out = capsys.readouterr().out
+    assert "inconsistent reward shape" in out
+    assert "cite: present in 1/2" in out

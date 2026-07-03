@@ -18,7 +18,9 @@ under cap, or raises ``CorpusLimitError`` — surfaced here as a clean message.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 from benchmax import config
@@ -186,6 +188,74 @@ def _cmd_corpus_search(args: argparse.Namespace) -> int:
     return 0
 
 
+@handle_errors
+def _cmd_corpus_browse(args: argparse.Namespace) -> int:
+    # Recover the wizard's "preview the corpus" step: pull the stored chunks and
+    # render them in the local HTML viewer (same one `data view` uses).
+    from benchmax.cli.dataview import build_view_model, write_html
+    from benchmax.platform.browser import maybe_open_browser
+
+    try:
+        client = _corpus_client()
+    except ImportError as exc:
+        print(f"Error: {exc}. {_RAG_INSTALL_HINT}", file=sys.stderr)
+        return 1
+
+    corpora = client.list_corpora()
+    target = next(
+        (c for c in corpora if c.id == args.corpus or c.name == args.corpus), None
+    )
+    if target is None:
+        have = ", ".join(c.name for c in corpora) or "(none)"
+        print(f"Error: no corpus matching {args.corpus!r}. Have: {have}", file=sys.stderr)
+        return 1
+
+    # Page through chunks up to --limit (0 = all). `more` tracks whether a
+    # next-page cursor remained when we stopped, so we can say so honestly.
+    want = args.limit
+    chunks: list = []
+    cursor: str | None = None
+    while True:
+        if want and want > 0 and len(chunks) >= want:
+            break
+        page_size = 500 if not (want and want > 0) else min(500, want - len(chunks))
+        page, cursor = client.list_corpus_chunks(target.id, limit=page_size, cursor=cursor)
+        chunks.extend(page)
+        if not cursor or not page:
+            break
+    more = cursor is not None
+
+    records = [
+        {"id": c.id, "content": c.content, "metadata": c.metadata, "score": c.score}
+        for c in chunks
+    ]
+    if args.json:
+        from benchmax.cli._output import print_json
+
+        print_json(records)
+        return 0
+
+    model = build_view_model(
+        records, source=f"{target.name} (chunks)", type_override="chunks", limit=0
+    )
+    if args.out:
+        out = Path(args.out)
+    else:
+        fd, tmp = tempfile.mkstemp(prefix="castform-chunks-", suffix=".html")
+        os.close(fd)
+        out = Path(tmp)
+    write_html(model, out, view=args.view)
+
+    n = len(records)
+    print(f"✓ corpus '{target.name}' — {n} chunk{'' if n == 1 else 's'}")
+    print(f"  {out}")
+    if more:
+        print(f"  (showing first {n}; corpus has more — re-run with --limit 0 for all)")
+    if not args.no_open:
+        maybe_open_browser(out.resolve().as_uri())
+    return 0
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     """Attach the `corpus` group to the top-level subparsers."""
     corpus = sub.add_parser("corpus", help="Corpus utilities for RAG envs")
@@ -228,3 +298,33 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p_se.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_se.set_defaults(func=_cmd_corpus_search)
+
+    p_br = corpus_sub.add_parser(
+        "browse",
+        help="Browse a corpus's chunks in an HTML viewer (opens in your browser)",
+        description="Page a corpus's stored chunks into the local HTML viewer — recovering "
+        "the wizard's 'preview corpus' step. Resolves the corpus by name or id.",
+        epilog="Examples:\n"
+        "  castform corpus browse my-corpus\n"
+        "  castform corpus browse my-corpus --limit 0          # all chunks\n"
+        "  castform corpus browse my-corpus --json > chunks.jsonl",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_br.add_argument("corpus", help="Corpus name or id")
+    p_br.add_argument(
+        "--limit", type=int, default=200, help="Max chunks to fetch (default: 200; 0 = all)"
+    )
+    p_br.add_argument(
+        "--view",
+        choices=["auto", "table", "messages", "raw"],
+        default="auto",
+        help="Initial display mode (default: auto)",
+    )
+    p_br.add_argument("--out", help="Write the HTML here (default: a temp file)")
+    p_br.add_argument(
+        "--no-open", action="store_true", help="Write the file but don't open a browser"
+    )
+    p_br.add_argument(
+        "--json", action="store_true", help="Emit raw chunk JSON instead of the viewer"
+    )
+    p_br.set_defaults(func=_cmd_corpus_browse)
