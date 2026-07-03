@@ -114,7 +114,6 @@ def _launch_ns(**over):
         env_arg=None,
         set=None,
         name=None,
-        type="simple",
         yes=True,
         skip_validate=False,
         pip=["mydep"],
@@ -214,7 +213,7 @@ def test_launch_preflight_honors_set_max_turns(monkeypatch):
     assert captured["max_turns"] == 4
 
 
-# --- LAUNCH_CONFIG: run.py bakes in launcher args + type -------------------
+# --- LAUNCH_CONFIG: run.py bakes in launcher args -------------------
 
 
 def _config_project(**cfg):
@@ -258,12 +257,6 @@ def test_launch_cli_set_overrides_config(monkeypatch):
     assert _CapturingClient.captured["launcher_args"]["max_turns"] == 11
 
 
-def test_launch_config_type_used_when_flag_omitted(monkeypatch):
-    _patch_launch(monkeypatch, _config_project(type="simple-cpu"))
-    assert launch._cmd_launch(_launch_ns(type=None, set=None)) == 0
-    assert _CapturingClient.captured["training_run_type"] == "simple-cpu"
-
-
 def test_launch_config_max_turns_reaches_preflight(monkeypatch):
     captured: dict = {}
 
@@ -302,7 +295,36 @@ def test_launcher_args_from_config_out_of_range_fails():
 def test_launcher_args_from_config_ignores_reserved_keys():
     from benchmax.cli.launch import _launcher_args_from_config
 
-    # type/name/model are resolved separately, not sent as launcher args
+    # name/model are resolved separately; a legacy 'type' key is filtered, not sent
     assert _launcher_args_from_config(SPECS, {"type": "simple", "max_turns": 4}) == {
         "max_turns": 4
     }
+
+
+def test_launch_help_hides_training_run_type():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers()
+    launch.register(subparsers)
+
+    help_text = subparsers.choices["launch"].format_help()
+    assert "--type" not in help_text
+    assert "Training run type" not in help_text
+    assert "--trainer-ref" not in help_text
+
+
+def test_launch_rejects_training_run_type_arg():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    launch.register(subparsers)
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["launch", "--type", "simple-cpu"])
+
+
+def test_launch_rejects_trainer_ref_arg():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    launch.register(subparsers)
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["launch", "--trainer-ref", "main"])

@@ -36,7 +36,6 @@ class UploadedTrainingRun:
 
         uploaded = upload_training_run(...)
         run_id = trainer.launch_training_run(
-            training_run_type="simple",
             **dataclasses.asdict(uploaded),
         )
     """

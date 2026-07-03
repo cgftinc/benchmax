@@ -134,8 +134,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
             **_launcher_args_from_config(specs, lc),
             **_build_launcher_args(specs, args.set),
         }
-        # type/name/model resolve from the flag, else LAUNCH_CONFIG, else the default.
-        run_type = args.type or lc.get("type") or "simple"
+        # name/model resolve from the flag, else LAUNCH_CONFIG, else the default.
         run_name = args.name or lc.get("name") or project.env_class.__name__.lower()
         validate_model = args.model or lc.get("model")
         # Resolve once so the pre-flight validate and the upload install the SAME
@@ -158,9 +157,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            reply = input(
-                f"Launch '{run_name}' (type={run_type}) — incurs GPU cost. Continue? [y/N] "
-            )
+            reply = input(f"Launch '{run_name}' — incurs GPU cost. Continue? [y/N] ")
             if reply.strip().lower() not in ("y", "yes"):
                 print("Aborted.")
                 return 1
@@ -210,7 +207,6 @@ def _cmd_launch(args: argparse.Namespace) -> int:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             run_id = client.launch_training_run(
-                training_run_type=run_type,
                 name=run_name,
                 launcher_args=launcher_args or None,
                 **dataclasses.asdict(uploaded),
@@ -244,12 +240,6 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--eval", default="eval_dataset.jsonl", help="Eval dataset (jsonl)")
     p.add_argument("--name", help="Run name (default: the env class name)")
-    p.add_argument(
-        "--type",
-        default=None,
-        help="Training run type: simple (GPU) or simple-cpu (smoke). Default: run.py "
-        "LAUNCH_CONFIG['type'], else simple",
-    )
     p.add_argument(
         "--env-arg", action="append", metavar="KEY=VALUE", help="Env constructor arg"
     )
