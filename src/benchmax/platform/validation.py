@@ -111,6 +111,62 @@ def overrides_compute_group_reward(env_or_cls: type | Any) -> bool:
     return cls.compute_group_reward is not BaseEnv.compute_group_reward
 
 
+def overrides_validate_probe(env_or_cls: type | Any) -> bool:
+    """True if the env (class or instance) overrides ``validate_probe`` — the
+    optional pre-GPU sanity probe. The ``BaseEnv`` default is a no-op returning
+    ``None``, so there's nothing to run unless the env supplies its own probe. The
+    ``issubclass`` guard keeps this safe on the command-layer call path, where a
+    non-BaseEnv class would otherwise ``AttributeError`` on ``.validate_probe``."""
+    from benchmax.envs.base_env import BaseEnv
+
+    cls = env_or_cls if isinstance(env_or_cls, type) else type(env_or_cls)
+    return (
+        isinstance(cls, type)
+        and issubclass(cls, BaseEnv)
+        and cls.validate_probe is not BaseEnv.validate_probe
+    )
+
+
+def run_validate_probe(
+    env_class: type,
+    env_args: dict[str, Any],
+    eval_dataset: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Best-effort: run an env's optional ``validate_probe`` in-process (no GPU), for
+    the validate COMMAND to render alongside the remote rollout.
+
+    Returns the probe's result dict; ``None`` if the env doesn't override the probe;
+    or ``{"ok": False, "summary": "skipped (<reason>)"}`` if it overrides but isn't
+    locally runnable (provider/deps unreachable, timeout, or a probe bug). NEVER
+    raises — a probe failure must not fail validate.
+
+    Decoupled from the ``local`` flag: fires on the DEFAULT remote ``castform
+    validate``. It runs only via the CLI / scaffold ``main.py``, NOT a bare
+    ``validate_env`` SDK caller — so a direct-SDK user shouldn't assume it ran.
+    """
+    if not overrides_validate_probe(env_class):
+        return None
+    # Loop hygiene mirrors validate_env: nest_asyncio for notebook safety before,
+    # shutdown after (else a probe's httpx client throws "Event loop is closed").
+    _ensure_nest_asyncio()
+    try:
+        env = env_class(**(env_args or {}))
+        result = _run_async(env.validate_probe(list(eval_dataset or [])))
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            return {
+                "ok": False,
+                "summary": f"skipped (probe returned {type(result).__name__})",
+            }
+        return result
+    except Exception as exc:  # provider unreachable, missing dep, timeout, probe bug
+        reason = str(exc).strip() or type(exc).__name__
+        return {"ok": False, "summary": f"skipped ({reason})"}
+    finally:
+        _shutdown_shared_loop()
+
+
 def assert_group_reward_contract(
     env: Any,
     rollout_ids: list[str],
@@ -590,7 +646,9 @@ def _run_local_checks(
                     for _ in range(10):
                         pending = [
                             m
-                            for m in unregistered_local_refs(cloudpickle.dumps(env_class))
+                            for m in unregistered_local_refs(
+                                cloudpickle.dumps(env_class)
+                            )
                             if m not in seen
                         ]
                         if not pending:
@@ -627,9 +685,7 @@ def _run_local_checks(
             else:
                 if auto:
                     names = ", ".join(sorted(m.__name__ for m in auto))
-                    print(
-                        f"  \u2713 auto-bundled local module(s): {names} "
-                    )
+                    print(f"  \u2713 auto-bundled local module(s): {names} ")
                 else:
                     print("  \u2713 no unregistered local-module references")
                 passed += 1

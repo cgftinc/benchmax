@@ -1,10 +1,10 @@
 """Load a benchmax project (env class + datasets) from a directory.
 
-Convention mirrors the web-app scaffold (``buildAgentContextBody``): ``run.py``
+Convention mirrors the web-app scaffold (``buildAgentContextBody``): ``main.py``
 defines a single :class:`BaseEnv` subclass; ``train_dataset.jsonl`` /
 ``eval_dataset.jsonl`` hold one JSON object per line. ``validate`` and ``launch``
 share this loader. An importable module path (``--module``) is an alternative to
-``run.py`` for shipped envs / fixtures.
+``main.py`` for shipped envs / fixtures.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Any
 
 
 class ProjectError(Exception):
-    """A project couldn't be loaded (missing run.py/dataset, or no/ambiguous env)."""
+    """A project couldn't be loaded (missing main.py/dataset, or no/ambiguous env)."""
 
 
 @dataclass
@@ -31,9 +31,9 @@ class LoadedProject:
     eval_dataset: list[dict[str, Any]]
     module: ModuleType
     from_file: (
-        bool  # loaded from a run.py path (pickle env by value) vs an importable module
+        bool  # loaded from a main.py path (pickle env by value) vs an importable module
     )
-    # Optional module-level config dicts baked into run.py so a run is
+    # Optional module-level config dicts baked into main.py so a run is
     # reproducible from the file (validate/launch read these; CLI flags override).
     launch_config: dict[str, Any]
     validate_config: dict[str, Any]
@@ -68,7 +68,7 @@ def row_question_and_gold(row: Any) -> tuple[object, object]:
 
 def _read_config(module: ModuleType, name: str) -> dict[str, Any]:
     """A module-level config dict (``LAUNCH_CONFIG`` / ``VALIDATE_CONFIG``) from
-    run.py — the knobs the file bakes in so the run reproduces without remembering
+    main.py — the knobs the file bakes in so the run reproduces without remembering
     CLI flags. Absent → ``{}`` (the block is optional); present-but-not-a-dict is a
     user error we fail loudly on rather than silently drop (a dropped budget wastes
     GPU with no explanation)."""
@@ -78,7 +78,7 @@ def _read_config(module: ModuleType, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProjectError(
             f"{name} must be a dict (got {type(value).__name__}); it bakes the "
-            "validate/launch knobs into run.py. Fix or remove it."
+            "validate/launch knobs into main.py. Fix or remove it."
         )
     return dict(value)
 
@@ -145,7 +145,7 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
 def load_project(
     *,
     directory: str = ".",
-    run_file: str = "run.py",
+    run_file: str = "main.py",
     module_path: str | None = None,
     env_class_name: str | None = None,
     train_file: str = "train_dataset.jsonl",

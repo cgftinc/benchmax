@@ -1,8 +1,8 @@
 # Get started
 
-`castform setup` scaffolded the agent skills and project guides here. You write
-`run.py` (a `BaseEnv` subclass) and a little data following those skills — then
-the whole chain runs cheaply, no GPU.
+`castform setup` scaffolded the project guide, agent skills, a runnable seed
+`main.py`, and tiny seed datasets. Tailor the seed, validate cheaply, then decide
+whether to iterate or launch.
 
 **Every castform run is the same four steps:**
 
@@ -21,16 +21,16 @@ castform corpus ingest ./docs && castform data qa-gen --fast # generate (rag)
 castform data traces --project my-agent                       # generate (traces)
 ```
 
-Once `run.py` and your datasets are in place, validate (cheap, no GPU):
+Validate first (cheap, real rollouts, no GPU):
 
 ```
 castform validate
 ```
 
 Then point your coding agent (Claude Code / Codex) at your real task. Pick the
-variant that matches your goal, swap in the `<…>` placeholder, and paste it in.
-The agent decomposes the goal and works through the stages — consulting the
-skills in `.claude/skills/` as reference, not following them in lockstep.
+variant that matches your goal, replace the `<…>` placeholder, and paste it in.
+The agent should load the matching skill in `.claude/skills/` before each stage,
+especially `verify-environment` before every `castform validate`.
 
 ## Paste one of these into your agent
 
@@ -64,9 +64,9 @@ iterate or launch.
 ```
 
 > **Generic, RAG, and traces all run end-to-end on today's CLI** — the four-step
-> path above is identical; only the **data** step differs. RAG: `corpus ingest` →
+> path is identical; only the **data** step differs. RAG: `corpus ingest` →
 > `data qa-gen` (local) or `data qa-gen --provider` (a vector DB). Traces:
-> `data traces` pulls + shapes your Braintrust traces. See **generate-data**.
+> `data traces` pulls and shapes Braintrust traces. See **generate-data**.
 
 ## The milestone: a green baseline
 

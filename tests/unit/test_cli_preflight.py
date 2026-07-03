@@ -52,7 +52,7 @@ def test_hint_follows_cause_chain():
         try:
             raise _mnfe("pinecone")
         except ModuleNotFoundError as exc:
-            raise RuntimeError("Failed to import run.py") from exc
+            raise RuntimeError("Failed to import main.py") from exc
     except RuntimeError as wrapped:
         hint = install_hint_for_import_error(wrapped)
     assert hint is not None and "castform[pinecone]" in hint
@@ -75,7 +75,7 @@ def test_print_project_error_appends_hint(capsys):
     try:
         raise _mnfe("turbopuffer")
     except ModuleNotFoundError as exc:
-        wrapped = RuntimeError(f"Failed to import run.py: {exc}")
+        wrapped = RuntimeError(f"Failed to import main.py: {exc}")
         wrapped.__cause__ = exc
     _preflight.print_project_error(wrapped)
     err = capsys.readouterr().err

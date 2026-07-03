@@ -182,6 +182,31 @@ class BaseEnv(ABC):
         """
         return [{} for _ in rollout_ids]
 
+    async def validate_probe(
+        self, eval_dataset: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Optional pre-GPU sanity probe, run in-process by ``castform validate``
+        (and ``python main.py validate``) alongside the remote rollout — no GPU.
+
+        Override to prove something the cheap rollout can't before spending GPU:
+        e.g. a RAG env checks retrieval gold-hit@k over ``eval_dataset``. Return a
+        result dict to render — include a ``summary`` string (shown in the
+        scorecard) and an ``ok`` bool (✓/⚠); extra keys pass through to ``--json``.
+        Return ``None`` to skip. Raising is caught and rendered as "skipped"; a
+        probe must never fail the run. Default is a no-op (returns ``None``).
+        """
+        return None
+
+    def estimate_rollout_tokens(self) -> Optional[int]:
+        """Optional: a worst-case estimate of ONE rollout's total token count, for
+        the pre-launch truncation guard (``castform launch`` warns if it exceeds
+        ``max_rollout_len``, since a truncated rollout is dropped from the loss).
+
+        Env-type-aware — a search env sizes it off its search budget × per-result
+        cap, a judge env off its trace length. Return ``None`` to skip (the launch
+        guard falls back to a coarse per-turn estimate). Default is a no-op."""
+        return None
+
     async def get_system_prompt(self, add_tool_defs: bool = False) -> str:
         """Get system prompt. To add tool definitions, set add_tool_defs to True."""
         if add_tool_defs:
