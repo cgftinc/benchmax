@@ -322,7 +322,8 @@ def test_launcher_args_from_config_out_of_range_fails():
 def test_launcher_args_from_config_ignores_reserved_keys():
     from benchmax.cli.launch import _launcher_args_from_config
 
-    # name/model are resolved separately; a legacy 'type' key is filtered, not sent
+    # reserved keys ('name', 'type') are filtered from launcher args; 'model' is NOT
+    # reserved — it flows through as the training arg (see the model-routing test above)
     assert _launcher_args_from_config(SPECS, {"type": "simple", "max_turns": 4}) == {
         "max_turns": 4
     }
