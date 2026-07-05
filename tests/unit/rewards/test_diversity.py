@@ -157,6 +157,16 @@ class TestClusterTextsNgram:
         assert result.cluster_ids[0] != result.cluster_ids[2]
 
 
+class TestClusterTextsLLMShortCircuits:
+    @pytest.mark.asyncio
+    async def test_single_text_does_not_call_api_or_require_creds(self):
+        config = DiversityConfig(method="llm")
+        result = await cluster_texts(["only one strategy"], config)
+        assert result.divisors == [1.0]
+        assert result.cluster_ids == ["0"]
+        assert result.raw_response is None
+
+
 # ---------------------------------------------------------------------------
 # scale_by_diversity
 # ---------------------------------------------------------------------------

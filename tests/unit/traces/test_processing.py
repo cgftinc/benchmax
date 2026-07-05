@@ -8,11 +8,7 @@ from benchmax.traces.adapter import (
     TraceMessage,
 )
 from benchmax.traces.processing import (
-    MIN_TRAIN_SAMPLES,
     VALID_IDENTIFIER_RE,
-    DropReason,
-    FilterResult,
-    OutcomeBalance,
     TrainingExample,
     apply_filters,
     apply_heuristic_filters,
@@ -310,9 +306,9 @@ class TestTrainingExampleSerialization:
             scores={"quality": 0.9},
         )
         d = ex.to_jsonl_dict()
-        # prompt is structured message dicts
-        assert isinstance(d["prompt"], list)
-        assert d["prompt"][0]["role"] == "user"
+        # prompt_messages is the authoritative structured prompt.
+        assert isinstance(d["prompt_messages"], list)
+        assert d["prompt_messages"][0]["role"] == "user"
         # ground_truth is the completion message dict
         assert isinstance(d["ground_truth"], dict)
         assert d["ground_truth"]["role"] == "assistant"
@@ -619,8 +615,8 @@ class TestSplitDataset:
         examples = self._make_examples(20)
         train, _ = split_dataset(examples, train_count=16, eval_count=4)
         row = train[0]
-        assert "prompt" in row
-        assert isinstance(row["prompt"], list)  # structured message dicts
+        assert "prompt_messages" in row
+        assert isinstance(row["prompt_messages"], list)  # structured message dicts
         assert "ground_truth" in row
         assert isinstance(row["ground_truth"], dict)  # completion message dict
         assert "init_rollout_args" in row

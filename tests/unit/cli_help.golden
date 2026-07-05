@@ -1,22 +1,26 @@
-usage: castform [-h] <command> ...
+usage: castform [-h] [--profile PROFILE] <command> ...
 
 Castform CLI
 
 positional arguments:
   <command>
-    login     Sign in via your browser
-    logout    Clear the cached session
-    whoami    Show the current login
-    runs      Inspect training runs
-    stop      Stop (cancel) a run you own
-    validate  Verify an env on a real-rollout subset; show rewards + errors
-    launch    Validate, upload, and launch a training run
-    data      Dataset utilities
-    corpus    Corpus utilities for RAG envs
-    setup     Sign in + scaffold this project for a coding agent
-    doctor    Check interpreter, sign-in, and env deps are ready
-    guide     Walk through your first run
-    help      List the available commands
+    login            Sign in via your browser
+    logout           Clear cached session(s)
+    whoami           Show the current login
+    profile          Inspect Castform profiles
+    config           Inspect Castform config
+    runs             Inspect training runs
+    stop             Stop (cancel) a run you own
+    validate         Verify an env on a real-rollout subset; show rewards +
+                     errors
+    launch           Validate, upload, and launch a training run
+    data             Dataset utilities
+    corpus           Corpus utilities for RAG envs
+    setup            Sign in + scaffold this project for a coding agent
+    doctor           Check interpreter, sign-in, and env deps are ready
+    guide            Walk through your first run
+    help             List the available commands
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help         show this help message and exit
+  --profile PROFILE  Castform profile to use for this command

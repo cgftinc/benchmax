@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from benchmax import config
 from benchmax.platform.credentials import (
     TokenProvider,
     as_token_provider,
@@ -28,8 +29,9 @@ class PostgresSearch:
 
     Args:
         corpus_name: Name of the corpus.
-        base_url: Corpora API base URL.
-        corpus_id: Optional corpus ID (skips name lookup).
+        base_url: Optional Corpora API base URL. When omitted, resolves from
+            ``benchmax.config.platform_url()`` in the process that uses the
+            client.
         token_provider: Optional override — a callable resolving the bearer per
             call, or a literal key (string sugar). Defaults to ``platform_bearer``.
     """
@@ -37,7 +39,7 @@ class PostgresSearch:
     def __init__(
         self,
         corpus_name: str,
-        base_url: str,
+        base_url: str | None = None,
         *,
         corpus_id: str | None = None,
         token_provider: str | TokenProvider | None = None,
@@ -51,7 +53,7 @@ class PostgresSearch:
     def _get_client(self) -> CorpusClient:
         if self._client is None:
             self._client = CorpusClient(
-                base_url=self._base_url,
+                base_url=self._base_url or config.platform_url(),
                 token_provider=self._token_provider,
             )
         return self._client
@@ -106,6 +108,9 @@ class PostgresSearch:
     def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()
         state["_client"] = None
+        # Corpus IDs are deployment-local; resolve by name in the runtime
+        # process instead of baking an authoring-environment ID into bundles.
+        state["_corpus_id"] = None
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:

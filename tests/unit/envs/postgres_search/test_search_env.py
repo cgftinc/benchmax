@@ -61,14 +61,12 @@ class TestInit:
     def test_isinstance_search_client(self):
         assert isinstance(StubSearch(), SearchClient)
 
-    def test_requires_judge_credentials(self):
-        # judge_base_url and judge_model are required; the judge *credential* is
-        # resolved at call time via judge_token_provider, so it's no longer a
-        # constructor arg.
-        with pytest.raises(ValueError, match="requires judge_base_url"):
-            SearchEnv(search=StubSearch(), judge_base_url="", judge_model="m")
+    def test_requires_judge_model(self):
+        # judge_base_url and judge credentials are resolved at call time; only
+        # the model must be fixed on the env.
+        SearchEnv(search=StubSearch(), judge_base_url=None, judge_model="m")
 
-        with pytest.raises(ValueError, match="requires judge_base_url"):
+        with pytest.raises(ValueError, match="requires judge_model"):
             SearchEnv(search=StubSearch(), judge_base_url="u", judge_model="")
 
     def test_tool_schema_has_query(self):

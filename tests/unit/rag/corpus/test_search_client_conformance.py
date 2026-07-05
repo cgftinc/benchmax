@@ -5,6 +5,7 @@ from __future__ import annotations
 import pickle
 
 import cloudpickle
+import pytest
 
 from benchmax.rag.corpus.pinecone.search import PineconeSearch
 from benchmax.rag.corpus.search_client import SearchClient
@@ -68,12 +69,13 @@ class TestChromaSearchConformance:
     def test_get_params_cloud(self):
         from benchmax.rag.corpus.chroma.search import ChromaSearch
 
-        cs = ChromaSearch(
-            collection_name="test",
-            tenant="t",
-            database="d",
-            token_provider="ck-fake-key-123",
-        )
+        with pytest.warns(UserWarning, match="baked into the bundle"):
+            cs = ChromaSearch(
+                collection_name="test",
+                tenant="t",
+                database="d",
+                token_provider="ck-fake-key-123",
+            )
         params = cs.get_params()
         assert params["backend"] == "chroma"
         assert params["mode"] == "cloud"

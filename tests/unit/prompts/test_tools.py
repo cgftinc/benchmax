@@ -1,20 +1,20 @@
 from typing import Dict, Any, List
 from benchmax.envs.base_env import ToolDefinition
 from benchmax.prompts.tools import (
-    mcp2openai,
     parse_hermes_tool_call,
     render_tools_prompt,
+    tool_definition_to_openai,
 )
 
 
-def test_mcp2openai():
+def test_tool_definition_to_openai():
     # Test basic conversion
     tool_def = ToolDefinition(
         name="test_tool",
         description="A test tool",
         input_schema={"type": "object", "properties": {"arg1": {"type": "string"}}},
     )
-    result = mcp2openai(tool_def)
+    result = tool_definition_to_openai(tool_def)
 
     assert result["type"] == "function"
     assert result["function"]["name"] == "test_tool"
@@ -30,7 +30,7 @@ def test_mcp2openai():
     tool_def_no_schema = ToolDefinition(
         name="empty_tool", description="Tool with no schema", input_schema=None
     )
-    result_no_schema = mcp2openai(tool_def_no_schema)
+    result_no_schema = tool_definition_to_openai(tool_def_no_schema)
     assert result_no_schema["function"]["parameters"] == {"required": []}
 
 

@@ -32,15 +32,21 @@ class FakeChunk:
 
 
 def _make_mock_model(embedding_dim: int = 384) -> MagicMock:
-    """Return a KeyBERT mock whose .model.encode() and .model.embed() return random embeddings."""
+    """Return a KeyBERT mock with finite, well-conditioned embeddings."""
     model = MagicMock()
-    rng = np.random.default_rng(42)
+
+    def _embeddings(n: int) -> np.ndarray:
+        rows = np.zeros((n, embedding_dim), dtype=np.float32)
+        for i in range(n):
+            rows[i, i % embedding_dim] = 1.0
+            rows[i, (i + 17) % embedding_dim] = 0.5
+        return rows
 
     def fake_encode(texts: list[str], **kwargs: object) -> np.ndarray:
-        return rng.random((len(texts), embedding_dim)).astype(np.float32)
+        return _embeddings(len(texts))
 
     def fake_embed(texts: list[str], **kwargs: object) -> np.ndarray:
-        return rng.random((len(texts), embedding_dim)).astype(np.float32)
+        return _embeddings(len(texts))
 
     model.model.encode = fake_encode
     model.model.embed = fake_embed

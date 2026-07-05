@@ -4,13 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from benchmax.rag.corpus.turbopuffer.namespace import TpufNamespace
-
-_HAS_BM25_TRUNCATION = hasattr(TpufNamespace, "_TPUF_BM25_MAX_QUERY_LEN")
-_HAS_NATIVE_HYBRID = hasattr(TpufNamespace, "build_native_hybrid_rank_by")
-
 
 def _make_namespace(
     fields: list[str] | None = None,
@@ -45,10 +39,6 @@ class TestBuildBm25RankBy:
         assert inner[0] == ("Product", 1, ("title", "BM25", "query"))
         assert inner[1] == ("Product", 1, ("body", "BM25", "query"))
 
-    @pytest.mark.skipif(
-        not _HAS_BM25_TRUNCATION,
-        reason="BM25 truncation not in installed version",
-    )
     def test_truncates_at_1024_code_points(self):
         ns = _make_namespace()
         long_query = "a" * 2000
@@ -74,10 +64,6 @@ class TestBuildVectorRankBy:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not _HAS_NATIVE_HYBRID,
-    reason="build_native_hybrid_rank_by not in installed version",
-)
 class TestBuildNativeHybridRankBy:
     def test_default_weights(self):
         ns = _make_namespace(fields=["content"])

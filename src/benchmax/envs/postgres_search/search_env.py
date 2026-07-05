@@ -18,6 +18,7 @@ import traceback
 from collections.abc import Callable
 from typing import Any
 
+from benchmax import config
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.example_id import make_example
 from benchmax.envs.reward_helpers import (
@@ -273,7 +274,8 @@ class SearchEnv(BaseEnv):
 
     Args:
         search: A :class:`SearchClient` instance (pickle-safe).
-        judge_base_url: Base URL for the LLM judge API (required).
+        judge_base_url: Optional base URL for the LLM judge API. When omitted,
+            resolves from ``benchmax.config.llm_url()`` at judge-call time.
         judge_model: Model name for the LLM judge (required).
         judge_token_provider: Optional; resolves the judge bearer per call.
             Defaults to ``platform_bearer`` (the credential seam).
@@ -337,7 +339,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         self,
         search: SearchClient,
         *,
-        judge_base_url: str,
+        judge_base_url: str | None = None,
         judge_model: str,
         judge_token_provider: str | TokenProvider | None = None,
         judge_timeout: float = 30.0,
@@ -349,10 +351,10 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         max_search_calls: int = 10,
         **kwargs: Any,
     ) -> None:
-        if not judge_base_url or not judge_model:
+        if not judge_model:
             raise ValueError(
-                "SearchEnv requires judge_base_url and judge_model; both must be "
-                "non-empty. The judge credential is resolved at call time via "
+                "SearchEnv requires judge_model. The judge base URL and "
+                "credential are resolved at call time via config.llm_url() and "
                 "judge_token_provider (default: platform_bearer)."
             )
 
@@ -603,7 +605,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             ground_truth=ground_truth,
             response=response,
             model=self._judge_model,
-            base_url=self._judge_base_url,
+            base_url=self._judge_base_url or config.llm_url(),
             api_key=self._judge_token_provider(),
             timeout=self._judge_timeout,
         )

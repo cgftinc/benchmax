@@ -6,7 +6,9 @@ import pickle
 from types import SimpleNamespace
 
 import cloudpickle
+import pytest
 
+from benchmax import profile_config as profiles
 from benchmax.rag.corpus.embed import DEFAULT_EMBED_MODEL, platform_embed_fn
 
 
@@ -39,6 +41,12 @@ def _patch(monkeypatch, *, key="tok-seam"):
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_profile_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("CASTFORM_CONFIG_PATH", str(tmp_path / "castform.toml"))
+    monkeypatch.delenv("CASTFORM_PROFILE", raising=False)
+
+
 def test_returns_one_vector_per_input_in_order(monkeypatch):
     monkeypatch.setenv("CASTFORM_LLM_URL", "https://llm.test.example/v1")
     _patch(monkeypatch)
@@ -67,12 +75,13 @@ def test_client_built_lazily_and_once(monkeypatch):
 
 
 def test_base_url_resolves_at_call_time_from_config(monkeypatch):
-    # Cross-env story: a sandbox sets CASTFORM_BASE_DOMAIN, which must be read when the
+    # Cross-env story: a sandbox sets CASTFORM_PROFILE, which must be read when the
     # fn runs, not when it was authored.
     _patch(monkeypatch)
     fn = platform_embed_fn()  # authored with no base_url
 
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.dev")
+    profiles.upsert_profile("staging", domain="castform.dev")
+    monkeypatch.setenv("CASTFORM_PROFILE", "staging")
     monkeypatch.delenv("CASTFORM_LLM_URL", raising=False)
     fn(["q"])
 
@@ -99,5 +108,6 @@ def test_cloudpickle_roundtrip_before_first_call(monkeypatch):
     restored = pickle.loads(cloudpickle.dumps(fn))
 
     monkeypatch.setenv("CASTFORM_LLM_URL", "https://llm.test.example/v1")
+    monkeypatch.setenv("PLATFORM_API_KEY", "tok-seam")
     _patch(monkeypatch)
     assert restored(["zz"]) == [[2.0]]

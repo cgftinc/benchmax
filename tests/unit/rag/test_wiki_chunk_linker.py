@@ -2,9 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
-
-import pytest
 
 from benchmax.rag.qa_generation.corpus_profile import (
     CorpusProfile,
@@ -191,24 +188,30 @@ class TestWikiChunkLinker:
         assert bundle.secondary_chunks == []
         assert bundle.structural_hints["confidence"] == 0.0
 
-    def test_used_hashes_tracking(self):
+    def test_used_hashes_are_excluded_from_later_links(self):
         linker, chunks = self._build_linker()
-        bundle1 = linker.link(chunks[0], target_hop_count=2)
-        sec1 = {c.hash for c in bundle1.secondary_chunks}
+        first = linker.link(chunks[0], target_hop_count=5)
+        first_hashes = {c.hash for c in first.secondary_chunks}
 
-        bundle2 = linker.link(chunks[3], target_hop_count=2)
-        sec2 = {c.hash for c in bundle2.secondary_chunks}
+        second = linker.link(chunks[0], target_hop_count=5)
+        second_hashes = {c.hash for c in second.secondary_chunks}
 
-        # Second link shouldn't reuse chunks from first
-        assert not (sec1 & sec2) or not sec1  # may overlap if limited candidates
+        assert first_hashes
+        assert second_hashes
+        assert not (first_hashes & second_hashes)
 
-    def test_reset_used_hashes(self):
+    def test_reset_used_hashes_allows_chunks_to_be_linked_again(self):
         linker, chunks = self._build_linker()
-        linker.link(chunks[0], target_hop_count=2)
-        assert len(linker._used_hashes) > 0
+        first = linker.link(chunks[0], target_hop_count=5)
+        first_hashes = {c.hash for c in first.secondary_chunks}
 
         linker.reset_used_hashes()
-        assert len(linker._used_hashes) == 0
+
+        after_reset = linker.link(chunks[0], target_hop_count=5)
+        after_reset_hashes = {c.hash for c in after_reset.secondary_chunks}
+
+        assert first_hashes
+        assert after_reset_hashes == first_hashes
 
     def test_prefers_cross_file(self):
         """Cross-file chunks should score higher than same-file."""

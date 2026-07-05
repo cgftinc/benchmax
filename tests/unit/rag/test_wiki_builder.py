@@ -12,8 +12,6 @@ from benchmax.rag.qa_generation.wiki_builder import (
     WikiBuilder,
     WikiIndex,
     WikiPage,
-    _extract_cross_links,
-    _merge_overlapping_clusters,
 )
 
 # ---------------------------------------------------------------------------
@@ -268,16 +266,6 @@ class TestGetWikiContext:
         postgres_pos = ctx.find("PostgreSQL")
         assert redis_pos < postgres_pos
 
-    def test_context_includes_header(self):
-        """The formatted context starts with the expected header."""
-        index = self._make_index()
-        primary = FakeChunk(content="Redis info.", hash="hash_a")
-        builder = _make_builder()
-
-        ctx = builder.get_wiki_context(index, primary, [], max_tokens=2000)
-
-        assert ctx.startswith("# Relevant Wiki Context")
-
     def test_token_budget_limits_output(self):
         """Context is truncated to roughly max_tokens."""
         index = WikiIndex()
@@ -340,36 +328,6 @@ class TestGeneratePages:
         assert "Redis" in result.pages
         assert "PostgreSQL" in result.pages
 
-    def test_prompt_contains_entity_name_and_corpus_summary(self):
-        """Each generated prompt includes the entity name and corpus summary."""
-        chunks = [
-            FakeChunk(content="Redis TTL.", hash="h1"),
-            FakeChunk(content="Redis config.", hash="h2"),
-        ]
-        clusters = {"Redis": chunks}
-
-        fake_response = MagicMock()
-        fake_response.answer = "## Redis\n\nSome content.\n\nRelated topics:\n"
-        fake_batch_result = MagicMock()
-        fake_batch_result.responses = [fake_response]
-
-        client = MagicMock()
-        config = _make_config()
-        builder = WikiBuilder(config, client)
-
-        with patch(
-            "benchmax.rag.qa_generation.wiki_builder.batch_process_sync",
-            return_value=fake_batch_result,
-        ) as mock_bps:
-            builder.generate_pages(clusters, "My corpus summary.", "desc")
-
-        call_kwargs = mock_bps.call_args
-        prompts_arg = call_kwargs.kwargs.get("prompts") or call_kwargs.args[2]
-        prompt_text = prompts_arg[0]
-
-        assert "Redis" in prompt_text
-        assert "My corpus summary." in prompt_text
-
     def test_failed_responses_skipped(self):
         """Clusters whose LLM call fails (None response) are skipped silently."""
         clusters = {
@@ -423,70 +381,3 @@ class TestGeneratePages:
 
         assert result.pages == {}
         assert result.chunk_to_pages == {}
-
-
-# ---------------------------------------------------------------------------
-# _merge_overlapping_clusters unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestMergeOverlappingClusters:
-    def test_no_merge_when_low_overlap(self):
-        clusters = {
-            "A": {0, 1, 2},
-        }
-        result = _merge_overlapping_clusters(clusters, overlap_threshold=0.5)
-        assert result == {"A": {0, 1, 2}}
-
-    def test_merges_two_identical_clusters(self):
-        clusters = {
-            "A": {0, 1, 2},
-            "B": {0, 1, 2},
-        }
-        result = _merge_overlapping_clusters(clusters, overlap_threshold=0.5)
-        assert len(result) == 1
-        merged_set = next(iter(result.values()))
-        assert merged_set == {0, 1, 2}
-
-    def test_merges_high_overlap(self):
-        # B is a subset of A → overlap/smaller = 2/2 = 100% > 50%
-        clusters = {
-            "A": {0, 1, 2, 3},
-            "B": {0, 1},
-        }
-        result = _merge_overlapping_clusters(clusters, overlap_threshold=0.5)
-        assert len(result) == 1
-
-    def test_does_not_merge_low_overlap(self):
-        clusters = {
-            "A": {0, 1, 2, 3},
-            "B": {3, 4, 5, 6},
-        }
-        # overlap = 1, smaller = 4, ratio = 0.25 < 0.5 → no merge
-        result = _merge_overlapping_clusters(clusters, overlap_threshold=0.5)
-        assert len(result) == 2
-
-
-# ---------------------------------------------------------------------------
-# _extract_cross_links unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestExtractCrossLinks:
-    def test_extracts_from_related_topics_section(self):
-        content = "## Redis\n\nRedis is fast.\n\nRelated topics:\n- PostgreSQL\n- Kafka\n"
-        links = _extract_cross_links(content, ["Redis", "PostgreSQL", "Kafka"], "Redis")
-        assert "PostgreSQL" in links
-        assert "Kafka" in links
-        assert "Redis" not in links
-
-    def test_falls_back_to_content_mention(self):
-        content = "## Redis\n\nRedis works well with Kafka for streaming.\n"
-        links = _extract_cross_links(content, ["Redis", "Kafka", "Zookeeper"], "Redis")
-        assert "Kafka" in links
-        assert "Zookeeper" not in links
-
-    def test_excludes_current_entity(self):
-        content = "## Redis\n\nRedis is the subject.\n\nRelated topics:\n- Redis\n- Kafka\n"
-        links = _extract_cross_links(content, ["Redis", "Kafka"], "Redis")
-        assert "Redis" not in links

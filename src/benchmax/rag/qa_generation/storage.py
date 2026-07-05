@@ -81,8 +81,6 @@ def load_qa_dataset(path: str | Path) -> list[QADataPoint]:
 def save_qa_dataset_jsonl(dataset: list[QADataPoint], path: str | Path) -> None:
     """Save QA dataset to a JSONL file (one JSON object per line).
 
-    This format is compatible with HuggingFace ``load_dataset("json", ...)``.
-
     Args:
         dataset: List of QADataPoints to save
         path: File path to save to (will be created if doesn't exist)

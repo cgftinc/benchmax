@@ -45,7 +45,7 @@ from benchmax.rubrics import rubric as rubric_mod
 # Defaults route through ``benchmax.config``: the prod LLM endpoint is
 # ``https://llm.castform.com/v1`` and the platform control plane is
 # ``https://api.castform.com``. Point at a different environment by setting
-# ``CASTFORM_BASE_DOMAIN`` (or override URLs individually via
+# ``CASTFORM_PROFILE`` (or override URLs individually via
 # ``CASTFORM_PLATFORM_URL`` / ``CASTFORM_LLM_URL``).
 from benchmax import config
 
@@ -532,7 +532,7 @@ async def generate_dataset(n, path, concurrency=CONCURRENCY):
     return saved
 
 
-def load_dataset(path):
+def load_jsonl_dataset(path):
     """Load examples from JSONL."""
     if not os.path.exists(path):
         return []
@@ -547,7 +547,7 @@ def get_dataset():
     (no Mandarin filter needed) and ordered to favor simpler examples first, so we
     do NOT shuffle — the order IS the curriculum — and do NOT generate; the
     committed file is the source of truth."""
-    existing = load_dataset(DATASET_PATH)
+    existing = load_jsonl_dataset(DATASET_PATH)
     print(f"Dataset: {len(existing)} examples (curriculum order preserved)")
     return existing
 

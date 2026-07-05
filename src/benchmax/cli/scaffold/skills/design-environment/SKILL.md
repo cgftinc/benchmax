@@ -265,7 +265,6 @@ class CustomSearchEnv(SearchEnv):
                 token_provider=(lambda: _API_KEY),   # closes over the baked key
                 embed_fn=platform_embed_fn(),         # vector/hybrid — see below
             ),
-            judge_base_url=config.llm_url(),
             judge_model="gpt-5.4-mini",
             **kwargs,
         )
@@ -362,10 +361,10 @@ a good start) and author the env to fit the rows — three things to get right:
 
 ### Companion-server envs (advanced)
 
-If the env needs a separate server (a game/sim like Showdown), that server must
-be provisioned alongside the rollout (the `SkypilotProvisioner` pattern). This is
-manual today and the biggest footgun — get a single-turn, no-companion env
-working first.
+If the env needs a separate server (a game/sim like Showdown), get a
+single-process env working first. Companion services are not first-class in the
+current scaffold; add explicit deployment plumbing outside the generated starter
+only after the local env contract is stable.
 
 ### Dependencies
 

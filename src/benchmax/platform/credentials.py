@@ -14,8 +14,8 @@ Precedence (per call):
    picked up. Mirrors ``trainer/auth/ray_auth.py``'s per-request read.
 2. ``PLATFORM_API_KEY`` — injected by the rollout worker (playground / eval) or
    set by the user (self-serve / benchmax lib).
-3. ``~/.castform/credentials.json`` — the device-auth session cached by
-   ``castform login`` (the human self-serve path). Lowest precedence so an
+3. selected ``~/.castform.toml`` profile session — cached by ``castform login``
+   (the human self-serve path). Lowest precedence so an
    explicit key/token always wins. Re-read each call.
 
 Raises if none is available — fail loudly rather than make an
@@ -33,14 +33,11 @@ import warnings
 from collections.abc import Callable
 from pathlib import Path
 
+from benchmax import profile_config as profiles
+
 # Matches the trainer's token_refresher / ray_auth default.
 _TOKEN_PATH_ENV = "ACT_AS_TOKEN_PATH"
 _API_KEY_ENV = "PLATFORM_API_KEY"
-
-# Cached device-auth session written by `castform login` (Phase 4). Lowest
-# precedence in platform_bearer. Path overridable for tests.
-_CRED_PATH_ENV = "CASTFORM_CREDENTIALS_PATH"
-_DEFAULT_CRED_PATH = Path.home() / ".castform" / "credentials.json"
 
 TokenProvider = Callable[[], str]
 
@@ -110,67 +107,25 @@ def platform_bearer() -> str:
     )
 
 
-def _credentials_path() -> Path:
-    override = os.environ.get(_CRED_PATH_ENV)
-    return Path(override) if override else _DEFAULT_CRED_PATH
+def read_castform_session(profile: str | None = None) -> dict | None:
+    """Read the selected profile's cached device-auth session."""
+    return profiles.session_for_profile(profile)
 
 
-def read_castform_session() -> dict | None:
-    """Read the cached device-auth session, or ``None`` if unusable.
-
-    Returns the parsed ``~/.castform/credentials.json`` dict, or ``None`` when the
-    file is absent, malformed, or (on POSIX) looser than ``0600`` — a
-    world/group-readable credential is not trusted. Written by ``castform
-    login`` (Phase 4); schema::
-
-        {"access_token": str, "refresh_token": str, "expires_at": int}
-
-    ``refresh_token`` is reserved for the per-process mint/refresh added with the
-    device flow (Phase 3/4); today only ``access_token`` / ``env`` are consumed.
-    """
-    path = _credentials_path()
-    try:
-        st = path.stat()
-    except OSError:
-        return None
-    if os.name == "posix" and (st.st_mode & 0o077):
-        warnings.warn(
-            f"Ignoring {path}: permissions {oct(st.st_mode & 0o777)} are looser "
-            f"than 0600. Run `chmod 600 {path}`.",
-            stacklevel=2,
-        )
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+def write_castform_session(session: dict, *, profile: str | None = None) -> None:
+    """Write the device-auth session to the selected TOML profile."""
+    name = profile or profiles.selected_profile_name()
+    profiles.upsert_profile(name, session=session)
 
 
-def write_castform_session(session: dict) -> None:
-    """Write the device-auth session to ``~/.castform/credentials.json`` (0600).
-
-    Called by ``castform login``. Creates the parent dir and writes the file with
-    owner-only permissions; an existing file is replaced atomically-enough for a
-    single-user CLI (truncate + write under a 0600 umask).
-    """
-    path = _credentials_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Create with 0600 from the start (don't briefly expose a world-readable file).
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(session, fh)
-    os.chmod(path, 0o600)  # tighten even if the file pre-existed with looser bits
-
-
-def clear_castform_session() -> None:
-    """Delete the cached session (``castform logout``). No-op if absent."""
+def clear_castform_session(*, profile: str | None = None, all_profiles: bool = False) -> None:
+    """Delete cached session(s). No-op if absent."""
     with _SESSION_JWT_LOCK:
         _SESSION_JWT_CACHE.update({"token": None, "src": None, "exp": 0.0})
-    try:
-        _credentials_path().unlink()
-    except OSError:
-        pass
+    if all_profiles:
+        profiles.clear_all_sessions()
+    else:
+        profiles.clear_profile_session(profile or profiles.selected_profile_name())
 
 
 # Per-process cache of the short-lived JWT minted from the cached session, so we
@@ -208,7 +163,7 @@ def _jwt_exp(token: str) -> float:
     return float(exp) if isinstance(exp, (int, float)) else 0.0
 
 
-def _mint_session_jwt(access_token: str) -> str | None:
+def _mint_session_jwt(access_token: str, profile: str | None = None) -> str | None:
     """Exchange the cached session for a short-lived auth-service JWT.
 
     Hits the jwt plugin's ``GET /api/auth/token`` with the session as Bearer —
@@ -221,7 +176,7 @@ def _mint_session_jwt(access_token: str) -> str | None:
 
     try:
         resp = httpx.get(
-            f"{config.auth_url()}/api/auth/token",
+            f"{config.auth_url(profile)}/api/auth/token",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=10.0,
         )
@@ -233,10 +188,10 @@ def _mint_session_jwt(access_token: str) -> str | None:
     return token if isinstance(token, str) and token else None
 
 
-def _session_jwt() -> str | None:
+def _session_jwt(profile: str | None = None) -> str | None:
     """Resolve a short-lived JWT from the cached device-auth session.
 
-    Reads ``~/.castform``; if the session is present and unexpired, returns a
+    Reads ``~/.castform.toml``; if the session is present and unexpired, returns a
     cached JWT (re-minting ~60s before it expires — the per-process mint from
     D2). On a transient mint failure, a still-valid cached JWT is reused rather
     than failing the in-flight request. Returns ``None`` if there's no usable
@@ -244,7 +199,8 @@ def _session_jwt() -> str | None:
     ``refresh_token`` when the *session* itself expires is a future addition;
     today an expired session just prompts re-login.
     """
-    session = read_castform_session()
+    profile_name = profile or profiles.selected_profile_name()
+    session = read_castform_session(profile_name)
     if not session:
         return None
     access_token = session.get("access_token")
@@ -262,18 +218,20 @@ def _session_jwt() -> str | None:
         cached = _SESSION_JWT_CACHE["token"]
         if (
             cached
-            and _SESSION_JWT_CACHE["src"] == access_token
+            and _SESSION_JWT_CACHE["src"] == (profile_name, access_token)
             and time.time() < float(_SESSION_JWT_CACHE["exp"]) - 60
         ):
             return cached  # type: ignore[return-value]
 
-    jwt = _mint_session_jwt(access_token)
+    jwt = _mint_session_jwt(access_token, profile_name)
     if jwt:
         exp = _jwt_exp(jwt)
         if exp <= time.time():
             exp = time.time() + _MINT_FALLBACK_TTL  # no parseable exp → don't re-mint per call
         with _SESSION_JWT_LOCK:
-            _SESSION_JWT_CACHE.update({"token": jwt, "src": access_token, "exp": exp})
+            _SESSION_JWT_CACHE.update(
+                {"token": jwt, "src": (profile_name, access_token), "exp": exp}
+            )
         return jwt
 
     # Mint failed (transient): reuse a cached JWT for this same session that is
@@ -282,7 +240,7 @@ def _session_jwt() -> str | None:
         cached = _SESSION_JWT_CACHE["token"]
         if (
             cached
-            and _SESSION_JWT_CACHE["src"] == access_token
+            and _SESSION_JWT_CACHE["src"] == (profile_name, access_token)
             and time.time() < float(_SESSION_JWT_CACHE["exp"])
         ):
             return cached  # type: ignore[return-value]
@@ -302,7 +260,7 @@ def resolve_token_provider(
        commonly default an unset key to ``""``), so they fall through to:
     2. explicit ``token_provider`` — a custom per-call provider (tests / BYO).
     3. :func:`platform_bearer` — the credential seam (``ACT_AS_TOKEN_PATH`` →
-       ``PLATFORM_API_KEY`` → cached ``~/.castform`` session).
+       ``PLATFORM_API_KEY`` → selected ``~/.castform.toml`` profile session).
 
     The result is called **per request** by the client, so a rotating/expiring
     token is picked up — never frozen at construction.

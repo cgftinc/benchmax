@@ -172,12 +172,13 @@ class TestPickle:
         assert restored._client is None
 
     def test_roundtrip_preserves_config_cloud(self):
-        cs = ChromaSearch(
-            collection_name="col",
-            tenant="t",
-            database="d",
-            token_provider="ck-key",
-        )
+        with pytest.warns(UserWarning, match="baked into the bundle"):
+            cs = ChromaSearch(
+                collection_name="col",
+                tenant="t",
+                database="d",
+                token_provider="ck-key",
+            )
         data = cloudpickle.dumps(cs)
         restored = pickle.loads(data)
         assert restored._collection_name == "col"

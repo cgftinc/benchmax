@@ -27,6 +27,8 @@ def _stub_client_factory(responses: List[str] | Callable[..., str]):
 
     def factory(*_, **__):
         client = MagicMock()
+        client.close = AsyncMock()
+        client.aclose = AsyncMock()
 
         async def create(**kwargs):
             calls.append(kwargs)

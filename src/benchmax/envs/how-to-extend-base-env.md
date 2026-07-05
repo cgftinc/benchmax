@@ -45,7 +45,7 @@ def evaluate_expression(expr: str) -> str:
 Bring it all together in a subclass of `BaseEnv`:
 
 ```python
-class SimpleMathEnv(BaseEnv):
+class SimpleArithmeticEnv(BaseEnv):
     system_prompt: str = SYSTEM_PROMPT
     _reward_funcs: List[RewardFunction] = [reward_func]
 
@@ -84,4 +84,3 @@ class SimpleMathEnv(BaseEnv):
         _, tool_fn = self.tools[tool_name]
         return tool_fn(**tool_args)
 ```
-

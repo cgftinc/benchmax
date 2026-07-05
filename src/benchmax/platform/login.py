@@ -17,13 +17,40 @@ import time
 from . import credentials
 from .browser import maybe_open_browser
 from .device_auth import poll_for_token, request_device_code
+from benchmax import profile_config as profiles
 
 
-def _login() -> None:
+def _login(
+    *,
+    profile: str | None = None,
+    domain: str | None = None,
+    api_url: str | None = None,
+    llm_url: str | None = None,
+    auth_url: str | None = None,
+    app_url: str | None = None,
+) -> str:
     """Run the device flow and cache the session. Raises DeviceAuthError on failure."""
-    from benchmax import config
+    profile_name = profile or profiles.selected_profile_name()
+    existing = profiles.get_profile(profile_name)
+    if existing is None and not domain and profile_name != profiles.DEFAULT_PROFILE:
+        raise RuntimeError(
+            f"Profile {profile_name!r} does not exist yet. Pass --domain when logging in."
+        )
+    # Make the profile resolvable for this login without writing a partial
+    # config before the device flow succeeds.
+    login_domain = domain or (existing or {}).get("domain") or profiles.DEFAULT_DOMAIN
+    login_profile = dict(existing or {})
+    login_profile["domain"] = login_domain
+    if api_url:
+        login_profile["api_url"] = api_url
+    if llm_url:
+        login_profile["llm_url"] = llm_url
+    if auth_url:
+        login_profile["auth_url"] = auth_url
+    if app_url:
+        login_profile["app_url"] = app_url
 
-    auth = config.auth_url()
+    auth = auth_url or login_profile.get("auth_url") or f"https://auth.{login_domain}"
     dc = request_device_code(auth)
     verification = dc.get("verification_uri_complete") or dc["verification_uri"]
     print(f"\nTo sign in, open this URL in your browser:\n\n    {verification}\n")
@@ -43,7 +70,16 @@ def _login() -> None:
         session["refresh_token"] = tok["refresh_token"]
     if tok.get("expires_in"):
         session["expires_at"] = int(time.time()) + int(tok["expires_in"])
-    credentials.write_castform_session(session)
+    profiles.upsert_profile(
+        profile_name,
+        domain=login_domain,
+        api_url=api_url,
+        llm_url=llm_url,
+        auth_url=auth_url,
+        app_url=app_url,
+        session=session,
+    )
+    return profile_name
 
 
 def ensure_session(*, interactive: bool | None = None) -> None:

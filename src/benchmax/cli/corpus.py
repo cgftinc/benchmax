@@ -169,7 +169,7 @@ def _cmd_corpus_search(args: argparse.Namespace) -> int:
     except ImportError as exc:
         print(f"Error: {exc}. {_RAG_INSTALL_HINT}", file=sys.stderr)
         return 1
-    search = PostgresSearch(args.corpus, base_url=config.platform_url())
+    search = PostgresSearch(args.corpus)
     hits = search.search(args.query, top_k=args.top_k)
     if args.json:
         from benchmax.cli._output import print_json

@@ -35,7 +35,6 @@ _MODULE_EXTRA: dict[str, str] = {
     "keybert": "rag",
     "nest_asyncio": "rag",
     "langchain_text_splitters": "rag",
-    "ragas": "rag",
     "ruamel": "rag",
     "tqdm": "rag",
 }

@@ -8,9 +8,16 @@ import json
 
 import pytest
 
-from benchmax import cli
+from benchmax import cli, config
+from benchmax import profile_config as profiles
 from benchmax.platform import browser, credentials, login
 from benchmax.platform.device_auth import DeviceAuthError
+
+
+@pytest.fixture(autouse=True)
+def _isolate_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("CASTFORM_CONFIG_PATH", str(tmp_path / "castform.toml"))
+    monkeypatch.delenv("CASTFORM_PROFILE", raising=False)
 
 
 def _raise_device_auth(*_a, **_k):
@@ -45,7 +52,14 @@ def stub_flow(monkeypatch):
         lambda _auth, _dc, **_k: {"access_token": "sess_abc", "expires_in": 604800},
     )
     monkeypatch.setattr(
-        credentials, "write_castform_session", lambda s: captured.update(session=s)
+        profiles,
+        "upsert_profile",
+        lambda name, **kw: captured.update(profile=name, **kw),
+    )
+    monkeypatch.setattr(
+        config,
+        "base_domain",
+        lambda _profile=None: captured.get("domain") or "castform.com",
     )
     # This test is about session writing, not browser UX — stub the open so it
     # never launches a real browser (e.g. under `pytest -s`, where stdin is a tty).
@@ -56,9 +70,25 @@ def stub_flow(monkeypatch):
 def test_login_writes_session(stub_flow):
     assert cli._cmd_login(argparse.Namespace()) == 0
     s = stub_flow["session"]
+    assert stub_flow["profile"] == "prod"
+    assert stub_flow["domain"] == "castform.com"
     assert s["access_token"] == "sess_abc"
-    assert "env" not in s  # no env concept — domain comes from config/env var
     assert s["expires_at"] > 0
+
+
+def test_login_profile_domain_writes_profile_session(stub_flow):
+    args = argparse.Namespace(
+        profile="staging",
+        domain="castform.dev",
+        api_url=None,
+        llm_url=None,
+        auth_url=None,
+        app_url=None,
+    )
+    assert cli._cmd_login(args) == 0
+    assert stub_flow["profile"] == "staging"
+    assert stub_flow["domain"] == "castform.dev"
+    assert stub_flow["session"]["access_token"] == "sess_abc"
 
 
 def test_login_failure_returns_1(monkeypatch):
@@ -72,25 +102,26 @@ def test_logout_clears_session(monkeypatch):
     monkeypatch.setattr(
         credentials,
         "clear_castform_session",
-        lambda: called.setdefault("cleared", True),
+        lambda **kw: called.update(kw) or called.setdefault("cleared", True),
     )
     assert cli._cmd_logout(argparse.Namespace()) == 0
     assert called["cleared"]
+    assert called["profile"] == "prod"
 
 
 def test_whoami_not_logged_in(monkeypatch):
-    monkeypatch.setattr(credentials, "read_castform_session", lambda: None)
+    monkeypatch.setattr(credentials, "read_castform_session", lambda _profile=None: None)
     assert cli._cmd_whoami(argparse.Namespace()) == 1
 
 
 def test_whoami_logged_in_shows_email(monkeypatch, capsys):
     monkeypatch.setattr(
-        credentials, "read_castform_session", lambda: {"access_token": "x"}
+        credentials, "read_castform_session", lambda _profile=None: {"access_token": "x"}
     )
     claims = base64.urlsafe_b64encode(json.dumps({"email": "a@b.com"}).encode()).rstrip(
         b"="
     )
-    monkeypatch.setattr(credentials, "_session_jwt", lambda: f"h.{claims.decode()}.s")
+    monkeypatch.setattr(credentials, "_session_jwt", lambda _profile=None: f"h.{claims.decode()}.s")
     assert cli._cmd_whoami(argparse.Namespace()) == 0
     assert "a@b.com" in capsys.readouterr().out
 

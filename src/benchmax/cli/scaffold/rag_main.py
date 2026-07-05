@@ -137,8 +137,7 @@ class CustomSearchEnv(SearchEnv):
         super().__init__(
             # PostgresSearch is pickle-safe; the bearer is resolved per request,
             # nothing credential-shaped is frozen into the bundled env.
-            search=PostgresSearch(CORPUS_NAME, base_url=config.platform_url()),
-            judge_base_url=config.llm_url(),
+            search=PostgresSearch(CORPUS_NAME),
             judge_model=JUDGE_MODEL,
             max_search_calls=MAX_SEARCH_CALLS,
             **kwargs,

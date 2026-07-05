@@ -3,14 +3,14 @@ from typing import Dict, List
 
 from benchmax.envs.types import ToolDefinition
 
-def mcp2openai(mcp_tool: ToolDefinition) -> dict:
+def tool_definition_to_openai(tool: ToolDefinition) -> dict:
     """Convert a ToolDefinition to an OpenAI Function Call format."""
     openai_format = {
         "type": "function",
         "function": {
-            "name": mcp_tool.name,
-            "description": mcp_tool.description,
-            "parameters": mcp_tool.input_schema or {},
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.input_schema or {},
             "strict": False,
         },
     }
@@ -39,7 +39,7 @@ def parse_hermes_tool_call(text: str) -> List[Dict[str, str]]:
         tool_call_json = match.group(1).strip()
         try:
             tool_calls.append(json.loads(tool_call_json))
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             return []
     
     return tool_calls if tool_calls else []
@@ -64,7 +64,7 @@ def render_tools_prompt(
     str
         A fully-rendered prompt string with system message and tool information.
     """
-    tool_schema = [mcp2openai(tool_def) for tool_def in tool_definitions]
+    tool_schema = [tool_definition_to_openai(tool_def) for tool_def in tool_definitions]
     if not tool_schema:
         return system_message
 
@@ -89,4 +89,3 @@ def render_tools_prompt(
     ])
 
     return "\n".join(lines)
-

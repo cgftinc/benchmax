@@ -837,6 +837,8 @@ def _filter_notable(
     if small_corpus:
         return count_filtered
 
+    import warnings  # noqa: PLC0415
+
     from sklearn.cluster import KMeans  # noqa: PLC0415
 
     result: list[_KeyphraseCandidate] = []
@@ -850,7 +852,9 @@ def _filter_notable(
         n_clusters = min(min_clusters, len(embeddings))
         try:
             km = KMeans(n_clusters=n_clusters, n_init=3, random_state=42)
-            km.fit(emb_matrix)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                km.fit(emb_matrix)
             if len(set(km.labels_)) >= min_clusters:
                 result.append(candidate)
         except Exception:

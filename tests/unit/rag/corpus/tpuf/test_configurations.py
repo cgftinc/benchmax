@@ -10,8 +10,6 @@ Covers degraded/variant customer configurations:
 
 from __future__ import annotations
 
-# The feat/hybrid-search branch adds mode/hybrid params to search_related.
-import inspect as _inspect
 from types import SimpleNamespace
 
 import pytest
@@ -22,8 +20,6 @@ from benchmax.rag.corpus.search_schema.search_exceptions import (
 )
 from benchmax.rag.corpus.search_schema.search_types import SearchSpec
 from benchmax.rag.corpus.turbopuffer.source import TpufChunkSource
-
-_SEARCH_RELATED_HAS_MODE = "mode" in _inspect.signature(TpufChunkSource.search_related).parameters
 
 # ---------------------------------------------------------------------------
 # Fakes — same pattern as test_tpuf_search_related.py
@@ -150,10 +146,6 @@ def _make_source(
 
 
 class TestNoEmbedFnModeValidation:
-    @pytest.mark.skipif(
-        not _SEARCH_RELATED_HAS_MODE,
-        reason="search_related mode param not in installed version",
-    )
     def test_search_related_vector_mode_raises(self):
         ns = FakeNamespace(rows=[_row(1, "result")])
         source = _make_source(ns, embed_fn=None)
@@ -161,10 +153,6 @@ class TestNoEmbedFnModeValidation:
         with pytest.raises(UnsupportedSearchModeError):
             source.search_related(primary, ["query"], top_k=5, mode="vector")
 
-    @pytest.mark.skipif(
-        not _SEARCH_RELATED_HAS_MODE,
-        reason="search_related mode param not in installed version",
-    )
     def test_search_related_hybrid_mode_raises(self):
         ns = FakeNamespace(rows=[_row(1, "result")])
         source = _make_source(ns, embed_fn=None)

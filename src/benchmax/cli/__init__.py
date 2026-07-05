@@ -11,6 +11,7 @@ bundled packaging means a CLI dep would land in the training-engine closure; see
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from benchmax.cli import (
@@ -28,8 +29,25 @@ from benchmax.cli import (
 
 # Re-export auth handlers — tests/unit/test_cli.py imports them as cli._cmd_*.
 from benchmax.cli._auth import _cmd_login, _cmd_logout, _cmd_whoami
+from benchmax.profile_config import PROFILE_ENV
 
 __all__ = ["build_parser", "main", "_cmd_login", "_cmd_logout", "_cmd_whoami"]
+
+
+def _add_profile_option(parser: argparse.ArgumentParser) -> None:
+    if "--profile" not in parser._option_string_actions:
+        parser.add_argument(
+            "--profile",
+            help="Castform profile to use for this command",
+        )
+
+
+def _add_profile_option_recursive(parser: argparse.ArgumentParser) -> None:
+    _add_profile_option(parser)
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for child in action.choices.values():
+                _add_profile_option_recursive(child)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,12 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     hp = sub.add_parser("help", help="List the available commands")
     hp.set_defaults(func=_list_commands)
+    _add_profile_option_recursive(parser)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "profile", None):
+        os.environ[PROFILE_ENV] = args.profile
     return args.func(args)
 
 

@@ -17,6 +17,7 @@ from benchmax.cli._client import handle_errors
 from benchmax.cli._output import BLUE, _GREY, paint, print_json
 from benchmax.cli._preflight import _EXTRA_SENTINEL, extra_is_installed
 from benchmax.platform import credentials
+from benchmax import profile_config as profiles
 
 _REQUIRED_PY = (3, 12)
 
@@ -41,13 +42,18 @@ def _version() -> str:
 
 def _auth_check() -> tuple[bool, str]:
     """(signed_in, detail). Resolves the same bearer seam validate/launch use."""
+    selected = profiles.select_profile()
     try:
         credentials.platform_bearer()
     except Exception:
-        return False, "not signed in — run `castform login`"
-    jwt = credentials._session_jwt()
+        return (
+            False,
+            f"profile {selected.name!r} not signed in — run "
+            f"`castform login --profile {selected.name} --domain <domain>`",
+        )
+    jwt = credentials._session_jwt(selected.name)
     who = (credentials._jwt_claims(jwt).get("email") if jwt else None) or "your account"
-    return True, f"{who} ({config.base_domain()})"
+    return True, f"{who} (profile {selected.name!r}, {config.base_domain(selected.name)})"
 
 
 def _collect() -> dict:
@@ -58,6 +64,7 @@ def _collect() -> dict:
         "python_ok": py_ok,
         "python": py_detail,
         "benchmax_version": _version(),
+        "selected_profile": profiles.select_profile().name,
         "signed_in": auth_ok,
         "auth": auth_detail,
         "extras": extras,

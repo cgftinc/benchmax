@@ -42,7 +42,8 @@ class PostgresChunkSource:
             resolves the bearer per request via the credential seam (cached
             device-auth session / ACT_AS_TOKEN_PATH / PLATFORM_API_KEY).
         base_url: Corpora API base URL. Optional — defaults to the
-            session-derived platform URL (``config.platform_url()``).
+            selected profile's platform URL in the process that uses the
+            source.
 
     Example:
         >>> source = PostgresChunkSource(corpus_name="my-docs")
@@ -58,11 +59,11 @@ class PostgresChunkSource:
     ) -> None:
         # Per-request bearer: an explicit key wins; an empty key resolves via the
         # platform credential seam (CorpusClient no longer bakes a static key).
-        # base_url defaults to the session-derived platform URL.
-        self._client = CorpusClient(
-            base_url=base_url if base_url is not None else config.platform_url(),
-            token_provider=resolve_token_provider(api_key),
-        )
+        # base_url defaults lazily so pickled env bundles resolve profile/env in
+        # the runtime process, not on the authoring host.
+        self._base_url = base_url
+        self._token_provider = resolve_token_provider(api_key)
+        self._client: CorpusClient | None = None
         self._corpus_name = corpus_name
         self._corpus: Corpus | None = None
         self.collection: ChunkCollection | None = (
@@ -79,6 +80,14 @@ class PostgresChunkSource:
             "constraints": {"max_top_k": 1000},
             "graph_expansion": True,
         }
+
+    def _get_client(self) -> CorpusClient:
+        if self._client is None:
+            self._client = CorpusClient(
+                base_url=self._base_url or config.platform_url(),
+                token_provider=self._token_provider,
+            )
+        return self._client
 
     def populate_from_folder(
         self,
@@ -152,7 +161,8 @@ class PostgresChunkSource:
         """
         self.collection = collection
 
-        self._corpus = self._client.get_or_create_corpus(
+        client = self._get_client()
+        self._corpus = client.get_or_create_corpus(
             self._corpus_name, on_limit=on_limit
         )
 
@@ -160,7 +170,7 @@ class PostgresChunkSource:
             print(f"Using corpus: {self._corpus.name} (ID: {self._corpus.id})")
             print(f"Uploading {len(self.collection)} chunks to corpus...")
 
-        upload_result = self._client.upload_chunks(
+        upload_result = client.upload_chunks(
             corpus_id=self._corpus.id,
             collection=self.collection,
             batch_size=batch_size,
@@ -187,7 +197,8 @@ class PostgresChunkSource:
         """
         from benchmax.rag.chunkers.inspector import ChunkInspector
 
-        self._corpus = self._client.get_corpus(corpus_id)
+        client = self._get_client()
+        self._corpus = client.get_corpus(corpus_id)
         self._corpus_name = self._corpus.name
 
         if show_summary:
@@ -198,7 +209,7 @@ class PostgresChunkSource:
         chunks: list[Chunk] = []
         cursor: str | None = None
         while True:
-            results, next_cursor = self._client.list_corpus_chunks(
+            results, next_cursor = client.list_corpus_chunks(
                 corpus_id=corpus_id,
                 limit=page_size,
                 cursor=cursor,
@@ -242,7 +253,8 @@ class PostgresChunkSource:
             show_summary: Print load summary (default True)
         """
         target_name = corpus_name or self._corpus_name
-        matched = [c for c in self._client.list_corpora() if c.name == target_name]
+        client = self._get_client()
+        matched = [c for c in client.list_corpora() if c.name == target_name]
         if not matched:
             raise ValueError(f"Could not find existing corpus named '{target_name}'.")
 
@@ -323,7 +335,7 @@ class PostgresChunkSource:
         related_map: dict[str, dict] = {}
 
         for query in queries:
-            matched_chunks = self._client.search_with_chunks(
+            matched_chunks = self._get_client().search_with_chunks(
                 corpus_id=self._corpus.id,
                 query=query,
                 collection=self.collection,
@@ -358,7 +370,7 @@ class PostgresChunkSource:
         related_map: dict[str, dict] = {}
 
         for query in queries:
-            matched_chunks = await self._client.asearch_with_chunks(
+            matched_chunks = await self._get_client().asearch_with_chunks(
                 corpus_id=self._corpus.id,
                 query=query,
                 collection=self.collection,
@@ -371,7 +383,8 @@ class PostgresChunkSource:
     async def aclose(self) -> None:
         """Close the underlying corpus client's async transport (best-effort).
         Call from within the event loop that used it."""
-        await self._client.aclose()
+        if self._client is not None:
+            await self._client.aclose()
 
     @staticmethod
     def _accumulate_related(
@@ -443,7 +456,7 @@ class PostgresChunkSource:
 
         self._assert_ready()
         filters = to_corpora_filters(spec.get("filter"), self._search_capabilities)
-        matched = self._client.search_with_chunks(
+        matched = self._get_client().search_with_chunks(
             corpus_id=self._corpus.id,
             query=str(spec.get("text_query") or ""),
             collection=self.collection,
@@ -469,6 +482,15 @@ class PostgresChunkSource:
         """Search and return content strings without Chunk construction."""
         chunks = self.search(spec)
         return [chunk.content for chunk in chunks]
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        state["_client"] = None
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        self._client = None
 
     def embed_query(self, text: str) -> list[float] | None:
         """Return ``None`` — Corpora backend has no embedding support."""

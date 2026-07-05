@@ -693,8 +693,8 @@ class TrainerClient:
         return response.json()
 
 
-# Server URLs are resolved lazily via callables so env-var changes after
-# import (e.g. test fixtures setting CASTFORM_BASE_DOMAIN) take effect.
+# Server URLs are resolved lazily via callables so profile/env changes after
+# import (e.g. test fixtures setting CASTFORM_PROFILE) take effect.
 # Resolving once at import froze RolloutClient on the first-seen URL while
 # StorageClient/TrainerClient picked up env changes at construction time —
 # tests for one client could pass while the other silently hit prod.

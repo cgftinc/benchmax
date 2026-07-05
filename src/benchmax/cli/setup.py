@@ -32,6 +32,7 @@ from benchmax.cli._output import (
     term_width,
 )
 from benchmax.platform import credentials
+from benchmax import profile_config as profiles
 
 _SKILLS = (
     "design-environment",
@@ -172,13 +173,14 @@ def _login_first(skip: bool) -> None:
         who = (
             credentials._jwt_claims(jwt).get("email") if jwt else None
         ) or "your account"
-        print(f"Signed in as {who} ({config.base_domain()}).")
+        selected = profiles.selected_profile_name()
+        print(f"Signed in as {who} (profile {selected!r}, {config.base_domain(selected)}).")
     except RuntimeError:
         print("Signing in…")
         from benchmax.platform.login import _login
 
-        _login()
-        print(f"✓ Signed in to {config.base_domain()}.")
+        profile_name = _login()
+        print(f"✓ Signed in to profile {profile_name!r} ({config.base_domain(profile_name)}).")
 
 
 def _choose_agents(arg: str | None) -> set[str]:

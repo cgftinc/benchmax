@@ -33,7 +33,7 @@ def platform_embed_fn(
     client / chunk source expects. The OpenAI client is built lazily on first call so that
     (a) the closure stays cloudpickle-safe — no live httpx client is ever serialized into the
     env bundle — and (b) ``base_url`` and credentials resolve in the *sandbox* where the env
-    runs, picking up its ``CASTFORM_BASE_DOMAIN`` rather than the authoring host's.
+    runs, picking up its ``CASTFORM_PROFILE`` rather than the authoring host's.
 
     Auth mirrors the LLM judge (``resolve_judge_key``): an explicit ``api_key`` wins, else the
     platform credential seam (``ACT_AS_TOKEN_PATH`` in training, ``PLATFORM_API_KEY`` / session
