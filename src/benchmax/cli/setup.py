@@ -4,10 +4,11 @@ Logs you in (no-op if already authed), then writes the agent scaffold from the
 packaged templates (``benchmax/cli/scaffold``): CLAUDE.md / AGENTS.md, the
 per-stage skills into each agent's skills dir (claude → ``.claude/skills/``,
 codex → ``.agents/skills/``, with the body's path references retargeted), a
-starter prompt. The generic flow ships NO ``run.py`` — the agent writes it from
-the design-environment skill (example code lives in the skills, not a scaffolded
-file); ``--template rag`` ships a specialized SearchEnv ``run.py``. Datasets are
-never shipped (the agent generates them). Does NOT open the agent.
+starter prompt, and a runnable seed ``main.py`` + tiny seed datasets per template
+(``generic`` → a minimal single-turn env, ``rag`` → a SearchEnv) so ``python
+main.py validate`` runs on day one. ``--no-template`` skips the seed (docs + skills
+only; the agent writes ``main.py`` from the design-environment skill). Does NOT
+open the agent.
 The scaffold prose duplicates the web-app generator (``buildAgentContextBody``)
 for now — accepted divergence debt; keep aligned.
 """
@@ -15,6 +16,7 @@ for now — accepted divergence debt; keep aligned.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from importlib import resources
 from pathlib import Path
@@ -44,10 +46,47 @@ _SKILLS = (
 # under `.agents/skills/` and point AGENTS.md at them explicitly.
 _SKILLS_DIR = {"claude": ".claude/skills", "codex": ".agents/skills"}
 
+# Per-template seed files in the scaffold dir: a runnable `main.py` + tiny seed
+# datasets, copied into the project so `python main.py validate` runs day one.
+_TEMPLATE_SEEDS = {
+    "generic": {
+        "main": "generic_main.py",
+        "train": "generic_train_dataset.jsonl",
+        "eval": "generic_eval_dataset.jsonl",
+    },
+    "rag": {
+        "main": "rag_main.py",
+        "train": "rag_train_dataset.jsonl",
+        "eval": "rag_eval_dataset.jsonl",
+    },
+}
+
 
 def _retarget(text: str, agent: str) -> str:
     """Rewrite the scaffold's ``.claude/skills`` references to ``agent``'s dir."""
     return text.replace(".claude/skills", _SKILLS_DIR[agent])
+
+
+# Env-conditional surfacing: content between ``<!-- rag:start -->`` and
+# ``<!-- rag:end -->`` (HTML comments, invisible when rendered) is RAG-specific —
+# a single-source doc that the setup mechanism tailors per template.
+_RAG_BLOCK_RE = re.compile(
+    r"^[ \t]*<!--\s*rag:start\s*-->.*?^[ \t]*<!--\s*rag:end\s*-->[ \t]*\n?",
+    re.DOTALL | re.MULTILINE | re.IGNORECASE,
+)
+_RAG_MARKER_RE = re.compile(
+    r"^[ \t]*<!--\s*rag:(?:start|end)\s*-->[ \t]*\n?",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _apply_template_conditionals(text: str, template: str) -> str:
+    """Tailor a scaffold doc to the env template. ``--template rag`` KEEPS the
+    RAG-specific blocks (dropping just the delimiter comments); every other template
+    STRIPS them, so a generic scaffold carries no RAG-specific guidance."""
+    if template == "rag":
+        return _RAG_MARKER_RE.sub("", text)
+    return _RAG_BLOCK_RE.sub("", text)
 
 
 # The one prompt we surface in-terminal — kept in sync with GETTING_STARTED.md's
@@ -153,21 +192,15 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     target = Path(args.dir).resolve()
     target.mkdir(parents=True, exist_ok=True)
 
-    # `--template rag` must not silently leave a stale non-rag run.py in place — it
-    # would still `validate` green and masquerade as a rag baseline. Fail loudly
-    # (require a clean dir or --force) instead of the usual skip-if-exists.
-    run_py = target / "run.py"
-    if (
-        args.template == "rag"
-        and not args.no_template
-        and run_py.exists()
-        and not args.force
-    ):
+    # A seed main.py must not silently overwrite (or be masked by) a stale one — the
+    # old env would still `validate` green and masquerade as a working baseline. Fail
+    # loudly (require a clean dir or --force) instead of the usual skip-if-exists.
+    main_py = target / "main.py"
+    if not args.no_template and main_py.exists() and not args.force:
         print(
-            f"Error: {run_py} already exists — refusing to leave a non-rag run.py "
-            "in place for --template rag (it would still validate green and look "
-            "like a working rag baseline). Re-run with --force to replace it, or "
-            "use a clean directory.",
+            f"Error: {main_py} already exists — refusing to overwrite it (a stale env "
+            "would still validate green and mask your task). Re-run with --force to "
+            "replace it, or use a clean directory.",
             file=sys.stderr,
         )
         return 1
@@ -188,6 +221,11 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     def w(dest: Path, text: str) -> bool:
         return _write(dest, text, force=args.force, log=log)
 
+    def prep(text: str, agent: str) -> str:
+        # Tailor to the env template (strip RAG blocks for non-rag), then retarget
+        # the skills-dir references to the agent.
+        return _retarget(_apply_template_conditionals(text, args.template), agent)
+
     bodies = [
         (a, f)
         for a, f in (("claude", "CLAUDE.md"), ("codex", "AGENTS.md"))
@@ -197,8 +235,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     # 1) agent guides — instruction file(s) + GETTING_STARTED. GETTING_STARTED
     #    references the skills dir, so point it at the primary agent.
     primary = "claude" if "claude" in agents else "codex"
-    guide_writes = [w(target / f, _retarget(instructions, a)) for a, f in bodies]
-    guide_writes.append(w(target / "GETTING_STARTED.md", _retarget(starter, primary)))
+    guide_writes = [w(target / f, prep(instructions, a)) for a, f in bodies]
+    guide_writes.append(w(target / "GETTING_STARTED.md", prep(starter, primary)))
 
     # 2) agent skills — the same per-stage skills under each agent's dir.
     skill_writes: list[bool] = []
@@ -207,16 +245,35 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         for name in _SKILLS:
             skill = (root / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
             dest = target.joinpath(*skills_dir, name, "SKILL.md")
-            skill_writes.append(w(dest, _retarget(skill, agent)))
+            skill_writes.append(w(dest, prep(skill, agent)))
 
-    # 3) env template — only rag ships one (a SearchEnv with specialized wiring).
-    #    The generic flow ships no run.py: the agent writes it from the
-    #    design-environment skill. --no-template skips the rag template too.
+    # 3) env template — every template ships a runnable seed main.py + tiny seed
+    #    datasets so `python main.py validate` runs on day one; the agent then
+    #    tailors them. --no-template skips the seed (docs + skills only). main.py
+    #    honors --force (the guard above cleared it); the datasets ALWAYS
+    #    skip-if-exists — --force is only for the main.py guard, and real data (e.g. a
+    #    rag `castform data qa-gen` output) must never be clobbered by the placeholder.
     env_writes: list[bool] = []
-    if args.template == "rag" and not args.no_template:
-        # Datasets come from `castform data qa-gen`; existing run.py failed fast above.
+    if not args.no_template:
+        seed = _TEMPLATE_SEEDS[args.template]
         env_writes.append(
-            w(target / "run.py", (root / "rag_run.py").read_text("utf-8"))
+            w(target / "main.py", (root / seed["main"]).read_text("utf-8"))
+        )
+        env_writes.append(
+            _write(
+                target / "train_dataset.jsonl",
+                (root / seed["train"]).read_text("utf-8"),
+                force=False,
+                log=log,
+            )
+        )
+        env_writes.append(
+            _write(
+                target / "eval_dataset.jsonl",
+                (root / seed["eval"]).read_text("utf-8"),
+                force=False,
+                log=log,
+            )
         )
 
     if args.verbose:
@@ -231,8 +288,10 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 f"{len(_SKILLS)} stages × {n_ag} agent{'s' * (n_ag != 1)}",
             ),
         ]
-        if env_writes:  # rag only — generic ships no run.py
-            groups.append(("env template", env_writes, "run.py (rag SearchEnv)"))
+        if env_writes:  # every template ships a seed main.py + datasets
+            groups.append(
+                ("env template", env_writes, f"main.py + datasets ({args.template})")
+            )
         label_w = max(len(label) for label, _, _ in groups)
         for label, writes, detail in groups:
             print(_group_status(label, writes, detail, label_w))
@@ -244,7 +303,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         )
     )
 
-    if env_writes:  # rag template — its data path pulls deps beyond base castform
+    if env_writes and args.template == "rag":  # rag data path pulls extra deps
         print()
         print(
             paint(
@@ -281,13 +340,13 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--template",
         choices=["generic", "rag"],
         default="generic",
-        help="Env template: 'generic' ships none (the agent writes run.py), "
-        "'rag' ships a SearchEnv run.py (default: generic)",
+        help="Env seed: 'generic' = a minimal single-turn env, 'rag' = a SearchEnv "
+        "(both ship a runnable main.py + tiny datasets; default: generic)",
     )
     p.add_argument(
         "--no-template",
         action="store_true",
-        help="Skip the rag SearchEnv run.py (rag only — generic ships none)",
+        help="Skip the seed main.py + datasets (scaffold docs + skills only)",
     )
     p.add_argument(
         "--skip-login", action="store_true", help="Don't sign in (scaffold only)"

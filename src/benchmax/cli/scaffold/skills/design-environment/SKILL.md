@@ -1,39 +1,29 @@
 ---
 name: design-environment
-description: Design a castform RL environment — a BaseEnv subclass with tools and reward functions. Use when creating or editing run.py / the env for a training run.
+description: Design a castform RL environment — a BaseEnv subclass with tools and reward functions. Use when creating or editing main.py / the env for a training run.
 ---
 
 # Design the environment
 
-> The four-step path: `castform setup → data → validate → launch`. This skill
-> shapes the **env** you write at step 1 and `validate` (step 3) checks — see
-> `GETTING_STARTED.md` for the whole chain.
-
-The environment is a single `BaseEnv` subclass in `run.py`. `castform setup` does
-**not** scaffold it — you write `run.py` from the shape below. It defines what the
-model can do (tools), how a rollout is scored (rewards), and the system prompt.
+This skill is stage 1 of `castform setup → data → validate → launch`. Tailor the
+runnable seed `main.py` that `castform setup` wrote; it should contain one
+`BaseEnv` subclass defining the system prompt, tools, and rewards.
 
 ## Fast path (to a green baseline)
 
-Write a single-turn `run.py` — a `BaseEnv` subclass — by filling in three things
-(copy the shape from **The BaseEnv shape** below):
+For the first green baseline, keep the env single-turn unless the task truly needs
+tools. Fill in three things:
 
 1. **`system_prompt`** — what the model is told it's doing.
 2. **`compute_reward`** — how a rollout is scored. Make it **discriminating** (it
    must give different scores to better/worse answers); a reward that never varies
    gives training no gradient. Keep the primary task (usually correctness) dominant
    and gate secondary bonuses on it.
-3. the datasets — the **generate-data** skill (`castform setup` does not ship any).
-
-Start single-turn with no tools (`list_tools` returns `[]`). That's the right
-default — only reach for tools if the task genuinely needs them.
+3. **Datasets** — tailor the seed rows with the **generate-data** skill.
 
 Next, hand off to the next skill — **load it, don't just run its command**:
-**invoke the `generate-data` skill** for the datasets, then **invoke the
-`verify-environment` skill** before you run `castform validate`. Each stage's
-skill is loaded with the Skill tool; `castform validate` without
-verify-environment loaded means you'll miss how to read the scorecard and report
-the baseline.
+invoke **generate-data**, then invoke **verify-environment** before every
+`castform validate`.
 
 ## Going deeper
 
@@ -66,6 +56,10 @@ class MyEnv(BaseEnv):
 `prompt` (or `messages` / `prompt_messages`) field, and exposes the whole row as
 `task`. Override it only if your columns differ.
 
+Put per-rollout configuration in `__init__`, not at module level: the sandbox
+**unpickles** your env instance rather than re-importing `main.py`, so top-level code
+doesn't run in the sandbox (it runs only at bundle time, on your machine).
+
 ### Reading the rollout (`messages` and `task`)
 
 Both reward hooks are `async`. `messages` is the full transcript as a list of
@@ -86,7 +80,7 @@ Both reward hooks are `async`. `messages` is the full transcript as a list of
   or `None` if the env grades without per-row data — read it defensively with
   `(task or {}).get("ground_truth")`.
 
-Copy-paste — get the model's final text answer (inline this in `run.py`; there is
+Copy-paste — get the model's final text answer (inline this in `main.py`; there is
 **no importable `last_answer`** helper, so don't `import` one):
 
 ```python
@@ -191,44 +185,34 @@ def extract_answer(text: str) -> str:
   validate caps at 4/8 too): `castform validate --max-turns N --max-tool-calls N`
   (both settable here) and `castform launch --set max_turns=N` (at launch only
   `max_turns` is a documented `--set` knob — `max_tool_calls` isn't, it defaults to 8;
-  run `castform launch --list-args` for the live set). For a rag `SearchEnv`, match
-  `MAX_SEARCH_CALLS`: each search is one turn + one tool call, and the answer is
-  inline (one extra turn, NOT a tool call), so budget `--max-turns S+1
-  --max-tool-calls S` for `S` searches. Keep `MAX_SEARCH_CALLS` ≤ 8 if you need it
-  honored in training; the scaffold defaults below that cap. Note the limit in
-  `run.py` so it isn't forgotten.
+  run `castform launch --list-args` for the live set).
+  <!-- rag:start -->
+  - For a rag `SearchEnv`, match `MAX_SEARCH_CALLS`: each search is one turn + one
+    tool call, and the answer is inline (one extra turn, NOT a tool call), so budget
+    `--max-turns S+1 --max-tool-calls S` for `S` searches. Keep `MAX_SEARCH_CALLS` ≤ 8
+    if you need it honored in training; the scaffold defaults below that cap. Note the
+    limit in `main.py` so it isn't forgotten.
+  <!-- rag:end -->
 
-### RAG and traces environments (the two specializations)
+### RAG and traces environments
 
-RAG and traces are the **same loop** as any custom env — one `run.py`, then
-`validate` / `launch`. They differ in just two things: the **system prompt** and
-**where the data comes from** (the **generate-data** skill covers the data).
+RAG and traces use the same loop as any custom env: one `main.py`, then validate
+and launch. The differences are the prompt, tools, reward details, and data source
+(covered by **generate-data**). If the user's request names a source, use that
+funnel; otherwise confirm before pulling data.
 
-**Recognize the use-case first.** If the user's request already declares it — "RAG
-over my corpus", "search over my handbook", "train on my agent's traces" — go straight
-to that funnel. If it's free-form, infer the likely source from the task and **confirm
-with the user** before building the env or pulling data.
-
-**The data is the user's — present the real sources, never offer a fake one.** For
-"search over my <handbook / docs / wiki>", ask which real source they have — a local
-folder, a corpus already on Castform (`castform corpus list`), or a vector-DB corpus —
-and STOP if they have none (they gather their docs first). **Never offer to generate a
-fake / "demo" corpus, not even for a dry run** — a model trained on invented pages
-learns nothing real. "Generate a small synthetic dataset" means QA **pairs**
-generated FROM their corpus (`qa-gen`), not synthesized source docs. A model trained on
-made-up pages learns nothing about their real handbook.
+<!-- rag:start -->
+**Use the user's real corpus.** For "search over my handbook/docs/wiki", ask for a
+local folder, an existing Castform corpus (`castform corpus list`), or a vector-DB
+corpus. Stop if they have none. Never generate fake/demo source docs; "synthetic
+dataset" means QA pairs generated from their real corpus.
 
 #### RAG — search a corpus and cite sources
 
-`castform setup --template rag` writes a `SearchEnv` subclass with a search tool and
-a multi-component reward (answer correctness, conciseness via an LLM judge,
-citations, and search efficiency). The reward is spelled out **inline in the run.py's
-`compute_reward`** — the weights (`W_*`), the correctness gate, and the arithmetic
-are right there to read and edit; the heavy pieces (`judge_answer_quality`,
-`score_citations`, `score_search_efficiency`, `extract_answer_block`) are named
-helpers imported from `benchmax.envs.postgres_search.search_env`. Treat that reward
-as a baseline to audit, not a law of nature (`castform validate --reward-audit`).
-Before a real launch, inspect transcripts and edit the run.py for your corpus:
+`castform setup --template rag` writes a `SearchEnv` with a search tool and inline
+reward arithmetic in `compute_reward`. Treat it as an auditable starting point, not
+a law. Before a real launch, inspect transcripts with
+`castform validate --reward-audit` and adjust:
 
 - **Answer extraction:** only score a committed `<answer>` block. Missing tags
   should score as no answer, and a final answer block should beat an earlier draft.
@@ -240,6 +224,11 @@ Before a real launch, inspect transcripts and edit the run.py for your corpus:
   than only the single gold label.
 - **Correctness gate:** multiply citation, brevity, and style bonuses by
   correctness so a wrong answer cannot bank source-format rewards.
+- **Retrieval signal (ungated):** unlike the format bonuses, keep a small
+  `retrieval_hit` term **ungated** — a gold-chunk retrieval is worth rewarding even
+  when the final answer is wrong, so the model keeps learning to search. `castform
+  validate`'s RAG probe reports retrieval **gold-hit@k**, so you can read retrieval
+  quality apart from answer correctness.
 - **Conciseness:** an LLM conciseness judge may be sparse and expensive. A
   deterministic prose-length term, excluding citation labels, is often denser and
   free.
@@ -288,7 +277,7 @@ Chroma → `ChromaSearch(collection_name=…, tenant=…, database=…, token_pr
 sandbox against the env's own domain.)
 
 **Ship the provider SDK to the sandbox — REQUIRED.** The rollout sandbox bundles only
-`run.py` + benchmax; the provider SDK (`turbopuffer` / `pinecone` / `chromadb`) is NOT
+`main.py` + benchmax; the provider SDK (`turbopuffer` / `pinecone` / `chromadb`) is NOT
 there. If it's missing, the search client's import fails in the sandbox and gets
 swallowed into an all-zero **hollow green** (the `pip install castform[<provider>]` you
 did for `qa-gen` only fixes your *local* machine). Two ways to inject it — both compose,
@@ -301,7 +290,7 @@ so you don't memorize package names:
   castform validate --provider turbopuffer --examples 2   # same flag on launch
   ```
 
-- **The `PIP_DEPENDENCIES` slot in `run.py`** (declare once) — the rag scaffold's
+- **The `PIP_DEPENDENCIES` slot in `main.py`** (declare once) — the rag scaffold's
   `CustomSearchEnv` ships an empty `PIP_DEPENDENCIES: list[str] = []`; fill it when you
   swap the `search=` client and it travels with the env, applied on every validate **and**
   launch with no flag:
@@ -332,6 +321,7 @@ your corpus is full-text-indexed** (turbopuffer/chroma BM25) — it needs nothin
 is the most robust. `platform_embed_fn` requires a recent benchmax **on the sandbox
 image**; if `validate` fails to unpickle with `No module named 'benchmax.rag.corpus.embed'`,
 the deployed image predates it — fall back to the lexical path (no `embed_fn`).
+<!-- rag:end -->
 
 #### Traces — learn the agent's task from its recorded traces
 
@@ -379,9 +369,12 @@ working first.
 
 ### Dependencies
 
-Imports beyond benchmax must be bundled at launch. Three ways for PyPI deps, all
-merged (de-duped): a `PIP_DEPENDENCIES = [...]` class attr on your env (declared once,
-travels with it), `--pip <pkg>` on validate/launch (or `pip_dependencies=[…]` via the
-SDK), and `--provider <name>` for a known RAG provider's SDK. Local files are bundled
-from `run.py` automatically by `castform launch` (pass `local_modules=[mod]` if calling
-the SDK directly).
+Imports beyond benchmax must be bundled at launch. For PyPI deps (all merged,
+de-duped): a `PIP_DEPENDENCIES = [...]` class attr on your env (declared once, travels
+with it) and `--pip <pkg>` on validate/launch (or `pip_dependencies=[…]` via the SDK).
+<!-- rag:start -->
+For a known RAG provider's SDK, `--provider <name>` injects it as a third channel
+(merged with the others).
+<!-- rag:end -->
+Local files are bundled from `main.py` automatically by `castform launch` (pass
+`local_modules=[mod]` if calling the SDK directly).

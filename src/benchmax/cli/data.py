@@ -37,7 +37,7 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 def _provider_qa_source_factory(provider: str) -> tuple[Any, str]:
     """Build a ``(source_factory, corpus_label)`` for ``qa-gen --provider``.
 
-    Reads the same ``DATA_*`` env vars the wizard / run.py use (``DATA_api_key`` plus
+    Reads the same ``DATA_*`` env vars the wizard / main.py use (``DATA_api_key`` plus
     per-provider resource fields). qa-gen reads stored chunks directly, so no ``embed_fn``
     is wired here. Raises ``ValueError`` with a clean message on a missing env var or a
     missing provider SDK (the caller turns that into an ``Error:`` line).
@@ -373,10 +373,10 @@ def _cmd_data_traces(args: argparse.Namespace) -> int:
             print(f"  detected system prompt ({len(system_prompt)} chars): {preview}")
         if tools:
             print(f"  detected tools: {', '.join(t.get('name', '?') for t in tools)}")
-        # The agent authors run.py's dataset_preprocess to match the pulled rows.
+        # The agent authors main.py's dataset_preprocess to match the pulled rows.
         print(
             "  Rows are {prompt_messages, ground_truth, init_rollout_args} — author "
-            "run.py's dataset_preprocess to match."
+            "main.py's dataset_preprocess to match."
         )
         print("  Next: castform setup   (then castform validate)")
     return 0

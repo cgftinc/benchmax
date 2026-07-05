@@ -28,7 +28,7 @@ def _write_run(tmp_path, *names):
     body = "from benchmax.envs.base_env import BaseEnv\n\n"
     for n in names:
         body += f"class {n}(BaseEnv):\n    pass\n\n"
-    p = tmp_path / "run.py"
+    p = tmp_path / "main.py"
     p.write_text(body)
     return p
 
@@ -39,7 +39,7 @@ def test_discover_single_env(tmp_path):
 
 
 def test_discover_no_env_raises(tmp_path):
-    p = tmp_path / "run.py"
+    p = tmp_path / "main.py"
     p.write_text("x = 1\n")
     mod = _load_module_from_file(p)
     with pytest.raises(ProjectError, match="No BaseEnv"):
@@ -100,7 +100,7 @@ class _FakeProject:
 def _validate_ns(**over) -> argparse.Namespace:
     base = dict(
         dir=".",
-        run_file="run.py",
+        run_file="main.py",
         module=None,
         env_class=None,
         train="train_dataset.jsonl",
@@ -208,6 +208,62 @@ def test_validate_json_includes_messages(monkeypatch, capsys):
     assert '"messages"' in out and "answer text" in out
 
 
+def test_validate_probe_renders_at_command_layer(monkeypatch, capsys):
+    """An env overriding validate_probe gets its result rendered as a scorecard row
+    (human) and a `probe` key (--json). This runs with validate_env MOCKED, so a
+    row here proves the probe fires at the COMMAND layer — not inside validate_env
+    (the original _run_local_checks defect: local checks don't run on default
+    remote validate, so a probe there would be inert)."""
+    from benchmax.envs.base_env import BaseEnv
+
+    class _ProbeEnv(BaseEnv):
+        async def list_tools(self):
+            return []
+
+        async def run_tool(self, rollout_id, tool_name, **k):
+            return ""
+
+        async def compute_reward(self, rollout_id, messages, task, **k):
+            return {}
+
+        async def validate_probe(self, eval_dataset):
+            return {"ok": True, "summary": "gold-hit@10 = 0.60", "value": 0.6}
+
+    class _P:
+        env_class = _ProbeEnv
+        train_dataset = [{"prompt": "x"}]
+        eval_dataset = [{"question": "q", "answer": "a"}]
+        module = None
+        from_file = True
+        launch_config: dict = {}
+        validate_config: dict = {}
+
+    report = _report(
+        examples=[ExampleValidation(index=0, ok=True, rewards={"acc": 1.0})], group=None
+    )
+    monkeypatch.setattr(validate, "load_project", lambda **k: _P())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: report)
+
+    # default args: local_only=False → local=False (the remote path)
+    assert validate._cmd_validate(_validate_ns()) == 0
+    out = capsys.readouterr().out
+    assert "validate probe" in out and "gold-hit@10 = 0.60" in out
+
+    assert validate._cmd_validate(_validate_ns(json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"probe"' in out and "gold-hit@10 = 0.60" in out
+
+
+def test_validate_no_probe_row_when_env_does_not_override(monkeypatch, capsys):
+    """An env that doesn't override validate_probe → no probe row (no regression)."""
+    report = _report(
+        examples=[ExampleValidation(index=0, ok=True, rewards={"acc": 1.0})], group=None
+    )
+    _patch(monkeypatch, report)  # _FakeProject.env_class is a bare type (no probe)
+    assert validate._cmd_validate(_validate_ns()) == 0
+    assert "validate probe" not in capsys.readouterr().out
+
+
 def test_env_arg_parsing():
     assert validate._parse_env_args(["a=1", "b=hi", "c=true"]) == {
         "a": 1,
@@ -260,7 +316,7 @@ def test_validate_turn_budget_forwards_to_rollout(monkeypatch):
 
 
 def test_validate_turn_budget_defaults_in_parser():
-    # Parser default is None (unset) so run.py's VALIDATE_CONFIG can supply it;
+    # Parser default is None (unset) so main.py's VALIDATE_CONFIG can supply it;
     # _cmd_validate resolves None → config → the 4/8 fallback.
     args = build_parser().parse_args(["validate"])
     assert args.max_turns is None and args.max_tool_calls is None
@@ -278,7 +334,7 @@ def _validate_config_project(**config):
 
 
 def test_validate_config_supplies_budget_when_flag_omitted(monkeypatch):
-    # run.py VALIDATE_CONFIG fills max_turns/examples when the CLI omits them.
+    # main.py VALIDATE_CONFIG fills max_turns/examples when the CLI omits them.
     captured: dict = {}
 
     def _capture(**k):
@@ -581,7 +637,7 @@ def test_reward_audit_json_carries_audit_and_gold(monkeypatch, capsys):
     assert validate._cmd_validate(_validate_ns(reward_audit=True, json=True)) == 0
     out = capsys.readouterr().out
     assert '"audit"' in out
-    assert '"correctness_component": "answer_correctness"' in out
+    assert '"primary_component": "answer_correctness"' in out
     assert '"gold": "edit /etc/docker"' in out
 
 
@@ -608,9 +664,73 @@ def test_audit_components_notes():
     assert corr_key == "answer_correctness"
     notes = {r["component"]: r["note"] for r in rows}
     assert notes["answer_correctness"] == "primary (gate)"
-    assert "mirrors correctness" in notes["dup"]
+    assert "mirrors the primary reward" in notes["dup"]
     assert "constant" in notes["fmt"]
     assert notes["recall"] == ""  # discriminates independently
+
+
+def test_primary_reward_key_env_declared_then_heuristic():
+    """The gate key is env-supplied first (any env-type), with the RAG name
+    heuristic as fallback — so the audit isn't anchored on a literal 'correct' key."""
+    pk = validate._primary_reward_key
+    # RAG anchors via the heuristic with no declaration
+    assert pk({"answer_correctness": 0, "citation_recall": 0}) == "answer_correctness"
+    # judge dict, no *correct* key, no declaration → None (skip, not misfire)
+    assert pk({"helpfulness": 0, "conciseness": 0}) is None
+    # judge dict + env-declared gate → anchors on the declared component
+    assert pk({"helpfulness": 0, "conciseness": 0}, "helpfulness") == "helpfulness"
+    # a declaration that isn't a component falls back to the heuristic (→ None here)
+    assert pk({"a": 0, "b": 0}, "missing") is None
+
+
+def test_reward_audit_non_rag_dict_no_misfire_and_declared_anchors():
+    """A non-RAG (judge-shaped) reward dict: no gate → no spurious 'mirrors' note;
+    with an env-declared gate the redundancy check anchors correctly."""
+    ok_rewards = [
+        {"quality": 1.0, "dup": 0.5},
+        {"quality": 1.0, "dup": 0.5},
+        {"quality": 0.0, "dup": 0.0},
+        {"quality": 0.0, "dup": 0.0},
+    ]
+    # no declaration + no *correct* key → no anchor, so nothing is flagged redundant
+    rows, corr = validate._audit_components(ok_rewards, set())
+    assert corr is None
+    assert all("mirrors" not in r["note"] for r in rows)
+    # declaring the gate lights up the redundancy check ('dup' mirrors 'quality')
+    rows, corr = validate._audit_components(ok_rewards, set(), "quality")
+    assert corr == "quality"
+    notes = {r["component"]: r["note"] for r in rows}
+    assert "mirrors the primary reward" in notes["dup"]
+
+
+def test_reward_audit_json_uses_env_declared_primary(monkeypatch, capsys):
+    """--reward-audit --json anchors on the env's PRIMARY_REWARD_KEY end-to-end."""
+    import json as _json
+
+    class _JudgeEnv:
+        PRIMARY_REWARD_KEY = "quality"
+
+    class _P:
+        env_class = _JudgeEnv
+        train_dataset = [{"prompt": "x"}, {"prompt": "y"}]
+        eval_dataset: list = []
+        module = None
+        from_file = True
+        launch_config: dict = {}
+        validate_config: dict = {}
+
+    report = _report(
+        examples=[
+            ExampleValidation(index=0, ok=True, rewards={"quality": 1.0, "dup": 0.2}),
+            ExampleValidation(index=1, ok=True, rewards={"quality": 0.0, "dup": 0.2}),
+        ],
+        group=None,
+    )
+    monkeypatch.setattr(validate, "load_project", lambda **k: _P())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: report)
+    assert validate._cmd_validate(_validate_ns(json=True, reward_audit=True)) == 0
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload["audit"]["primary_component"] == "quality"
 
 
 def test_audit_marks_group_components_na():

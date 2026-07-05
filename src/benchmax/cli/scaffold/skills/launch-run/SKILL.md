@@ -5,15 +5,14 @@ description: Launch a castform GPU training run with `castform launch` (validate
 
 # Launch a run
 
-> The four-step path: `castform setup → data → validate → launch`. This skill is
-> the **launch** step (4) — only after `validate` is green. See `GETTING_STARTED.md`.
+This is stage 4 of `castform setup → data → validate → launch`. Use it only after
+`castform validate` is green and the user agrees to spend GPU credits.
 
 ## Fast path
 
-`castform launch` runs the full flow: pre-flight `validate` → upload env+datasets
-→ launch. **This spends real GPU credits** — only launch after `castform validate`
-is green. It warns that the run incurs GPU cost and prompts to continue (pass
-`--yes` to skip the prompt for non-interactive use).
+`castform launch` runs pre-flight validate, uploads env+datasets, then launches.
+It warns about GPU cost and prompts to continue (pass `--yes` only for
+non-interactive use).
 
 ```bash
 castform launch --name my-run --set model=Qwen/Qwen3.5-4B
@@ -22,9 +21,9 @@ castform launch --name my-run --set model=Qwen/Qwen3.5-4B
 It prints the run URL and a `castform runs status …` command to track it. Then go
 to the **view-progress** skill.
 
-The defaults are sensible for a first smoke run — for a serious RAG run, also set
-the rollout budget and think about epochs. If eval starts falling while train keeps
-rising, the best checkpoint is likely before the final step.
+Defaults are fine for a smoke run. For a serious run, set the rollout budget and
+epochs deliberately. If eval falls while train rises, the best checkpoint may be
+before the final step.
 
 ## Going deeper
 
@@ -50,7 +49,7 @@ authoritative at runtime):
 
 | `--set` key | default | what it does |
 |---|---|---|
-| `model` | `Qwen/Qwen3.5-4B` | model id; selects the trainer config (e.g. also `Qwen/Qwen3.5-35B-A3B`). |
+| `model` | `Qwen/Qwen3.5-4B` | model id; selects the trainer config (e.g. also `Qwen/Qwen3.5-35B-A3B`). Launch uses the HF-style id (`Qwen/Qwen3.5-4B`); the validate/eval path names the same model `qwen3.5-4b` — don't cross them. |
 | `learning_rate` | `1e-5` | Adam learning rate (slime `--lr`). |
 | `num_epochs` | `5` | passes over the train set. For RAG, 3 is often a safer first serious run than training deep into an overfit tail; watch eval and keep the best checkpoint, not just the final. |
 | `group_size` | `9` | rollouts per prompt for GRPO; drives **both** train and eval rollout counts. |
@@ -61,18 +60,24 @@ authoritative at runtime):
 
 **Tool calls cap at 8 at launch — and you can't raise them.** Unlike `castform validate`
 (which takes `--max-tool-calls`), launch exposes only `max_turns` as a `--set` knob;
-`max_tool_calls` is fixed at 8. A multi-turn / search env that needs more is silently
-truncated in training — keep `MAX_SEARCH_CALLS` ≤ 8 (see design-environment's Tools / turns).
+`max_tool_calls` is fixed at 8. A multi-turn env that needs more is silently truncated
+in training.
 
-For search/RAG, budget the transcript, not just the final answer. Tool outputs count
-against `max_rollout_len` across all turns: `MAX_SEARCH_CALLS × per-search output`
-can push a run into truncation or OOM even when each individual search result is
-reasonable. Prefer a smaller default search budget, trimmed per-chunk bodies, and a
-`max_rollout_len` you chose after checking `castform launch --list-args`.
+<!-- rag:start -->
+For a search env, keep `MAX_SEARCH_CALLS` ≤ 8 (see design-environment's Tools / turns).
 
-### Bake the config into run.py (reproducible launches)
+Budget the transcript, not just the final answer: tool outputs count against
+`max_rollout_len` across all turns, so the transcript token budget for a search env is
+roughly `MAX_SEARCH_CALLS × MAX_TOOL_OUTPUT_CHARS`. That can push a run into truncation
+or OOM even when each individual search result is reasonable — `castform launch` warns
+before the confirm prompt when the estimate exceeds `max_rollout_len`. Prefer a smaller
+default search budget, trimmed per-chunk bodies, and a `max_rollout_len` you chose after
+checking `castform launch --list-args`.
+<!-- rag:end -->
 
-A `run.py` can carry a `LAUNCH_CONFIG` dict (and `VALIDATE_CONFIG` for the
+### Bake the config into main.py (reproducible launches)
+
+A `main.py` can carry a `LAUNCH_CONFIG` dict (and `VALIDATE_CONFIG` for the
 pre-launch check) that `castform launch` / `castform validate` read, so the run
 reproduces from the file without remembering flags — a `--set` / CLI flag still
 overrides per invocation:
@@ -89,16 +94,21 @@ VALIDATE_CONFIG = {"max_turns": 7, "max_tool_calls": 6, "examples": 6}
 
 The launcher keys must be real `--set` args (`--list-args`) — an unknown key is
 skipped with a warning, not sent. `max_tool_calls` is **not** a launch arg (stays 8),
-so keep it out of `LAUNCH_CONFIG`; it *is* honored in `VALIDATE_CONFIG`. This is the
-fix for the `MAX_SEARCH_CALLS` ↔ `--max-turns` sync footgun — set the budget once, in
-the file, next to `MAX_SEARCH_CALLS`.
+so keep it out of `LAUNCH_CONFIG`; it *is* honored in `VALIDATE_CONFIG`.
+<!-- rag:start -->
+This is the fix for the `MAX_SEARCH_CALLS` ↔ `--max-turns` sync footgun — set the
+budget once, in the file, next to `MAX_SEARCH_CALLS`.
+<!-- rag:end -->
 
 ### Epochs, checkpoints, and overfitting
 
 Read eval, not train, as the launch succeeds. A healthy train curve can keep rising
 while eval peaks and then falls; in that case the final checkpoint is worse than an
-earlier one. For RAG, start with fewer epochs when the validation curve from a prior
-run showed a peak before the end, and record the best eval step in your run notes.
+earlier one.
+<!-- rag:start -->
+For RAG, start with fewer epochs when the validation curve from a prior run showed a
+peak before the end, and record the best eval step in your run notes.
+<!-- rag:end -->
 
 The CLI may not expose checkpoint listing/serving for a non-final step yet. If eval
 peaks early, do not assume the platform is serving the final model you want; use the

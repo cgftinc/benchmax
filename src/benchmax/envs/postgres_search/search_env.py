@@ -55,7 +55,7 @@ def extract_answer_block(text: str) -> str:
     Only when no block is closed does it forgive a missing close tag and take
     everything after the final opener (a truncated final answer).
 
-    Public reward helper: a scaffold ``run.py`` imports this to score answers
+    Public reward helper: a scaffold ``main.py`` imports this to score answers
     inline. NOTE this is the strict extractor — do NOT use
     ``reward_helpers.extract_answer_block``, which falls back to the full
     completion when there's no tag (scores reasoning as the answer).
@@ -123,9 +123,9 @@ SEARCH_EFFICIENCY_DECAY_RATE = 0.2
 
 # ----------------------------------------------------------------------------
 # Reward helpers — the reward *arithmetic* lives in the env's compute_reward
-# (and, for the scaffold, in run.py so it's visible/editable); these free
+# (and, for the scaffold, in main.py so it's visible/editable); these free
 # functions are the reusable pieces it calls by name. The heavy plumbing (the
-# HTTP judge, the citation matcher) stays here so run.py stays short.
+# HTTP judge, the citation matcher) stays here so main.py stays short.
 # ----------------------------------------------------------------------------
 
 
@@ -144,7 +144,7 @@ async def judge_answer_quality(
     """LLM judge → ``(correctness, conciseness)``, both in [0, 1].
 
     Empty response → ``(0.0, 0.0)``. The two rubric calls run concurrently. This
-    is the heavy HTTP leg of the reward — a scaffold ``run.py`` calls it as a
+    is the heavy HTTP leg of the reward — a scaffold ``main.py`` calls it as a
     one-liner and does the weighting/gating arithmetic itself. Pass custom
     rubrics to change what "correct"/"concise" mean.
     """

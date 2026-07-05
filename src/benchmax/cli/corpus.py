@@ -2,7 +2,7 @@
 
 ``corpus ingest <folder>`` chunks a local document folder and uploads it to the
 deployed Corpora backend (BM25/lexical search), yielding a named corpus that
-``data qa-gen`` and the rag ``run.py`` template resolve by name. ``corpus list`` /
+``data qa-gen`` and the rag ``main.py`` template resolve by name. ``corpus list`` /
 ``corpus delete`` manage them against the 5-corpus-per-user cap (the cap is why
 ``ingest`` can refuse — delete one to free a slot). Thin wrappers over
 ``benchmax.rag.corpus.postgres`` — the rag bits import lazily so users without the

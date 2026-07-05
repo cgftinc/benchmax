@@ -106,7 +106,7 @@ def _launch_ns(**over):
     base = dict(
         list_args=False,
         dir=".",
-        run_file="run.py",
+        run_file="main.py",
         module=None,
         env_class=None,
         train="train_dataset.jsonl",
@@ -146,6 +146,7 @@ def test_launch_merges_pip_into_both_sites(monkeypatch):
         "benchmax.platform.training_run.upload_training_run", _fake_upload
     )
     monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+    monkeypatch.setattr(launch, "_write_run_manifest", lambda **k: None)
 
     assert launch._cmd_launch(_launch_ns()) == 0
     merged = ["mydep", "myorg-search>=2.0", "chromadb>=1.0.0", "snowballstemmer>=2.2.0"]
@@ -181,6 +182,7 @@ def test_launch_plain_env_no_provider_both_sites_match(monkeypatch):
         "benchmax.platform.training_run.upload_training_run", _fake_upload
     )
     monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+    monkeypatch.setattr(launch, "_write_run_manifest", lambda **k: None)
 
     assert launch._cmd_launch(_launch_ns(pip=["mydep"], provider=None)) == 0
     assert captured["validate"] == ["mydep"] and captured["upload"] == ["mydep"]
@@ -205,6 +207,7 @@ def test_launch_preflight_honors_set_max_turns(monkeypatch):
         "benchmax.platform.training_run.upload_training_run", lambda **k: _Uploaded()
     )
     monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+    monkeypatch.setattr(launch, "_write_run_manifest", lambda **k: None)
 
     assert launch._cmd_launch(_launch_ns(set=["max_turns=11"])) == 0
     assert captured["max_turns"] == 11
@@ -213,7 +216,7 @@ def test_launch_preflight_honors_set_max_turns(monkeypatch):
     assert captured["max_turns"] == 4
 
 
-# --- LAUNCH_CONFIG: run.py bakes in launcher args -------------------
+# --- LAUNCH_CONFIG: main.py bakes in launcher args -------------------
 
 
 def _config_project(**cfg):
@@ -242,6 +245,7 @@ def _patch_launch(monkeypatch, project):
         "benchmax.platform.training_run.upload_training_run", lambda **k: _Uploaded()
     )
     monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+    monkeypatch.setattr(launch, "_write_run_manifest", lambda **k: None)
 
 
 def test_launch_config_supplies_launcher_args(monkeypatch):
@@ -276,6 +280,7 @@ def test_launch_config_model_is_training_arg_not_preflight(monkeypatch):
         "benchmax.platform.training_run.upload_training_run", lambda **k: _Uploaded()
     )
     monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+    monkeypatch.setattr(launch, "_write_run_manifest", lambda **k: None)
 
     assert launch._cmd_launch(_launch_ns(model=None, set=None)) == 0
     # training model reaches the server as a launcher arg
@@ -300,6 +305,7 @@ def test_launch_config_max_turns_reaches_preflight(monkeypatch):
         "benchmax.platform.training_run.upload_training_run", lambda **k: _Uploaded()
     )
     monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+    monkeypatch.setattr(launch, "_write_run_manifest", lambda **k: None)
     assert launch._cmd_launch(_launch_ns(set=None)) == 0
     assert captured["max_turns"] == 9  # preflight smoke-tests at the config budget
 
@@ -327,6 +333,152 @@ def test_launcher_args_from_config_ignores_reserved_keys():
     assert _launcher_args_from_config(SPECS, {"type": "simple", "max_turns": 4}) == {
         "max_turns": 4
     }
+
+
+# --- token-budget guard + in-repo manifest (Slice 6) -----------------------
+
+
+def test_launch_warns_when_estimate_exceeds_budget(monkeypatch, capsys):
+    """The pre-confirm truncation guard warns when the env's estimated rollout
+    tokens exceed max_rollout_len (a truncated rollout is dropped from the loss)."""
+    from benchmax.envs.base_env import BaseEnv
+
+    class _BigEnv(BaseEnv):
+        async def list_tools(self):
+            return []
+
+        async def run_tool(self, rollout_id, tool_name, **k):
+            return ""
+
+        async def compute_reward(self, rollout_id, messages, task, **k):
+            return {}
+
+        def estimate_rollout_tokens(self):
+            return 999_999  # >> the budget below
+
+    class _BigProject(_FakeProject):
+        env_class = _BigEnv
+        launch_config = {"max_rollout_len": 2000, "max_turns": 4}
+
+    _patch_launch(monkeypatch, _BigProject())
+    assert launch._cmd_launch(_launch_ns(set=None)) == 0
+    err = capsys.readouterr().err
+    assert "EXCEEDS max_rollout_len" in err and "DROP from the loss" in err
+
+
+def test_launch_writes_in_repo_manifest(monkeypatch, tmp_path):
+    """After a successful launch, an in-repo manifest records the env + dataset
+    hashes, row counts, launcher args, and run id."""
+    import json as _json
+
+    (tmp_path / "main.py").write_text("# env definition\n")
+    monkeypatch.setattr(launch, "load_project", lambda **k: _FakeProject())
+    monkeypatch.setattr(launch, "TrainerClient", _CapturingClient)
+    monkeypatch.setattr(
+        "benchmax.platform.validation.validate_env",
+        lambda **k: type("R", (), {"ok": True})(),
+    )
+    monkeypatch.setattr(
+        "benchmax.platform.training_run.upload_training_run", lambda **k: _Uploaded()
+    )
+    monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+
+    assert launch._cmd_launch(_launch_ns(dir=str(tmp_path), json=True)) == 0
+    manifest = tmp_path / ".castform" / "runs" / "run-123.json"
+    assert manifest.exists()
+    data = _json.loads(manifest.read_text())
+    assert data["run_id"] == "run-123"
+    assert data["train_rows"] == 1 and data["eval_rows"] == 1
+    assert data["env_sha256"] is not None  # main.py was hashed
+    assert data["train_sha256"] and data["eval_sha256"]
+    assert "launcher_args" in data
+
+
+def test_estimate_rollout_tokens_prefers_env_then_falls_back():
+    from benchmax.cli.launch import _estimate_rollout_tokens
+
+    # no env estimate + a max_turns → coarse per-turn fallback
+    est, src = _estimate_rollout_tokens(_SlotEnv, {}, {"max_turns": 5})
+    assert est == 5 * launch._GENERIC_TOKENS_PER_TURN and "per-turn" in src
+    # no env estimate + no max_turns → no estimate at all
+    assert _estimate_rollout_tokens(_SlotEnv, {}, {}) == (None, "")
+
+
+def test_launch_guard_uses_schema_default_when_budget_omitted(monkeypatch, capsys):
+    """When max_rollout_len is omitted, the guard must fall back to the schema
+    default (the effective view), not silently skip — so a big env still warns."""
+    from benchmax.envs.base_env import BaseEnv
+
+    class _Big(BaseEnv):
+        async def list_tools(self):
+            return []
+
+        async def run_tool(self, rollout_id, tool_name, **k):
+            return ""
+
+        async def compute_reward(self, rollout_id, messages, task, **k):
+            return {}
+
+        def estimate_rollout_tokens(self):
+            return 999_999
+
+    class _BigProject(_FakeProject):
+        env_class = _Big
+        launch_config: dict = {}  # NO max_rollout_len set
+
+    specs_with_defaults = [
+        _spec("max_rollout_len", "integer", min=128, max=100000, default=4096),
+        _spec("max_turns", "integer", default=4),
+    ]
+
+    class _DefaultsClient(_CapturingClient):
+        def list_launch_args(self):
+            return specs_with_defaults
+
+    monkeypatch.setattr(launch, "load_project", lambda **k: _BigProject())
+    monkeypatch.setattr(launch, "TrainerClient", _DefaultsClient)
+    monkeypatch.setattr(
+        "benchmax.platform.validation.validate_env",
+        lambda **k: type("R", (), {"ok": True})(),
+    )
+    monkeypatch.setattr(
+        "benchmax.platform.training_run.upload_training_run", lambda **k: _Uploaded()
+    )
+    monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+    monkeypatch.setattr(launch, "_write_run_manifest", lambda **k: None)
+
+    assert launch._cmd_launch(_launch_ns(set=None)) == 0
+    assert "EXCEEDS max_rollout_len 4096" in capsys.readouterr().err
+
+
+def test_launch_manifest_records_module_source_for_module_launch(monkeypatch, tmp_path):
+    """A --module launch records the module path (not main.py) and no env_sha256."""
+    import json as _json
+
+    class _ModuleProject(_FakeProject):
+        from_file = False  # loaded from an importable module, not a file
+
+    monkeypatch.setattr(launch, "load_project", lambda **k: _ModuleProject())
+    monkeypatch.setattr(launch, "TrainerClient", _CapturingClient)
+    monkeypatch.setattr(
+        "benchmax.platform.validation.validate_env",
+        lambda **k: type("R", (), {"ok": True})(),
+    )
+    monkeypatch.setattr(
+        "benchmax.platform.training_run.upload_training_run", lambda **k: _Uploaded()
+    )
+    monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+
+    assert (
+        launch._cmd_launch(
+            _launch_ns(dir=str(tmp_path), module="myorg.envs.search", json=True)
+        )
+        == 0
+    )
+    data = _json.loads((tmp_path / ".castform" / "runs" / "run-123.json").read_text())
+    assert data["env_from_file"] is False
+    assert data["env_source"] == "myorg.envs.search"
+    assert data["env_sha256"] is None
 
 
 def test_launch_help_hides_training_run_type():

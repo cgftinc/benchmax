@@ -85,7 +85,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(_row(True, "castform (benchmax)", info["benchmax_version"]))
     print(_row(info["signed_in"], "signed in", info["auth"]))
     print()
-    print("  env-dependency extras (optional — install only what your run.py uses)")
+    print("  env-dependency extras (optional — install only what your main.py uses)")
     for name, present in info["extras"].items():
         detail = (
             "installed" if present else f"absent — uv pip install 'castform[{name}]'"
