@@ -31,12 +31,15 @@ def _py_check() -> tuple[bool, str]:
 
 
 def _version() -> str:
-    try:
-        from importlib.metadata import version
+    from importlib.metadata import version
 
-        return version("benchmax")
-    except Exception:
-        return "unknown"
+    # Distribution is published as "castform"; "benchmax" covers dev installs.
+    for dist in ("castform", "benchmax"):
+        try:
+            return version(dist)
+        except Exception:
+            pass
+    return "unknown"
 
 
 def _auth_check() -> tuple[bool, str]:
