@@ -212,6 +212,115 @@ def test_setup_template_rag_force_overwrites(tmp_path):
     assert "CustomSearchEnv" in main_py and main_py != "MINE"
 
 
+def test_setup_template_traces_writes_trace_env(tmp_path):
+    """--template traces writes a main.py the loader discovers as CustomTraceEnv (a
+    single-turn BaseEnv judging completions against the recorded gold turn), and it
+    constructs with no args, offline."""
+    from benchmax.cli._project import (
+        _load_module_from_file,
+        _read_config,
+        discover_env_class,
+    )
+    from benchmax.envs.base_env import BaseEnv
+
+    assert setup._cmd_setup(_ns(tmp_path, template="traces")) == 0
+    main_py = (tmp_path / "main.py").read_text()
+    assert "class CustomTraceEnv(BaseEnv)" in main_py
+    assert "async def compute_reward" in main_py
+    assert "GROUND_TRUTH_MATCH_RUBRIC" in main_py
+    assert "VALIDATE_CONFIG = {" in main_py
+    assert "LAUNCH_CONFIG = {" in main_py
+    mod = _load_module_from_file(tmp_path / "main.py")
+    env_cls = discover_env_class(mod)
+    assert env_cls.__name__ == "CustomTraceEnv"
+    assert issubclass(env_cls, BaseEnv)
+    assert env_cls.PRIMARY_REWARD_KEY == "ground_truth_match"
+    env = env_cls()  # no-arg construct, no network (judge creds resolve per call)
+    assert env._judge_model == mod.JUDGE_MODEL
+    assert _read_config(mod, "LAUNCH_CONFIG")["max_rollout_len"] == 8192
+
+
+def test_setup_template_traces_ships_seed_datasets(tmp_path, capsys):
+    """--template traces ships to_jsonl_dict-shaped seed rows (prompt_messages +
+    message-DICT ground_truth + init_rollout_args lineage) and points the user at
+    `castform data traces` for the real ones."""
+    from benchmax.cli._project import load_project
+
+    assert setup._cmd_setup(_ns(tmp_path, template="traces")) == 0
+    project = load_project(directory=str(tmp_path))
+    assert project.env_class.__name__ == "CustomTraceEnv"
+    row = project.train_dataset[0]
+    assert set(row) == {"prompt_messages", "ground_truth", "init_rollout_args"}
+    assert isinstance(row["prompt_messages"], list) and row["prompt_messages"]
+    assert isinstance(row["ground_truth"], dict)  # a message dict, NOT a string
+    assert row["ground_truth"]["role"] == "assistant"
+    assert "trace_id" in row["init_rollout_args"]
+    out = capsys.readouterr().out  # the post-setup hint names the real data path
+    assert "castform data traces --project" in out
+    assert "castform[traces]" in out
+
+
+def test_setup_template_judge_writes_judge_env(tmp_path):
+    """--template judge writes a main.py the loader discovers as ComplianceJudgeEnv
+    (a single-turn, no-tools, deterministic-reward compliance judge), with the
+    fixture-gated probe and the 8-component reward contract intact."""
+    from benchmax.cli._project import (
+        _load_module_from_file,
+        _read_config,
+        discover_env_class,
+    )
+    from benchmax.envs.base_env import BaseEnv
+
+    assert setup._cmd_setup(_ns(tmp_path, template="judge")) == 0
+    main_py = (tmp_path / "main.py").read_text()
+    assert "class ComplianceJudgeEnv(BaseEnv)" in main_py
+    assert "async def compute_reward" in main_py
+    assert "async def validate_probe" in main_py
+    assert "def render_trace_readout" in main_py
+    mod = _load_module_from_file(tmp_path / "main.py")
+    env_cls = discover_env_class(mod)
+    assert env_cls.__name__ == "ComplianceJudgeEnv"
+    assert issubclass(env_cls, BaseEnv)
+    assert env_cls.PRIMARY_REWARD_KEY == "violation_flag"
+    assert len(mod.REWARD_KEYS) == 8
+    env_cls()  # no-arg construct, fully offline (deterministic reward)
+    assert _read_config(mod, "LAUNCH_CONFIG")["max_rollout_len"] == 8192
+    # committed seed datasets load and carry the hidden scoring fields
+    from benchmax.cli._project import load_project
+
+    project = load_project(directory=str(tmp_path))
+    row = project.train_dataset[0]
+    assert {"prompt", "ground_truth", "turn_meta", "guidelines", "trace_id"} <= set(row)
+    # no-leakage invariant on the committed seeds: hidden fields stay out of prompt
+    assert "is_violation" not in row["prompt"]
+
+
+def test_apply_template_conditionals_generalized():
+    """The tag mechanism is generic: a `<!-- <tag>:start/end -->` block is KEPT
+    (markers stripped) only when its tag matches the template; every other tag —
+    known or unknown — strips wholesale, and delimiters never leak."""
+    doc = (
+        "always\n"
+        "<!-- rag:start -->\nrag only\n<!-- rag:end -->\n"
+        "<!-- traces:start -->\ntraces only\n<!-- traces:end -->\n"
+        "<!-- mystery:start -->\nunknown tag\n<!-- mystery:end -->\n"
+        "tail\n"
+    )
+    for template, kept, dropped in (
+        ("generic", [], ["rag only", "traces only"]),
+        ("rag", ["rag only"], ["traces only"]),
+        ("traces", ["traces only"], ["rag only"]),
+    ):
+        out = setup._apply_template_conditionals(doc, template)
+        assert "always" in out and "tail" in out, template
+        assert "unknown tag" not in out, template  # unknown tags always strip
+        assert ":start" not in out and ":end" not in out, template
+        for s in kept:
+            assert s in out, (template, s)
+        for s in dropped:
+            assert s not in out, (template, s)
+
+
 def test_setup_force_replaces_main_py_but_keeps_datasets(tmp_path):
     """--force clears the main.py overwrite guard but must NOT clobber datasets —
     real `castform data qa-gen` output is never overwritten by the placeholder seed."""
@@ -242,10 +351,10 @@ def test_getting_started_uses_one_prompt_model(tmp_path):
 
 
 def test_setup_env_conditional_surfacing(tmp_path):
-    """Generic scaffold carries NO RAG-specific guidance; --template rag surfaces it.
-    Single-source docs use `<!-- rag:start/end -->` markers that setup strips for
-    non-rag templates. Also: the scaffold guide names main.py and drops the old
-    'setup does not write main.py' convention."""
+    """Template-conditional guidance: each template's tagged blocks surface only
+    in its own scaffold; every other tag (rag/traces/judge) strips. Also: the
+    scaffold guide names main.py and drops the old 'setup does not write main.py'
+    convention."""
 
     def _emit(template):
         d = tmp_path / template
@@ -257,12 +366,15 @@ def test_setup_env_conditional_surfacing(tmp_path):
 
     generic = _emit("generic")
     rag = _emit("rag")
+    traces = _emit("traces")
+    judge = _emit("judge")
 
-    # the delimiter comments never leak into either emitted scaffold
-    for blob in (generic, rag):
-        assert "rag:start" not in blob and "rag:end" not in blob
+    # the delimiter comments never leak into any emitted scaffold
+    for blob in (generic, rag, traces, judge):
+        for tag in ("rag", "traces", "judge"):
+            assert f"{tag}:start" not in blob and f"{tag}:end" not in blob
 
-    # RAG-only sentinels: present in the rag scaffold, absent in the generic one
+    # RAG-only sentinels: present in the rag scaffold, absent everywhere else
     for sentinel in (
         "gold-hit",
         "retrieval_hit",
@@ -273,9 +385,25 @@ def test_setup_env_conditional_surfacing(tmp_path):
     ):
         assert sentinel in rag, f"rag scaffold missing {sentinel!r}"
         assert sentinel not in generic, f"generic scaffold leaked {sentinel!r}"
+        assert sentinel not in traces, f"traces scaffold leaked {sentinel!r}"
+        assert sentinel not in judge, f"judge scaffold leaked {sentinel!r}"
 
-    # reversed convention + main.py naming in both scaffolds' guide/skills
-    for blob in (generic, rag):
+    # traces-only sentinels: present in the traces scaffold, absent everywhere else
+    for sentinel in ("CustomTraceEnv",):
+        assert sentinel in traces, f"traces scaffold missing {sentinel!r}"
+        assert sentinel not in generic, f"generic scaffold leaked {sentinel!r}"
+        assert sentinel not in rag, f"rag scaffold leaked {sentinel!r}"
+        assert sentinel not in judge, f"judge scaffold leaked {sentinel!r}"
+
+    # judge-only sentinels: present in the judge scaffold, absent everywhere else
+    for sentinel in ("gold-rescore", "reward-gaming"):
+        assert sentinel in judge, f"judge scaffold missing {sentinel!r}"
+        assert sentinel not in generic, f"generic scaffold leaked {sentinel!r}"
+        assert sentinel not in rag, f"rag scaffold leaked {sentinel!r}"
+        assert sentinel not in traces, f"traces scaffold leaked {sentinel!r}"
+
+    # reversed convention + main.py naming in every scaffold's guide/skills
+    for blob in (generic, rag, traces, judge):
         assert "main.py" in blob
         assert "does not write" not in blob and "does **not** write" not in blob
 

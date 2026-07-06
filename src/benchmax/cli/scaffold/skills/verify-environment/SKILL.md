@@ -192,6 +192,15 @@ weight). Read the completions and answer these questions:
   retrieval is rewarded even when the answer is wrong); the validate probe reports
   retrieval **gold-hit@k**, so you can read retrieval quality apart from correctness.
 <!-- rag:end -->
+<!-- judge:start -->
+- **For judge envs, run the fixture gate before GPU.** `validate_probe` re-scores
+  the committed **gold-rescore** fixtures (known-verdict transcripts must re-score
+  exactly) and **reward-gaming** fixtures (a gaming transcript must NOT outscore an
+  honest one) — a red probe means the judge or reward is broken, not the data.
+  Audit the **held-out challenge set** with
+  `castform validate --train challenges/<file>.jsonl`; challenges are audit-only
+  and are **never trained on**.
+<!-- judge:end -->
 - **Gate bonuses on correctness.** Wrong answers should not earn citation,
   conciseness, or style rewards. Partial answers should get only partial secondary
   credit.

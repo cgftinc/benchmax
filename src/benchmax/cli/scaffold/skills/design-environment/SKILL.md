@@ -360,6 +360,31 @@ a good start) and author the env to fit the rows — three things to get right:
   *declare* its action (e.g. a `TOOL: <name>` line) that `compute_reward` scores
   against the recorded `tool_calls`.
 
+<!-- traces:start -->
+The `castform setup --template traces` seed (`CustomTraceEnv`) already implements
+all three: `dataset_preprocess` passes `prompt_messages` through, carries the
+`ground_truth` **message dict** in `task`, and forwards trace lineage
+(`trace_id` / `turn_index` / `scores`) with
+`make_example(..., init_rollout_args=example.get("init_rollout_args"))`; the reward
+judges the completion against the recorded turn (content + a rendered
+`tool_call: name(args)` line per gold call) on a comparative 0/0.5/1 match scale.
+Single-turn/no-tools is the right default for trace replay — tailor the seed, don't
+rebuild it.
+<!-- traces:end -->
+
+<!-- judge:start -->
+#### Judge envs — strict schema, componentized reward, no leakage
+
+A judge env post-trains the model to *grade* turns for compliance. Three rules:
+**strict-JSON output** (the verdict must parse against the schema; a non-parsing
+verdict scores 0 — never soft-fallback to prose scraping), a **componentized
+reward** (~8 small summed unit components — schema-valid, per-field agreement with
+gold, calibration — not one absolute grade), and **no leakage**: hidden gold labels
+must never render into the judge's prompt (anything the model can see, it learns to
+parrot). The gold-rescore + reward-gaming fixtures run via `validate_probe` before
+any GPU — see **verify-environment**.
+<!-- judge:end -->
+
 ### Companion-server envs (advanced)
 
 If the env needs a separate server (a game/sim like Showdown), that server must

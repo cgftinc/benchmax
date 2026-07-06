@@ -1,5 +1,10 @@
 [project]
 name = "benchmax"
+# Two-channel versioning — see RELEASING.md. The `.devN` counter feeds the
+# internal `benchmax` PyPI channel; public cuts strip the suffix and publish
+# as `castform` (next public cut: 0.1.2). Never publish a `.devN` as castform:
+# `pip install --upgrade castform` ignores dev releases, so users would
+# silently stay on the previous final version.
 version = "0.1.2.dev36"
 description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
 readme = "README.md"
