@@ -5,8 +5,9 @@ packaged templates (``benchmax/cli/scaffold``): CLAUDE.md / AGENTS.md, the
 per-stage skills into each agent's skills dir (claude → ``.claude/skills/``,
 codex → ``.agents/skills/``, with the body's path references retargeted), a
 starter prompt, and a runnable seed ``main.py`` + tiny seed datasets per template
-(``generic`` → a minimal single-turn env, ``rag`` → a SearchEnv) so ``python
-main.py validate`` runs on day one. ``--no-template`` skips the seed (docs + skills
+(``generic`` → a minimal single-turn env, ``rag`` → a SearchEnv, ``traces`` → a
+trace-replay env over recorded agent turns) so ``python main.py validate`` runs
+on day one. ``--no-template`` skips the seed (docs + skills
 only; the agent writes ``main.py`` from the design-environment skill). Does NOT
 open the agent.
 The scaffold prose duplicates the web-app generator (``buildAgentContextBody``)
@@ -59,6 +60,11 @@ _TEMPLATE_SEEDS = {
         "train": "rag_train_dataset.jsonl",
         "eval": "rag_eval_dataset.jsonl",
     },
+    "traces": {
+        "main": "traces_main.py",
+        "train": "traces_train_dataset.jsonl",
+        "eval": "traces_eval_dataset.jsonl",
+    },
 }
 
 
@@ -67,26 +73,33 @@ def _retarget(text: str, agent: str) -> str:
     return text.replace(".claude/skills", _SKILLS_DIR[agent])
 
 
-# Env-conditional surfacing: content between ``<!-- rag:start -->`` and
-# ``<!-- rag:end -->`` (HTML comments, invisible when rendered) is RAG-specific —
-# a single-source doc that the setup mechanism tailors per template.
-_RAG_BLOCK_RE = re.compile(
-    r"^[ \t]*<!--\s*rag:start\s*-->.*?^[ \t]*<!--\s*rag:end\s*-->[ \t]*\n?",
+# Env-conditional surfacing: content between ``<!-- <tag>:start -->`` and
+# ``<!-- <tag>:end -->`` (HTML comments, invisible when rendered) is
+# template-specific — a single-source doc that the setup mechanism tailors per
+# template. A block is KEPT (delimiters stripped) when its tag equals the chosen
+# template; every other tag's block (including unknown tags) is removed entirely.
+_COND_BLOCK_RE = re.compile(
+    r"^[ \t]*<!--\s*(?P<tag>[A-Za-z0-9_-]+):start\s*-->"
+    r".*?"
+    r"^[ \t]*<!--\s*(?P=tag):end\s*-->[ \t]*\n?",
     re.DOTALL | re.MULTILINE | re.IGNORECASE,
 )
-_RAG_MARKER_RE = re.compile(
-    r"^[ \t]*<!--\s*rag:(?:start|end)\s*-->[ \t]*\n?",
-    re.MULTILINE | re.IGNORECASE,
-)
+
+
+def _marker_re(tag: str) -> re.Pattern:
+    """The start/end delimiter comments for one tag (markers only, not content)."""
+    return re.compile(
+        r"^[ \t]*<!--\s*" + re.escape(tag) + r":(?:start|end)\s*-->[ \t]*\n?",
+        re.MULTILINE | re.IGNORECASE,
+    )
 
 
 def _apply_template_conditionals(text: str, template: str) -> str:
-    """Tailor a scaffold doc to the env template. ``--template rag`` KEEPS the
-    RAG-specific blocks (dropping just the delimiter comments); every other template
-    STRIPS them, so a generic scaffold carries no RAG-specific guidance."""
-    if template == "rag":
-        return _RAG_MARKER_RE.sub("", text)
-    return _RAG_BLOCK_RE.sub("", text)
+    """Tailor a scaffold doc to the env template: keep the chosen template's
+    blocks (dropping just the delimiter comments), then strip every remaining
+    tagged block wholesale — a generic scaffold carries no rag/traces guidance."""
+    text = _marker_re(template).sub("", text)  # keep own blocks, unmark them
+    return _COND_BLOCK_RE.sub("", text)
 
 
 # The one prompt we surface in-terminal — kept in sync with GETTING_STARTED.md's
@@ -315,6 +328,19 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 _GREY,
             )
         )
+    elif env_writes and args.template == "traces":  # traces data path is the CLI pull
+        print()
+        print(
+            paint(
+                "  Note: the seed datasets are synthetic placeholders — build the "
+                "real ones from your\n  recorded agent traces (same {prompt_messages,"
+                " ground_truth, init_rollout_args} rows,\n  and it prints the "
+                "detected system prompt to paste into main.py):\n"
+                "    uv pip install 'castform[traces]'\n"
+                "    castform data traces --project <name>   (needs BT_API_KEY)",
+                _GREY,
+            )
+        )
 
     _print_get_started()
     return 0
@@ -338,10 +364,11 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--template",
-        choices=["generic", "rag"],
+        choices=["generic", "rag", "traces"],
         default="generic",
-        help="Env seed: 'generic' = a minimal single-turn env, 'rag' = a SearchEnv "
-        "(both ship a runnable main.py + tiny datasets; default: generic)",
+        help="Env seed: 'generic' = a minimal single-turn env, 'rag' = a SearchEnv, "
+        "'traces' = a trace-replay env over recorded agent turns "
+        "(all ship a runnable main.py + tiny datasets; default: generic)",
     )
     p.add_argument(
         "--no-template",

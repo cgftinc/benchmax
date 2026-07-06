@@ -189,6 +189,23 @@ instead of `--project` if you have the id, and `--limit N` to cap the fetch. The
 the env's `dataset_preprocess` to match those rows — see **design-environment**'s traces
 note.
 
+<!-- traces:start -->
+The rows are exactly the shape the seed `CustomTraceEnv` reads (one recorded
+assistant turn per row):
+
+```jsonl
+{"prompt_messages": [{role, content, tool_calls, tool_call_id, name}, …],
+ "ground_truth": {"role": "assistant", content, tool_calls, …},
+ "init_rollout_args": {"trace_id", "turn_index", "total_messages", "scores", "raw_prompt"}}
+```
+
+`ground_truth` is ONE assistant **message dict** (`{}` if none survived) — not a
+string. **Paste the detected system prompt** into `main.py`'s `system_prompt` so
+training matches the recorded agent; the shipped seed rows are synthetic
+placeholders that this command replaces (they skip-if-exists, so real output is
+never clobbered).
+<!-- traces:end -->
+
 > Generated trace rows skew **text-reply heavy**, with action/tool rows landing late in
 > file order. Since `validate` rolls out the first N rows, **interleave an action row near
 > the front** before a small `--examples 2` validate, or the variance check only sees

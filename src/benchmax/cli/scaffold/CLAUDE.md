@@ -50,6 +50,14 @@ instead of `castform login`.
 - `train_dataset.jsonl` / `eval_dataset.jsonl` — one JSON object per line; each
   needs at least a `prompt` (and usually a `ground_truth`).
 
+<!-- traces:start -->
+For this traces run the real rows come from `castform data traces`:
+`{prompt_messages, ground_truth, init_rollout_args}`, where `ground_truth` is the
+recorded assistant turn as a **message dict** (content + tool_calls), not a string —
+the seed `CustomTraceEnv` reads this shape directly. Paste the command's detected
+system prompt into `main.py`'s `system_prompt`.
+<!-- traces:end -->
+
 `castform validate`/`launch` import the one `BaseEnv` subclass from `main.py` and
 load those two files. Keep that layout.
 

@@ -17,10 +17,11 @@ _SCAFFOLD_DIR = Path(scaffold_pkg.__file__).parent
 _SEEDS = {
     "generic": _SCAFFOLD_DIR / "generic_main.py",
     "rag": _SCAFFOLD_DIR / "rag_main.py",
+    "traces": _SCAFFOLD_DIR / "traces_main.py",
 }
 
 
-@pytest.fixture(params=["generic", "rag"])
+@pytest.fixture(params=["generic", "rag", "traces"])
 def mod(request):
     """Load a scaffold seed as a module (its `__main__` block does not fire)."""
     return _load_module_from_file(_SEEDS[request.param])
