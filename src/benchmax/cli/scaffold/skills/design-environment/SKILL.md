@@ -210,31 +210,39 @@ dataset" means QA pairs generated from their real corpus.
 #### RAG — search a corpus and cite sources
 
 `castform setup --template rag` writes a `SearchEnv` with a search tool and inline
-reward arithmetic in `compute_reward`. Treat it as an auditable starting point, not
-a law. Before a real launch, inspect transcripts with
-`castform validate --reward-audit` and adjust:
+reward arithmetic in `compute_reward` — the audited 4-component shape, which is
+also the `SearchEnv` library default (`answer_correctness` gate, ungated
+`retrieval_hit`, gated `citation_precision` + deterministic `answer_length`).
+Treat it as an auditable starting point, not a law. Before a real launch, inspect
+transcripts with `castform validate --reward-audit` and adjust:
 
-- **Answer extraction:** only score a committed `<answer>` block. Missing tags
-  should score as no answer, and a final answer block should beat an earlier draft.
-- **Citations:** the stock matcher is exact-source oriented (`score_citations`
-  defaults to whitespace-strip). Real corpora often have duplicate titles, page-id
-  hashes, bare-id citations, or several valid pages for the same fact. Pass a custom
-  matcher — `score_citations(answer, chunks, canonicalize=lambda s: ...)` — to match
-  by id/hash/title/path, and credit citations to any valid retrieved source rather
-  than only the single gold label.
+- **Answer extraction:** only score a committed `<answer>` block (the default
+  does). Missing tags score as no answer, and a final answer block beats an
+  earlier draft.
+- **Citations:** the default matcher is **loose** (`canonicalize_source_id_loose`
+  — lowercase, strip directory prefix + extension, so id-hash and title-path
+  variants match alike). Real corpora may still need corpus-specific rules
+  (several valid pages for the same fact, exact-path corpora): pass a custom
+  matcher — `score_citations(answer, chunks, canonicalize=lambda s: ...)` — or
+  use the strict `canonicalize_source_id` for exact-path matching. Note the free
+  helpers (`score_citations` etc.) default to the strict matcher; only the env
+  defaults to loose.
 - **Correctness gate:** multiply citation, brevity, and style bonuses by
-  correctness so a wrong answer cannot bank source-format rewards.
-- **Retrieval signal (ungated):** unlike the format bonuses, keep a small
-  `retrieval_hit` term **ungated** — a gold-chunk retrieval is worth rewarding even
-  when the final answer is wrong, so the model keeps learning to search. `castform
-  validate`'s RAG probe reports retrieval **gold-hit@k**, so you can read retrieval
-  quality apart from answer correctness.
-- **Conciseness:** an LLM conciseness judge may be sparse and expensive. A
-  deterministic prose-length term, excluding citation labels, is often denser and
-  free.
-- **Search shaping:** a "fewer searches is better" bonus can fight multi-hop
-  exploration. Use the hard `MAX_SEARCH_CALLS` cap for safety; keep search
-  efficiency small or disable it when it under-explores.
+  correctness so a wrong answer cannot bank source-format rewards (the default
+  gates `citation_precision` and `answer_length` this way).
+- **Retrieval signal (ungated):** unlike the format bonuses, the small
+  `retrieval_hit` term stays **ungated** — a gold-chunk retrieval is worth
+  rewarding even when the final answer is wrong, so the model keeps learning to
+  search. `castform validate`'s RAG probe reports retrieval **gold-hit@k**, so
+  you can read retrieval quality apart from answer correctness.
+- **Conciseness:** the default brevity term is the deterministic `answer_length`
+  (a prose-length cap, `ANSWER_LENGTH_CAP`) — dense and free. An LLM conciseness
+  judge (`judge_answer_quality` + `CONCISENESS_RUBRIC`) is opt-in and may be
+  sparse and expensive.
+- **Search shaping:** the default reward has **no** search-efficiency bonus — a
+  "fewer searches is better" term can fight multi-hop exploration. The hard
+  `MAX_SEARCH_CALLS` cap covers safety; opt back in with
+  `score_search_efficiency` and keep it small if it under-explores.
 - **Tool-output budget:** large search responses across many turns count toward
   `max_rollout_len`. If you let each search return thousands of characters, lower
   `MAX_SEARCH_CALLS`, trim per-chunk bodies, or raise `max_rollout_len` after

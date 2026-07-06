@@ -42,8 +42,10 @@ from typing import Any
 
 from benchmax import config
 from benchmax.envs.postgres_search.search_env import (
+    ANSWER_LENGTH_CAP,
     CORRECTNESS_RUBRIC,
     SearchEnv,
+    canonicalize_source_id_loose,
     extract_answer_block,
     score_citations,
 )
@@ -76,10 +78,10 @@ MAX_SEARCH_CALLS = 6
 # (~4 chars/token; 6 searches × 8000 ≈ 12k tokens, under a 16384 max_rollout_len).
 MAX_TOOL_OUTPUT_CHARS = 8000
 
-# Deterministic brevity cap: an answer at/above this many chars earns no length
-# bonus; shorter (still-correct) answers earn more. Replaces the LLM conciseness
-# judge (which fired on ~2% of rollouts) with dense signal on every correct rollout.
-ANSWER_LENGTH_CAP = 600
+# Deterministic brevity cap (imported above; lib default 600): an answer at/above
+# ANSWER_LENGTH_CAP chars earns no length bonus; shorter (still-correct) answers earn
+# more. Replaces the LLM conciseness judge (which fired on ~2% of rollouts) with
+# dense signal on every correct rollout.
 
 # validate_probe: retrieval gold-hit@k over eval rows — k, and a cap on live searches.
 PROBE_TOP_K = 10
@@ -151,12 +153,11 @@ class CustomSearchEnv(SearchEnv):
         return SearchEnv._truncate_tool_output(text, max_chars=max_chars)
 
     def _canonicalize_id(self, source_id: str) -> str:
-        """Match citations by id-hash OR title-path: lowercase, drop any directory
-        prefix and file extension, so 'docs/Geography.md', 'geography.md' and a bare
-        'geography' canonicalize alike (dup-heavy Notion/GitLab exports). Applied
-        symmetrically to the cited id and the gold `metadata.file`."""
-        s = str(source_id or "").strip().lower().rsplit("/", 1)[-1]
-        return s.rsplit(".", 1)[0] if "." in s else s
+        """Match citations by id-hash OR title-path (the lib default — lowercase,
+        drop any directory prefix and file extension, so 'docs/Geography.md',
+        'geography.md' and a bare 'geography' canonicalize alike). Kept here as
+        the seam to swap in a corpus-specific matcher."""
+        return canonicalize_source_id_loose(source_id)
 
     def estimate_rollout_tokens(self) -> int:
         # Worst case: system prompt + N searches × the per-result char cap + the
