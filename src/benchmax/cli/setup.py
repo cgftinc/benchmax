@@ -65,6 +65,11 @@ _TEMPLATE_SEEDS = {
         "train": "traces_train_dataset.jsonl",
         "eval": "traces_eval_dataset.jsonl",
     },
+    "judge": {
+        "main": "judge_main.py",
+        "train": "judge_train_dataset.jsonl",
+        "eval": "judge_eval_dataset.jsonl",
+    },
 }
 
 
@@ -364,10 +369,11 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--template",
-        choices=["generic", "rag", "traces"],
+        choices=["generic", "rag", "traces", "judge"],
         default="generic",
         help="Env seed: 'generic' = a minimal single-turn env, 'rag' = a SearchEnv, "
-        "'traces' = a trace-replay env over recorded agent turns "
+        "'traces' = a trace-replay env over recorded agent turns, "
+        "'judge' = a turn-level compliance judge with fixture-gated rewards "
         "(all ship a runnable main.py + tiny datasets; default: generic)",
     )
     p.add_argument(
