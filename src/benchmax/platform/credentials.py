@@ -100,10 +100,32 @@ def platform_bearer() -> str:
     if session_jwt:
         return session_jwt
 
-    raise RuntimeError(
-        f"No Castform platform credential available: run `castform login`, set "
-        f"{_API_KEY_ENV}, or (in training) ensure {_TOKEN_PATH_ENV} points at the "
-        f"token_refresher output ({_TOKEN_PATH_ENV}={token_path!r})."
+    raise RuntimeError(_missing_credential_message(token_path))
+
+
+def _missing_credential_message(token_path: str | None) -> str:
+    try:
+        selected = profiles.select_profile()
+        login_cmd = f"castform login --profile {selected.name} --domain <domain>"
+        profile_context = f"profile {selected.name!r}"
+        try:
+            profile = profiles.get_profile(selected.name)
+        except RuntimeError:
+            profile = None
+        if isinstance(profile, dict):
+            domain = profile.get("domain")
+            if isinstance(domain, str) and domain:
+                login_cmd = f"castform login --profile {selected.name} --domain {domain}"
+                profile_context = f"profile {selected.name!r} ({domain})"
+    except RuntimeError as exc:
+        login_cmd = "castform login --profile <profile> --domain <domain>"
+        profile_context = f"profile unavailable: {exc}"
+
+    return (
+        f"No Castform platform credential available for {profile_context}: run "
+        f"`{login_cmd}`, set {_API_KEY_ENV}, or (in training) ensure "
+        f"{_TOKEN_PATH_ENV} points at the token_refresher output "
+        f"({_TOKEN_PATH_ENV}={token_path!r})."
     )
 
 

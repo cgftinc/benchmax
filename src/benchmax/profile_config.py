@@ -53,7 +53,7 @@ def _check_permissions(path: Path) -> None:
         return
     if os.name == "posix" and (st.st_mode & 0o077):
         raise RuntimeError(
-            f"Ignoring {path}: permissions {oct(st.st_mode & 0o777)} are looser "
+            f"Refusing to read {path}: permissions {oct(st.st_mode & 0o777)} are looser "
             f"than 0600. Run `chmod 600 {path}`."
         )
 

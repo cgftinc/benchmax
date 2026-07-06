@@ -15,8 +15,8 @@ uv pip install benchmax
 python 3.12 required.
 
 The base install is intentionally small. Add extras only for the env/data path
-you use, for example `castform[rag]`, `castform[turbopuffer]`,
-or `castform[telestich]`.
+you use, for example `benchmax[rag]`, `benchmax[turbopuffer]`,
+or `benchmax[telestich]`.
 
 ---
 

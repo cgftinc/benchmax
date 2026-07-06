@@ -94,7 +94,7 @@ def test_ingest_missing_rag_dep_hints_install(monkeypatch, tmp_path, capsys):
     exc = ModuleNotFoundError("No module named 'langchain_text_splitters'")
     _install(monkeypatch, raise_exc=exc)
     assert corpus._cmd_corpus_ingest(_ns(str(tmp_path))) == 1
-    assert "pip install castform[rag]" in capsys.readouterr().err
+    assert "pip install benchmax[rag]" in capsys.readouterr().err
 
 
 # --- corpus list / delete ---------------------------------------------------

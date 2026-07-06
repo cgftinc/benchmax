@@ -25,8 +25,8 @@ def provider_choices() -> list[str]:
 
 
 def install_hint(provider: str) -> str:
-    """The user-facing ``Install with: pip install castform[<extra>]`` line."""
-    return f"Install with: pip install castform[{provider}]"
+    """The user-facing ``Install with: pip install benchmax[<extra>]`` line."""
+    return f"Install with: pip install benchmax[{provider}]"
 
 
 def resolve_pip_dependencies(

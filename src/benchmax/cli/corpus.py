@@ -26,7 +26,7 @@ from pathlib import Path
 from benchmax import config
 from benchmax.cli._client import handle_errors
 
-_RAG_INSTALL_HINT = "Install RAG support with: pip install castform[rag]"
+_RAG_INSTALL_HINT = "Install RAG support with: pip install benchmax[rag]"
 
 
 @handle_errors  # backstop stray httpx errors + no-credential RuntimeError, like the

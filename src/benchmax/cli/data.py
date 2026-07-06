@@ -24,8 +24,8 @@ from benchmax.cli._output import print_json
 from benchmax.cli._providers import install_hint, provider_choices
 from benchmax.platform.client import StorageClient
 
-_RAG_INSTALL_HINT = "Install RAG support with: pip install castform[rag]"
-_TRACES_INSTALL_HINT = "Install traces support with: pip install castform[traces]"
+_RAG_INSTALL_HINT = "Install RAG support with: pip install benchmax[rag]"
+_TRACES_INSTALL_HINT = "Install traces support with: pip install benchmax[traces]"
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:

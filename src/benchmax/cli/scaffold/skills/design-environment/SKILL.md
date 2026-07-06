@@ -278,7 +278,7 @@ sandbox against the env's own domain.)
 **Ship the provider SDK to the sandbox — REQUIRED.** The rollout sandbox bundles only
 `main.py` + benchmax; the provider SDK (`turbopuffer` / `pinecone` / `chromadb`) is NOT
 there. If it's missing, the search client's import fails in the sandbox and gets
-swallowed into an all-zero **hollow green** (the `pip install castform[<provider>]` you
+swallowed into an all-zero **hollow green** (the `pip install benchmax[<provider>]` you
 did for `qa-gen` only fixes your *local* machine). Two ways to inject it — both compose,
 so you don't memorize package names:
 

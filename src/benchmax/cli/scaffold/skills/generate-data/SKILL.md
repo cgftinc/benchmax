@@ -77,7 +77,7 @@ For a new corpus, ask for either a local folder (`castform corpus ingest <folder
 or a vector-DB provider (`castform data qa-gen --provider <name>`). If they have no
 documents yet, scaffold the env and pause at the ingest step.
 
-Fast path for a local docs folder, no provider key (needs `castform[rag]`):
+Fast path for a local docs folder, no provider key (needs `benchmax[rag]`):
 
 ```bash
 castform corpus ingest <your-docs-folder> --name my-corpus   # the user's real docs → BM25 corpus
@@ -153,13 +153,13 @@ also take `DATA_*` overrides:
 The local-folder path needs **no key** — it authenticates with your `castform
 login` session. With the `DATA_*` vars set, generate QA pairs straight from the
 provider corpus (no `corpus ingest` — it reads stored chunks directly; needs that
-provider's extra, e.g. `pip install castform[turbopuffer]`):
+provider's extra, e.g. `pip install benchmax[turbopuffer]`):
 
 ```bash
 castform data qa-gen --provider turbopuffer --fast   # → train_dataset.jsonl + eval_dataset.jsonl
 ```
 
-> That `pip install castform[<provider>]` only sets up **your machine** for qa-gen. The
+> That `pip install benchmax[<provider>]` only sets up **your machine** for qa-gen. The
 > validate/launch **sandbox** needs the same SDK independently — pass `--provider <name>`
 > to `castform validate`/`launch` (it injects the SDK, incl. chroma's `snowballstemmer`;
 > see design-environment), or the env hollow-greens. No package names to memorize.

@@ -65,7 +65,7 @@ def test_chroma_pip_includes_snowballstemmer():
 
 
 def test_install_hint_names_the_extra():
-    assert install_hint("turbopuffer") == "Install with: pip install castform[turbopuffer]"
+    assert install_hint("turbopuffer") == "Install with: pip install benchmax[turbopuffer]"
 
 
 # --- resolve_pip_dependencies: the merge helper -------------------------------

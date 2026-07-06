@@ -2,7 +2,7 @@
 
 A fast, read-only preflight a user or agent can run before ``castform validate``:
 the Python interpreter, the castform install, sign-in state, and which env-dependency
-extras are importable — so a missing ``castform[rag]`` / provider SDK surfaces as a
+extras are importable — so a missing ``benchmax[rag]`` / provider SDK surfaces as a
 check here rather than as a mid-rollout ``ModuleNotFoundError``. Never installs
 anything.
 """
@@ -42,9 +42,21 @@ def _version() -> str:
 
 def _auth_check() -> tuple[bool, str]:
     """(signed_in, detail). Resolves the same bearer seam validate/launch use."""
-    selected = profiles.select_profile()
+    try:
+        selected = profiles.select_profile()
+    except RuntimeError as exc:
+        return False, f"profile config error: {exc}"
     try:
         credentials.platform_bearer()
+    except RuntimeError as exc:
+        message = str(exc)
+        if "Castform config" in message or "Refusing to read" in message:
+            return False, f"profile config error: {exc}"
+        return (
+            False,
+            f"profile {selected.name!r} not signed in — run "
+            f"`castform login --profile {selected.name} --domain <domain>`",
+        )
     except Exception:
         return (
             False,
@@ -60,11 +72,15 @@ def _collect() -> dict:
     py_ok, py_detail = _py_check()
     auth_ok, auth_detail = _auth_check()
     extras = {name: extra_is_installed(name) for name in _EXTRA_SENTINEL}
+    try:
+        selected_profile = profiles.select_profile().name
+    except RuntimeError:
+        selected_profile = None
     return {
         "python_ok": py_ok,
         "python": py_detail,
         "benchmax_version": _version(),
-        "selected_profile": profiles.select_profile().name,
+        "selected_profile": selected_profile,
         "signed_in": auth_ok,
         "auth": auth_detail,
         "extras": extras,
@@ -95,7 +111,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print("  env-dependency extras (optional — install only what your main.py uses)")
     for name, present in info["extras"].items():
         detail = (
-            "installed" if present else f"absent — uv pip install 'castform[{name}]'"
+            "installed" if present else f"absent — uv pip install 'benchmax[{name}]'"
         )
         print(_row(None if not present else True, f"[{name}]", detail))
     print()

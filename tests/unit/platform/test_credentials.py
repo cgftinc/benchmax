@@ -80,8 +80,21 @@ def test_uses_env_when_no_token_path(monkeypatch):
 
 
 def test_raises_when_no_credential(monkeypatch):
-    with pytest.raises(RuntimeError, match="No Castform platform credential"):
+    with pytest.raises(RuntimeError, match="No Castform platform credential") as exc_info:
         platform_bearer()
+    message = str(exc_info.value)
+    assert "profile 'prod' (castform.com)" in message
+    assert "castform login --profile prod --domain castform.com" in message
+
+
+def test_missing_credential_message_uses_selected_profile(monkeypatch):
+    profiles.upsert_profile("staging", domain="castform.dev")
+    monkeypatch.setenv("CASTFORM_PROFILE", "staging")
+    with pytest.raises(RuntimeError, match="No Castform platform credential") as exc_info:
+        platform_bearer()
+    message = str(exc_info.value)
+    assert "profile 'staging' (castform.dev)" in message
+    assert "castform login --profile staging --domain castform.dev" in message
 
 
 def test_rotation_is_picked_up_per_call(tmp_path, monkeypatch):

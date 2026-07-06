@@ -6,6 +6,7 @@ import argparse
 import json
 
 from benchmax.cli import doctor
+from benchmax import profile_config as profiles
 
 
 def _run(monkeypatch, *, signed_in: bool, py_ok: bool = True, json_mode: bool = False):
@@ -18,6 +19,7 @@ def _run(monkeypatch, *, signed_in: bool, py_ok: bool = True, json_mode: bool = 
     monkeypatch.setattr(doctor, "_py_check", lambda: (py_ok, "3.12.0"))
     monkeypatch.setattr(doctor, "_version", lambda: "0.0.0")
     monkeypatch.setattr(doctor, "extra_is_installed", lambda name: name == "rag")
+    monkeypatch.setattr(doctor.profiles, "select_profile", lambda: profiles.ProfileSelection("prod", "test"))
     return doctor._cmd_doctor(argparse.Namespace(json=json_mode))
 
 
@@ -26,7 +28,7 @@ def test_ready_returns_zero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "ready to `castform validate`" in out
     # An absent extra shows its install hint; a present one says installed.
-    assert "castform[turbopuffer]" in out
+    assert "benchmax[turbopuffer]" in out
     assert "installed" in out
 
 
@@ -58,3 +60,15 @@ def test_json_mode_not_signed_in_exit_one(monkeypatch, capsys):
     assert rc == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["signed_in"] is False
+
+
+def test_auth_check_reports_profile_config_errors(monkeypatch):
+    monkeypatch.setattr(
+        doctor.profiles,
+        "select_profile",
+        lambda: (_ for _ in ()).throw(RuntimeError("bad permissions")),
+    )
+    ok, detail = doctor._auth_check()
+    assert ok is False
+    assert "profile config error" in detail
+    assert "bad permissions" in detail

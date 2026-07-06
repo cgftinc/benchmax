@@ -3,12 +3,12 @@
 ``castform validate``/``launch`` import the project's ``main.py`` in-process (see
 :func:`benchmax.cli._project.load_project`). A ``main.py`` that uses a corpus-provider
 backend (turbopuffer / pinecone / chroma) or the data-generation helpers imports a
-package that lives behind a ``castform[...]`` extra, not in base castform — so a base
+package that lives behind a ``benchmax[...]`` extra, not in base benchmax — so a base
 install fails with ``ModuleNotFoundError`` mid-import. Rather than surface a raw
 traceback, map the missing top-level module back to the extra that ships it and print
 the exact ``uv pip install`` line.
 
-The default *postgres* rag env imports on base castform (openai + httpx); this is for
+The default *postgres* rag env imports on base benchmax (openai + httpx); this is for
 the provider backends and the ``castform data qa-gen`` / chunking path, which pull the
 heavier deps.
 """
@@ -18,7 +18,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 
-# Import-name → the ``castform[<extra>]`` extra that provides it. Import names differ
+# Import-name → the ``benchmax[<extra>]`` extra that provides it. Import names differ
 # from the pip/extra names (scikit-learn→``sklearn``; chromadb ships under the
 # ``[chroma]`` extra), and ``ModuleNotFoundError.name`` reports the *import* name — so
 # this is keyed on that. Provider rows mirror ``_providers.PROVIDER_PIP``'s keys; the
@@ -72,7 +72,7 @@ def install_hint_for_import_error(exc: BaseException) -> str | None:
         return None
     extra = _MODULE_EXTRA.get(module)
     if extra:
-        return f"→ install the env deps: uv pip install 'castform[{extra}]'"
+        return f"→ install the env deps: uv pip install 'benchmax[{extra}]'"
     # A third-party module the env imports that isn't one of our extras — still nudge
     # toward installing it rather than leaving a bare "no module named …".
     return (

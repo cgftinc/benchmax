@@ -14,6 +14,7 @@ from collections.abc import Callable
 
 import httpx
 
+from benchmax import profile_config as profiles
 from benchmax.platform.client import TrainerClient
 from benchmax.platform.exceptions import AuthenticationError, TrainerError
 
@@ -21,6 +22,21 @@ from benchmax.platform.exceptions import AuthenticationError, TrainerError
 def trainer_client() -> TrainerClient:
     """A TrainerClient bound to the configured platform host + bearer seam."""
     return TrainerClient()
+
+
+def _login_hint() -> str:
+    try:
+        selected = profiles.select_profile()
+        domain = "<domain>"
+        try:
+            profile = profiles.get_profile(selected.name)
+        except RuntimeError:
+            profile = None
+        if isinstance(profile, dict) and isinstance(profile.get("domain"), str):
+            domain = profile["domain"]
+        return f"castform login --profile {selected.name} --domain {domain}"
+    except RuntimeError:
+        return "castform login --profile <profile> --domain <domain>"
 
 
 def handle_errors(func: Callable) -> Callable:
@@ -32,7 +48,7 @@ def handle_errors(func: Callable) -> Callable:
             return func(args)
         except AuthenticationError:
             print(
-                "Not logged in (or session expired). Run `castform login`.",
+                f"Not logged in (or session expired). Run `{_login_hint()}`.",
                 file=sys.stderr,
             )
             return 1

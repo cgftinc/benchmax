@@ -312,7 +312,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 "  Note: the postgres rag env validates on base castform, but "
                 "`castform data qa-gen`\n  and non-postgres corpus backends need "
                 "extra deps — install with:\n"
-                "    uv pip install 'castform[rag]'  (or [turbopuffer] / [pinecone] "
+                "    uv pip install 'benchmax[rag]'  (or [turbopuffer] / [pinecone] "
                 "/ [chroma])",
                 _GREY,
             )
