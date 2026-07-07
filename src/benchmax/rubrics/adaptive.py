@@ -1,9 +1,10 @@
 import asyncio
-from typing import Dict, List, Literal, Optional, cast
+import logging
+from typing import Callable, Dict, List, Literal, Optional, cast
 
 from openai import AsyncOpenAI
 
-from ._utils import _extract_json
+from ._utils import _extract_json, _judge_call_with_retry
 from .cache import (
     _empty_cache_entry,
     _format_cached_rubrics_for_prompt,
@@ -11,9 +12,10 @@ from .cache import (
     load_rubric_cache,
 )
 from .prompts import INSTANCE_WISE_RUBRIC_GENERATION_PROMPT
-from benchmax.platform.credentials import resolve_judge_key
 
 from .rubric import _cache_dict_to_rubric, evaluate_single_rubric
+
+logger = logging.getLogger(__name__)
 
 
 async def generate_instance_wise_adaptive_rubrics(
@@ -25,6 +27,8 @@ async def generate_instance_wise_adaptive_rubrics(
     base_url: Optional[str] = None,
     api_key: str = "",
     timeout: Optional[float] = None,
+    *,
+    token_provider: Optional[Callable[[], str]] = None,
 ) -> Optional[dict]:
     """
     Generate instance-wise adaptive rubrics using OpenAI async client.
@@ -51,15 +55,9 @@ async def generate_instance_wise_adaptive_rubrics(
 
     prompt = INSTANCE_WISE_RUBRIC_GENERATION_PROMPT + prompt_suffix
 
-    # Explicit api_key wins; otherwise resolve the Castform platform credential
-    # seam (ACT_AS_TOKEN_PATH in training, PLATFORM_API_KEY in playground /
-    # self-serve) — the same surface the search clients use. Falls back to None
-    # (→ OPENAI_API_KEY) when no platform credential is present, for direct use.
-    client = AsyncOpenAI(
-        base_url=base_url, api_key=resolve_judge_key(api_key, base_url), max_retries=3
-    )
-
-    try:
+    # Client built per attempt inside _judge_call_with_retry (re-resolves the
+    # credential on an auth retry); see evaluate_single_rubric.
+    async def _call(client: AsyncOpenAI) -> Optional[dict]:
         response = await client.chat.completions.create(
             model=model_name,
             messages=[{"role": "user", "content": prompt}],
@@ -67,7 +65,9 @@ async def generate_instance_wise_adaptive_rubrics(
             timeout=timeout,
         )
 
-        content = response.choices[0].message.content.strip() if response.choices else ""
+        content = (
+            response.choices[0].message.content.strip() if response.choices else ""
+        )
         if not content:
             print("Empty response from model")
             return None
@@ -76,7 +76,14 @@ async def generate_instance_wise_adaptive_rubrics(
         print(f"Generated instance-wise adaptive rubrics: {obj}")
         return obj
 
+    try:
+        return await _judge_call_with_retry(base_url, api_key, token_provider, _call)
     except Exception as e:
+        logger.error(
+            "adaptive rubric generation failed after retries: %s: %s",
+            type(e).__name__,
+            e,
+        )
         print(f"Prompt: {prompt}")
         print(f"Error generating instance-wise adaptive rubrics: {e}")
         return None

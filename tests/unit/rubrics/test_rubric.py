@@ -84,6 +84,9 @@ async def test_evaluate_single_rubric_exception_returns_zero(stub_openai):
     )
     assert result["score"] == 0
     assert "network down" in result["reasoning"]
+    # Exception path carries error metadata so callers can flag a _judge_error.
+    assert result["error"] == "network down"
+    assert result["error_type"] == "RuntimeError"
 
 
 # ---------------------------------------------------------------------------
@@ -338,3 +341,5 @@ async def test_ranking_exception_returns_zero_scores(stub_openai):
     )
     assert out["scores"] == [0.0, 0.0]
     assert "Error:" in out["reasoning"]
+    assert out["error"] == "x"
+    assert out["error_type"] == "RuntimeError"
