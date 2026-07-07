@@ -231,10 +231,11 @@ transcripts with `castform validate --reward-audit` and adjust:
   correctness so a wrong answer cannot bank source-format rewards (the default
   gates `citation_precision` and `answer_length` this way).
 - **Retrieval signal (ungated):** unlike the format bonuses, the small
-  `retrieval_hit` term stays **ungated** — a gold-chunk retrieval is worth
-  rewarding even when the final answer is wrong, so the model keeps learning to
-  search. `castform validate`'s RAG probe reports retrieval **gold-hit@k**, so
-  you can read retrieval quality apart from answer correctness.
+  `retrieval_hit` term stays **ungated** — citing a gold chunk is worth rewarding
+  even when the final answer is wrong, so the model keeps learning to search.
+  It's an answer-side proxy (gold sources cited in `<answer>`, not raw tool
+  traffic); `castform validate`'s RAG probe reports true retrieval **gold-hit@k**,
+  so you can read retrieval quality apart from answer correctness.
 - **Conciseness:** the default brevity term is the deterministic `answer_length`
   (a prose-length cap, `ANSWER_LENGTH_CAP`) — dense and free. An LLM conciseness
   judge (`judge_answer_quality` + `CONCISENESS_RUBRIC`) is opt-in and may be

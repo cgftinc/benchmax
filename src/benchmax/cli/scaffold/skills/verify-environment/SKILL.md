@@ -189,9 +189,10 @@ weight). Read the completions and answer these questions:
   real chunks, the model cites the identifiers it actually saw, and your citation
   matcher accepts valid id/hash/title/path variants without rewarding hallucinated
   sources. The default RAG reward (the audited shape) keeps an **ungated
-  `retrieval_hit`** (a gold-chunk retrieval is rewarded even when the answer is
-  wrong); the validate probe reports retrieval **gold-hit@k**, so you can read
-  retrieval quality apart from correctness.
+  `retrieval_hit`** (citing a gold chunk in the final `<answer>` is rewarded even
+  when the answer is wrong — an answer-side proxy; it does not inspect raw tool
+  traffic); the validate probe reports retrieval **gold-hit@k**, so you can read
+  actual retrieval quality apart from correctness.
 <!-- rag:end -->
 - **Gate bonuses on correctness.** Wrong answers should not earn citation,
   conciseness, or style rewards. Partial answers should get only partial secondary

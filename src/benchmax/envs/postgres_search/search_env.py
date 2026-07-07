@@ -3,8 +3,10 @@
 The default reward is the AUDITED 4-component shape (one LLM judge call, the rest
 deterministic):
 1. **answer_correctness** — LLM judge scores factual accuracy (the GATE)
-2. **retrieval_hit** — fraction of gold sources cited (UNGATED: finding gold is
-   rewarded even on a wrong answer, so the model keeps learning to search)
+2. **retrieval_hit** — fraction of gold sources cited in the final ``<answer>``
+   block (UNGATED: citing gold is rewarded even on a wrong answer, so the model
+   keeps learning to search). An answer-side proxy for retrieval — raw tool
+   traffic is never inspected.
 3. **citation_precision** — fraction of cited sources that are gold (gated on
    correctness)
 4. **answer_length** — deterministic brevity term (gated on correctness; replaces
@@ -318,7 +320,9 @@ class SearchEnv(BaseEnv):
             Defaults to ``platform_bearer`` (the credential seam).
         judge_timeout: Timeout for judge API calls.
         w_correctness: Weight for the correctness component (the gate).
-        w_retrieval_hit: Weight for the UNGATED gold-source recall component.
+        w_retrieval_hit: Weight for the UNGATED retrieval_hit component (recall
+            of gold sources among the final-answer citations — a proxy for
+            retrieval; tool traffic is not inspected).
         w_citation_precision: Weight for citation precision (gated).
         w_length: Weight for the deterministic brevity component (gated).
         max_search_calls: Hard search call budget (advertised in the prompt).
@@ -555,6 +559,8 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
                 correctness = 0.0
 
             # 2. Citations (recall → the UNGATED retrieval_hit; precision gated).
+            # retrieval_hit is an answer-side proxy: gold sources cited in the
+            # final <answer>, NOT what the search tool actually returned.
             recall, precision = self._score_citations(answer, reference_chunks)
             # 3. Deterministic brevity: shorter (still-correct) answers score higher.
             length_score = clip01(1.0 - len(answer) / ANSWER_LENGTH_CAP)

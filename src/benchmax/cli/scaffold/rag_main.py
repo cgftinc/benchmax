@@ -8,7 +8,7 @@ buried in the library. The heavy pieces (the correctness judge, the citation
 matcher) stay as named helpers imported from the lib so this file stays short.
 
 The reward is AUDITED (see `compute_reward`): correctness gates every secondary
-component, `retrieval_hit` is UNGATED so finding gold is rewarded even on a wrong
+component, `retrieval_hit` is UNGATED so citing gold is rewarded even on a wrong
 answer, citations match by id-hash OR title-path, and brevity is a deterministic
 length term (no second LLM call). `validate_probe` measures retrieval gold-hit@k
 over the eval rows — a pre-GPU check the cheap rollout can't give you.

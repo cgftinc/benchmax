@@ -101,7 +101,7 @@ Rewards are the training signal; robust rewards matter more than anything else.
   The `SearchEnv` default already implements the audited shape: it extracts only a
   committed `<answer>...</answer>` block (never scores the model's whole reasoning
   as an answer), matches citations by **id-hash OR title-path** across corpus
-  source formats, keeps an **ungated** `retrieval_hit` (credit finding gold even
+  source formats, keeps an **ungated** `retrieval_hit` (credit for citing gold even
   on a wrong answer), and uses a deterministic length term instead of an LLM
   conciseness judge. Verify on real transcripts that it fits your corpus.
 <!-- rag:end -->
