@@ -21,8 +21,9 @@ _SEEDS = {
 
 
 @pytest.fixture(params=["generic", "rag"])
-def mod(request):
+def mod(request, tmp_path, monkeypatch):
     """Load a scaffold seed as a module (its `__main__` block does not fire)."""
+    monkeypatch.chdir(tmp_path)
     return _load_module_from_file(_SEEDS[request.param])
 
 

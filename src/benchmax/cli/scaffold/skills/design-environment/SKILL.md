@@ -360,12 +360,11 @@ a good start) and author the env to fit the rows — three things to get right:
   *declare* its action (e.g. a `TOOL: <name>` line) that `compute_reward` scores
   against the recorded `tool_calls`.
 
-### Companion-server envs (advanced)
+### External-service envs (advanced)
 
-If the env needs a separate server (a game/sim like Showdown), that server must
-be provisioned alongside the rollout (the `SkypilotProvisioner` pattern). This is
-manual today and the biggest footgun — get a single-turn, no-companion env
-working first.
+If the env needs a separate service (a game/sim like Showdown), that service must
+be reachable during rollout. Get a single-process env working first and add
+external service deployment only after the reward loop is proven.
 
 ### Dependencies
 

@@ -150,10 +150,9 @@ you call the SDK directly, pass them to `upload_training_run`.
 - **Model-id split:** the validate path names a model like `qwen3.5-4b`; the launch
   training model (`--set model=`) uses the HF-style id like `Qwen/Qwen3.5-4B`. Don't
   cross them.
-- **Companion-server envs** (an env that talks to a separate game/sim server, e.g.
-  a Showdown-style env) need that server provisioned alongside the rollout — the
-  `SkypilotProvisioner` pattern. This is manual today and is the biggest
-  env-authoring footgun; see the `verify-environment` skill.
+- **External-service envs** (an env that talks to a separate game/sim service, e.g.
+  a Showdown-style env) need that service reachable during rollout. Keep the first
+  version single-process unless you already have a deployment path for the service.
 
 ## First-party use-cases
 

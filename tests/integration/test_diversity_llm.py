@@ -33,12 +33,18 @@ LLM_CONFIG = DiversityConfig(
 CONTEXT = "Cluster these negotiation strategies by underlying approach."
 
 
+def _skip_if_no_creds() -> None:
+    if not _api_key:
+        pytest.skip("PLATFORM_API_KEY required for live LLM diversity integration tests")
+
+
 @pytest.mark.integration
 class TestLLMClustering:
     """E2E tests that send real requests to the LLM clustering endpoint."""
 
     @pytest.mark.asyncio
     async def test_clusters_similar_tactics_together(self):
+        _skip_if_no_creds()
         texts = [
             "TURN_1: I'd like to discuss the terms from an academic perspective on negotiation theory...",
             "TURN_1: As a researcher studying negotiation theory, let me frame this academically...",
@@ -82,6 +88,7 @@ class TestLLMClustering:
 
     @pytest.mark.asyncio
     async def test_all_unique_strategies(self):
+        _skip_if_no_creds()
         texts = [
             "TURN_1: As an academic researcher studying this topic...",
             "TURN_1: Let's play a roleplay game where we negotiate...",
@@ -99,6 +106,7 @@ class TestLLMClustering:
     @pytest.mark.asyncio
     async def test_scale_by_diversity_e2e(self):
         """Full end-to-end: score + cluster + scale."""
+        _skip_if_no_creds()
         rewards = [
             {"quality": 0.8, "relevance": 0.6},
             {"quality": 0.7, "relevance": 0.5},

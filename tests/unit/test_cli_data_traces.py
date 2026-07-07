@@ -90,14 +90,14 @@ def test_traces_no_api_key_is_clean(monkeypatch, capsys):
     assert "Braintrust API key" in capsys.readouterr().err
 
 
-def test_traces_resolves_project_by_name(monkeypatch):
+def test_traces_resolves_project_by_name(monkeypatch, tmp_path):
     _install(
         monkeypatch,
         projects=[TraceProject(id="p1", name="alpha"), TraceProject(id="p2", name="beta")],
     )
     monkeypatch.setenv("BT_API_KEY", "bt-key")
     monkeypatch.delenv("BT_PROJECT_ID", raising=False)
-    assert data._cmd_data_traces(_ns(project="beta", out=".")) == 0
+    assert data._cmd_data_traces(_ns(project="beta", out=str(tmp_path))) == 0
     assert _FakeAdapter.last.fetched_project == "p2"  # type: ignore[attr-defined]
 
 

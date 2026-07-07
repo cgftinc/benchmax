@@ -95,7 +95,7 @@ def test_explicit_overrides_win(monkeypatch):
 def test_cloudpickle_roundtrip_before_first_call(monkeypatch):
     # The env bundle is cloudpickled before it ever runs; the fn must survive with no
     # live client captured.
-    fn = platform_embed_fn()
+    fn = platform_embed_fn(api_key="tok-seam")
     restored = pickle.loads(cloudpickle.dumps(fn))
 
     monkeypatch.setenv("CASTFORM_LLM_URL", "https://llm.test.example/v1")

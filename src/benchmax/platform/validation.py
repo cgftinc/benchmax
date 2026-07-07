@@ -8,11 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 import math
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -232,7 +229,7 @@ def _run_local_checks(
     """Run the local (no-network) contract checks for ``validate_env``.
 
     Mirrors how the trainer calls env methods — dataset_preprocess,
-    load_dataset, list_tools/run_tool, compute_reward, a simulated rollout,
+    list_tools/run_tool, compute_reward, a simulated rollout,
     compute_group_reward (when overridden), and pickle round-trips. Prints
     colored progress as it goes.
 
@@ -316,41 +313,7 @@ def _run_local_checks(
     else:
         print("  - prompt_messages shape check: skipped (no preprocessed result)")
 
-    # ── 3. load_dataset ──────────────────────────────────────────
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
-            for ex in examples:
-                f.write(json.dumps(ex) + "\n")
-            tmp_path = f.name
-
-        result = env_class.load_dataset("json", data_files=tmp_path, split="train")
-        if isinstance(result, tuple) and len(result) == 2:
-            ds, _ = result
-            if len(ds) > 0:
-                print(
-                    f'  \u2713 load_dataset accepts ("json", data_files=...,'
-                    f' split="train") — {len(ds)} rows'
-                )
-                passed += 1
-            else:
-                print("  \u2717 load_dataset returned empty dataset")
-                failed += 1
-        else:
-            print(
-                f"  \u2717 load_dataset returned {type(result).__name__},"
-                " expected (Dataset, str | None)"
-            )
-            failed += 1
-
-        Path(tmp_path).unlink(missing_ok=True)
-    except Exception as exc:
-        print(f"  \u2717 load_dataset raised {type(exc).__name__}: {exc}")
-        print(
-            '    Fix: load_dataset must accept ("json", data_files=path, split="train").'
-        )
-        failed += 1
-
-    # ── 4. Instantiate env + list_tools + run_tool ───────────────
+    # ── 3. Instantiate env + list_tools + run_tool ───────────────
     env = None
     try:
         env = env_class(**env_args)
@@ -825,7 +788,7 @@ def validate_env(
 
     1. **Local contract checks** (``local=True``, the default) — run in-process
        with no network, mirroring how the trainer calls env methods
-       (dataset_preprocess, load_dataset, list_tools/run_tool, compute_reward,
+       (dataset_preprocess, list_tools/run_tool, compute_reward,
        a simulated rollout, compute_group_reward, pickle round-trips).
     2. **Remote smoke rollout** (runs when ``api_key`` is given) — bundles the
        env inline and runs ``remote_examples`` real rollouts on the platform,

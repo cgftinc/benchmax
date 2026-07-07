@@ -960,7 +960,7 @@ def test_assess_group_events_all_failed():
 def test_run_group_parses_batch_sse(monkeypatch):
     """run_group POSTs a one-example batch (samples_per_example=N) to
     /v1/rollout/batch/stream and collects the rollout_completed events."""
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
+    monkeypatch.setenv("CASTFORM_PLATFORM_URL", "https://api.castform.com")
     import httpx as httpx_mod
 
     captured: dict[str, Any] = {}

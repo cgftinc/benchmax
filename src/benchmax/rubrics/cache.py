@@ -1,11 +1,10 @@
 import fcntl
 import json
 import os
+import statistics
 import tempfile
 import time
 from typing import Dict, List, Optional
-
-import numpy as np
 
 RUBRIC_CACHE_FILE = os.path.join(tempfile.gettempdir(), "rubric_cache.json")
 
@@ -143,7 +142,7 @@ def filter_and_cache_rubrics(
                 continue
 
             # Calculate standard deviation
-            std = np.std(scores)
+            std = statistics.pstdev(scores)
 
             # Store rubric with its std
             if rubric_key not in cache["scores_history"]:

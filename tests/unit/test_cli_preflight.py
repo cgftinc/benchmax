@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+
 from benchmax.cli import _preflight
 from benchmax.cli._preflight import (
     extra_is_installed,
@@ -84,6 +86,5 @@ def test_print_project_error_appends_hint(capsys):
 
 
 def test_extra_is_installed_known_and_unknown():
-    # [rag] is installed in the dev env (uv sync --all-extras); a bogus extra is not.
-    assert extra_is_installed("rag") is True
+    assert extra_is_installed("rag") is (importlib.util.find_spec("keybert") is not None)
     assert extra_is_installed("does-not-exist") is False
