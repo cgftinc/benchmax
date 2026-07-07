@@ -1,8 +1,67 @@
+import asyncio
 import json
+import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 import json_repair
+from openai import AsyncOpenAI, AuthenticationError, PermissionDeniedError
+
+from benchmax.platform.credentials import resolve_judge_key
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# The OpenAI SDK treats 401/403 as terminal (max_retries does not cover them). A
+# judge bearer can expire mid-run, so on an auth error we rebuild the client —
+# which re-resolves the credential (a fresh platform_bearer, or a token_provider()
+# call) — and retry a few times. This is what turns a silent judge outage into a
+# recoverable blip instead of a run-wide score-0 collapse.
+_AUTH_ERRORS = (AuthenticationError, PermissionDeniedError)
+_MAX_AUTH_ATTEMPTS = 3  # 1 initial + 2 rebuild-and-retry
+_AUTH_BACKOFF_SECONDS = 0.5
+
+
+def _resolve_judge_credential(
+    api_key: str,
+    base_url: Optional[str],
+    token_provider: Optional[Callable[[], str]],
+) -> Optional[str]:
+    """token_provider wins over api_key and is re-invoked per attempt (so a
+    refreshed token is picked up); otherwise fall back to resolve_judge_key."""
+    if token_provider is not None:
+        return token_provider()
+    return resolve_judge_key(api_key, base_url)
+
+
+async def _judge_call_with_retry(
+    base_url: Optional[str],
+    api_key: str,
+    token_provider: Optional[Callable[[], str]],
+    call: Callable[[AsyncOpenAI], Awaitable[T]],
+) -> T:
+    """Run ``call(client)`` against a freshly built AsyncOpenAI, retrying auth
+    failures with a rebuilt (credential-re-resolved) client. The client is closed
+    after every attempt (the per-call construction previously leaked). Non-auth
+    exceptions propagate unchanged to the caller's own error handler."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(_MAX_AUTH_ATTEMPTS):
+        client = AsyncOpenAI(
+            base_url=base_url,
+            api_key=_resolve_judge_credential(api_key, base_url, token_provider),
+            max_retries=3,
+        )
+        try:
+            return await call(client)
+        except _AUTH_ERRORS as e:
+            last_exc = e
+            if attempt + 1 < _MAX_AUTH_ATTEMPTS:
+                await asyncio.sleep(_AUTH_BACKOFF_SECONDS * (attempt + 1))
+        finally:
+            await client.close()
+    assert last_exc is not None
+    raise last_exc
 
 
 def _extract_json(s: str) -> dict:
