@@ -41,10 +41,54 @@ def _parse_env_args(pairs: list[str] | None) -> dict:
     return out
 
 
-def _fmt_rewards(rewards: dict | None) -> str:
+def _is_env_metric_key(key: object) -> bool:
+    return isinstance(key, str) and key.startswith("_")
+
+
+def _is_reward_key(key: object) -> bool:
+    return not _is_env_metric_key(key)
+
+
+def _reward_components(rewards: dict | None) -> dict:
     if not rewards:
+        return {}
+    return {k: v for k, v in rewards.items() if _is_reward_key(k)}
+
+
+def _env_metrics(rewards: dict | None) -> dict:
+    if not rewards:
+        return {}
+    return {k: v for k, v in rewards.items() if _is_env_metric_key(k)}
+
+
+def _mean_reward_components(ok_rewards: list[dict]) -> dict[str, float] | None:
+    return _mean_rewards([_reward_components(r) for r in ok_rewards])
+
+
+def _mean_env_metrics(ok_rewards: list[dict]) -> dict[str, float] | None:
+    return _mean_rewards([_env_metrics(r) for r in ok_rewards])
+
+
+def _fmt_values(values: dict | None) -> str:
+    if not values:
         return "(none)"
-    return ", ".join(f"{k}={fmt_value(v)}" for k, v in rewards.items())
+    return ", ".join(f"{k}={fmt_value(v)}" for k, v in values.items())
+
+
+def _fmt_rewards(rewards: dict | None) -> str:
+    return _fmt_values(_reward_components(rewards))
+
+
+def _fmt_env_metrics(rewards: dict | None) -> str:
+    return _fmt_values(_env_metrics(rewards))
+
+
+def _numeric_reward_total(rewards: dict | None) -> float:
+    return sum(
+        v
+        for v in _reward_components(rewards).values()
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    )
 
 
 # --- scorecard rendering (same shape every run) -------------------------
@@ -87,26 +131,45 @@ def _distinct_errors(remote) -> list[str]:
 
 def _print_rewards(ok_rewards: list[dict]) -> None:
     """Reward components as ``avg``/``std`` rows + a summed total."""
-    mean = _mean_rewards(ok_rewards) or {}
+    mean = _mean_reward_components(ok_rewards) or {}
+    metrics = _mean_env_metrics(ok_rewards) or {}
     if not mean:
         print("  reward     n/a — no numeric reward components to score")
-        return
-    comps = sorted(mean)
-    name_w = max(len("reward component"), len("total reward"), *(len(c) for c in comps))
+    else:
+        comps = sorted(mean)
+        name_w = max(
+            len("reward component"), len("total reward"), *(len(c) for c in comps)
+        )
 
-    def row(name: str, avg: str, std: str) -> str:
-        return f"  {name:<{name_w}}   {avg:>7}  {std:>7}"
+        def row(name: str, avg: str, std: str) -> str:
+            return f"  {name:<{name_w}}   {avg:>7}  {std:>7}"
 
-    print(row("reward component", "avg", "std"))
-    for k in comps:
-        vals = [
-            r[k]
-            for r in ok_rewards
-            if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool)
-        ]
-        print(row(k, fmt_value(mean[k]), fmt_value(_std(vals))))
-    print("  " + "─" * (name_w + 19))
-    print(f"  {'total reward':<{name_w}}   {fmt_value(sum(mean.values())):>7}")
+        print(row("reward component", "avg", "std"))
+        for k in comps:
+            vals = [
+                r[k]
+                for r in ok_rewards
+                if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool)
+            ]
+            print(row(k, fmt_value(mean[k]), fmt_value(_std(vals))))
+        print("  " + "─" * (name_w + 19))
+        print(f"  {'total reward':<{name_w}}   {fmt_value(sum(mean.values())):>7}")
+
+    if metrics:
+        comps = sorted(metrics)
+        name_w = max(len("env metric"), *(len(c) for c in comps))
+
+        def metric_row(name: str, avg: str, std: str) -> str:
+            return f"  {name:<{name_w}}   {avg:>7}  {std:>7}"
+
+        print(metric_row("env metric", "avg", "std"))
+        for k in comps:
+            vals = [
+                r[k]
+                for r in ok_rewards
+                if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool)
+            ]
+            print(metric_row(k, fmt_value(metrics[k]), fmt_value(_std(vals))))
 
 
 def _print_checks(remote, ok_rewards: list[dict]) -> None:
@@ -173,7 +236,11 @@ def _print_checks(remote, ok_rewards: list[dict]) -> None:
     elif not group.ok:
         print(_check("⚠", "group reward", f"FAILED — {group.error}"))
     else:
-        print(_check("✓", "group reward", f"mean {_fmt_rewards(group.rewards)}"))
+        detail = f"mean {_fmt_rewards(group.rewards)}"
+        metrics = _fmt_env_metrics(group.rewards)
+        if metrics != "(none)":
+            detail += f"; env metrics {metrics}"
+        print(_check("✓", "group reward", detail))
 
 
 def _recommendation(report, ok_rewards: list[dict]) -> str:
@@ -208,7 +275,7 @@ def _constant_components(ok_rewards: list[dict]) -> list[tuple[str, object]]:
     ``(component, value)`` per offending component, sorted by name."""
     if len(ok_rewards) < 2:
         return []
-    keys = sorted({k for r in ok_rewards for k in r})
+    keys = sorted({k for r in ok_rewards for k in r if _is_reward_key(k)})
     constant = []
     for k in keys:
         values = [r[k] for r in ok_rewards if k in r]
@@ -225,14 +292,7 @@ def _constant_total(ok_rewards: list[dict]) -> float | None:
     present in >=2 rollouts) silently misses. Bools are excluded, like the table."""
     if len(ok_rewards) < 2:
         return None
-    totals = [
-        sum(
-            v
-            for v in r.values()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-        )
-        for r in ok_rewards
-    ]
+    totals = [_numeric_reward_total(r) for r in ok_rewards]
     return totals[0] if len(set(totals)) == 1 else None
 
 
@@ -246,7 +306,7 @@ def _inconsistent_components(ok_rewards: list[dict]) -> list[tuple[str, int]]:
     if n < 2:
         return []
     out: list[tuple[str, int]] = []
-    for k in sorted({k for r in ok_rewards for k in r}):
+    for k in sorted({k for r in ok_rewards for k in r if _is_reward_key(k)}):
         present = sum(1 for r in ok_rewards if k in r)
         if 0 < present < n:
             out.append((k, present))
@@ -276,7 +336,7 @@ def _primary_reward_key(components, declared: str | None = None) -> str | None:
     ``correctness`` / any ``*correct*`` key) so a RAG env anchors with no
     declaration. ``None`` (no declaration, no match) → the redundancy check is
     skipped, not misfired."""
-    keys = list(components)
+    keys = [k for k in components if _is_reward_key(k)]
     if declared and declared in keys:
         return declared
     for exact in ("answer_correctness", "correctness"):
@@ -314,7 +374,7 @@ def _audit_components(
     ``note`` flags a component as: group-scored (N/A per-example), constant (no
     gradient), mirrors-primary (redundant), or primary (the gate). ``declared`` is
     the env's ``PRIMARY_REWARD_KEY``, if any."""
-    mean = _mean_rewards(ok_rewards) or {}
+    mean = _mean_reward_components(ok_rewards) or {}
     corr_key = _primary_reward_key(mean, declared)
     rows: list[dict] = []
     for k in sorted(mean):
@@ -341,6 +401,16 @@ def _audit_components(
     return rows, corr_key
 
 
+def _audit_env_metrics(ok_rewards: list[dict]) -> list[dict]:
+    """Env-metric rows (avg/std) for `_`-prefixed observability keys."""
+    mean = _mean_env_metrics(ok_rewards) or {}
+    rows: list[dict] = []
+    for k in sorted(mean):
+        vals = [v for v in (_numeric(r, k) for r in ok_rewards) if v is not None]
+        rows.append({"metric": k, "avg": mean[k], "std": _std(vals)})
+    return rows
+
+
 def _group_component_names(remote) -> set[str]:
     grp = getattr(remote, "group_reward", None)
     if grp is not None and grp.ok and grp.rewards:
@@ -359,6 +429,7 @@ def _print_reward_audit(
     rows, corr_key = _audit_components(
         ok_rewards, _group_component_names(remote), primary_key
     )
+    metric_rows = _audit_env_metrics(ok_rewards)
     print(
         f"  {n_ok} ok rollout{'' if n_ok == 1 else 's'} · "
         f"{len(rows)} reward component{'' if len(rows) == 1 else 's'}"
@@ -383,6 +454,16 @@ def _print_reward_audit(
                 "skipped; declare PRIMARY_REWARD_KEY on the env to enable it)"
             )
 
+    if metric_rows:
+        print()
+        name_w = max(len("env metric"), *(len(r["metric"]) for r in metric_rows))
+        print(f"  {'env metric':<{name_w}}   {'avg':>7}  {'std':>7}")
+        for r in metric_rows:
+            print(
+                f"  {r['metric']:<{name_w}}   {fmt_value(r['avg']):>7}  "
+                f"{fmt_value(r['std']):>7}"
+            )
+
     ragged = _inconsistent_components(ok_rewards)
     if ragged:
         print()
@@ -399,11 +480,7 @@ def _print_reward_audit(
     for ex in examples:
         row = dataset[ex.index] if dataset and 0 <= ex.index < len(dataset) else None
         q, gold = _example_gold(row)
-        total = sum(
-            v
-            for v in (ex.rewards or {}).values()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-        )
+        total = _numeric_reward_total(ex.rewards)
         print(f"  ── example {ex.index}  ·  reward {fmt_value(total)} ──")
         if q is not None:
             print(f"     Q:    {truncate(q, 200)}")
@@ -413,6 +490,9 @@ def _print_reward_audit(
             ans = final_answer(ex.messages)
             print(f"     ans:  {truncate(ans, 300) if ans else '(no answer captured)'}")
             print(f"     rewards: {_fmt_rewards(ex.rewards)}")
+            metrics = _fmt_env_metrics(ex.rewards)
+            if metrics != "(none)":
+                print(f"     env metrics: {metrics}")
         else:
             print(f"     ✗ failed: {ex.error}")
 
@@ -438,6 +518,7 @@ def _report_to_dict(
             }
             for e in (remote.examples if remote else [])
         ],
+        "env_metrics": _mean_env_metrics(ok_rewards) or {},
         "warnings": [
             {
                 "kind": "constant_reward_component",
@@ -470,7 +551,11 @@ def _report_to_dict(
         rows, corr_key = _audit_components(
             ok_rewards, _group_component_names(remote), primary_key
         )
-        out["audit"] = {"primary_component": corr_key, "components": rows}
+        out["audit"] = {
+            "primary_component": corr_key,
+            "components": rows,
+            "env_metrics": _audit_env_metrics(ok_rewards),
+        }
         # Join gold by index (the rollout of example i uses dataset[i]) so the JSON
         # is a self-sufficient reward audit — gold isn't otherwise in the payload.
         for e in out["examples"]:

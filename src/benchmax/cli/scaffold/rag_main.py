@@ -105,6 +105,10 @@ REWARD_KEYS = (
     "answer_length",
 )
 
+# `_judge_error` is an env metric, not reward: trainer S1/newer excludes `_`
+# keys from reward sums. Do not use this template with a pinned older trainer_ref.
+ENV_METRIC_KEYS = ("_judge_error",)
+
 logger = logging.getLogger(__name__)
 
 
@@ -113,6 +117,14 @@ def _meta_file_id(metadata: dict[str, Any] | None) -> str:
     and the gold-hit probe key off (mirrors the lib's reference-id extraction)."""
     md = metadata or {}
     return str(md.get("file") or md.get("file_path") or "").strip()
+
+
+def _zero_rewards() -> dict[str, float]:
+    return {k: 0.0 for k in (*REWARD_KEYS, *ENV_METRIC_KEYS)}
+
+
+def _judge_failed(result: dict[str, Any]) -> bool:
+    return "error" in result or "error_type" in result
 
 
 class CustomSearchEnv(SearchEnv):
@@ -185,7 +197,7 @@ class CustomSearchEnv(SearchEnv):
         on a wrong answer. `retrieval_hit` is UNGATED — citing a gold source is
         rewarded even when the answer is wrong. Return positive scores only.
         """
-        zeros = {k: 0.0 for k in REWARD_KEYS}
+        zeros = _zero_rewards()
         try:
             # Strict extraction: no committed <answer> → "" → scores 0 (the model's
             # reasoning is never scored as the answer).
@@ -207,15 +219,33 @@ class CustomSearchEnv(SearchEnv):
                     response=answer,
                     model_name=self._judge_model,
                     base_url=self._judge_base_url,
-                    api_key=self._judge_token_provider(),
+                    token_provider=self._judge_token_provider,
                     timeout=self._judge_timeout,
                 )
+            except Exception as exc:
+                logger.exception(
+                    "[CustomSearchEnv] correctness judge crashed before returning a "
+                    "result; scoring correctness=0 and keeping retrieval signal"
+                )
+                result = {
+                    "score": 0.0,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+
+            judge_error = 1.0 if _judge_failed(result) else 0.0
+            if judge_error:
+                logger.error(
+                    "[CustomSearchEnv] correctness judge failed after retries; scoring "
+                    "correctness=0 and keeping retrieval signal: %s: %s",
+                    result.get("error_type", "JudgeError"),
+                    result.get("error", ""),
+                )
+                correctness = 0.0
+            else:
                 correctness = clip01(
                     result.get("score", 0.0)
                 )  # 0 / 1 (rubric score_map)
-            except Exception:
-                logger.warning("[CustomSearchEnv] correctness judge failed; scoring 0")
-                correctness = 0.0
 
             # Citations: id-hash OR title-path match via _canonicalize_id (above).
             recall, precision = score_citations(
@@ -229,6 +259,7 @@ class CustomSearchEnv(SearchEnv):
                 "retrieval_hit": W_RETRIEVAL_HIT * recall,  # UNGATED
                 "citation_precision": W_CITATION_PRECISION * precision * correctness,
                 "answer_length": W_LENGTH * length_score * correctness,
+                "_judge_error": judge_error,
             }
         except Exception:
             # A reward bug must not crash the rollout — score 0, but LOG it: a

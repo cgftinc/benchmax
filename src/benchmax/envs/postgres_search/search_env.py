@@ -152,6 +152,7 @@ async def judge_answer_quality(
     model: str,
     base_url: str,
     api_key: str,
+    token_provider: Callable[[], str] | None = None,
     timeout: float = 30.0,
     correctness_rubric: Rubric = CORRECTNESS_RUBRIC,
     conciseness_rubric: Rubric = CONCISENESS_RUBRIC,
@@ -166,31 +167,18 @@ async def judge_answer_quality(
     Empty response → ``(0.0, 0.0)``. The two rubric calls run concurrently.
     Pass custom rubrics to change what "correct"/"concise" mean.
     """
-    if not response.strip():
-        return (0.0, 0.0)
     try:
-        correctness_task = evaluate_single_rubric(
-            rubric=correctness_rubric,
+        correctness_result, conciseness_result = await _judge_answer_quality_results(
             question=question,
             ground_truth=ground_truth,
             response=response,
-            model_name=model,
+            model=model,
             base_url=base_url,
             api_key=api_key,
+            token_provider=token_provider,
             timeout=timeout,
-        )
-        conciseness_task = evaluate_single_rubric(
-            rubric=conciseness_rubric,
-            question=question,
-            ground_truth=ground_truth,
-            response=response,
-            model_name=model,
-            base_url=base_url,
-            api_key=api_key,
-            timeout=timeout,
-        )
-        correctness_result, conciseness_result = await asyncio.gather(
-            correctness_task, conciseness_task
+            correctness_rubric=correctness_rubric,
+            conciseness_rubric=conciseness_rubric,
         )
         return (
             clip01(correctness_result.get("score", 0.0)),
@@ -198,6 +186,60 @@ async def judge_answer_quality(
         )
     except Exception:
         return (0.0, 0.0)
+
+
+def _zero_judge_result(reasoning: str = "Empty response") -> dict[str, Any]:
+    return {"score": 0.0, "reasoning": reasoning, "llm_output": ""}
+
+
+async def _judge_answer_quality_results(
+    *,
+    question: str,
+    ground_truth: str,
+    response: str,
+    model: str,
+    base_url: str,
+    api_key: str,
+    token_provider: Callable[[], str] | None = None,
+    timeout: float = 30.0,
+    correctness_rubric: Rubric = CORRECTNESS_RUBRIC,
+    conciseness_rubric: Rubric = CONCISENESS_RUBRIC,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """LLM judge results for callers that need structured error metadata."""
+    if not response.strip():
+        empty = _zero_judge_result()
+        return (empty, empty.copy())
+
+    correctness_task = evaluate_single_rubric(
+        rubric=correctness_rubric,
+        question=question,
+        ground_truth=ground_truth,
+        response=response,
+        model_name=model,
+        base_url=base_url,
+        api_key=api_key,
+        token_provider=token_provider,
+        timeout=timeout,
+    )
+    conciseness_task = evaluate_single_rubric(
+        rubric=conciseness_rubric,
+        question=question,
+        ground_truth=ground_truth,
+        response=response,
+        model_name=model,
+        base_url=base_url,
+        api_key=api_key,
+        token_provider=token_provider,
+        timeout=timeout,
+    )
+    correctness_result, conciseness_result = await asyncio.gather(
+        correctness_task, conciseness_task
+    )
+    return (correctness_result, conciseness_result)
+
+
+def _rubric_result_has_error(result: dict[str, Any]) -> bool:
+    return "error" in result or "error_type" in result
 
 
 def canonicalize_source_id(source_id: str) -> str:
@@ -419,7 +461,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         self._judge_model = judge_model
         # Resolved per call (default: the platform credential seam). A customer
         # may inject their own provider; baking their own key stays supported
-        # but discouraged — see docs/design/env-credential-model.md §7.1.
+        # but discouraged for first-party credentials.
         self._judge_token_provider = as_token_provider(
             judge_token_provider, platform_bearer
         )
@@ -543,20 +585,33 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             # verified correct" (0) and must NOT zero the ungated retrieval
             # signal below, so it's caught locally.
             try:
-                result = await evaluate_single_rubric(
-                    rubric=CORRECTNESS_RUBRIC,
+                result = await self._judge_correctness_result(
                     question=prompt,
                     ground_truth=gt_str,
                     response=answer,
-                    model_name=self._judge_model,
-                    base_url=self._judge_base_url,
-                    api_key=self._judge_token_provider(),
-                    timeout=self._judge_timeout,
                 )
-                correctness = clip01(result.get("score", 0.0))
-            except Exception:
-                logger.warning("[SearchEnv] correctness judge failed; scoring 0")
+            except Exception as exc:
+                logger.exception(
+                    "[SearchEnv] correctness judge crashed before returning a result; "
+                    "scoring correctness=0 and keeping retrieval signal"
+                )
+                result = {
+                    "score": 0.0,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+
+            judge_error = 1.0 if _rubric_result_has_error(result) else 0.0
+            if judge_error:
+                logger.error(
+                    "[SearchEnv] correctness judge failed after retries; scoring "
+                    "correctness=0 and keeping retrieval signal: %s: %s",
+                    result.get("error_type", "JudgeError"),
+                    result.get("error", ""),
+                )
                 correctness = 0.0
+            else:
+                correctness = clip01(result.get("score", 0.0))
 
             # 2. Citations (recall → the UNGATED retrieval_hit; precision gated).
             # retrieval_hit is an answer-side proxy: gold sources cited in the
@@ -572,6 +627,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
                 * precision
                 * correctness,
                 "answer_length": self._w_length * length_score * correctness,
+                "_judge_error": judge_error,
             }
 
             logger.info("[SearchEnv] rewards=%s", rewards)
@@ -655,6 +711,23 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     # Judge
     # ------------------------------------------------------------------
 
+    async def _judge_correctness_result(
+        self,
+        question: str,
+        ground_truth: str,
+        response: str,
+    ) -> dict[str, Any]:
+        return await evaluate_single_rubric(
+            rubric=CORRECTNESS_RUBRIC,
+            question=question,
+            ground_truth=ground_truth,
+            response=response,
+            model_name=self._judge_model,
+            base_url=self._judge_base_url,
+            token_provider=self._judge_token_provider,
+            timeout=self._judge_timeout,
+        )
+
     async def _judge_answer_quality(
         self,
         question: str,
@@ -672,7 +745,8 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             response=response,
             model=self._judge_model,
             base_url=self._judge_base_url,
-            api_key=self._judge_token_provider(),
+            api_key="",
+            token_provider=self._judge_token_provider,
             timeout=self._judge_timeout,
         )
 
@@ -721,4 +795,5 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             "retrieval_hit": 0.0,
             "citation_precision": 0.0,
             "answer_length": 0.0,
+            "_judge_error": 0.0,
         }

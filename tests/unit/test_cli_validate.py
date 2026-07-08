@@ -155,6 +155,46 @@ def test_validate_shows_rewards_and_group(monkeypatch, capsys):
     assert "GREEN baseline" in out
 
 
+def test_validate_renders_env_metrics_separately(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(
+                index=0, ok=True, rewards={"acc": 1.0, "_judge_error": 1.0}
+            ),
+            ExampleValidation(
+                index=1, ok=True, rewards={"acc": 0.0, "_judge_error": 1.0}
+            ),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0
+    out = capsys.readouterr().out
+    assert "total reward" in out and "0.5" in out
+    assert "env metric" in out and "_judge_error" in out
+    assert "1.5" not in out
+
+
+def test_validate_constant_env_metric_is_not_component_warning(monkeypatch, capsys):
+    report = _report(
+        examples=[
+            ExampleValidation(
+                index=0, ok=True, rewards={"acc": 1.0, "_judge_error": 0.0}
+            ),
+            ExampleValidation(
+                index=1, ok=True, rewards={"acc": 0.0, "_judge_error": 0.0}
+            ),
+        ],
+        group=None,
+    )
+    _patch(monkeypatch, report)
+    assert validate._cmd_validate(_validate_ns()) == 0
+    out = capsys.readouterr().out
+    assert "env metric" in out and "_judge_error" in out
+    assert "some components constant" not in out
+    assert "GREEN baseline" in out
+
+
 def test_validate_surfaces_error(monkeypatch, capsys):
     report = _report(
         examples=[ExampleValidation(index=0, ok=False, error="bad judge api key")],
@@ -543,8 +583,17 @@ def test_validate_json_includes_constant_warning(monkeypatch, capsys):
 def test_constant_components_helper():
     # direct unit: ignores varying + single-value sets, flags the constant one.
     assert validate._constant_components(
-        [{"a": 1.0, "b": 0.0}, {"a": 2.0, "b": 0.0}]
+        [
+            {"a": 1.0, "b": 0.0, "_judge_error": 0.0},
+            {"a": 2.0, "b": 0.0, "_judge_error": 0.0},
+        ]
     ) == [("b", 0.0)]
+    assert (
+        validate._constant_components(
+            [{"a": 1.0, "_judge_error": 0.0}, {"a": 2.0, "_judge_error": 0.0}]
+        )
+        == []
+    )
     assert validate._constant_components([{"a": 0.0}]) == []  # <2 rollouts
     assert validate._constant_components([]) == []
 
@@ -553,6 +602,12 @@ def test_constant_total_helper():
     # constant total (incl. ragged keys + bool exclusion) -> the value; else None.
     assert validate._constant_total([{"a": 0.0}, {"a": 0.0}]) == 0.0
     assert validate._constant_total([{"a": 0.0}, {"b": 0.0}]) == 0.0  # ragged, both 0
+    assert (
+        validate._constant_total(
+            [{"a": 0.0, "_judge_error": 1.0}, {"a": 0.0, "_judge_error": 1.0}]
+        )
+        == 0.0
+    )
     assert validate._constant_total([{"a": 1.0}, {"a": 2.0}]) is None  # varies
     assert validate._constant_total([{"a": 0.0}]) is None  # <2 rollouts
     assert (
@@ -641,6 +696,38 @@ def test_reward_audit_json_carries_audit_and_gold(monkeypatch, capsys):
     assert '"gold": "edit /etc/docker"' in out
 
 
+def test_reward_audit_json_separates_env_metrics(monkeypatch, capsys):
+    import json as _json
+
+    report = _report(
+        examples=[
+            ExampleValidation(
+                index=0,
+                ok=True,
+                rewards={"answer_correctness": 1.0, "_judge_error": 0.0},
+            ),
+            ExampleValidation(
+                index=1,
+                ok=True,
+                rewards={"answer_correctness": 0.0, "_judge_error": 0.0},
+            ),
+        ],
+        group=None,
+    )
+    monkeypatch.setattr(validate, "load_project", lambda **k: _RagProject())
+    monkeypatch.setattr("benchmax.platform.validation.validate_env", lambda **k: report)
+    assert validate._cmd_validate(_validate_ns(reward_audit=True, json=True)) == 0
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload["warnings"] == []
+    assert payload["env_metrics"] == {"_judge_error": 0.0}
+    assert {r["component"] for r in payload["audit"]["components"]} == {
+        "answer_correctness"
+    }
+    assert payload["audit"]["env_metrics"] == [
+        {"metric": "_judge_error", "avg": 0.0, "std": 0.0}
+    ]
+
+
 def test_mirrors_correctness_flags_redundant_not_independent():
     # A component that is constant within each correctness stratum mirrors it;
     # one that varies within a stratum (recall) does not.
@@ -655,10 +742,34 @@ def test_mirrors_correctness_flags_redundant_not_independent():
 
 def test_audit_components_notes():
     ok_rewards = [
-        {"answer_correctness": 1.0, "dup": 0.5, "recall": 0.3, "fmt": 0.1},
-        {"answer_correctness": 1.0, "dup": 0.5, "recall": 0.1, "fmt": 0.1},
-        {"answer_correctness": 0.0, "dup": 0.0, "recall": 0.0, "fmt": 0.1},
-        {"answer_correctness": 0.0, "dup": 0.0, "recall": 0.0, "fmt": 0.1},
+        {
+            "answer_correctness": 1.0,
+            "dup": 0.5,
+            "recall": 0.3,
+            "fmt": 0.1,
+            "_judge_error": 0.0,
+        },
+        {
+            "answer_correctness": 1.0,
+            "dup": 0.5,
+            "recall": 0.1,
+            "fmt": 0.1,
+            "_judge_error": 0.0,
+        },
+        {
+            "answer_correctness": 0.0,
+            "dup": 0.0,
+            "recall": 0.0,
+            "fmt": 0.1,
+            "_judge_error": 1.0,
+        },
+        {
+            "answer_correctness": 0.0,
+            "dup": 0.0,
+            "recall": 0.0,
+            "fmt": 0.1,
+            "_judge_error": 1.0,
+        },
     ]
     rows, corr_key = validate._audit_components(ok_rewards, set())
     assert corr_key == "answer_correctness"
@@ -667,6 +778,9 @@ def test_audit_components_notes():
     assert "mirrors the primary reward" in notes["dup"]
     assert "constant" in notes["fmt"]
     assert notes["recall"] == ""  # discriminates independently
+    assert "_judge_error" not in notes
+    metrics = {r["metric"]: r for r in validate._audit_env_metrics(ok_rewards)}
+    assert metrics["_judge_error"]["avg"] == pytest.approx(0.5)
 
 
 def test_primary_reward_key_env_declared_then_heuristic():
@@ -679,6 +793,8 @@ def test_primary_reward_key_env_declared_then_heuristic():
     assert pk({"helpfulness": 0, "conciseness": 0}) is None
     # judge dict + env-declared gate → anchors on the declared component
     assert pk({"helpfulness": 0, "conciseness": 0}, "helpfulness") == "helpfulness"
+    # env metrics are never primary reward components, even if declared by mistake
+    assert pk({"_judge_error": 0}, "_judge_error") is None
     # a declaration that isn't a component falls back to the heuristic (→ None here)
     assert pk({"a": 0, "b": 0}, "missing") is None
 
@@ -811,6 +927,12 @@ def test_inconsistent_components_helper():
     assert validate._inconsistent_components(
         [{"acc": 1.0, "cite": 0.3}, {"acc": 0.0}]
     ) == [("cite", 1)]
+    assert (
+        validate._inconsistent_components(
+            [{"acc": 1.0, "_judge_error": 0.0}, {"acc": 0.0}]
+        )
+        == []
+    )
     assert (
         validate._inconsistent_components([{"a": 1.0}, {"a": 0.0}]) == []
     )  # consistent

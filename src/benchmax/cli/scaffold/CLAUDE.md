@@ -143,6 +143,10 @@ you call the SDK directly, pass them to `upload_training_run`.
   per-search result string across many turns can hit the cap even when each single
   tool response looks safe.
 <!-- rag:end -->
+- **Reward keys starting with `_` are env metrics, not reward.** Always emit them
+  every rollout, but never use them for training signal. The scaffold's
+  `_judge_error` requires trainer support for the `_` convention; don't pair it
+  with a pinned older `trainer_ref`.
 - **`ok=false` + `remote_ran=true` + `examples=[]` is an infra failure**, not a
   model verdict — a worker/startup problem swallowed the rollouts. Preserve the
   output and **retry**; never report it as a baseline result.

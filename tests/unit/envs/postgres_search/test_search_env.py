@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import pickle
 from unittest.mock import AsyncMock, patch
 
@@ -260,14 +261,16 @@ class TestComputeReward:
                 },
             )
         )
-        # Exactly the audited 4-component shape — no conciseness/recall/
-        # search_efficiency keys in the default reward.
+        # The audited reward shape plus the reserved env metric. No conciseness/
+        # recall/search_efficiency keys in the default reward.
         assert set(result) == {
             "answer_correctness",
             "retrieval_hit",
             "citation_precision",
             "answer_length",
+            "_judge_error",
         }
+        assert result["_judge_error"] == 0.0
 
     @patch(
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
@@ -284,6 +287,24 @@ class TestComputeReward:
             )
         )
         assert result["answer_correctness"] == pytest.approx(1.0)  # 0.5 * 2.0
+
+    @patch(
+        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
+        new_callable=AsyncMock,
+    )
+    def test_compute_reward_passes_judge_token_provider_callable(self, mock_eval):
+        mock_eval.return_value = {"score": 1.0}
+        env = _make_env()
+        asyncio.run(
+            env.compute_reward(
+                "r1",
+                _msgs("<answer>42</answer>"),
+                {"question": "Q?", "ground_truth": "42"},
+            )
+        )
+        kwargs = mock_eval.await_args.kwargs
+        assert kwargs["token_provider"] is env._judge_token_provider
+        assert "api_key" not in kwargs
 
     @patch(
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
@@ -487,10 +508,17 @@ class TestComputeReward:
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
-    def test_judge_failure_scores_zero_but_keeps_retrieval_hit(self, mock_eval):
-        # A judge exception is caught LOCALLY: correctness scores 0, but the
-        # ungated retrieval signal (and the rest of the reward) still computes.
-        mock_eval.side_effect = RuntimeError("judge down")
+    def test_judge_error_scores_zero_but_keeps_retrieval_hit(self, mock_eval, caplog):
+        # S2 returns structured error metadata after retry exhaustion. SearchEnv must
+        # surface it as an env metric while preserving the ungated retrieval signal.
+        mock_eval.return_value = {
+            "score": 0.0,
+            "error": "expired token",
+            "error_type": "AuthenticationError",
+        }
+        caplog.set_level(
+            logging.ERROR, logger="benchmax.envs.postgres_search.search_env"
+        )
         env = _make_env(w_retrieval_hit=1.0)
         result = asyncio.run(
             env.compute_reward(
@@ -507,6 +535,8 @@ class TestComputeReward:
         )
         assert result["answer_correctness"] == 0.0
         assert result["retrieval_hit"] == pytest.approx(1.0)  # not zeroed
+        assert result["_judge_error"] == 1.0
+        assert "correctness judge failed after retries" in caplog.text
 
     def test_empty_completion_returns_zeros(self):
         env = _make_env()
@@ -772,6 +802,10 @@ class TestFreeRewardHelpers:
             new_callable=AsyncMock,
         ) as mock_eval:
             mock_eval.return_value = {"score": 0.5}
+
+            def token_provider():
+                return "fresh"
+
             c, con = asyncio.run(
                 judge_answer_quality(
                     question="Q",
@@ -780,9 +814,15 @@ class TestFreeRewardHelpers:
                     model="m",
                     base_url="u",
                     api_key="k",
+                    token_provider=token_provider,
                 )
             )
             assert c == pytest.approx(0.5) and con == pytest.approx(0.5)
+            assert mock_eval.await_count == 2
+            assert all(
+                call.kwargs["token_provider"] is token_provider
+                for call in mock_eval.await_args_list
+            )
 
     def test_judge_answer_quality_empty_response_is_zero(self):
         c, con = asyncio.run(
@@ -818,7 +858,11 @@ class TestSeedLibSync:
 
     def test_reward_keys_match_lib_default(self, rag_mod):
         env = _make_env()
-        assert set(rag_mod.REWARD_KEYS) == set(env._zero_rewards())
+        reward_keys = {k for k in env._zero_rewards() if not k.startswith("_")}
+        metric_keys = {k for k in env._zero_rewards() if k.startswith("_")}
+        assert set(rag_mod.REWARD_KEYS) == reward_keys
+        assert set(rag_mod.ENV_METRIC_KEYS) == metric_keys == {"_judge_error"}
+        assert rag_mod._zero_rewards() == env._zero_rewards()
 
     def test_weights_and_length_cap_match_lib_defaults(self, rag_mod):
         env = _make_env()
