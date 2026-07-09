@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.example_id import make_example
-from benchmax.envs.geo3k_vlm.reward_fn import infinity_doc_reward
+from benchmax.envs.qwen3_ocr.reward_fn import infinity_doc_reward
 from benchmax.envs.types import Example, Messages, ToolDefinition
 
 
@@ -77,8 +77,10 @@ def _is_retryable_dataset_load_error(exc: Exception) -> bool:
 
 
 def _load_dataset_with_retries(load_dataset: Any, *args: Any, **kwargs: Any) -> Any:
-    max_attempts = max(1, int(os.environ.get("GEO3K_LOAD_RETRIES", "5")))
-    delay_seconds = max(0.0, float(os.environ.get("GEO3K_LOAD_RETRY_DELAY_SECONDS", "10")))
+    max_attempts = max(1, int(os.environ.get("QWEN3_OCR_LOAD_RETRIES", "5")))
+    delay_seconds = max(
+        0.0, float(os.environ.get("QWEN3_OCR_LOAD_RETRY_DELAY_SECONDS", "10"))
+    )
 
     for attempt in range(1, max_attempts + 1):
         try:
@@ -94,7 +96,7 @@ def _load_dataset_with_retries(load_dataset: Any, *args: Any, **kwargs: Any) -> 
             delay_seconds = min(delay_seconds * 2 if delay_seconds else 1.0, 120.0)
 
 
-class Geo3KVLMEnv(BaseEnv):
+class Qwen3OCREnv(BaseEnv):
     """Tool-free multimodal env for document OCR / geometry VLM rollouts."""
 
     system_prompt: str = SYSTEM_PROMPT

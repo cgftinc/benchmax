@@ -1,4 +1,4 @@
-"""Infinity-Doc OCR layout reward (from Qwen3-VL-4B-Instruct-ocr.yaml).
+"""Infinity-Doc OCR layout reward.
 
 Scores document-parsing rollouts as ``r_dist + r_count + r_order`` in ``[0, 3]``.
 """

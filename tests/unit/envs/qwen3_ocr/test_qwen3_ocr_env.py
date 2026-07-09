@@ -1,20 +1,20 @@
-"""Unit tests for Geo3KVLMEnv and Infinity-Doc OCR reward."""
+"""Unit tests for Qwen3OCREnv and Infinity-Doc OCR reward."""
 
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
 
-from benchmax.envs.geo3k_vlm import Geo3KVLMEnv
-from benchmax.envs.geo3k_vlm.geo3k_vlm_env import OCR_PROMPT_TEMPLATE
-from benchmax.envs.geo3k_vlm.reward_fn import infinity_doc_reward, segments
+from benchmax.envs.qwen3_ocr import Qwen3OCREnv
+from benchmax.envs.qwen3_ocr.qwen3_ocr_env import OCR_PROMPT_TEMPLATE
+from benchmax.envs.qwen3_ocr.reward_fn import infinity_doc_reward, segments
 
 
 def test_preprocess_builds_openai_image_parts() -> None:
-    example = Geo3KVLMEnv.dataset_preprocess(
+    example = Qwen3OCREnv.dataset_preprocess(
         {
             "prompt": "Find x.",
-            "images": ["https://example.com/geo.png"],
+            "images": ["https://example.com/document.png"],
             "answer": "12",
         }
     )
@@ -23,7 +23,7 @@ def test_preprocess_builds_openai_image_parts() -> None:
     user = example["prompt_messages"][0]
     assert user["role"] == "user"
     assert user["content"] == [
-        {"type": "image_url", "image_url": {"url": "https://example.com/geo.png"}},
+        {"type": "image_url", "image_url": {"url": "https://example.com/document.png"}},
         {"type": "text", "text": "Find x."},
     ]
     assert example["task"]["answer"] == "12"
@@ -31,7 +31,7 @@ def test_preprocess_builds_openai_image_parts() -> None:
 
 def test_preprocess_does_not_prepend_system_prompt() -> None:
     dataset_prompt = "Document Parsing: convert the image to markdown."
-    example = Geo3KVLMEnv.dataset_preprocess(
+    example = Qwen3OCREnv.dataset_preprocess(
         {
             "prompt": dataset_prompt,
             "images": ["https://example.com/doc.png"],
@@ -39,7 +39,7 @@ def test_preprocess_does_not_prepend_system_prompt() -> None:
         }
     )
 
-    assert Geo3KVLMEnv.system_prompt == ""
+    assert Qwen3OCREnv.system_prompt == ""
     assert example["prompt_messages"][0]["content"][-1] == {
         "type": "text",
         "text": dataset_prompt,
@@ -47,10 +47,10 @@ def test_preprocess_does_not_prepend_system_prompt() -> None:
 
 
 def test_preprocess_uses_arrow_safe_content_shape() -> None:
-    example = Geo3KVLMEnv.dataset_preprocess(
+    example = Qwen3OCREnv.dataset_preprocess(
         {
             "prompt": "Find x.",
-            "images": ["https://example.com/geo.png"],
+            "images": ["https://example.com/document.png"],
             "answer": "12",
         }
     )
@@ -93,7 +93,7 @@ def test_segments_markdown_table_rows() -> None:
 
 
 def test_env_compute_reward_and_lifecycle() -> None:
-    env = Geo3KVLMEnv()
+    env = Qwen3OCREnv()
 
     async def _run() -> None:
         await env.init_rollout("rid")
@@ -125,7 +125,7 @@ def test_convert_infinity_doc_rows_writes_images(tmp_path: Path, monkeypatch) ->
             assert format == "PNG"
             Path(path).write_bytes(b"png")
 
-    rows = Geo3KVLMEnv._convert_infinity_doc_rows(
+    rows = Qwen3OCREnv._convert_infinity_doc_rows(
         [{"id": "doc-1", "image": FakeImage(), "gt": "# Title", "attributes": {"lang": "en"}}],
         "train_images",
         [7],
@@ -141,7 +141,7 @@ def test_convert_infinity_doc_rows_writes_images(tmp_path: Path, monkeypatch) ->
 
 
 def test_preprocess_falls_back_to_ocr_prompt_template() -> None:
-    example = Geo3KVLMEnv.dataset_preprocess(
+    example = Qwen3OCREnv.dataset_preprocess(
         {
             "images": ["https://example.com/doc.png"],
             "answer": "# Title",
