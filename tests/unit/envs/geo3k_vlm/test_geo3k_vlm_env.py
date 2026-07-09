@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from benchmax.envs.geo3k_vlm import Geo3KVLMEnv
+from benchmax.envs.geo3k_vlm.geo3k_vlm_env import OCR_PROMPT_TEMPLATE
 from benchmax.envs.geo3k_vlm.reward_fn import infinity_doc_reward, segments
 
 
@@ -107,3 +109,45 @@ def test_env_compute_reward_and_lifecycle() -> None:
         await env.shutdown()
 
     asyncio.run(_run())
+
+
+def test_convert_infinity_doc_rows_writes_images(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("INFINITY_DOC_DATASET_DIR", str(tmp_path))
+    monkeypatch.setenv("INFINITY_DOC_DATASET", "infly/Infinity-Doc-55K")
+    monkeypatch.setenv("INFINITY_DOC_SPLIT", "train")
+
+    class FakeImage:
+        def convert(self, mode: str) -> "FakeImage":
+            assert mode == "RGB"
+            return self
+
+        def save(self, path: Path, format: str = "PNG") -> None:
+            assert format == "PNG"
+            Path(path).write_bytes(b"png")
+
+    rows = Geo3KVLMEnv._convert_infinity_doc_rows(
+        [{"id": "doc-1", "image": FakeImage(), "gt": "# Title", "attributes": {"lang": "en"}}],
+        "train_images",
+        [7],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["prompt"] == OCR_PROMPT_TEMPLATE
+    assert rows[0]["answer"] == "# Title"
+    assert rows[0]["metadata"]["source_index_after_shuffle"] == 7
+    image_path = Path(rows[0]["images"][0])
+    assert image_path.exists()
+    assert image_path.parent == tmp_path / "train_images"
+
+
+def test_preprocess_falls_back_to_ocr_prompt_template() -> None:
+    example = Geo3KVLMEnv.dataset_preprocess(
+        {
+            "images": ["https://example.com/doc.png"],
+            "answer": "# Title",
+        }
+    )
+    assert example["prompt_messages"][0]["content"][-1] == {
+        "type": "text",
+        "text": OCR_PROMPT_TEMPLATE,
+    }
