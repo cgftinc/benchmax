@@ -11,7 +11,7 @@ import cloudpickle
 import pytest
 
 from benchmax.rag.corpus.search_client import SearchClient
-from benchmax.envs.postgres_search.search_env import SearchEnv
+from benchmax.envs.postgres_search.search_env import SearchEnv, _extract_answer_block
 
 JUDGE_ARGS = {
     "judge_base_url": "http://judge.test/v1",
@@ -152,7 +152,9 @@ class TestInit:
         # RAG prompts frequently include JSON few-shot examples. The regex
         # substitution should leave them untouched instead of crashing.
         class CustomEnv(SearchEnv):
-            SYSTEM_PROMPT_TEMPLATE = 'Example: {"answer": "X"} for {corpus_description}.'
+            SYSTEM_PROMPT_TEMPLATE = (
+                'Example: {"answer": "X"} for {corpus_description}.'
+            )
 
         assert (
             CustomEnv.render_system_prompt(
@@ -338,6 +340,63 @@ class TestComputeReward:
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
+    def test_secondary_rewards_scaled_by_partial_correctness(self, mock_eval):
+        # correctness=conciseness=0.5 (same judge mock). Every secondary bonus
+        # multiplies by correctness, so a half-right answer earns half its
+        # citation/brevity reward — they can't trade off against being right.
+        mock_eval.return_value = {"score": 0.5}
+        env = _make_env(
+            w_correctness=1.0,
+            w_conciseness=0.5,
+            w_citation_recall=1.0,
+            w_citation_precision=1.0,
+        )
+        result = asyncio.run(
+            env.compute_reward(
+                "r1",
+                _msgs("<answer>partial [Source: doc_a]</answer>"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "full",
+                    "reference_chunks": [
+                        {"content": "...", "metadata": {"file": "doc_a"}}
+                    ],
+                },
+            )
+        )
+        assert result["answer_correctness"] == pytest.approx(0.5)  # not gated
+        assert result["conciseness"] == pytest.approx(0.125)  # 0.5 * 0.5 * 0.5
+        assert result["citation_recall"] == pytest.approx(0.5)  # 1.0 * 1.0 * 0.5
+        assert result["citation_precision"] == pytest.approx(0.5)  # 1.0 * 1.0 * 0.5
+
+    @patch(
+        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
+        new_callable=AsyncMock,
+    )
+    def test_citations_zeroed_when_answer_wrong(self, mock_eval):
+        # correctness=0 → perfect citations still earn 0 (gated on correctness).
+        mock_eval.return_value = {"score": 0.0}
+        env = _make_env(w_citation_recall=1.0, w_citation_precision=1.0)
+        result = asyncio.run(
+            env.compute_reward(
+                "r1",
+                _msgs("<answer>wrong [Source: doc_a]</answer>"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "right",
+                    "reference_chunks": [
+                        {"content": "...", "metadata": {"file": "doc_a"}}
+                    ],
+                },
+            )
+        )
+        assert result["citation_recall"] == 0.0
+        assert result["citation_precision"] == 0.0
+
+    @patch(
+        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
+        new_callable=AsyncMock,
+    )
     def test_search_efficiency_within_chunk_baseline(self, mock_eval):
         mock_eval.return_value = {"score": 1.0}
         env = _make_env(max_search_calls=3)
@@ -484,6 +543,48 @@ class TestCitationScoring:
         assert precision == pytest.approx(1.0)
 
 
+class TestExtractAnswerBlock:
+    def test_normal_closed_block(self):
+        assert _extract_answer_block("reasoning <answer>42</answer>") == "42"
+
+    def test_no_tag_returns_empty(self):
+        # A completion with no <answer> opener scores as no answer — never its
+        # full reasoning text.
+        assert _extract_answer_block("just reasoning, never committed") == ""
+
+    def test_last_block_wins_on_self_correction(self):
+        # Multiple openers → the LAST committed block (a self-correction wins).
+        text = "<answer>first guess</answer> on reflection <answer>final</answer>"
+        assert _extract_answer_block(text) == "final"
+
+    def test_forgives_missing_close_tag(self):
+        # An unclosed final block → everything after the last opener.
+        assert (
+            _extract_answer_block("thinking... <answer>committed but unclosed")
+            == "committed but unclosed"
+        )
+
+    def test_empty_text_returns_empty(self):
+        assert _extract_answer_block("") == ""
+
+    def test_stray_literal_answer_tag_does_not_hijack(self):
+        # A real, closed answer followed by prose mentioning "<answer>" must
+        # NOT be hijacked by the literal tag — otherwise the trailing fragment
+        # is scored and a correct answer reads as wrong (correctness 0).
+        text = (
+            "<answer>The capital is Paris. [Source: doc_a]</answer> "
+            "let me know if you want it outside <answer> tags"
+        )
+        assert _extract_answer_block(text) == "The capital is Paris. [Source: doc_a]"
+
+    def test_closed_block_preferred_over_trailing_unclosed_opener(self):
+        # A committed (closed) answer wins over a later unclosed opener.
+        assert (
+            _extract_answer_block("<answer>committed</answer> aside: <answer> draft")
+            == "committed"
+        )
+
+
 class TestDatasetPreprocess:
     def test_extracts_question_answer(self):
         env = _make_env()
@@ -541,3 +642,110 @@ class TestPickle:
         assert restored._default_mode == "lexical"
         result = asyncio.run(restored._search_tool(query="test"))
         assert "result one" in result
+
+
+# --- free reward helpers (imported by a scaffold main.py) --------------------
+
+from benchmax.envs.postgres_search.search_env import (  # noqa: E402
+    canonicalize_source_id,
+    extract_answer_block,
+    extract_reference_ids,
+    judge_answer_quality,
+    parse_citations,
+    score_citations,
+    score_search_efficiency,
+)
+
+
+class TestFreeRewardHelpers:
+    def test_extract_answer_block_public_name(self):
+        # public name is the same strict extractor as the underscore alias
+        assert extract_answer_block("<answer>x</answer>") == "x"
+        assert extract_answer_block("no tag") == ""
+        assert extract_answer_block is _extract_answer_block
+
+    def test_score_citations_recall_precision(self):
+        chunks = [
+            {"metadata": {"file": "a"}},
+            {"metadata": {"file": "b"}},
+        ]
+        recall, precision = score_citations("cite [Source: a]", chunks)
+        assert recall == pytest.approx(0.5)  # 1 of 2 gold cited
+        assert precision == pytest.approx(1.0)  # the 1 cite is valid
+
+    def test_score_citations_no_gold_is_zero(self):
+        assert score_citations("[Source: a]", []) == (0.0, 0.0)
+
+    def test_score_citations_custom_canonicalize(self):
+        # a corpus-robust matcher (case-insensitive) can be injected
+        chunks = [{"metadata": {"file": "DocA"}}]
+        recall, _ = score_citations(
+            "[Source: doca]", chunks, canonicalize=lambda s: s.strip().lower()
+        )
+        assert recall == pytest.approx(1.0)
+
+    def test_parse_and_reference_id_helpers(self):
+        assert parse_citations("x [Source: p ] y") == {"p"}
+        assert extract_reference_ids([{"metadata": {"file_path": " q "}}]) == {"q"}
+        assert canonicalize_source_id("  z  ") == "z"
+
+    def test_score_search_efficiency_gates_and_decays(self):
+        # incorrect → 0; within baseline → full weight; over budget → 0
+        assert (
+            score_search_efficiency(
+                calls=1,
+                correctness=0.0,
+                reference_chunk_count=1,
+                max_search_calls=5,
+                weight=0.1,
+            )
+            == 0.0
+        )
+        assert score_search_efficiency(
+            calls=2,
+            correctness=1.0,
+            reference_chunk_count=1,
+            max_search_calls=5,
+            weight=0.1,
+        ) == pytest.approx(0.1)  # baseline = 1 + 2 = 3, 2 calls → no decay
+        assert (
+            score_search_efficiency(
+                calls=99,
+                correctness=1.0,
+                reference_chunk_count=1,
+                max_search_calls=5,
+                weight=0.1,
+            )
+            == 0.0
+        )  # over the hard budget
+
+    def test_judge_answer_quality_free_helper(self):
+        with patch(
+            "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
+            new_callable=AsyncMock,
+        ) as mock_eval:
+            mock_eval.return_value = {"score": 0.5}
+            c, con = asyncio.run(
+                judge_answer_quality(
+                    question="Q",
+                    ground_truth="G",
+                    response="A",
+                    model="m",
+                    base_url="u",
+                    api_key="k",
+                )
+            )
+            assert c == pytest.approx(0.5) and con == pytest.approx(0.5)
+
+    def test_judge_answer_quality_empty_response_is_zero(self):
+        c, con = asyncio.run(
+            judge_answer_quality(
+                question="Q",
+                ground_truth="G",
+                response="   ",
+                model="m",
+                base_url="u",
+                api_key="k",
+            )
+        )
+        assert (c, con) == (0.0, 0.0)

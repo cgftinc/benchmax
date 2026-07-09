@@ -8,11 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 import math
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -111,6 +108,62 @@ def overrides_compute_group_reward(env_or_cls: type | Any) -> bool:
     return cls.compute_group_reward is not BaseEnv.compute_group_reward
 
 
+def overrides_validate_probe(env_or_cls: type | Any) -> bool:
+    """True if the env (class or instance) overrides ``validate_probe`` — the
+    optional pre-GPU sanity probe. The ``BaseEnv`` default is a no-op returning
+    ``None``, so there's nothing to run unless the env supplies its own probe. The
+    ``issubclass`` guard keeps this safe on the command-layer call path, where a
+    non-BaseEnv class would otherwise ``AttributeError`` on ``.validate_probe``."""
+    from benchmax.envs.base_env import BaseEnv
+
+    cls = env_or_cls if isinstance(env_or_cls, type) else type(env_or_cls)
+    return (
+        isinstance(cls, type)
+        and issubclass(cls, BaseEnv)
+        and cls.validate_probe is not BaseEnv.validate_probe
+    )
+
+
+def run_validate_probe(
+    env_class: type,
+    env_args: dict[str, Any],
+    eval_dataset: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Best-effort: run an env's optional ``validate_probe`` in-process (no GPU), for
+    the validate COMMAND to render alongside the remote rollout.
+
+    Returns the probe's result dict; ``None`` if the env doesn't override the probe;
+    or ``{"ok": False, "summary": "skipped (<reason>)"}`` if it overrides but isn't
+    locally runnable (provider/deps unreachable, timeout, or a probe bug). NEVER
+    raises — a probe failure must not fail validate.
+
+    Decoupled from the ``local`` flag: fires on the DEFAULT remote ``castform
+    validate``. It runs only via the CLI / scaffold ``main.py``, NOT a bare
+    ``validate_env`` SDK caller — so a direct-SDK user shouldn't assume it ran.
+    """
+    if not overrides_validate_probe(env_class):
+        return None
+    # Loop hygiene mirrors validate_env: nest_asyncio for notebook safety before,
+    # shutdown after (else a probe's httpx client throws "Event loop is closed").
+    _ensure_nest_asyncio()
+    try:
+        env = env_class(**(env_args or {}))
+        result = _run_async(env.validate_probe(list(eval_dataset or [])))
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            return {
+                "ok": False,
+                "summary": f"skipped (probe returned {type(result).__name__})",
+            }
+        return result
+    except Exception as exc:  # provider unreachable, missing dep, timeout, probe bug
+        reason = str(exc).strip() or type(exc).__name__
+        return {"ok": False, "summary": f"skipped ({reason})"}
+    finally:
+        _shutdown_shared_loop()
+
+
 def assert_group_reward_contract(
     env: Any,
     rollout_ids: list[str],
@@ -176,7 +229,7 @@ def _run_local_checks(
     """Run the local (no-network) contract checks for ``validate_env``.
 
     Mirrors how the trainer calls env methods — dataset_preprocess,
-    load_dataset, list_tools/run_tool, compute_reward, a simulated rollout,
+    list_tools/run_tool, compute_reward, a simulated rollout,
     compute_group_reward (when overridden), and pickle round-trips. Prints
     colored progress as it goes.
 
@@ -260,41 +313,7 @@ def _run_local_checks(
     else:
         print("  - prompt_messages shape check: skipped (no preprocessed result)")
 
-    # ── 3. load_dataset ──────────────────────────────────────────
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
-            for ex in examples:
-                f.write(json.dumps(ex) + "\n")
-            tmp_path = f.name
-
-        result = env_class.load_dataset("json", data_files=tmp_path, split="train")
-        if isinstance(result, tuple) and len(result) == 2:
-            ds, _ = result
-            if len(ds) > 0:
-                print(
-                    f'  \u2713 load_dataset accepts ("json", data_files=...,'
-                    f' split="train") — {len(ds)} rows'
-                )
-                passed += 1
-            else:
-                print("  \u2717 load_dataset returned empty dataset")
-                failed += 1
-        else:
-            print(
-                f"  \u2717 load_dataset returned {type(result).__name__},"
-                " expected (Dataset, str | None)"
-            )
-            failed += 1
-
-        Path(tmp_path).unlink(missing_ok=True)
-    except Exception as exc:
-        print(f"  \u2717 load_dataset raised {type(exc).__name__}: {exc}")
-        print(
-            '    Fix: load_dataset must accept ("json", data_files=path, split="train").'
-        )
-        failed += 1
-
-    # ── 4. Instantiate env + list_tools + run_tool ───────────────
+    # ── 3. Instantiate env + list_tools + run_tool ───────────────
     env = None
     try:
         env = env_class(**env_args)
@@ -590,7 +609,9 @@ def _run_local_checks(
                     for _ in range(10):
                         pending = [
                             m
-                            for m in unregistered_local_refs(cloudpickle.dumps(env_class))
+                            for m in unregistered_local_refs(
+                                cloudpickle.dumps(env_class)
+                            )
                             if m not in seen
                         ]
                         if not pending:
@@ -627,9 +648,7 @@ def _run_local_checks(
             else:
                 if auto:
                     names = ", ".join(sorted(m.__name__ for m in auto))
-                    print(
-                        f"  \u2713 auto-bundled local module(s): {names} "
-                    )
+                    print(f"  \u2713 auto-bundled local module(s): {names} ")
                 else:
                     print("  \u2713 no unregistered local-module references")
                 passed += 1
@@ -769,7 +788,7 @@ def validate_env(
 
     1. **Local contract checks** (``local=True``, the default) — run in-process
        with no network, mirroring how the trainer calls env methods
-       (dataset_preprocess, load_dataset, list_tools/run_tool, compute_reward,
+       (dataset_preprocess, list_tools/run_tool, compute_reward,
        a simulated rollout, compute_group_reward, pickle round-trips).
     2. **Remote smoke rollout** (runs when ``api_key`` is given) — bundles the
        env inline and runs ``remote_examples`` real rollouts on the platform,
@@ -831,12 +850,12 @@ def validate_env(
         llm_model: Override the validation model for the remote rollout.
         max_turns: Max conversation turns per remote rollout (default 4). Raise it
             to match an env that advertises a larger budget (e.g. a SearchEnv with
-            ``MAX_SEARCH_CALLS=10`` needs ``max_turns`` ~11 — one turn per search
+            ``MAX_SEARCH_CALLS=6`` needs ``max_turns`` ~7 — one turn per search
             plus the answer) so the rollout isn't truncated below what the prompt
             instructs. The trainer ignores the env's own ``recommended_max_*``.
         max_tool_calls: Max tool calls across the whole rollout (default 8). Raise
             it alongside ``max_turns`` for tool-heavy envs (each search is one tool
-            call, so ``MAX_SEARCH_CALLS=10`` needs ``max_tool_calls`` >= 10).
+            call, so ``MAX_SEARCH_CALLS=6`` needs ``max_tool_calls`` >= 6).
         verbose: Print progress + the roll-up summary (default True).
 
     Returns:

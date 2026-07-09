@@ -42,6 +42,20 @@ class _FakeClient:
     def get_environment_logs(self, run_id, **_k):
         return self.canned.get("logs", [])
 
+    def get_rollout_summary(self, run_id, **_k):
+        return self.canned.get("summary", [])
+
+    def get_rollout_heatmap(self, run_id, prompt_message_id, **_k):
+        self.calls["heatmap_example"] = prompt_message_id
+        return self.canned.get("heatmap", [])
+
+    def get_rollout_details(self, run_id, rollout_id):
+        self.calls["details_rollout"] = rollout_id
+        return self.canned.get("rollout_details", {})
+
+    def get_rollout_mode_average(self, run_id, **_k):
+        return self.canned.get("mode_average", {})
+
 
 def _patch(monkeypatch, **canned) -> _FakeClient:
     client = _FakeClient(**canned)
@@ -160,3 +174,181 @@ def test_runs_logs(monkeypatch, capsys):
     assert runs._cmd_runs_logs(_ns(run_id="r1", rollout_id=None, json=False)) == 0
     out = capsys.readouterr().out
     assert "ERROR" in out and "boom" in out and "Trace" in out
+
+
+# --- stored-rollout commands (rollouts / rollout) -----------------------
+
+
+def _rollouts_ns(**kw):
+    base = dict(run_id="r1", mode="eval", example=None, limit=50, json=False)
+    base.update(kw)
+    return _ns(**base)
+
+
+def _rollout_ns(**kw):
+    base = dict(run_id="r1", rollout_id="ro1", dataset=None, view=False, json=False)
+    base.update(kw)
+    return _ns(**base)
+
+
+def test_runs_rollouts_summary_table(monkeypatch, capsys):
+    _patch(
+        monkeypatch,
+        summary=[
+            {
+                "promptMessageId": "ex1",
+                "promptText": "where do I add the exception?",
+                "rewardHistory": [
+                    {"step": 0, "meanReward": 0.2},
+                    {"step": 20, "meanReward": 0.7},
+                ],
+            }
+        ],
+        mode_average={"avg": 0.55},
+    )
+    assert runs._cmd_runs_rollouts(_rollouts_ns()) == 0
+    out = capsys.readouterr().out
+    assert "EXAMPLE ID" in out and "ex1" in out
+    assert "0.7" in out  # latest mean reward (not the step-0 value)
+    assert "0.55" in out  # mode average in the header
+
+
+def test_runs_rollouts_example_heatmap(monkeypatch, capsys):
+    client = _patch(
+        monkeypatch,
+        heatmap=[
+            {"id": "roA", "step": 0, "totalReward": 0.1},
+            {"id": "roB", "step": 20, "totalReward": 0.9},
+        ],
+    )
+    assert runs._cmd_runs_rollouts(_rollouts_ns(example="ex1")) == 0
+    out = capsys.readouterr().out
+    assert client.calls["heatmap_example"] == "ex1"
+    assert "roA" in out and "roB" in out
+    assert "castform runs rollout r1" in out  # next-step hint
+
+
+def test_runs_rollout_details_with_gold(monkeypatch, capsys, tmp_path):
+    ds = tmp_path / "eval.jsonl"
+    ds.write_text(
+        '{"prompt": "where do I add the exception?", "ground_truth": "edit /etc/docker"}\n'
+    )
+    _patch(
+        monkeypatch,
+        rollout_details={
+            "step": 139,
+            "totalReward": 0.85,
+            "promptMessages": [
+                {"role": "user", "content": "where do I add the exception?"}
+            ],
+            "messages": [
+                {"role": "user", "content": "where do I add the exception?"},
+                {"role": "assistant", "content": "edit /etc/docker and reload"},
+            ],
+            "rewards": [
+                {"name": "answer_correctness", "value": 1.0},
+                {"name": "citation_recall", "value": 0.3},
+            ],
+        },
+    )
+    assert runs._cmd_runs_rollout(_rollout_ns(dataset=str(ds))) == 0
+    out = capsys.readouterr().out
+    assert "edit /etc/docker" in out  # gold, joined from local dataset
+    assert "edit /etc/docker and reload" in out  # the model's answer
+    assert "answer_correctness" in out and "citation_recall" in out
+    assert "step 139" in out
+
+
+def test_runs_rollout_json_attaches_gold(monkeypatch, capsys, tmp_path):
+    ds = tmp_path / "eval.jsonl"
+    ds.write_text('{"prompt": "Q?", "ground_truth": "GOLD"}\n')
+    _patch(
+        monkeypatch,
+        rollout_details={
+            "promptMessages": [{"role": "user", "content": "Q?"}],
+            "messages": [{"role": "assistant", "content": "A"}],
+            "rewards": [],
+        },
+    )
+    assert runs._cmd_runs_rollout(_rollout_ns(dataset=str(ds), json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"gold": "GOLD"' in out
+
+
+def test_runs_rollout_gold_not_found_is_graceful(monkeypatch, capsys, tmp_path):
+    _patch(
+        monkeypatch,
+        rollout_details={
+            "promptMessages": [{"role": "user", "content": "Q?"}],
+            "messages": [{"role": "assistant", "content": "A"}],
+            "rewards": [],
+        },
+    )
+    # dataset path that doesn't exist → no gold, but must not crash
+    assert (
+        runs._cmd_runs_rollout(_rollout_ns(dataset=str(tmp_path / "nope.jsonl"))) == 0
+    )
+    assert "not found locally" in capsys.readouterr().out
+
+
+def test_runs_rollout_view_writes_html_and_opens_absolute_uri(monkeypatch, tmp_path):
+    # Regression: --view wrote a RELATIVE path then called .as_uri(), which raises
+    # ValueError. It must resolve to an absolute file:// URI and not crash.
+    opened: dict = {}
+    monkeypatch.chdir(tmp_path)
+    _patch(
+        monkeypatch,
+        rollout_details={
+            "step": 7,
+            "totalReward": 0.5,
+            "promptMessages": [{"role": "user", "content": "Q?"}],
+            "messages": [{"role": "assistant", "content": "A"}],
+            "rewards": [{"name": "answer_correctness", "value": 1.0}],
+        },
+    )
+    monkeypatch.setattr(
+        "benchmax.platform.browser.maybe_open_browser",
+        lambda uri: opened.setdefault("uri", uri),
+    )
+    assert runs._cmd_runs_rollout(_rollout_ns(view=True)) == 0
+    assert (tmp_path / "rollout-ro1.html").exists()
+    assert opened["uri"].startswith("file://") and "rollout-ro1.html" in opened["uri"]
+
+
+def test_gold_join_helpers(tmp_path):
+    assert runs._user_prompt([{"role": "user", "content": "hi"}]) == "hi"
+    assert (
+        runs.final_answer(
+            [{"role": "assistant", "content": "one"}, {"role": "user", "content": "q"}]
+        )
+        == "one"
+    )
+    idx = {"a b c": "GOLD"}
+    assert runs._match_gold("a b c", idx) == "GOLD"  # exact (whitespace-normalized)
+    assert runs._match_gold("  a   b c ", idx) == "GOLD"  # normalization
+    assert (
+        runs._match_gold("prefix a b c suffix", idx) is None
+    )  # NOT fuzzy — no wrong gold
+    assert runs._match_gold("unrelated", idx) is None
+    assert runs._match_gold(None, idx) is None
+
+
+def test_gold_index_reads_question_key(tmp_path):
+    # Flagship RAG datasets key on 'question'/'answer' (no 'prompt'/'ground_truth').
+    ds = tmp_path / "eval.jsonl"
+    ds.write_text(
+        '{"question": "what is X?", "answer": "X is Y", "reference_chunks": []}\n'
+    )
+    idx = runs._gold_index([str(ds)])
+    assert idx == {
+        "what is X?": "X is Y"
+    }  # was empty before the fix (keyed on 'prompt')
+
+
+def test_match_gold_exact_only_no_false_positive():
+    # Exact-only join: a prompt that merely CONTAINS a dataset question must NOT
+    # attach that question's gold (the confidently-wrong-gold regression).
+    idx = {"reset password": "SHORT", "reset password on mobile": "LONG"}
+    assert runs._match_gold("reset password", idx) == "SHORT"
+    assert runs._match_gold("reset password on mobile", idx) == "LONG"
+    assert runs._match_gold("how do I reset password expiry policy?", idx) is None

@@ -14,8 +14,8 @@ _SKILLS = (
     "view-progress",
 )
 
-# castform setup ships these — never an env or datasets for the generic flow.
-_NEVER_SHIPPED = ("run.py", "train_dataset.jsonl", "eval_dataset.jsonl")
+# Every template now ships these — a runnable seed + tiny day-one datasets.
+_SEED_FILES = ("main.py", "train_dataset.jsonl", "eval_dataset.jsonl")
 
 
 def _ns(tmp, **kw):
@@ -68,22 +68,30 @@ def test_setup_codex_writes_agents_skills(tmp_path):
         assert (tmp_path / ".agents" / "skills" / name / "SKILL.md").exists()
     assert ".agents/skills" in (tmp_path / "AGENTS.md").read_text()
     assert ".claude/skills" not in (tmp_path / "AGENTS.md").read_text()
+    assert "Gate secondary bonuses" in (tmp_path / "AGENTS.md").read_text()
+    view_progress = (
+        tmp_path / ".agents" / "skills" / "view-progress" / "SKILL.md"
+    ).read_text()
+    assert "external-eval" in view_progress
 
 
 def test_setup_default_shows_grouped_summary(tmp_path, capsys):
     assert setup._cmd_setup(_ns(tmp_path)) == 0
     out = capsys.readouterr().out
     assert "agent guides" in out and "agent skills" in out
-    assert "env template" not in out  # generic ships no run.py
+    assert "env template" in out  # generic now ships a seed main.py + datasets
     # no per-file log by default
     assert "wrote " not in out
     assert "SKILL.md" not in out
 
 
-def test_setup_default_reports_already_present_on_rerun(tmp_path, capsys):
-    assert setup._cmd_setup(_ns(tmp_path)) == 0
+def test_setup_no_template_rerun_reports_already_present(tmp_path, capsys):
+    """The docs+skills scaffold is idempotent: re-running --no-template reports
+    everything already present. (A seed template instead hits the main.py overwrite
+    guard on re-run — see test_setup_refuses_existing_main_py.)"""
+    assert setup._cmd_setup(_ns(tmp_path, no_template=True)) == 0
     capsys.readouterr()  # discard first run
-    assert setup._cmd_setup(_ns(tmp_path)) == 0
+    assert setup._cmd_setup(_ns(tmp_path, no_template=True)) == 0
     assert "already present" in capsys.readouterr().out
 
 
@@ -113,61 +121,107 @@ def test_setup_content_cites_real_verbs(tmp_path):
     assert "max_rollout_len" in guide  # the real launch knob is documented
 
 
-def test_setup_generic_ships_no_env_or_data(tmp_path):
-    """The generic flow scaffolds docs + skills only — the agent writes run.py
-    from the design-environment skill, and generates its own datasets."""
+def test_setup_generic_ships_seed_env_and_data(tmp_path):
+    """The generic flow ships a runnable seed main.py (a minimal single-turn env)
+    plus tiny day-one datasets, so `python main.py validate` runs with zero edits."""
+    from benchmax.cli._project import load_project
+
     assert setup._cmd_setup(_ns(tmp_path)) == 0
     assert (tmp_path / "CLAUDE.md").exists()  # docs written
-    for name in _NEVER_SHIPPED:
+    for name in _SEED_FILES:
+        assert (tmp_path / name).exists(), name
+    # the seed loads: a no-tool CustomEnv + non-empty datasets
+    project = load_project(directory=str(tmp_path))
+    assert project.env_class.__name__ == "CustomEnv"
+    assert project.train_dataset and project.eval_dataset
+
+
+def test_setup_no_template_ships_docs_and_skills_only(tmp_path):
+    """--no-template scaffolds docs + skills only — no seed main.py / datasets."""
+    assert setup._cmd_setup(_ns(tmp_path, no_template=True)) == 0
+    assert (tmp_path / "CLAUDE.md").exists()  # docs written
+    for name in _SEED_FILES:
         assert not (tmp_path / name).exists(), name
 
 
-def test_setup_generic_leaves_existing_run_py_untouched(tmp_path):
-    """Generic never touches run.py, so a user's own run.py survives setup."""
-    (tmp_path / "run.py").write_text("MINE")
-    assert setup._cmd_setup(_ns(tmp_path)) == 0
-    assert (tmp_path / "run.py").read_text() == "MINE"
+def test_setup_refuses_existing_main_py(tmp_path, capsys):
+    """The overwrite guard now applies to every seed-writing template: an existing
+    main.py + no --force must fail loudly and leave the file untouched."""
+    (tmp_path / "main.py").write_text("MINE")
+    assert setup._cmd_setup(_ns(tmp_path)) == 1
+    assert (tmp_path / "main.py").read_text() == "MINE"  # untouched
+    assert "already exists" in capsys.readouterr().err
 
 
 def test_setup_template_rag_writes_searchenv(tmp_path):
-    """--template rag writes a run.py the loader discovers as CustomSearchEnv (a
+    """--template rag writes a main.py the loader discovers as CustomSearchEnv (a
     SearchEnv subclass), and it constructs with no args, offline."""
     from benchmax.cli._project import _load_module_from_file, discover_env_class
     from benchmax.envs.postgres_search.search_env import SearchEnv
 
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
-    run_py = (tmp_path / "run.py").read_text()
-    assert "class CustomSearchEnv(SearchEnv)" in run_py
-    mod = _load_module_from_file(tmp_path / "run.py")
+    main_py = (tmp_path / "main.py").read_text()
+    assert "class CustomSearchEnv(SearchEnv)" in main_py
+    assert "MAX_SEARCH_CALLS = 6" in main_py
+    # Self-contained: the reward arithmetic + weights are visible/editable in the
+    # file, and the run's budgets are baked in so it reproduces without CLI flags.
+    assert "async def compute_reward" in main_py
+    assert "W_CORRECTNESS" in main_py
+    assert "VALIDATE_CONFIG = {" in main_py
+    assert "LAUNCH_CONFIG = {" in main_py
+    mod = _load_module_from_file(tmp_path / "main.py")
     env_cls = discover_env_class(mod)  # imported SearchEnv is ignored (other module)
     assert env_cls.__name__ == "CustomSearchEnv"
     assert issubclass(env_cls, SearchEnv)
     assert isinstance(env_cls(), SearchEnv)  # no-arg construct, no network
+    # The config blocks are what validate/launch read (LoadedProject surfaces them).
+    from benchmax.cli._project import _read_config
+
+    assert _read_config(mod, "VALIDATE_CONFIG")["max_turns"] == 7
+    assert _read_config(mod, "LAUNCH_CONFIG")["max_rollout_len"] == 16384
 
 
-def test_setup_template_rag_writes_run_py_no_datasets(tmp_path):
-    """--template rag ships the SearchEnv run.py only; datasets come from
-    `castform data qa-gen`, so none are written at setup time."""
+def test_setup_template_rag_writes_seed_and_datasets(tmp_path):
+    """--template rag ships the SearchEnv main.py + tiny seed datasets (question/
+    answer/reference_chunks shape). Real data replaces them via `castform data
+    qa-gen`; the datasets skip-if-exists, so real data is never clobbered."""
+    from benchmax.cli._project import load_project
+
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
-    assert (tmp_path / "run.py").exists()
-    assert not (tmp_path / "train_dataset.jsonl").exists()
-    assert not (tmp_path / "eval_dataset.jsonl").exists()
+    assert (tmp_path / "main.py").exists()
+    assert (tmp_path / "train_dataset.jsonl").exists()
+    assert (tmp_path / "eval_dataset.jsonl").exists()
+    project = load_project(directory=str(tmp_path))
+    assert project.env_class.__name__ == "CustomSearchEnv"
+    assert set(project.train_dataset[0]) >= {"question", "answer", "reference_chunks"}
 
 
-def test_setup_template_rag_refuses_existing_run_py(tmp_path, capsys):
-    """The hollow-pass guard: existing run.py + --template rag (no --force) must
+def test_setup_template_rag_refuses_existing_main_py(tmp_path, capsys):
+    """The hollow-pass guard: existing main.py + --template rag (no --force) must
     fail loudly and leave the file untouched — never silently skip."""
-    (tmp_path / "run.py").write_text("MINE")
+    (tmp_path / "main.py").write_text("MINE")
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 1
-    assert (tmp_path / "run.py").read_text() == "MINE"  # untouched
+    assert (tmp_path / "main.py").read_text() == "MINE"  # untouched
     assert "already exists" in capsys.readouterr().err
 
 
 def test_setup_template_rag_force_overwrites(tmp_path):
-    (tmp_path / "run.py").write_text("MINE")
+    (tmp_path / "main.py").write_text("MINE")
     assert setup._cmd_setup(_ns(tmp_path, template="rag", force=True)) == 0
-    run_py = (tmp_path / "run.py").read_text()
-    assert "CustomSearchEnv" in run_py and run_py != "MINE"
+    main_py = (tmp_path / "main.py").read_text()
+    assert "CustomSearchEnv" in main_py and main_py != "MINE"
+
+
+def test_setup_force_replaces_main_py_but_keeps_datasets(tmp_path):
+    """--force clears the main.py overwrite guard but must NOT clobber datasets —
+    real `castform data qa-gen` output is never overwritten by the placeholder seed."""
+    (tmp_path / "main.py").write_text("MINE")
+    (tmp_path / "train_dataset.jsonl").write_text("REAL TRAIN DATA")
+    (tmp_path / "eval_dataset.jsonl").write_text("REAL EVAL DATA")
+    assert setup._cmd_setup(_ns(tmp_path, template="rag", force=True)) == 0
+    assert (tmp_path / "main.py").read_text() != "MINE"  # guard cleared, seed written
+    assert (tmp_path / "train_dataset.jsonl").read_text() == "REAL TRAIN DATA"  # kept
+    assert (tmp_path / "eval_dataset.jsonl").read_text() == "REAL EVAL DATA"  # kept
 
 
 def test_getting_started_uses_one_prompt_model(tmp_path):
@@ -187,3 +241,82 @@ def test_getting_started_uses_one_prompt_model(tmp_path):
     assert "Quick commands" in gs
 
 
+def test_setup_env_conditional_surfacing(tmp_path):
+    """Generic scaffold carries NO RAG-specific guidance; --template rag surfaces it.
+    Single-source docs use `<!-- rag:start/end -->` markers that setup strips for
+    non-rag templates. Also: the scaffold guide names main.py and drops the old
+    'setup does not write main.py' convention."""
+
+    def _emit(template):
+        d = tmp_path / template
+        assert setup._cmd_setup(_ns(d, template=template)) == 0
+        texts = [(d / "CLAUDE.md").read_text()]
+        for name in _SKILLS:
+            texts.append((d / ".claude" / "skills" / name / "SKILL.md").read_text())
+        return "\n".join(texts)
+
+    generic = _emit("generic")
+    rag = _emit("rag")
+
+    # the delimiter comments never leak into either emitted scaffold
+    for blob in (generic, rag):
+        assert "rag:start" not in blob and "rag:end" not in blob
+
+    # RAG-only sentinels: present in the rag scaffold, absent in the generic one
+    for sentinel in (
+        "gold-hit",
+        "retrieval_hit",
+        "MAX_TOOL_OUTPUT_CHARS",
+        "MAX_SEARCH_CALLS",
+        "reference_chunks",
+        "SearchEnv",
+    ):
+        assert sentinel in rag, f"rag scaffold missing {sentinel!r}"
+        assert sentinel not in generic, f"generic scaffold leaked {sentinel!r}"
+
+    # reversed convention + main.py naming in both scaffolds' guide/skills
+    for blob in (generic, rag):
+        assert "main.py" in blob
+        assert "does not write" not in blob and "does **not** write" not in blob
+
+
+def test_rag_scaffold_reward_threads_canonicalize_and_timeout(tmp_path, monkeypatch):
+    """The scaffold's inline compute_reward must honor a _canonicalize_id override
+    (citations) and the env's judge_timeout — behavior the inherited SearchEnv had,
+    which a naive inline reward silently drops (review findings #0, #6)."""
+    import asyncio
+
+    from benchmax.cli._project import _load_module_from_file, discover_env_class
+
+    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
+    mod = _load_module_from_file(tmp_path / "main.py")
+    env_cls = discover_env_class(mod)
+
+    env = env_cls.__new__(env_cls)  # skip network __init__
+    env._judge_model = "m"
+    env._judge_base_url = "u"
+    env._judge_timeout = 99.0
+    env._judge_token_provider = lambda: "k"
+    # A corpus-specific matcher (case-insensitive) — proves _canonicalize_id is threaded.
+    env._canonicalize_id = lambda s: str(s or "").strip().lower()
+
+    captured: dict = {}
+
+    async def _fake_judge(**kw):
+        captured.update(kw)
+        return {"score": 1.0}
+
+    monkeypatch.setattr(mod, "evaluate_single_rubric", _fake_judge)
+
+    msgs = [{"role": "assistant", "content": "<answer>x [Source: DOCA]</answer>"}]
+    task = {
+        "question": "Q",
+        "ground_truth": "x",
+        "reference_chunks": [{"metadata": {"file": "doca"}}],
+    }
+    reward = asyncio.run(env.compute_reward("r", msgs, task))
+
+    assert captured["timeout"] == 99.0  # #6: env judge_timeout threaded
+    # #0: "DOCA" cite matched gold "doca" via the injected lowercasing canonicalizer
+    # (retrieval_hit is the ungated recall component)
+    assert reward["retrieval_hit"] > 0

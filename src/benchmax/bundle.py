@@ -274,12 +274,15 @@ def _get_source(env_class: type[BaseEnv]) -> str | None:
 
 
 def _benchmax_version() -> str:
-    try:
-        from importlib.metadata import version
+    from importlib.metadata import version
 
-        return version("benchmax")
-    except Exception:
-        return "unknown"
+    # Distribution is published as "castform"; "benchmax" covers dev installs.
+    for dist in ("castform", "benchmax"):
+        try:
+            return version(dist)
+        except Exception:
+            pass
+    return "unknown"
 
 
 def _ensure_safe_python_version() -> None:

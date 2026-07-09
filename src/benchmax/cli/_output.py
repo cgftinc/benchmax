@@ -132,3 +132,20 @@ def fmt_value(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:.4g}"
     return str(value)
+
+
+def truncate(text: object, n: int) -> str:
+    """Collapse whitespace and clip to ``n`` chars (…-suffixed) for one-line display.
+
+    ``None`` → ``""``, but a falsy-yet-real value is preserved (a gold answer of
+    ``0`` must render as ``0``, not blank)."""
+    s = " ".join(("" if text is None else str(text)).split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def final_answer(messages: list | None) -> str | None:
+    """The last assistant-turn content in a transcript — the model's committed answer."""
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("content"):
+            return m["content"]
+    return None

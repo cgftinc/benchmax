@@ -49,7 +49,6 @@ def test_launch_training_run_posts_to_train_runs_launch():
 
     trainer = _make_trainer_with_transport(handler)
     run_id = trainer.launch_training_run(
-        training_run_type="simple",
         env_cls_path="x/env-cls.pkl",
         env_metadata_path="x/env-metadata.json",
         train_dataset_path="x/train.jsonl",
@@ -79,7 +78,6 @@ def test_launch_training_run_surfaces_server_warnings():
     trainer = _make_trainer_with_transport(handler)
     with pytest.warns(UserWarning, match=r"max_rollout_len.*16384"):
         run_id = trainer.launch_training_run(
-            training_run_type="simple",
             env_cls_path="x/env-cls.pkl",
             env_metadata_path="x/env-metadata.json",
             train_dataset_path="x/train.jsonl",
@@ -88,7 +86,7 @@ def test_launch_training_run_surfaces_server_warnings():
     assert run_id == "run-warn"
 
 
-def test_launch_training_run_sends_training_run_type_in_body():
+def test_launch_training_run_omits_training_run_type_from_body():
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -99,15 +97,44 @@ def test_launch_training_run_sends_training_run_type_in_body():
 
     trainer = _make_trainer_with_transport(handler)
     trainer.launch_training_run(
-        training_run_type="simple-r5",
         env_cls_path="a",
         env_metadata_path="b",
         train_dataset_path="c",
         eval_dataset_path="d",
     )
 
-    assert captured["body"]["type"] == "simple-r5"
+    assert "type" not in captured["body"]
     assert captured["body"]["args"]["env_cls_path"] == "a"
+
+
+def test_launch_training_run_rejects_training_run_type_kwarg():
+    trainer = _make_trainer_with_transport(
+        lambda request: httpx.Response(200, json={"runId": "unused"})
+    )
+
+    with pytest.raises(TypeError, match="training_run_type"):
+        trainer.launch_training_run(
+            training_run_type="simple-cpu",
+            env_cls_path="a",
+            env_metadata_path="b",
+            train_dataset_path="c",
+            eval_dataset_path="d",
+        )
+
+
+def test_launch_training_run_rejects_trainer_ref_kwarg():
+    trainer = _make_trainer_with_transport(
+        lambda request: httpx.Response(200, json={"runId": "unused"})
+    )
+
+    with pytest.raises(TypeError, match="trainer_ref"):
+        trainer.launch_training_run(
+            trainer_ref="main",
+            env_cls_path="a",
+            env_metadata_path="b",
+            train_dataset_path="c",
+            eval_dataset_path="d",
+        )
 
 
 def test_launch_training_run_reads_run_id_not_experiment_id():
@@ -119,7 +146,6 @@ def test_launch_training_run_reads_run_id_not_experiment_id():
     trainer = _make_trainer_with_transport(handler)
     assert (
         trainer.launch_training_run(
-            training_run_type="simple",
             env_cls_path="a",
             env_metadata_path="b",
             train_dataset_path="c",
@@ -428,10 +454,13 @@ def test_stream_rollout_resolves_bearer_and_llm_key_via_seam(monkeypatch):
     assert captured["payload"]["llm"]["api_key"] == "sk_seam"
 
 
-def test_stream_rollout_raises_without_any_credential(monkeypatch):
+def test_stream_rollout_raises_without_any_credential(monkeypatch, tmp_path):
     """No explicit key and no seam credential → fail loudly before the network."""
     monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
     monkeypatch.delenv("PLATFORM_API_KEY", raising=False)
+    # Isolate from a logged-in dev's ~/.castform/credentials.json fallback — else the
+    # resolver mints a real token and hits the network instead of failing loudly.
+    monkeypatch.setenv("CASTFORM_CREDENTIALS_PATH", str(tmp_path / "none.json"))
 
     client = RolloutClient(server_url="https://rollout.example")
     with pytest.raises(RuntimeError, match="No Castform platform credential"):
@@ -591,6 +620,103 @@ def test_validate_examples_env_class_bundles_to_bytes(monkeypatch):
         assert kw["env_metadata_bytes"] is not None
         assert kw["env_cls_path"] is None
         assert kw["env_metadata_path"] is None
+
+
+def test_validate_examples_full_messages_surfaces_transcript(monkeypatch):
+    """full_messages=True asks stream_rollout to capture_messages and surfaces
+    the streamed transcript on each ExampleValidation (so `castform validate
+    --json` can carry real completions for a reward audit)."""
+    client = RolloutClient(api_key="k")
+
+    captured: list[dict[str, Any]] = []
+    transcript = [{"role": "assistant", "content": "the answer"}]
+
+    def _fake_stream_rollout(**kwargs):
+        captured.append(kwargs)
+        return {"success": True, "rewards": {"r": 1.0}, "messages": transcript}
+
+    monkeypatch.setattr(client, "stream_rollout", _fake_stream_rollout)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}],
+        env_class=_make_smoke_env(),
+        n=1,
+        full_messages=True,
+        verbose=False,
+    )
+
+    assert result.ok
+    assert captured[0]["capture_messages"] is True
+    assert result.examples[0].messages == transcript
+
+
+def test_validate_examples_omits_messages_without_full_messages(monkeypatch):
+    """Default (full_messages=False) → capture_messages off, messages stays None."""
+    client = RolloutClient(api_key="k")
+
+    captured: list[dict[str, Any]] = []
+
+    def _fake_stream_rollout(**kwargs):
+        captured.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(client, "stream_rollout", _fake_stream_rollout)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}],
+        env_class=_make_smoke_env(),
+        n=1,
+        verbose=False,
+    )
+
+    assert captured[0]["capture_messages"] is False
+    assert result.examples[0].messages is None
+
+
+def test_validate_examples_retries_transient_worker_error(monkeypatch):
+    """A one-off worker_error (infra flake) is retried once and then succeeds —
+    it must not fail the example."""
+    client = RolloutClient(api_key="k")
+
+    calls = {"n": 0}
+
+    def _fake_stream_rollout(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"event": "worker_error", "error": "worker_args.json not found"}
+        return {"event": "rollout_completed", "success": True, "rewards": {"r": 1.0}}
+
+    monkeypatch.setattr(client, "stream_rollout", _fake_stream_rollout)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}], env_class=_make_smoke_env(), n=1, verbose=False
+    )
+
+    assert calls["n"] == 2  # first (flaked) + one retry
+    assert result.ok
+    assert result.examples[0].ok
+
+
+def test_validate_examples_persistent_worker_error_fails_after_retry(monkeypatch):
+    """A worker_error that persists through the retry is recorded as a failure —
+    the retry is bounded (one extra attempt), not infinite."""
+    client = RolloutClient(api_key="k")
+
+    calls = {"n": 0}
+
+    def _fake_stream_rollout(**kwargs):
+        calls["n"] += 1
+        return {"event": "worker_error", "error": "sandbox setup failed"}
+
+    monkeypatch.setattr(client, "stream_rollout", _fake_stream_rollout)
+
+    result = client.validate_examples(
+        [{"prompt": "hi"}], env_class=_make_smoke_env(), n=1, verbose=False
+    )
+
+    assert calls["n"] == 2  # original + exactly one retry, then give up
+    assert not result.ok
+    assert result.examples[0].error
 
 
 def test_validate_examples_env_class_conflicts_with_explicit_env(monkeypatch):
@@ -834,7 +960,7 @@ def test_assess_group_events_all_failed():
 def test_run_group_parses_batch_sse(monkeypatch):
     """run_group POSTs a one-example batch (samples_per_example=N) to
     /v1/rollout/batch/stream and collects the rollout_completed events."""
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
+    monkeypatch.setenv("CASTFORM_PLATFORM_URL", "https://api.castform.com")
     import httpx as httpx_mod
 
     captured: dict[str, Any] = {}

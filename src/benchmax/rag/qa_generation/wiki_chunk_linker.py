@@ -10,6 +10,7 @@ No wiki page generation is required — the linker operates entirely on the
 entity-chunk graph (entity_chunk_index, chunk_entity_index, entity_cooccurrence)
 stored on CorpusProfile.
 """
+
 from __future__ import annotations
 
 import logging
@@ -101,7 +102,8 @@ class WikiChunkLinker:
         pool_lookup: dict[str, Any] = {}
         if corpus_pool:
             pool_lookup = {
-                getattr(c, "hash", None): c for c in corpus_pool
+                getattr(c, "hash", None): c
+                for c in corpus_pool
                 if getattr(c, "hash", None)
             }
 
@@ -137,7 +139,8 @@ class WikiChunkLinker:
 
             # Entity proximity via co-occurrence graph
             proximity_score = self._entity_proximity_score(
-                primary_entity_set, candidate_entities,
+                primary_entity_set,
+                candidate_entities,
             )
 
             # Cross-file bonus
@@ -175,7 +178,9 @@ class WikiChunkLinker:
 
         # Step 4: Coverage-greedy selection from top candidates
         selected = self._select_diverse(
-            scored, primary_entity_set, n_secondaries,
+            scored,
+            primary_entity_set,
+            n_secondaries,
         )
 
         # Register used hashes
@@ -203,6 +208,25 @@ class WikiChunkLinker:
             },
         )
 
+    async def alink(
+        self,
+        primary_chunk: Any,
+        *,
+        target_hop_count: int | None = None,
+        corpus_pool: list[Any] | None = None,
+        reasoning_mode: str = "",
+        context: Any = None,
+    ) -> AnchorBundle:
+        """Async twin of :meth:`link`. Wiki linking is pure in-memory entity-graph
+        work (no corpus I/O), so this delegates to the sync implementation; the
+        ``context`` arg is accepted for protocol uniformity and unused."""
+        return self.link(
+            primary_chunk,
+            target_hop_count=target_hop_count,
+            corpus_pool=corpus_pool,
+            reasoning_mode=reasoning_mode,
+        )
+
     def reset_used_hashes(self) -> None:
         """Clear used-hash tracking between generation rounds."""
         self._used_hashes.clear()
@@ -212,7 +236,9 @@ class WikiChunkLinker:
     # ------------------------------------------------------------------
 
     def _entity_proximity_score(
-        self, primary_entities: set[str], candidate_entities: set[str],
+        self,
+        primary_entities: set[str],
+        candidate_entities: set[str],
     ) -> float:
         """Score entity-level proximity via co-occurrence graph.
 
@@ -241,7 +267,9 @@ class WikiChunkLinker:
         return min(1.0, avg_cooc / max(max_cooc * 0.1, 1.0))
 
     def _resolve_chunk(
-        self, chunk_hash: str, pool_lookup: dict[str, Any],
+        self,
+        chunk_hash: str,
+        pool_lookup: dict[str, Any],
     ) -> Any | None:
         """Look up a chunk object by hash."""
         collection = getattr(self.source, "collection", None)
@@ -259,7 +287,7 @@ class WikiChunkLinker:
         selected: list[Any] = []
         covered: set[str] = set(primary_entities)
         # Work from top-K candidates (capped for performance)
-        pool = scored[:n * 5]
+        pool = scored[: n * 5]
 
         for _ in range(n):
             if not pool:

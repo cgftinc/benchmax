@@ -8,9 +8,10 @@ Guards the non-interactive contract: the verb must forward ``on_limit="error"`` 
 from __future__ import annotations
 
 import argparse
+import json
 
 import benchmax.rag.corpus.postgres.source as src_mod
-from benchmax.cli import corpus
+from benchmax.cli import build_parser, corpus
 from benchmax.rag.corpus.postgres.exceptions import CorpusLimitError
 
 
@@ -114,6 +115,7 @@ class _FakeClient:
     rows: list = []
     deleted: list = []
     delete_ok = True
+    chunks: list = []  # list[CorpusChunk] for browse
 
     def __init__(self, base_url=None):
         pass
@@ -125,11 +127,20 @@ class _FakeClient:
         _FakeClient.deleted.append(corpus_id)
         return _FakeClient.delete_ok
 
+    def list_corpus_chunks(self, corpus_id, limit=500, cursor=None):
+        # Cursor = an integer offset; cap each page at 2 to simulate a backend
+        # whose page size is below the requested limit (exercises the browse loop).
+        start = int(cursor) if cursor else 0
+        page = _FakeClient.chunks[start : start + min(limit, 2)]
+        nxt = start + len(page)
+        return page, (str(nxt) if nxt < len(_FakeClient.chunks) else None)
 
-def _install_client(monkeypatch, *, rows=None, delete_ok=True):
+
+def _install_client(monkeypatch, *, rows=None, delete_ok=True, chunks=None):
     _FakeClient.rows = rows if rows is not None else []
     _FakeClient.deleted = []
     _FakeClient.delete_ok = delete_ok
+    _FakeClient.chunks = chunks if chunks is not None else []
     monkeypatch.setattr(client_mod, "CorpusClient", _FakeClient)
 
 
@@ -149,7 +160,7 @@ def test_corpus_list_shows_names_and_cap(monkeypatch, capsys):
     _install_client(monkeypatch, rows=[_Row("id1", "alpha"), _Row("id2", "beta")])
     assert corpus._cmd_corpus_list(_ns_list()) == 0
     out = capsys.readouterr().out
-    assert "2/5 corpora" in out and "alpha" in out and "beta" in out
+    assert "2/20 corpora" in out and "alpha" in out and "beta" in out
 
 
 def test_corpus_list_empty(monkeypatch, capsys):
@@ -228,3 +239,94 @@ def test_corpus_search_empty(monkeypatch, capsys):
     monkeypatch.setattr(search_mod, "PostgresSearch", _FakeSearch)
     assert corpus._cmd_corpus_search(_ns_search("karpathy", "q")) == 0
     assert "No results" in capsys.readouterr().out
+
+
+# --- corpus browse ----------------------------------------------------------
+
+import benchmax.platform.browser as browser_mod  # noqa: E402
+from benchmax.rag.corpus.postgres.models import CorpusChunk  # noqa: E402
+
+
+def _chunks(n):
+    return [
+        CorpusChunk(id=f"c{i}", content=f"chunk body {i}", metadata={"i": i}, score=1.0 - i / 100)
+        for i in range(n)
+    ]
+
+
+def _ns_browse(corpus_, **kw):
+    base = dict(corpus=corpus_, limit=200, view="auto", out=None, no_open=False, json=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _capture_open(monkeypatch):
+    opened: dict = {}
+    monkeypatch.setattr(browser_mod, "maybe_open_browser", lambda u: opened.setdefault("url", u))
+    return opened
+
+
+def test_corpus_browse_renders_and_opens(monkeypatch, tmp_path, capsys):
+    opened = _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(5))
+    out = tmp_path / "chunks.html"
+    rc = corpus._cmd_corpus_browse(_ns_browse("alpha", out=str(out)))
+    assert rc == 0 and out.exists() and out.stat().st_size > 0
+    printed = capsys.readouterr().out
+    assert "5 chunks" in printed and str(out) in printed
+    # The viewer embeds the chunks as the `chunks` kind.
+    html = out.read_text()
+    start = html.index('id="data">') + len('id="data">')
+    model = json.loads(html[start : html.index("</script>", start)])
+    assert model["kind"] == "chunks" and len(model["rows"]) == 5
+    assert opened["url"] == out.resolve().as_uri()
+
+
+def test_corpus_browse_limit_reports_more(monkeypatch, tmp_path, capsys):
+    _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(5))
+    rc = corpus._cmd_corpus_browse(_ns_browse("alpha", limit=1, out=str(tmp_path / "c.html")))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "1 chunk" in out and "corpus has more" in out
+
+
+def test_corpus_browse_limit_zero_fetches_all(monkeypatch, tmp_path, capsys):
+    _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(5))
+    rc = corpus._cmd_corpus_browse(_ns_browse("alpha", limit=0, out=str(tmp_path / "c.html")))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "5 chunks" in out and "corpus has more" not in out
+
+
+def test_corpus_browse_json_emits_chunks(monkeypatch, capsys):
+    _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(2))
+    rc = corpus._cmd_corpus_browse(_ns_browse("alpha", json=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert '"content": "chunk body 0"' in out and '"id": "c0"' in out
+
+
+def test_corpus_browse_no_open_skips_browser(monkeypatch, tmp_path, capsys):
+    opened = _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(2))
+    rc = corpus._cmd_corpus_browse(_ns_browse("alpha", out=str(tmp_path / "c.html"), no_open=True))
+    assert rc == 0 and "url" not in opened
+
+
+def test_corpus_browse_not_found(monkeypatch, capsys):
+    _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(2))
+    rc = corpus._cmd_corpus_browse(_ns_browse("nope"))
+    assert rc == 1 and "no corpus matching" in capsys.readouterr().err
+
+
+def test_corpus_browse_registered_with_flags():
+    args = build_parser().parse_args(
+        ["corpus", "browse", "alpha", "--limit", "10", "--view", "raw", "--no-open"]
+    )
+    assert args.func is corpus._cmd_corpus_browse
+    assert args.corpus == "alpha" and args.limit == 10 and args.view == "raw"
+    assert args.no_open is True

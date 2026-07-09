@@ -64,6 +64,7 @@ def _ns(**kw):
         max_examples=1000,
         out=".",
         dry_run=False,
+        preview=False,
         json=False,
     )
     base.update(kw)
@@ -89,14 +90,14 @@ def test_traces_no_api_key_is_clean(monkeypatch, capsys):
     assert "Braintrust API key" in capsys.readouterr().err
 
 
-def test_traces_resolves_project_by_name(monkeypatch):
+def test_traces_resolves_project_by_name(monkeypatch, tmp_path):
     _install(
         monkeypatch,
         projects=[TraceProject(id="p1", name="alpha"), TraceProject(id="p2", name="beta")],
     )
     monkeypatch.setenv("BT_API_KEY", "bt-key")
     monkeypatch.delenv("BT_PROJECT_ID", raising=False)
-    assert data._cmd_data_traces(_ns(project="beta", out=".")) == 0
+    assert data._cmd_data_traces(_ns(project="beta", out=str(tmp_path))) == 0
     assert _FakeAdapter.last.fetched_project == "p2"  # type: ignore[attr-defined]
 
 
@@ -166,3 +167,63 @@ def test_traces_dry_run_json_writes_nothing(monkeypatch, tmp_path, capsys):
 def test_traces_dry_run_in_parser():
     args = build_parser().parse_args(["data", "traces", "--project", "x", "--dry-run"])
     assert args.dry_run is True
+
+
+# --- data traces --preview --------------------------------------------------
+
+import benchmax.platform.browser as browser_mod  # noqa: E402
+from benchmax.traces.adapter import NormalizedTrace, TraceMessage  # noqa: E402
+
+
+class _PreviewAdapter(_FakeAdapter):
+    """Like _FakeAdapter but returns real NormalizedTrace objects for preview."""
+
+    def fetch_traces(self, project_id, *, limit=None, cursor=None):
+        self.fetched_project = project_id
+        traces = [
+            NormalizedTrace(
+                id="t-1",
+                messages=[TraceMessage(role="user", content="hi"),
+                          TraceMessage(role="assistant", content="hello")],
+                scores={"helpfulness": 0.9},
+                metadata={"provider": "braintrust"},
+            )
+        ]
+        return (traces, None)
+
+
+def _install_preview(monkeypatch):
+    _FakeAdapter.projects = [TraceProject(id="p1", name="proj")]
+    monkeypatch.setattr(adapter_mod, "BraintrustTraceAdapter", _PreviewAdapter)
+    # If --preview ever fell through to the pipeline, this fake would prove it.
+    monkeypatch.setattr(traces_mod, "TracesPipeline", _FakePipeline)
+
+
+def test_traces_preview_renders_and_skips_dataset(monkeypatch, tmp_path, capsys):
+    _install_preview(monkeypatch)
+    monkeypatch.setenv("BT_API_KEY", "bt-key")
+    monkeypatch.setenv("BT_PROJECT_ID", "p1")
+    opened: dict = {}
+    monkeypatch.setattr(browser_mod, "maybe_open_browser", lambda u: opened.setdefault("url", u))
+
+    rc = data._cmd_data_traces(_ns(out=str(tmp_path), preview=True))
+    assert rc == 0
+    snapshot = tmp_path / "traces_preview.jsonl"
+    html = tmp_path / "traces_preview.html"
+    assert snapshot.exists() and html.exists()
+    # Preview must NOT build the train/eval dataset.
+    assert not (tmp_path / "train_dataset.jsonl").exists()
+    assert not (tmp_path / "eval_dataset.jsonl").exists()
+    # Snapshot is the normalized-trace shape; the viewer embeds it as traces.
+    assert json.loads(snapshot.read_text().splitlines()[0])["id"] == "t-1"
+    body = html.read_text()
+    start = body.index('id="data">') + len('id="data">')
+    model = json.loads(body[start : body.index("</script>", start)])
+    assert model["kind"] == "traces" and model["variant"] == "normalized-trace"
+    assert opened["url"] == html.resolve().as_uri()
+    assert "not built into a dataset" in capsys.readouterr().out
+
+
+def test_traces_preview_registered_flag():
+    args = build_parser().parse_args(["data", "traces", "--project", "x", "--preview"])
+    assert args.preview is True

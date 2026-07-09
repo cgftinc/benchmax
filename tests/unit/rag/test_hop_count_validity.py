@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
@@ -94,7 +95,7 @@ class TestHopCountValidityFilter:
         item = _make_item()
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].is_passed
         meta = result[0].filter_verdict.metadata
         assert meta["hop_count_validated"] is True
@@ -112,7 +113,7 @@ class TestHopCountValidityFilter:
         item = _make_item()
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].needs_refinement
         meta = result[0].filter_verdict.metadata
         assert meta["hop_count_validated"] is False
@@ -131,7 +132,7 @@ class TestHopCountValidityFilter:
         item = _make_item(refinement_count=2)
         ctx = _make_context(max_refinements=2)
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].is_rejected
 
     def test_skips_lookup_type(self):
@@ -139,7 +140,7 @@ class TestHopCountValidityFilter:
         item = _make_item(qa_type="lookup")
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].filter_verdict is None
 
     def test_skips_single_chunk_items(self):
@@ -147,7 +148,7 @@ class TestHopCountValidityFilter:
         item = _make_item(chunks=[{"id": "c1", "metadata": {}, "content": "Only one."}])
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].filter_verdict is None
 
     def test_skips_already_rejected_items(self):
@@ -160,7 +161,7 @@ class TestHopCountValidityFilter:
         item = _make_item(verdict=rejected_verdict)
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].filter_verdict.reason == "grounding_rejected"
 
     @patch.object(HopCountValidityFilter, "_judge_subset")
@@ -188,7 +189,7 @@ class TestHopCountValidityFilter:
         )
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].is_passed
         meta = result[0].filter_verdict.metadata
         assert meta["subsets_tested"] == 3
@@ -208,7 +209,7 @@ class TestHopCountValidityFilter:
         item = _make_item()
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         # No verdict set — item passed through the filter without being flagged.
         assert result[0].filter_verdict is None
 
@@ -225,7 +226,7 @@ class TestHopCountValidityFilter:
         item = _make_item()
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         verdict = result[0].filter_verdict
         assert "redundant" in verdict.reasoning.lower()
         assert verdict.metadata.get("refinement_hint")
@@ -235,7 +236,7 @@ class TestHopCountValidityFilter:
         item = _make_item()
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].filter_verdict is None
 
 
@@ -274,7 +275,7 @@ class TestLopsidedOverlapPreGate:
         filt = self._make_filter_leave_one_out()
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         verdict = result[0].filter_verdict
         assert verdict is not None
         assert verdict.status in ("needs_refinement", "rejected")
@@ -306,7 +307,7 @@ class TestLopsidedOverlapPreGate:
         filt = self._make_filter_leave_one_out()
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         # Lopsided gate should not have fired; judge was called and returned passed.
         verdict = result[0].filter_verdict
         assert verdict is not None
@@ -320,7 +321,7 @@ class TestLopsidedOverlapPreGate:
         filt = self._make_filter_leave_one_out()
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].filter_verdict is None
 
     def test_lopsided_gate_only_in_leave_one_out_mode(self):
@@ -358,7 +359,7 @@ class TestLopsidedOverlapPreGate:
                 "missing_facts": ["X"],
             },
         ):
-            result = filt_primary.evaluate([item], ctx)
+            result = asyncio.run(filt_primary.evaluate([item], ctx))
 
         # In primary_only mode the lopsided gate is skipped;
         # the item should not carry a lopsided verdict.
@@ -389,7 +390,7 @@ class TestDifficultyScoring:
         item = _make_item()
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].is_passed
         meta = result[0].filter_verdict.metadata
         assert "difficulty_score" in meta
@@ -416,11 +417,12 @@ class TestDifficultyScoring:
                 )
             )
             chunks = [
-                {"id": f"c{i}", "metadata": {}, "content": f"Chunk {i}."} for i in range(n_chunks)
+                {"id": f"c{i}", "metadata": {}, "content": f"Chunk {i}."}
+                for i in range(n_chunks)
             ]
             item = _make_item(chunks=chunks)
             ctx = _make_context()
-            result = filt.evaluate([item], ctx)
+            result = asyncio.run(filt.evaluate([item], ctx))
             return result[0].filter_verdict.metadata["difficulty_score"]
 
         score_2hop = run_with_chunks(2)
@@ -452,8 +454,18 @@ class TestRemovedReferenceChunksTracking:
             subset_ids = {c["id"] for c in subset}
             # c3 is redundant: answerable even when c3 is absent (subset = [c1, c2])
             if subset_ids == {"c1", "c2"}:
-                return {"answerable": True, "confidence": 0.9, "reasoning": "c3 redundant", "missing_facts": []}
-            return {"answerable": False, "confidence": 0.9, "reasoning": "Essential", "missing_facts": ["X"]}
+                return {
+                    "answerable": True,
+                    "confidence": 0.9,
+                    "reasoning": "c3 redundant",
+                    "missing_facts": [],
+                }
+            return {
+                "answerable": False,
+                "confidence": 0.9,
+                "reasoning": "Essential",
+                "missing_facts": ["X"],
+            }
 
         mock_judge.side_effect = side_effect
         filt = self._make_filter_leave_one_out()
@@ -466,7 +478,7 @@ class TestRemovedReferenceChunksTracking:
         )
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].is_passed
         # reference_chunks should only contain the 2 essential chunks
         ref_ids = {c["id"] for c in result[0].qa["reference_chunks"]}
@@ -491,6 +503,6 @@ class TestRemovedReferenceChunksTracking:
         item = _make_item()
         ctx = _make_context()
 
-        result = filt.evaluate([item], ctx)
+        result = asyncio.run(filt.evaluate([item], ctx))
         assert result[0].is_passed
         assert result[0].qa.get("removed_reference_chunks") is None

@@ -1,19 +1,15 @@
 [project]
 name = "benchmax"
-version = "0.1.2.dev34"
+version = "0.1.2.dev36"
 description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
 readme = "README.md"
 authors = [{ name = "castie@castform.com" }]
 requires-python = "==3.12.*"
 dependencies = [
-    "aiohttp>=3.13.1",
-    "asyncio>=4.0.0",
     "cloudpickle>=3.0.0",
-    "datasets>=4.0.0",
-    "httpx>=0.27.0",
+    "httpx[http2]>=0.27.0",
     "json-repair>=0.59.10",
     "openai>=2.15.0",
-    "pydantic>=2.0.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -32,29 +28,19 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # Ship the `castform setup` scaffold templates in the wheel (read at runtime via
-# importlib.resources): docs (*.md), the starter run.py + datasets (*.py/*.jsonl),
+# importlib.resources): docs (*.md), the starter main.py + seed datasets (*.py/*.jsonl),
 # and the per-skill SKILL.md. Skill dirs are hyphenated (data, not Python packages).
 "benchmax.cli.scaffold" = ["*.md", "*.py", "*.jsonl", "skills/*/SKILL.md"]
+# Ship the `castform data view` HTML viewer (read at runtime via importlib.resources).
+"benchmax.cli" = ["templates/*.html"]
 
 [project.optional-dependencies]
-mcp = [
-    "fastmcp~=2.12.0",
-    "pyjwt>=2.10.1",
-]
-skypilot = [
-    "skypilot[aws,gcp]~=0.8.1",
-    "pip>=25.3",
-    "msrestazure>=0.6.4.post1",
-]
-excel = ["openpyxl>=3.1.5"]
-excel-mac-windows = ["openpyxl>=3.1.5", "xlwings>=0.33.16"]
-crm = ["python-dateutil>=2.9.0.post0"]
 telestich = ["english_words", "pronouncing", "wordfreq"]
 rag = [
     "keybert>=0.8",
     "langchain-text-splitters>=0.3.0",
     "nest-asyncio>=1.5.0",
-    "ragas>=0.4.3",
+    "pydantic>=2.0.0",
     "ruamel-yaml>=0.19.1",
     "scikit-learn>=1.8.0",
     "sentence-transformers>=5.2.3",
@@ -73,15 +59,3 @@ dev = [
     "python-dotenv>=1.2.1",
     "ruff>=0.14.2",
 ]
-mcp = [
-    "fastmcp~=2.12.0",
-    "pyjwt>=2.10.1",
-]
-skypilot = [
-    "skypilot[aws,gcp]~=0.8.1",       # Add azure only in an Azure-specific env/group
-    "pip>=25.3",                      # Added as needed for skypilot launch
-    "msrestazure>=0.6.4.post1",
-]
-excel = ["openpyxl>=3.1.5"]
-excel-mac-windows = ["openpyxl>=3.1.5", "xlwings>=0.33.16"]
-crm = ["python-dateutil>=2.9.0.post0"]

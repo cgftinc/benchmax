@@ -1,16 +1,13 @@
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from benchmax.envs.example_id import canonical_example_id, make_example
 from benchmax.envs.types import Example, Messages, ToolDefinition
 from benchmax.prompts.tools import render_tools_prompt
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 
 
 class BaseEnv(ABC):
@@ -122,20 +119,19 @@ class BaseEnv(ABC):
         )
 
     @classmethod
-    def load_dataset(
-        cls, dataset_name: str, **kwargs
-    ) -> Tuple[
-        "DatasetDict | Dataset | IterableDatasetDict | IterableDataset", str | None
-    ]:
-        """Load + prepare a dataset for this env.
+    def load_dataset(cls, dataset_name: str, **kwargs) -> tuple[Any, str | None]:
+        """Deprecated dataset hook.
 
-        Default thin-wraps ``datasets.load_dataset``. Override to fetch from
-        custom sources or to materialize a local cache; return the dataset
-        and an optional local path.
+        Castform now expects local JSONL/project datasets. The old default
+        Hugging Face ``datasets.load_dataset`` wrapper was intentionally removed
+        from the base SDK to keep installs light and avoid Arrow/HF-specific
+        behavior. Override this method only for legacy/custom loaders.
         """
-        from datasets import load_dataset
-
-        return load_dataset(dataset_name, **kwargs), None
+        raise NotImplementedError(
+            f"{cls.__name__}.load_dataset is deprecated and has no default "
+            "implementation. Use local JSONL/project datasets, or override "
+            "load_dataset for a custom legacy loader."
+        )
 
     # Methods all environment subclasses must implement.
 
@@ -181,6 +177,31 @@ class BaseEnv(ABC):
         isolation. Returns are paired with ``rollout_ids`` by index.
         """
         return [{} for _ in rollout_ids]
+
+    async def validate_probe(
+        self, eval_dataset: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Optional pre-GPU sanity probe, run in-process by ``castform validate``
+        (and ``python main.py validate``) alongside the remote rollout — no GPU.
+
+        Override to prove something the cheap rollout can't before spending GPU:
+        e.g. a RAG env checks retrieval gold-hit@k over ``eval_dataset``. Return a
+        result dict to render — include a ``summary`` string (shown in the
+        scorecard) and an ``ok`` bool (✓/⚠); extra keys pass through to ``--json``.
+        Return ``None`` to skip. Raising is caught and rendered as "skipped"; a
+        probe must never fail the run. Default is a no-op (returns ``None``).
+        """
+        return None
+
+    def estimate_rollout_tokens(self) -> Optional[int]:
+        """Optional: a worst-case estimate of ONE rollout's total token count, for
+        the pre-launch truncation guard (``castform launch`` warns if it exceeds
+        ``max_rollout_len``, since a truncated rollout is dropped from the loss).
+
+        Env-type-aware — a search env sizes it off its search budget × per-result
+        cap, a judge env off its trace length. Return ``None`` to skip (the launch
+        guard falls back to a coarse per-turn estimate). Default is a no-op."""
+        return None
 
     async def get_system_prompt(self, add_tool_defs: bool = False) -> str:
         """Get system prompt. To add tool definitions, set add_tool_defs to True."""

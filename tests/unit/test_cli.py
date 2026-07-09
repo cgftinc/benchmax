@@ -9,7 +9,7 @@ import json
 import pytest
 
 from benchmax import cli
-from benchmax.platform import credentials, login
+from benchmax.platform import browser, credentials, login
 from benchmax.platform.device_auth import DeviceAuthError
 
 
@@ -49,7 +49,7 @@ def stub_flow(monkeypatch):
     )
     # This test is about session writing, not browser UX — stub the open so it
     # never launches a real browser (e.g. under `pytest -s`, where stdin is a tty).
-    monkeypatch.setattr(login, "_maybe_open_browser", lambda _u: None)
+    monkeypatch.setattr(login, "maybe_open_browser", lambda _u: None)
     return captured
 
 
@@ -130,40 +130,40 @@ class _FakeStdin:
 
 
 def test_maybe_open_browser_opens_on_tty(monkeypatch):
-    monkeypatch.setattr(login.sys, "stdin", _FakeStdin(True))
+    monkeypatch.setattr(browser.sys, "stdin", _FakeStdin(True))
     monkeypatch.delenv("SSH_CONNECTION", raising=False)
     monkeypatch.delenv("CASTFORM_NO_BROWSER", raising=False)
     opened = {}
-    monkeypatch.setattr(login.webbrowser, "open", lambda u: opened.setdefault("url", u))
-    login._maybe_open_browser("https://app.x/device?user_code=ABCD")
+    monkeypatch.setattr(browser.webbrowser, "open", lambda u: opened.setdefault("url", u))
+    browser.maybe_open_browser("https://app.x/device?user_code=ABCD")
     assert opened["url"] == "https://app.x/device?user_code=ABCD"
 
 
 def test_maybe_open_browser_skips_over_ssh(monkeypatch):
-    monkeypatch.setattr(login.sys, "stdin", _FakeStdin(True))
+    monkeypatch.setattr(browser.sys, "stdin", _FakeStdin(True))
     monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
     monkeypatch.delenv("CASTFORM_NO_BROWSER", raising=False)
     opened = {}
-    monkeypatch.setattr(login.webbrowser, "open", lambda u: opened.setdefault("url", u))
-    login._maybe_open_browser("https://app.x/device")
+    monkeypatch.setattr(browser.webbrowser, "open", lambda u: opened.setdefault("url", u))
+    browser.maybe_open_browser("https://app.x/device")
     assert "url" not in opened
 
 
 def test_maybe_open_browser_skips_non_interactive(monkeypatch):
-    monkeypatch.setattr(login.sys, "stdin", _FakeStdin(False))
+    monkeypatch.setattr(browser.sys, "stdin", _FakeStdin(False))
     monkeypatch.delenv("SSH_CONNECTION", raising=False)
     monkeypatch.delenv("CASTFORM_NO_BROWSER", raising=False)
     opened = {}
-    monkeypatch.setattr(login.webbrowser, "open", lambda u: opened.setdefault("url", u))
-    login._maybe_open_browser("https://app.x/device")
+    monkeypatch.setattr(browser.webbrowser, "open", lambda u: opened.setdefault("url", u))
+    browser.maybe_open_browser("https://app.x/device")
     assert "url" not in opened
 
 
 def test_maybe_open_browser_opt_out(monkeypatch):
-    monkeypatch.setattr(login.sys, "stdin", _FakeStdin(True))
+    monkeypatch.setattr(browser.sys, "stdin", _FakeStdin(True))
     monkeypatch.delenv("SSH_CONNECTION", raising=False)
     monkeypatch.setenv("CASTFORM_NO_BROWSER", "1")
     opened = {}
-    monkeypatch.setattr(login.webbrowser, "open", lambda u: opened.setdefault("url", u))
-    login._maybe_open_browser("https://app.x/device")
+    monkeypatch.setattr(browser.webbrowser, "open", lambda u: opened.setdefault("url", u))
+    browser.maybe_open_browser("https://app.x/device")
     assert "url" not in opened
