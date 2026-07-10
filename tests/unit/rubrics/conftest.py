@@ -36,6 +36,8 @@ def _stub_client_factory(responses: List[str] | Callable[..., str]):
             return _mk_response(responses(kwargs))
 
         client.chat.completions.create = AsyncMock(side_effect=create)
+        # _judge_call_with_retry closes the client after every attempt.
+        client.close = AsyncMock()
         return client
 
     factory.calls = calls  # type: ignore[attr-defined]
@@ -48,8 +50,8 @@ def stub_openai(monkeypatch):
 
     def install(responses):
         factory = _stub_client_factory(responses)
-        monkeypatch.setattr("benchmax.rubrics.rubric.AsyncOpenAI", factory)
-        monkeypatch.setattr("benchmax.rubrics.adaptive.AsyncOpenAI", factory)
+        # Construction now lives in _utils._judge_call_with_retry, so patch there.
+        monkeypatch.setattr("benchmax.rubrics._utils.AsyncOpenAI", factory)
         # The judge clients resolve their bearer through resolve_judge_key ->
         # platform_bearer. With no platform env that raises by design; stub it
         # so these logic tests don't need credentials.

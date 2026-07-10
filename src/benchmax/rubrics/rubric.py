@@ -1,12 +1,10 @@
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 from openai import AsyncOpenAI
 
-from benchmax.platform.credentials import resolve_judge_key
-
-from ._utils import _extract_json
+from ._utils import _extract_json, _judge_call_with_retry
 from .prompts import (
     RUBRIC_EVALUATION_PROMPT,
     RUBRIC_RANGED_EVALUATION_PROMPT,
@@ -40,6 +38,8 @@ async def evaluate_single_rubric(
     api_key: str = "",
     timeout: Optional[float] = None,
     enable_logging: bool = True,
+    *,
+    token_provider: Optional[Callable[[], str]] = None,
 ) -> Dict[str, Any]:
     """
     Evaluate a single response against a single rubric.
@@ -91,16 +91,15 @@ async def evaluate_single_rubric(
             response=response,
         )
 
-    # Explicit api_key wins; otherwise resolve the Castform platform credential
+    # The client is built inside _judge_call_with_retry, once per attempt, so its
+    # credential re-resolves on an auth retry. Explicit api_key (or token_provider)
+    # wins; otherwise resolve_judge_key resolves the Castform platform credential
     # seam (ACT_AS_TOKEN_PATH in training, PLATFORM_API_KEY in playground /
-    # self-serve) — the same surface the search clients use. Falls back to None
-    # (→ OPENAI_API_KEY) when no platform credential is present, for direct use.
-    client = AsyncOpenAI(
-        base_url=base_url, api_key=resolve_judge_key(api_key, base_url), max_retries=3
-    )
-
+    # self-serve), falling back to OPENAI_API_KEY for direct use.
     content = ""
-    try:
+
+    async def _call(client: AsyncOpenAI) -> Dict[str, Any]:
+        nonlocal content
         resp = await client.chat.completions.create(
             model=model_name,
             messages=[{"role": "user", "content": prompt}],
@@ -134,11 +133,27 @@ async def evaluate_single_rubric(
             )
         return out
 
+    try:
+        return await _judge_call_with_retry(base_url, api_key, token_provider, _call)
     except Exception as e:
+        # Loud: a judge failure must never masquerade as a low reward. The
+        # error/error_type keys let callers surface a _judge_error metric.
+        logger.error(
+            "rubric '%s' evaluation failed after retries: %s: %s",
+            rubric.title,
+            type(e).__name__,
+            e,
+        )
         print(
             f"Error evaluating rubric '{rubric.title}': {e}\njudge output:\n{content}"
         )
-        return {"score": 0, "reasoning": f"Error: {e}", "llm_output": content}
+        return {
+            "score": 0,
+            "reasoning": f"Error: {e}",
+            "llm_output": content,
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
 
 
 def _monotonic_seams(seams: List[tuple]) -> List[tuple]:
@@ -201,6 +216,7 @@ async def evaluate_rubric_ranking(
     anchors: Optional[List[str]] = None,
     band_edges: Optional[List[float]] = None,
     anchor_labels: Optional[List[str]] = None,
+    token_provider: Optional[Callable[[], str]] = None,
 ) -> Dict[str, Any]:
     """
     Rank N responses against a single rubric in one judge call and convert the
@@ -294,14 +310,12 @@ async def evaluate_rubric_ranking(
         n_minus_1=max_local,
     )
 
-    # Explicit api_key wins; otherwise resolve the Castform platform credential
-    # seam — see resolve_judge_key / evaluate_single_rubric.
-    client = AsyncOpenAI(
-        base_url=base_url, api_key=resolve_judge_key(api_key, base_url), max_retries=3
-    )
-
+    # Client built per attempt inside _judge_call_with_retry (re-resolves the
+    # credential on an auth retry); see evaluate_single_rubric.
     content = ""
-    try:
+
+    async def _call(client: AsyncOpenAI) -> Dict[str, Any]:
+        nonlocal content
         resp = await client.chat.completions.create(
             model=model_name,
             messages=[{"role": "user", "content": prompt}],
@@ -453,11 +467,22 @@ async def evaluate_rubric_ranking(
                 poems_fmt,
             )
         return out
+
+    try:
+        return await _judge_call_with_retry(base_url, api_key, token_provider, _call)
     except Exception as e:
+        logger.error(
+            "rubric ranking '%s' failed after retries: %s: %s",
+            rubric.title,
+            type(e).__name__,
+            e,
+        )
         print(f"Error ranking rubric '{rubric.title}': {e}\njudge output:\n{content}")
         return {
             "scores": scores,
             "ranking": [],
             "reasoning": f"Error: {e}",
             "llm_output": content,
+            "error": str(e),
+            "error_type": type(e).__name__,
         }

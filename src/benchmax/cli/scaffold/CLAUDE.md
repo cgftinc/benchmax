@@ -98,11 +98,12 @@ Rewards are the training signal; robust rewards matter more than anything else.
   need tie-breaking resolution.
 <!-- rag:start -->
 - **For RAG, audit the reward before launch** (`castform validate --reward-audit`).
-  Extract only a committed `<answer>...</answer>` block (never score the model's
-  whole reasoning as an answer), match citations by **id-hash OR title-path** across
-  corpus source formats, keep an **ungated** `retrieval_hit` (credit finding gold
-  even on a wrong answer), and prefer a deterministic length term over an LLM
-  conciseness judge.
+  The `SearchEnv` default already implements the audited shape: it extracts only a
+  committed `<answer>...</answer>` block (never scores the model's whole reasoning
+  as an answer), matches citations by **id-hash OR title-path** across corpus
+  source formats, keeps an **ungated** `retrieval_hit` (credit for citing gold even
+  on a wrong answer), and uses a deterministic length term instead of an LLM
+  conciseness judge. Verify on real transcripts that it fits your corpus.
 <!-- rag:end -->
 
 ## Dependencies

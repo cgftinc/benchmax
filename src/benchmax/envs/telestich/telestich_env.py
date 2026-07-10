@@ -999,18 +999,22 @@ then stop."""
             return await self._quality_elo(prompt, poems, anchors, band_edges)
 
         async def _score_batch(batch: list[str]) -> list[float]:
-            res = await evaluate_rubric_ranking(
-                rubric=QUALITY_RUBRIC,
-                question=prompt,
-                responses=batch,
-                model_name=JUDGE_MODEL,
-                base_url=self._judge_base_url,
-                timeout=self._judge_timeout,
-                anchors=anchors or None,
-                band_edges=band_edges or None,
-                anchor_labels=anchor_labels or None,
-            )
-            return res["scores"]
+            try:
+                res = await evaluate_rubric_ranking(
+                    rubric=QUALITY_RUBRIC,
+                    question=prompt,
+                    responses=batch,
+                    model_name=JUDGE_MODEL,
+                    base_url=self._judge_base_url,
+                    timeout=self._judge_timeout,
+                    anchors=anchors or None,
+                    band_edges=band_edges or None,
+                    anchor_labels=anchor_labels or None,
+                )
+                return res["scores"]
+            except Exception:
+                logger.exception("[TelestichEnv] quality batch failed; scoring 0s")
+                return [0.0] * len(batch)
 
         batches = [
             poems[i : i + JUDGE_BATCH] for i in range(0, len(poems), JUDGE_BATCH)

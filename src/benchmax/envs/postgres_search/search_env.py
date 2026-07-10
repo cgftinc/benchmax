@@ -1,11 +1,20 @@
 """SearchEnv — multi-component reward search environment for RL training.
 
-Provides 5 reward components:
-1. **answer_correctness** — LLM judge scores factual accuracy (0, 0.5, 1.0)
-2. **conciseness** — LLM judge scores brevity (gated on correctness)
-3. **citation_recall** — fraction of reference sources cited (gated on correctness)
-4. **citation_precision** — fraction of cited sources that are relevant (gated on correctness)
-5. **search_efficiency** — shaped bonus based on search count vs. gold chunk count
+The default reward is the AUDITED 4-component shape (one LLM judge call, the rest
+deterministic):
+1. **answer_correctness** — LLM judge scores factual accuracy (the GATE)
+2. **retrieval_hit** — fraction of gold sources cited in the final ``<answer>``
+   block (UNGATED: citing gold is rewarded even on a wrong answer, so the model
+   keeps learning to search). An answer-side proxy for retrieval — raw tool
+   traffic is never inspected.
+3. **citation_precision** — fraction of cited sources that are gold (gated on
+   correctness)
+4. **answer_length** — deterministic brevity term (gated on correctness; replaces
+   the LLM conciseness judge)
+
+The old components stay available as opt-in helpers (:data:`CONCISENESS_RUBRIC`,
+:func:`judge_answer_quality`, :func:`score_search_efficiency`) for subclasses that
+override ``compute_reward``.
 """
 
 from __future__ import annotations
@@ -22,7 +31,6 @@ from benchmax.envs.base_env import BaseEnv
 from benchmax.envs.example_id import make_example
 from benchmax.envs.reward_helpers import (
     clip01,
-    count_search_calls,
     extract_completion_text,
     search_within_budget,
 )
@@ -107,6 +115,8 @@ CORRECTNESS_RUBRIC = Rubric(
     },
 )
 
+# Opt-in rubric — NOT part of the default reward (brevity is the deterministic
+# answer_length term). Pass it to `judge_answer_quality` from a custom reward.
 CONCISENESS_RUBRIC = Rubric(
     title="Answer conciseness",
     description=(
@@ -119,6 +129,11 @@ CONCISENESS_RUBRIC = Rubric(
 MAX_TOOL_OUTPUT_CHARS = 10000
 TOOL_OUTPUT_TRUNCATION_SUFFIX = "\n...[truncated due to character limit]"
 SEARCH_EFFICIENCY_DECAY_RATE = 0.2
+
+# Deterministic brevity cap: an answer at/above this many chars earns no length
+# bonus; shorter (still-correct) answers earn more. Dense signal on every correct
+# rollout, no second LLM call.
+ANSWER_LENGTH_CAP = 600
 
 
 # ----------------------------------------------------------------------------
@@ -143,10 +158,13 @@ async def judge_answer_quality(
 ) -> tuple[float, float]:
     """LLM judge → ``(correctness, conciseness)``, both in [0, 1].
 
-    Empty response → ``(0.0, 0.0)``. The two rubric calls run concurrently. This
-    is the heavy HTTP leg of the reward — a scaffold ``main.py`` calls it as a
-    one-liner and does the weighting/gating arithmetic itself. Pass custom
-    rubrics to change what "correct"/"concise" mean.
+    Opt-in helper — NOT called by the default reward, which makes ONE
+    ``evaluate_single_rubric`` call (correctness only) and scores brevity
+    deterministically. Use this from a custom ``compute_reward`` when you want
+    a judged conciseness component too.
+
+    Empty response → ``(0.0, 0.0)``. The two rubric calls run concurrently.
+    Pass custom rubrics to change what "correct"/"concise" mean.
     """
     if not response.strip():
         return (0.0, 0.0)
@@ -183,12 +201,25 @@ async def judge_answer_quality(
 
 
 def canonicalize_source_id(source_id: str) -> str:
-    """Normalize a citation/source id (default: whitespace-strip → exact match).
+    """Normalize a citation/source id by whitespace-strip → exact match.
 
-    Pass a custom callable to :func:`score_citations` for corpus-specific,
-    robust matching (id-hash / title / path). The default is exact-path *by
-    design* — the design-environment skill covers when to override it."""
+    This is the strict matcher and the default for the free citation helpers
+    (:func:`parse_citations` / :func:`extract_reference_ids` /
+    :func:`score_citations`). :class:`SearchEnv` itself defaults to the loose
+    :func:`canonicalize_source_id_loose`; pass ``canonicalize=`` (or override
+    ``_canonicalize_id``) to choose per corpus."""
     return str(source_id or "").strip()
+
+
+def canonicalize_source_id_loose(source_id: str) -> str:
+    """Match citations by id-hash OR title-path: lowercase, drop any directory
+    prefix and file extension, so ``docs/Geography.md``, ``geography.md`` and a
+    bare ``geography`` canonicalize alike (dup-heavy Notion/GitLab exports).
+    Apply symmetrically to the cited id and the gold ``metadata.file``.
+
+    The :class:`SearchEnv` default canonicalizer."""
+    s = str(source_id or "").strip().lower().rsplit("/", 1)[-1]
+    return s.rsplit(".", 1)[0] if "." in s else s
 
 
 def parse_citations(
@@ -253,6 +284,10 @@ def score_search_efficiency(
 ) -> float:
     """Bonus for a CORRECT answer that doesn't over-search past ~``ref_chunks + 2``.
 
+    Opt-in helper — NOT part of the default reward (a "fewer searches" bonus can
+    fight multi-hop exploration; the hard ``max_search_calls`` cap covers safety).
+    Call it from a custom ``compute_reward`` to re-enable search shaping.
+
     ``0`` when the answer is incorrect (``correctness <= 0``) or the run is over
     the hard ``max_search_calls`` budget. ``correctness`` is the raw judge score
     (it both gates and scales)."""
@@ -267,9 +302,15 @@ def score_search_efficiency(
 
 
 class SearchEnv(BaseEnv):
-    """Backend-agnostic search environment with multi-component rewards.
+    """Backend-agnostic search environment with the audited 4-component reward.
 
-    Requires an LLM judge for correctness and conciseness scoring.
+    ``answer_correctness`` (one LLM judge call) is the GATE: every component
+    EXCEPT ``retrieval_hit`` is × correctness, so brevity/precision can't be
+    earned on a wrong answer. ``retrieval_hit`` is UNGATED — citing a gold
+    source is rewarded even when the answer is wrong. ``answer_length`` is a
+    deterministic brevity term (no second judge call).
+
+    Requires an LLM judge for correctness scoring.
 
     Args:
         search: A :class:`SearchClient` instance (pickle-safe).
@@ -278,13 +319,18 @@ class SearchEnv(BaseEnv):
         judge_token_provider: Optional; resolves the judge bearer per call.
             Defaults to ``platform_bearer`` (the credential seam).
         judge_timeout: Timeout for judge API calls.
-        w_correctness: Weight for correctness reward component.
-        w_conciseness: Weight for conciseness reward component.
-        w_citation_recall: Weight for citation recall component.
-        w_citation_precision: Weight for citation precision component.
-        w_search_efficiency: Weight for search efficiency reward component.
-        max_search_calls: Hard search call budget (0 reward if exceeded).
+        w_correctness: Weight for the correctness component (the gate).
+        w_retrieval_hit: Weight for the UNGATED retrieval_hit component (recall
+            of gold sources among the final-answer citations — a proxy for
+            retrieval; tool traffic is not inspected).
+        w_citation_precision: Weight for citation precision (gated).
+        w_length: Weight for the deterministic brevity component (gated).
+        max_search_calls: Hard search call budget (advertised in the prompt).
     """
+
+    # The gate component — `castform validate --reward-audit` judges the
+    # secondary components for redundancy against this key.
+    PRIMARY_REWARD_KEY = "answer_correctness"
 
     SYSTEM_PROMPT_TEMPLATE = """\
 Answer the given question by searching over {corpus_description}.
@@ -342,13 +388,25 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         judge_token_provider: str | TokenProvider | None = None,
         judge_timeout: float = 30.0,
         w_correctness: float = 1.0,
-        w_conciseness: float = 0.5,
-        w_citation_recall: float = 0.5,
-        w_citation_precision: float = 0.5,
-        w_search_efficiency: float = 0.1,
+        w_retrieval_hit: float = 0.3,
+        w_citation_precision: float = 0.3,
+        w_length: float = 0.2,
         max_search_calls: int = 10,
         **kwargs: Any,
     ) -> None:
+        # Fail loudly on the pre-audit weight kwargs (**kwargs would otherwise
+        # swallow them silently and the caller's weights would be no-ops).
+        removed = {"w_conciseness", "w_citation_recall", "w_search_efficiency"} & set(
+            kwargs
+        )
+        if removed:
+            raise TypeError(
+                f"SearchEnv no longer accepts {sorted(removed)}; the default reward "
+                "is the audited 4-component shape (answer_correctness / "
+                "retrieval_hit / citation_precision / answer_length). Use "
+                "w_retrieval_hit / w_length, or override compute_reward with the "
+                "opt-in helpers (judge_answer_quality, score_search_efficiency)."
+            )
         if not judge_base_url or not judge_model:
             raise ValueError(
                 "SearchEnv requires judge_base_url and judge_model; both must be "
@@ -367,10 +425,9 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         )
         self._judge_timeout = judge_timeout
         self._w_correctness = w_correctness
-        self._w_conciseness = w_conciseness
-        self._w_citation_recall = w_citation_recall
+        self._w_retrieval_hit = w_retrieval_hit
         self._w_citation_precision = w_citation_precision
-        self._w_search_efficiency = w_search_efficiency
+        self._w_length = w_length
         self._max_search_calls = max_search_calls
 
         # Determine default search mode.
@@ -455,19 +512,25 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         task: dict[str, Any] | None,
         **kwargs: Any,
     ) -> dict[str, float]:
-        """Compute 5-component reward."""
+        """The audited 4-component reward.
+
+        ``answer_correctness`` (from the judge rubric) is the GATE: every
+        component EXCEPT ``retrieval_hit`` is × correctness, so brevity/precision
+        can't be earned on a wrong answer. ``retrieval_hit`` is UNGATED — citing
+        a gold source is rewarded even when the answer is wrong.
+        """
         zeros = self._zero_rewards()
         try:
-            text = extract_completion_text(messages)
-            if not text.strip():
+            # Strict extraction: no committed <answer> → "" → scores 0 (the
+            # model's reasoning is never scored as the answer).
+            answer = _extract_answer_block(extract_completion_text(messages))
+            if not answer.strip():
                 return zeros
 
             t = task or {}
-            answer = _extract_answer_block(text)
             prompt = str(t.get("question") or t.get("prompt") or "")
             gt_str = str(t.get("ground_truth") or "")
             reference_chunks = t.get("reference_chunks", [])
-            reference_chunk_count = len(reference_chunks)
 
             logger.info(
                 "[SearchEnv] Q: %s\n  GT: %s\n  A: %s",
@@ -476,46 +539,48 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
                 answer[:200],
             )
 
-            # 1. Correctness + Conciseness (concurrent judge calls)
-            correctness_raw, conciseness_raw = await self._judge_answer_quality(
-                question=prompt,
-                ground_truth=gt_str,
-                response=answer,
-            )
+            # 1. Correctness judge — ONE rubric call. A judge failure means "not
+            # verified correct" (0) and must NOT zero the ungated retrieval
+            # signal below, so it's caught locally.
+            try:
+                result = await evaluate_single_rubric(
+                    rubric=CORRECTNESS_RUBRIC,
+                    question=prompt,
+                    ground_truth=gt_str,
+                    response=answer,
+                    model_name=self._judge_model,
+                    base_url=self._judge_base_url,
+                    api_key=self._judge_token_provider(),
+                    timeout=self._judge_timeout,
+                )
+                correctness = clip01(result.get("score", 0.0))
+            except Exception:
+                logger.warning("[SearchEnv] correctness judge failed; scoring 0")
+                correctness = 0.0
 
-            # Gate every secondary bonus on correctness (0 / 0.5 / 1.0): a wrong
-            # or missing answer earns no citation/brevity reward, and a partial
-            # answer earns only partial bonuses — so brevity/citations can't
-            # trade off against being right. (search_efficiency already scales
-            # this way.)
-            correctness = clip01(correctness_raw)
+            # 2. Citations (recall → the UNGATED retrieval_hit; precision gated).
+            # retrieval_hit is an answer-side proxy: gold sources cited in the
+            # final <answer>, NOT what the search tool actually returned.
+            recall, precision = self._score_citations(answer, reference_chunks)
+            # 3. Deterministic brevity: shorter (still-correct) answers score higher.
+            length_score = clip01(1.0 - len(answer) / ANSWER_LENGTH_CAP)
+
             rewards: dict[str, float] = {
                 "answer_correctness": self._w_correctness * correctness,
-                "conciseness": self._w_conciseness
-                * clip01(conciseness_raw)
+                "retrieval_hit": self._w_retrieval_hit * recall,  # UNGATED
+                "citation_precision": self._w_citation_precision
+                * precision
                 * correctness,
+                "answer_length": self._w_length * length_score * correctness,
             }
-
-            # 2. Citation recall / precision (gated on correctness)
-            recall, precision = self._score_citations(answer, reference_chunks)
-            rewards["citation_recall"] = self._w_citation_recall * recall * correctness
-            rewards["citation_precision"] = (
-                self._w_citation_precision * precision * correctness
-            )
-
-            # 3. Search efficiency (shaped by search count vs. gold chunk baseline)
-            calls = count_search_calls(messages)
-            rewards["search_efficiency"] = self._score_search_efficiency(
-                calls=calls,
-                correctness_raw=correctness_raw,
-                reference_chunk_count=reference_chunk_count,
-            )
 
             logger.info("[SearchEnv] rewards=%s", rewards)
             return rewards
 
-        except (KeyError, ValueError, TypeError, AttributeError) as exc:
-            logger.exception("[SearchEnv] compute_reward failed: %s", exc)
+        except Exception:
+            # A reward bug must not crash the rollout — score 0, but LOG it: a
+            # silent all-zero reward is the hardest reward bug to diagnose.
+            logger.exception("[SearchEnv] compute_reward failed")
             return zeros
 
     # ------------------------------------------------------------------
@@ -597,7 +662,10 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         response: str,
     ) -> tuple[float, float]:
         """Evaluate correctness + conciseness — delegates to the free
-        :func:`judge_answer_quality` helper with this env's judge config."""
+        :func:`judge_answer_quality` helper with this env's judge config.
+
+        Opt-in: the default reward makes ONE correctness rubric call instead;
+        call this from a custom ``compute_reward`` for a judged conciseness."""
         return await judge_answer_quality(
             question=question,
             ground_truth=ground_truth,
@@ -611,23 +679,6 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     # ------------------------------------------------------------------
     # Citation scoring
     # ------------------------------------------------------------------
-
-    def _score_search_efficiency(
-        self,
-        *,
-        calls: int,
-        correctness_raw: float,
-        reference_chunk_count: int,
-    ) -> float:
-        """Reward correct answers that don't search past the gold-chunk baseline —
-        delegates to the free :func:`score_search_efficiency` helper."""
-        return score_search_efficiency(
-            calls=calls,
-            correctness=correctness_raw,
-            reference_chunk_count=reference_chunk_count,
-            max_search_calls=self._max_search_calls,
-            weight=self._w_search_efficiency,
-        )
 
     def _score_citations(
         self,
@@ -654,8 +705,11 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         return parse_citations(text, canonicalize=self._canonicalize_id)
 
     def _canonicalize_id(self, source_id: str) -> str:
-        """Normalize a source ID. Override for corpus-specific rules."""
-        return canonicalize_source_id(source_id)
+        """Normalize a source ID (default: the loose id-hash OR title-path
+        matcher, :func:`canonicalize_source_id_loose`). Override for
+        corpus-specific rules — e.g. return :func:`canonicalize_source_id`
+        for strict exact-path matching."""
+        return canonicalize_source_id_loose(source_id)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -664,8 +718,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     def _zero_rewards(self) -> dict[str, float]:
         return {
             "answer_correctness": 0.0,
-            "conciseness": 0.0,
-            "citation_recall": 0.0,
+            "retrieval_hit": 0.0,
             "citation_precision": 0.0,
-            "search_efficiency": 0.0,
+            "answer_length": 0.0,
         }

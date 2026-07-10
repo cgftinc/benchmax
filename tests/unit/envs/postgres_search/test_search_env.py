@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import pickle
 from unittest.mock import AsyncMock, patch
 
@@ -116,9 +115,23 @@ class TestInit:
         env = _make_env()
         assert env._max_search_calls == 10
 
-    def test_w_search_efficiency_defaults_to_point_one(self):
+    def test_default_weights_are_the_audited_shape(self):
         env = _make_env()
-        assert env._w_search_efficiency == pytest.approx(0.1)
+        assert env._w_correctness == pytest.approx(1.0)
+        assert env._w_retrieval_hit == pytest.approx(0.3)
+        assert env._w_citation_precision == pytest.approx(0.3)
+        assert env._w_length == pytest.approx(0.2)
+
+    def test_removed_weight_kwargs_fail_loudly(self):
+        # The pre-audit weights are GONE, not aliased. **kwargs would swallow
+        # them silently (caller's weights become no-ops), so __init__ rejects
+        # them explicitly.
+        for kwarg in ("w_conciseness", "w_citation_recall", "w_search_efficiency"):
+            with pytest.raises(TypeError, match="no longer accepts"):
+                _make_env(**{kwarg: 0.5})
+
+    def test_primary_reward_key_is_answer_correctness(self):
+        assert SearchEnv.PRIMARY_REWARD_KEY == "answer_correctness"
 
     def test_subclass_can_set_plain_system_prompt(self):
         class CustomEnv(SearchEnv):
@@ -233,7 +246,7 @@ class TestComputeReward:
     )
     def test_all_components_returned(self, mock_eval):
         mock_eval.return_value = {"score": 0.8}
-        env = _make_env(w_correctness=1.0, w_conciseness=0.5)
+        env = _make_env()
         result = asyncio.run(
             env.compute_reward(
                 "r1",
@@ -247,11 +260,14 @@ class TestComputeReward:
                 },
             )
         )
-        assert "answer_correctness" in result
-        assert "conciseness" in result
-        assert "citation_recall" in result
-        assert "citation_precision" in result
-        assert "search_efficiency" in result
+        # Exactly the audited 4-component shape — no conciseness/recall/
+        # search_efficiency keys in the default reward.
+        assert set(result) == {
+            "answer_correctness",
+            "retrieval_hit",
+            "citation_precision",
+            "answer_length",
+        }
 
     @patch(
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
@@ -273,8 +289,8 @@ class TestComputeReward:
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
-    def test_conciseness_gated_on_correctness(self, mock_eval):
-        # Correctness=0, conciseness should also be 0
+    def test_answer_length_gated_on_correctness(self, mock_eval):
+        # Correctness=0 → the brevity term is 0 (short-but-wrong earns nothing).
         mock_eval.return_value = {"score": 0.0}
         env = _make_env()
         result = asyncio.run(
@@ -284,7 +300,54 @@ class TestComputeReward:
                 {"question": "Q?", "ground_truth": "right"},
             )
         )
-        assert result["conciseness"] == 0.0
+        assert result["answer_length"] == 0.0
+
+    @patch(
+        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
+        new_callable=AsyncMock,
+    )
+    def test_answer_length_is_deterministic_brevity(self, mock_eval):
+        # Correct + short → w_length * (1 - len/ANSWER_LENGTH_CAP); correct +
+        # over the cap → clamps to 0. No second judge call is ever made.
+        mock_eval.return_value = {"score": 1.0}
+        env = _make_env(w_length=1.0)
+        short = "42"
+        result = asyncio.run(
+            env.compute_reward(
+                "r1",
+                _msgs(f"<answer>{short}</answer>"),
+                {"question": "Q?", "ground_truth": "42"},
+            )
+        )
+        assert result["answer_length"] == pytest.approx(1.0 - len(short) / 600)
+        assert mock_eval.await_count == 1  # ONE judge call (correctness only)
+
+        long = "x" * 700  # >= ANSWER_LENGTH_CAP
+        result = asyncio.run(
+            env.compute_reward(
+                "r1",
+                _msgs(f"<answer>{long}</answer>"),
+                {"question": "Q?", "ground_truth": "42"},
+            )
+        )
+        assert result["answer_length"] == 0.0
+
+    @patch(
+        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
+        new_callable=AsyncMock,
+    )
+    def test_no_answer_tag_short_circuits_before_judge(self, mock_eval):
+        # Strict extraction: no committed <answer> → zeros, judge never called.
+        env = _make_env()
+        result = asyncio.run(
+            env.compute_reward(
+                "r1",
+                _msgs("I think it's 42 but I never commit an answer tag"),
+                {"question": "Q?", "ground_truth": "42"},
+            )
+        )
+        assert all(v == 0.0 for v in result.values())
+        mock_eval.assert_not_awaited()
 
     @patch(
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
@@ -292,7 +355,7 @@ class TestComputeReward:
     )
     def test_citation_exact_match(self, mock_eval):
         mock_eval.return_value = {"score": 1.0}
-        env = _make_env(w_citation_recall=1.0, w_citation_precision=1.0)
+        env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
         result = asyncio.run(
             env.compute_reward(
                 "r1",
@@ -309,7 +372,32 @@ class TestComputeReward:
                 },
             )
         )
-        assert result["citation_recall"] == pytest.approx(1.0)
+        assert result["retrieval_hit"] == pytest.approx(1.0)
+        assert result["citation_precision"] == pytest.approx(1.0)
+
+    @patch(
+        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
+        new_callable=AsyncMock,
+    )
+    def test_citation_matches_title_path_variant_by_default(self, mock_eval):
+        # The default canonicalizer is LOOSE (id-hash OR title-path): a cited
+        # 'docs/Statute_A.md' matches a bare 'statute_a' gold file id.
+        mock_eval.return_value = {"score": 1.0}
+        env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
+        result = asyncio.run(
+            env.compute_reward(
+                "r1",
+                _msgs("<answer>Found it [Source: docs/Statute_A.md]</answer>"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "answer",
+                    "reference_chunks": [
+                        {"content": "...", "metadata": {"file": "statute_a"}},
+                    ],
+                },
+            )
+        )
+        assert result["retrieval_hit"] == pytest.approx(1.0)
         assert result["citation_precision"] == pytest.approx(1.0)
 
     @patch(
@@ -318,7 +406,7 @@ class TestComputeReward:
     )
     def test_citation_partial_recall(self, mock_eval):
         mock_eval.return_value = {"score": 1.0}
-        env = _make_env(w_citation_recall=1.0, w_citation_precision=1.0)
+        env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
         result = asyncio.run(
             env.compute_reward(
                 "r1",
@@ -333,28 +421,28 @@ class TestComputeReward:
                 },
             )
         )
-        assert result["citation_recall"] == pytest.approx(0.5)
+        assert result["retrieval_hit"] == pytest.approx(0.5)
         assert result["citation_precision"] == pytest.approx(1.0)
 
     @patch(
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
-    def test_secondary_rewards_scaled_by_partial_correctness(self, mock_eval):
-        # correctness=conciseness=0.5 (same judge mock). Every secondary bonus
-        # multiplies by correctness, so a half-right answer earns half its
-        # citation/brevity reward — they can't trade off against being right.
+    def test_gated_rewards_scaled_by_partial_correctness(self, mock_eval):
+        # correctness=0.5. The GATED components (precision, length) scale by
+        # correctness; retrieval_hit does NOT (it's ungated by design).
         mock_eval.return_value = {"score": 0.5}
         env = _make_env(
             w_correctness=1.0,
-            w_conciseness=0.5,
-            w_citation_recall=1.0,
+            w_retrieval_hit=1.0,
             w_citation_precision=1.0,
+            w_length=1.0,
         )
+        answer = "partial [Source: doc_a]"
         result = asyncio.run(
             env.compute_reward(
                 "r1",
-                _msgs("<answer>partial [Source: doc_a]</answer>"),
+                _msgs(f"<answer>{answer}</answer>"),
                 {
                     "question": "Q?",
                     "ground_truth": "full",
@@ -365,18 +453,19 @@ class TestComputeReward:
             )
         )
         assert result["answer_correctness"] == pytest.approx(0.5)  # not gated
-        assert result["conciseness"] == pytest.approx(0.125)  # 0.5 * 0.5 * 0.5
-        assert result["citation_recall"] == pytest.approx(0.5)  # 1.0 * 1.0 * 0.5
+        assert result["retrieval_hit"] == pytest.approx(1.0)  # UNGATED: full recall
         assert result["citation_precision"] == pytest.approx(0.5)  # 1.0 * 1.0 * 0.5
+        assert result["answer_length"] == pytest.approx((1.0 - len(answer) / 600) * 0.5)
 
     @patch(
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
-    def test_citations_zeroed_when_answer_wrong(self, mock_eval):
-        # correctness=0 → perfect citations still earn 0 (gated on correctness).
+    def test_retrieval_hit_survives_wrong_answer(self, mock_eval):
+        # The core audit fix: correctness=0 → the GATED precision is zeroed, but
+        # the UNGATED retrieval_hit still credits citing the gold source.
         mock_eval.return_value = {"score": 0.0}
-        env = _make_env(w_citation_recall=1.0, w_citation_precision=1.0)
+        env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
         result = asyncio.run(
             env.compute_reward(
                 "r1",
@@ -390,111 +479,34 @@ class TestComputeReward:
                 },
             )
         )
-        assert result["citation_recall"] == 0.0
-        assert result["citation_precision"] == 0.0
+        assert result["answer_correctness"] == 0.0
+        assert result["retrieval_hit"] == pytest.approx(1.0)  # UNGATED
+        assert result["citation_precision"] == 0.0  # gated → 0
 
     @patch(
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
-    def test_search_efficiency_within_chunk_baseline(self, mock_eval):
-        mock_eval.return_value = {"score": 1.0}
-        env = _make_env(max_search_calls=3)
-        # Baseline is len(reference_chunks) + 2 = 3, so full reward at 2 calls.
-        messages = [
-            {"role": "assistant", "content": "<tool_call>search1</tool_call>"},
-            {"role": "assistant", "content": "<tool_call>search2</tool_call>"},
-            {"role": "assistant", "content": "<answer>answer</answer>"},
-        ]
+    def test_judge_failure_scores_zero_but_keeps_retrieval_hit(self, mock_eval):
+        # A judge exception is caught LOCALLY: correctness scores 0, but the
+        # ungated retrieval signal (and the rest of the reward) still computes.
+        mock_eval.side_effect = RuntimeError("judge down")
+        env = _make_env(w_retrieval_hit=1.0)
         result = asyncio.run(
             env.compute_reward(
                 "r1",
-                messages,
+                _msgs("<answer>42 [Source: doc_a]</answer>"),
                 {
                     "question": "Q?",
-                    "ground_truth": "answer",
+                    "ground_truth": "42",
                     "reference_chunks": [
                         {"content": "...", "metadata": {"file": "doc_a"}}
                     ],
                 },
             )
         )
-        assert result["search_efficiency"] == 0.1
-
-    @patch(
-        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
-        new_callable=AsyncMock,
-    )
-    def test_search_efficiency_over_budget(self, mock_eval):
-        mock_eval.return_value = {"score": 1.0}
-        env = _make_env(max_search_calls=2)
-        # 3 tool calls — over budget
-        messages = [
-            {"role": "assistant", "content": "<tool_call>s1</tool_call>"},
-            {"role": "assistant", "content": "<tool_call>s2</tool_call>"},
-            {
-                "role": "assistant",
-                "content": "<tool_call>s3</tool_call> <answer>a</answer>",
-            },
-        ]
-        result = asyncio.run(
-            env.compute_reward(
-                "r1",
-                messages,
-                {"question": "Q?", "ground_truth": "a"},
-            )
-        )
-        assert result["search_efficiency"] == 0.0
-
-    @patch(
-        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
-        new_callable=AsyncMock,
-    )
-    def test_search_efficiency_decays_past_baseline(self, mock_eval):
-        mock_eval.return_value = {"score": 1.0}
-        env = _make_env(max_search_calls=10)
-        messages = [
-            {"role": "assistant", "content": "<tool_call>search1</tool_call>"},
-            {"role": "assistant", "content": "<tool_call>search2</tool_call>"},
-            {"role": "assistant", "content": "<tool_call>search3</tool_call>"},
-            {"role": "assistant", "content": "<tool_call>search4</tool_call>"},
-            {"role": "assistant", "content": "<tool_call>search5</tool_call>"},
-            {"role": "assistant", "content": "<answer>answer</answer>"},
-        ]
-        result = asyncio.run(
-            env.compute_reward(
-                "r1",
-                messages,
-                {
-                    "question": "Q?",
-                    "ground_truth": "answer",
-                    "reference_chunks": [
-                        {"content": "...", "metadata": {"file": "doc_a"}}
-                    ],
-                },
-            )
-        )
-        assert result["search_efficiency"] == pytest.approx(0.1 * math.exp(-0.4))
-
-    @patch(
-        "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
-        new_callable=AsyncMock,
-    )
-    def test_search_efficiency_uses_weight_and_correctness_scale(self, mock_eval):
-        mock_eval.return_value = {"score": 0.5}
-        env = _make_env(max_search_calls=10, w_search_efficiency=0.25)
-        messages = [
-            {"role": "assistant", "content": "<tool_call>search1</tool_call>"},
-            {"role": "assistant", "content": "<answer>answer</answer>"},
-        ]
-        result = asyncio.run(
-            env.compute_reward(
-                "r1",
-                messages,
-                {"question": "Q?", "ground_truth": "answer"},
-            )
-        )
-        assert result["search_efficiency"] == pytest.approx(0.125)
+        assert result["answer_correctness"] == 0.0
+        assert result["retrieval_hit"] == pytest.approx(1.0)  # not zeroed
 
     def test_empty_completion_returns_zeros(self):
         env = _make_env()
@@ -527,6 +539,22 @@ class TestCitationScoring:
     def test_canonicalize_id_strips_whitespace(self):
         env = _make_env()
         assert env._canonicalize_id("  doc_a  ") == "doc_a"
+
+    def test_default_canonicalizer_is_loose(self):
+        # SearchEnv now defaults to id-hash OR title-path matching.
+        env = _make_env()
+        assert env._canonicalize_id("docs/Geography.md") == "geography"
+        assert env._canonicalize_id("Geography.md") == "geography"
+        assert env._canonicalize_id("geography") == "geography"
+
+    def test_score_citations_matches_title_path_to_bare_id(self):
+        env = _make_env()
+        recall, precision = env._score_citations(
+            "answer [Source: docs/Geography.md]",
+            [{"content": "...", "metadata": {"file": "geography"}}],
+        )
+        assert recall == pytest.approx(1.0)
+        assert precision == pytest.approx(1.0)
 
     def test_email_style_thread_ids_work_via_metadata_file(self):
         env = _make_env()
@@ -647,7 +675,9 @@ class TestPickle:
 # --- free reward helpers (imported by a scaffold main.py) --------------------
 
 from benchmax.envs.postgres_search.search_env import (  # noqa: E402
+    ANSWER_LENGTH_CAP,
     canonicalize_source_id,
+    canonicalize_source_id_loose,
     extract_answer_block,
     extract_reference_ids,
     judge_answer_quality,
@@ -688,6 +718,23 @@ class TestFreeRewardHelpers:
         assert parse_citations("x [Source: p ] y") == {"p"}
         assert extract_reference_ids([{"metadata": {"file_path": " q "}}]) == {"q"}
         assert canonicalize_source_id("  z  ") == "z"
+
+    def test_canonicalize_source_id_loose(self):
+        # id-hash OR title-path: lowercase, strip dir prefix + extension.
+        assert canonicalize_source_id_loose("docs/Geography.md") == "geography"
+        assert canonicalize_source_id_loose("Geography.md") == "geography"
+        assert canonicalize_source_id_loose("geography") == "geography"
+        assert canonicalize_source_id_loose("  AbC123  ") == "abc123"
+        assert canonicalize_source_id_loose("a/b/Notes.2024.txt") == "notes.2024"
+        assert canonicalize_source_id_loose("") == ""
+
+    def test_canonicalize_source_id_stays_exact(self):
+        # The strict matcher is still exported and still exact-path.
+        assert canonicalize_source_id("docs/Geography.md") == "docs/Geography.md"
+        # ...and remains the default for the free citation helpers.
+        assert score_citations(
+            "[Source: docs/Geography.md]", [{"metadata": {"file": "geography"}}]
+        ) == (0.0, 0.0)
 
     def test_score_search_efficiency_gates_and_decays(self):
         # incorrect → 0; within baseline → full weight; over budget → 0
@@ -749,3 +796,44 @@ class TestFreeRewardHelpers:
             )
         )
         assert (c, con) == (0.0, 0.0)
+
+
+# --- seed <-> lib sync guard --------------------------------------------------
+
+
+class TestSeedLibSync:
+    """The RAG seed spells the reward out inline (pedagogy); its semantics must
+    stay IDENTICAL to the lib default it mirrors."""
+
+    @pytest.fixture
+    def rag_mod(self):
+        from pathlib import Path
+
+        import benchmax.cli.scaffold as scaffold_pkg
+        from benchmax.cli._project import _load_module_from_file
+
+        return _load_module_from_file(
+            Path(scaffold_pkg.__file__).parent / "rag_main.py"
+        )
+
+    def test_reward_keys_match_lib_default(self, rag_mod):
+        env = _make_env()
+        assert set(rag_mod.REWARD_KEYS) == set(env._zero_rewards())
+
+    def test_weights_and_length_cap_match_lib_defaults(self, rag_mod):
+        env = _make_env()
+        assert rag_mod.W_CORRECTNESS == env._w_correctness
+        assert rag_mod.W_RETRIEVAL_HIT == env._w_retrieval_hit
+        assert rag_mod.W_CITATION_PRECISION == env._w_citation_precision
+        assert rag_mod.W_LENGTH == env._w_length
+        # The seed imports the lib constant, so the caps can't drift.
+        assert rag_mod.ANSWER_LENGTH_CAP == ANSWER_LENGTH_CAP == 600
+
+    def test_seed_primary_reward_key_matches_lib(self, rag_mod):
+        from benchmax.cli._project import discover_env_class
+
+        assert (
+            discover_env_class(rag_mod).PRIMARY_REWARD_KEY
+            == SearchEnv.PRIMARY_REWARD_KEY
+            == "answer_correctness"
+        )
