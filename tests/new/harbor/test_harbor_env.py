@@ -217,9 +217,17 @@ async def test_harbor_uses_request_model_when_template_omits_one(
 
     monkeypatch.setattr(Trial, "create", staticmethod(create_trial))
 
-    outcomes = await env.run_group([_request(tmp_path, rollout_id="rollout-1")])
+    outcomes = await env.run_group(
+        [
+            _request(
+                tmp_path,
+                rollout_id="rollout-1",
+                model="Qwen/Qwen3.5-4B",
+            )
+        ]
+    )
 
-    assert captured_model == "openai/trainer-model"
+    assert captured_model == "openai/Qwen/Qwen3.5-4B"
     assert outcomes["rollout-1"].rewards == {"reward": 1.0}
 
 
@@ -286,14 +294,19 @@ def test_harbor_env_rejects_configuration_it_cannot_honor(tmp_path: Path) -> Non
         )
 
 
-def _request(tmp_path: Path, *, rollout_id: str) -> RolloutRequest[TaskConfig]:
+def _request(
+    tmp_path: Path,
+    *,
+    rollout_id: str,
+    model: str = "trainer-model",
+) -> RolloutRequest[TaskConfig]:
     return RolloutRequest(
         rollout_id=rollout_id,
         example=Example(
             id="sha256:task",
             payload=TaskConfig(path=tmp_path / "resolved-task"),
         ),
-        model="trainer-model",
+        model=model,
         base_url="https://gateway.example/v1",
         api_key="session-key",
     )
