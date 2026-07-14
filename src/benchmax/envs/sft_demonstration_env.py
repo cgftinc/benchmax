@@ -49,7 +49,9 @@ def _normalize_tool_calls(tool_calls: list[Any]) -> list[dict[str, Any]]:
                     "type": call.get("type", "function"),
                     "function": {
                         "name": fn.get("name", ""),
-                        "arguments": _normalize_tool_call_arguments(fn.get("arguments")),
+                        "arguments": _normalize_tool_call_arguments(
+                            fn.get("arguments")
+                        ),
                     },
                 }
             )
@@ -85,7 +87,9 @@ def _as_message_list(value: Any, *, field_name: str) -> list[dict[str, Any]]:
     if isinstance(value, dict):
         value = [value]
     if not isinstance(value, list):
-        raise ValueError(f"{field_name} must be a message dict or list, got {type(value)}")
+        raise ValueError(
+            f"{field_name} must be a message dict or list, got {type(value)}"
+        )
     return [_clean_message(message) for message in value]
 
 
@@ -95,7 +99,9 @@ def _prompt_messages(row: dict[str, Any]) -> list[dict[str, Any]]:
     if "messages" in row:
         return _as_message_list(row["messages"], field_name="messages")
     if "prompt" in row:
-        return _as_message_list([{"role": "user", "content": row["prompt"]}], field_name="prompt")
+        return _as_message_list(
+            [{"role": "user", "content": row["prompt"]}], field_name="prompt"
+        )
     raise KeyError("SFT rows must include prompt_messages, messages, or prompt")
 
 
@@ -129,7 +135,14 @@ def _task(row: dict[str, Any]) -> dict[str, Any]:
         task.update(existing_task)
 
     for key, value in row.items():
-        if key in {"prompt_messages", "messages", "prompt", "completion_messages", "ground_truth", "task"}:
+        if key in {
+            "prompt_messages",
+            "messages",
+            "prompt",
+            "completion_messages",
+            "ground_truth",
+            "task",
+        }:
             continue
         if key == "init_rollout_args":
             continue
@@ -163,7 +176,9 @@ class SftDemonstrationEnv(BaseEnv):
 
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> Any:
         _ = rollout_id, tool_args
-        raise NotImplementedError(f"{self.__class__.__name__} does not support tools; got {tool_name!r}")
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support tools; got {tool_name!r}"
+        )
 
     async def compute_reward(
         self,
@@ -173,5 +188,6 @@ class SftDemonstrationEnv(BaseEnv):
         **kwargs: Any,
     ) -> dict[str, float]:
         _ = rollout_id, messages, task, kwargs
-        raise NotImplementedError(f"{self.__class__.__name__} is for SFT demonstrations, not reward scoring")
-
+        raise NotImplementedError(
+            f"{self.__class__.__name__} is for SFT demonstrations, not reward scoring"
+        )
