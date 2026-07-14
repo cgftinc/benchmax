@@ -46,7 +46,9 @@ def _provider_qa_source_factory(provider: str) -> tuple[Any, str]:
 
     def _require(name: str, value: str) -> str:
         if not value:
-            raise ValueError(f"--provider {provider} needs {name} (set it as an env var)")
+            raise ValueError(
+                f"--provider {provider} needs {name} (set it as an env var)"
+            )
         return value
 
     if provider == "turbopuffer":
@@ -97,10 +99,10 @@ def _provider_qa_source_factory(provider: str) -> tuple[Any, str]:
     try:
         from benchmax.rag.corpus.chroma.source import ChromaChunkSource
     except ImportError:
-        raise ValueError(
-            f"chromadb not installed. {install_hint('chroma')}"
-        ) from None
-    collection = _require("DATA_collection_name", os.environ.get("DATA_collection_name", ""))
+        raise ValueError(f"chromadb not installed. {install_hint('chroma')}") from None
+    collection = _require(
+        "DATA_collection_name", os.environ.get("DATA_collection_name", "")
+    )
     tenant = os.environ.get("DATA_tenant") or None
     database = os.environ.get("DATA_database") or None
     host = os.environ.get("DATA_host") or None
@@ -161,7 +163,11 @@ def _cmd_data_qa_gen(args: argparse.Namespace) -> int:
     # on_limit="prompt" create branch.
     # Lower --min-chunk-chars for small docs: the default 400-char floor rejects
     # short chunks ("No eligible chunks ..."); leave unset to keep the lib default.
-    chunk_kw = {} if args.min_chunk_chars is None else {"min_chunk_chars": args.min_chunk_chars}
+    chunk_kw = (
+        {}
+        if args.min_chunk_chars is None
+        else {"min_chunk_chars": args.min_chunk_chars}
+    )
     source_factory = None
     if args.provider:
         try:
@@ -293,15 +299,24 @@ def _cmd_data_traces(args: argparse.Namespace) -> int:
         snapshot = out_dir / "traces_preview.jsonl"
         _write_jsonl(snapshot, records)
         html = out_dir / "traces_preview.html"
-        model = build_view_model(records, source=f"{project_id} (traces preview)", limit=0)
+        model = build_view_model(
+            records, source=f"{project_id} (traces preview)", limit=0
+        )
         write_html(model, html)
         n = len(records)
         if args.json:
             print_json(
-                {"preview": True, "count": n, "snapshot": str(snapshot), "html": str(html)}
+                {
+                    "preview": True,
+                    "count": n,
+                    "snapshot": str(snapshot),
+                    "html": str(html),
+                }
             )
         else:
-            print(f"✓ preview: {n} normalized trace{'' if n == 1 else 's'} (not built into a dataset)")
+            print(
+                f"✓ preview: {n} normalized trace{'' if n == 1 else 's'} (not built into a dataset)"
+            )
             print(f"  snapshot: {snapshot}")
             print(f"  viewer:   {html}")
         maybe_open_browser(html.resolve().as_uri())
@@ -332,7 +347,9 @@ def _cmd_data_traces(args: argparse.Namespace) -> int:
             print(f"detected system prompt ({len(system_prompt)} chars):")
             print(system_prompt or "(none)")
             print(f"detected tools: {', '.join(tool_names) or '(none)'}")
-            print("dry run — no datasets written. re-run without --dry-run to write them.")
+            print(
+                "dry run — no datasets written. re-run without --dry-run to write them."
+            )
         return 0
 
     out_dir = Path(args.out)
@@ -373,10 +390,10 @@ def _cmd_data_traces(args: argparse.Namespace) -> int:
             print(f"  detected system prompt ({len(system_prompt)} chars): {preview}")
         if tools:
             print(f"  detected tools: {', '.join(t.get('name', '?') for t in tools)}")
-        # The agent authors main.py's dataset_preprocess to match the pulled rows.
+        # The agent authors its JsonlDataset row_to_example callback for these rows.
         print(
-            "  Rows are {prompt_messages, ground_truth, init_rollout_args} — author "
-            "main.py's dataset_preprocess to match."
+            "  Rows are {prompt_messages, ground_truth, rollout_args} — author "
+            "main.py's dataset example factory to match."
         )
         print("  Next: castform setup   (then castform validate)")
     return 0
@@ -480,9 +497,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         "traces",
         help="Build a train/eval dataset from recorded agent traces (Braintrust)",
     )
-    p_tr.add_argument(
-        "--api-key", help="Braintrust API key (default: BT_API_KEY env)"
-    )
+    p_tr.add_argument("--api-key", help="Braintrust API key (default: BT_API_KEY env)")
     proj = p_tr.add_mutually_exclusive_group()
     proj.add_argument(
         "--project-id", help="Braintrust project id (default: BT_PROJECT_ID env)"

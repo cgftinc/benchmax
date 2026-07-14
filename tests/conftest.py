@@ -21,7 +21,7 @@ _HAS_RAG_EXTRA = all(
         "keybert",
         "langchain_text_splitters",
         "numpy",
-        "yaml",
+        "ruamel",
     )
 )
 _HAS_CHROMA_EXTRA = _has_module("chromadb")

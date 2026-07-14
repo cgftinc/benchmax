@@ -11,7 +11,12 @@ from typing import Any
 
 import pytest
 
-from benchmax.envs.base_env import BaseEnv
+from benchmax.envs import (
+    BaseEnv,
+    Example,
+    JsonlDataset,
+    canonical_example_id,
+)
 from benchmax.platform.client import ExampleValidation, ValidationResult
 from benchmax.platform.validation import (
     ValidationReport,
@@ -35,35 +40,51 @@ class _DummyEnv:
 class _PlainEnv(BaseEnv):
     """Passes every local check; does NOT override compute_group_reward."""
 
-    system_prompt = "sys"
+    max_turns = 1
 
-    async def list_tools(self):
-        return []
+    async def create_dataset(self, split, base_dir):
+        def make_example(row):
+            payload = {
+                "prompt_messages": [
+                    {"role": "user", "content": str(row.get("prompt", ""))}
+                ],
+                **{key: value for key, value in row.items() if key != "prompt"},
+            }
+            return Example(id=canonical_example_id(payload), payload=payload)
 
-    async def run_tool(self, rollout_id, tool_name, **tool_args):
-        return "ok"
+        return JsonlDataset(base_dir / f"{split}.jsonl", row_to_example=make_example)
 
-    async def compute_reward(self, rollout_id, messages, task, **kwargs):
+    async def compute_reward(
+        self, rollout_id, messages, example_args, *, termination_reason
+    ):
         return {"r": 1.0}
 
 
 class _GoodGroupEnv(_PlainEnv):
-    async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
+    async def compute_group_reward(
+        self, rollout_ids, messages_list, example_args_list, termination_reasons
+    ):
         return [{"r": 1.0} for _ in rollout_ids]
 
 
 class _NotListGroupEnv(_PlainEnv):
-    async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
+    async def compute_group_reward(
+        self, rollout_ids, messages_list, example_args_list, termination_reasons
+    ):
         return {"r": 1.0}  # not a list[dict]
 
 
 class _ShortGroupEnv(_PlainEnv):
-    async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
+    async def compute_group_reward(
+        self, rollout_ids, messages_list, example_args_list, termination_reasons
+    ):
         return [{"r": 1.0}]  # always length 1 → breaks 1:1 pairing
 
 
 class _NonFiniteGroupEnv(_PlainEnv):
-    async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
+    async def compute_group_reward(
+        self, rollout_ids, messages_list, example_args_list, termination_reasons
+    ):
         return [{"r": float("nan")} for _ in rollout_ids]
 
 
@@ -202,26 +223,24 @@ def test_overrides_compute_group_reward_predicate():
 
 def test_contract_ok_returns_summary():
     summary = assert_group_reward_contract(
-        _GoodGroupEnv(), ["a", "b"], [[], []], [None, None]
+        _GoodGroupEnv(), ["a", "b"], [[], []], [{}, {}]
     )
     assert "2 dict" in summary
 
 
 def test_contract_raises_on_non_list():
     with pytest.raises(ValueError, match="expected list"):
-        assert_group_reward_contract(_NotListGroupEnv(), ["a"], [[]], [None])
+        assert_group_reward_contract(_NotListGroupEnv(), ["a"], [[]], [{}])
 
 
 def test_contract_raises_on_length_mismatch():
     with pytest.raises(ValueError, match="one per rollout_id"):
-        assert_group_reward_contract(
-            _ShortGroupEnv(), ["a", "b"], [[], []], [None, None]
-        )
+        assert_group_reward_contract(_ShortGroupEnv(), ["a", "b"], [[], []], [{}, {}])
 
 
 def test_contract_raises_on_non_finite():
     with pytest.raises(ValueError, match="non-finite"):
-        assert_group_reward_contract(_NonFiniteGroupEnv(), ["a"], [[]], [None])
+        assert_group_reward_contract(_NonFiniteGroupEnv(), ["a"], [[]], [{}])
 
 
 # ---------------------------------------------------------------------------

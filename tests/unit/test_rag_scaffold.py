@@ -50,7 +50,9 @@ def _reward(
         "ground_truth": "Paris",
         "reference_chunks": [{"metadata": {"file": gold_file}}],
     }
-    return asyncio.run(env.compute_reward("r", msgs, task))
+    return asyncio.run(
+        env.compute_reward("r", msgs, task, termination_reason="finished")
+    )
 
 
 # ── reward: gating + the ungated retrieval_hit ──────────────────────────────────
@@ -85,7 +87,7 @@ def test_reward_no_answer_block_all_zero(rag_mod, monkeypatch):
     monkeypatch.setattr(rag_mod, "evaluate_single_rubric", _rec)
     msgs = [{"role": "assistant", "content": "I think it's Paris but no answer tag"}]
     task = {"question": "Q", "ground_truth": "Paris", "reference_chunks": []}
-    r = asyncio.run(env.compute_reward("r", msgs, task))
+    r = asyncio.run(env.compute_reward("r", msgs, task, termination_reason="finished"))
     assert set(r) == set(rag_mod.REWARD_KEYS)
     assert all(v == 0.0 for v in r.values())
     assert not calls  # short-circuited before the judge call

@@ -1,6 +1,7 @@
 """Castform platform clients (storage, training runs, rollout)."""
 
 from .client import RolloutClient, StorageClient, TrainerClient
+from .config import PlatformConfig
 from .credentials import platform_bearer
 from .training_run import UploadedTrainingRun, upload_training_run
 from .validation import ValidationReport, validate_env
@@ -11,6 +12,7 @@ from .login import ensure_session
 
 __all__ = [
     "RolloutClient",
+    "PlatformConfig",
     "StorageClient",
     "TrainerClient",
     "UploadedTrainingRun",

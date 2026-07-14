@@ -35,6 +35,7 @@ where = ["src"]
 "benchmax.cli" = ["templates/*.html"]
 
 [project.optional-dependencies]
+harbor = ["harbor>=0.18.0,<0.19"]
 telestich = ["english_words", "pronouncing", "wordfreq"]
 rag = [
     "keybert>=0.8",
@@ -54,6 +55,7 @@ turbopuffer = ["turbopuffer>=1.16.2"]
 
 [dependency-groups]
 dev = [
+    "harbor>=0.18.0,<0.19",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "python-dotenv>=1.2.1",

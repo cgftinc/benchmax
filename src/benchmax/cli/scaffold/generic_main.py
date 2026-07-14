@@ -20,12 +20,20 @@ import dataclasses
 import difflib
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from benchmax.envs.base_env import BaseEnv
+from benchmax.envs import (
+    BaseEnv,
+    DatasetSplit,
+    Example,
+    JsonRow,
+    JsonlDataset,
+    Messages,
+    canonical_example_id,
+)
 from benchmax.envs.reward_helpers import extract_completion_text
-from benchmax.envs.types import Messages, ToolDefinition
 from benchmax.platform.client import TrainerClient
 from benchmax.platform.login import ensure_session
 from benchmax.platform.training_run import upload_training_run
@@ -41,30 +49,47 @@ class CustomEnv(BaseEnv):
 
     # Advertised to the model each rollout (optional; default ""). Keep it short.
     system_prompt = "Answer the question concisely and directly."
+    max_turns = 1
 
     # Extra pip deps the rollout sandbox needs (it bundles only main.py + benchmax).
     # Empty here; add your reward/tool SDKs if you introduce them.
     PIP_DEPENDENCIES: list[str] = []
 
-    async def list_tools(self) -> list[ToolDefinition]:
-        return []  # single-turn: the model answers directly, no tools
+    async def create_dataset(
+        self, split: DatasetSplit, base_dir: Path
+    ) -> JsonlDataset[JsonRow]:
+        return JsonlDataset(
+            base_dir / f"{split}.jsonl",
+            row_to_example=self._example_from_row,
+        )
 
-    async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> str:
-        return f"Error: this env has no tools (got {tool_name!r})."
+    def _example_from_row(self, row: JsonRow) -> Example[JsonRow]:
+        prompt = row.get("prompt")
+        if not isinstance(prompt, str):
+            raise TypeError("dataset rows require a string 'prompt'")
+        payload: JsonRow = {
+            "prompt_messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            **{key: value for key, value in row.items() if key != "prompt"},
+        }
+        return Example(id=canonical_example_id(payload), payload=payload)
 
     async def compute_reward(
         self,
         rollout_id: str,
         messages: Messages,
-        task: dict[str, Any] | None,
-        **kwargs: Any,
+        example_args: Mapping[str, Any],
+        *,
+        termination_reason: str,
     ) -> dict[str, float]:
         """Score the answer against `ground_truth`. Return positive scores only; all
         components are SUMMED into one scalar — this is your whole training signal,
         so edit it. (Deterministic overlap here; swap in an LLM judge for open-ended
         answers — see the design-environment skill.)
         """
-        t = task or {}
+        t = example_args
         answer = extract_completion_text(messages).strip()
         gold = str(t.get("ground_truth") or t.get("answer") or "").strip()
         if not answer:
@@ -143,7 +168,7 @@ def _load_jsonl(path: str) -> list[dict[str, Any]]:
 
 
 def _run_name() -> str:
-    return LAUNCH_CONFIG.get("name") or CustomEnv.__name__.lower()
+    return str(LAUNCH_CONFIG.get("name") or CustomEnv.__name__.lower())
 
 
 def generate_data(force: bool = False) -> bool:
@@ -191,6 +216,7 @@ def validate() -> Any:
     """Baseline the env on a real-rollout subset (no GPU). Returns the report."""
     train = _load_jsonl(TRAIN_FILE)
     eval_ds = _load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else []
+    model = VALIDATE_CONFIG.get("model")
     report = validate_env(
         env_class=CustomEnv,
         env_args=ENV_ARGS,
@@ -200,7 +226,7 @@ def validate() -> Any:
         local=False,  # run the remote real-rollout subset (matches `castform validate`)
         remote_examples=VALIDATE_CONFIG.get("examples", 2),
         group_reward_samples=VALIDATE_CONFIG.get("group_samples", 2),
-        llm_model=VALIDATE_CONFIG.get("model"),
+        llm_model=str(model) if model is not None else None,
         max_turns=VALIDATE_CONFIG.get("max_turns", 4),
         max_tool_calls=VALIDATE_CONFIG.get("max_tool_calls", 8),
     )

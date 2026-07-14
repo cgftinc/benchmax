@@ -51,7 +51,7 @@ TRACE_EXAMPLE = {
         "tool_call_id": "",
         "name": "",
     },
-    "init_rollout_args": {
+    "rollout_args": {
         "trace_id": "trace-42",
         "turn_index": 2,
         "total_messages": 3,
@@ -65,7 +65,7 @@ TRACE_EXAMPLE_NO_GT = {
         {"role": "user", "content": "hi", "tool_calls": [], "tool_call_id": "", "name": ""},
     ],
     "ground_truth": {},
-    "init_rollout_args": {
+    "rollout_args": {
         "trace_id": "trace-43",
         "turn_index": 0,
         "total_messages": 1,
@@ -131,7 +131,7 @@ def test_scaffold_maps_prompt_ground_truth_to_question_answer():
 # --- trace normalization ----------------------------------------------------
 
 
-def test_trace_example_pulls_init_rollout_args_and_ground_truth():
+def test_trace_example_pulls_rollout_args_and_ground_truth():
     row = _vm(TRACE_EXAMPLE)["rows"][0]
     assert row["id"] == "trace-42"
     assert row["turn_index"] == 2
