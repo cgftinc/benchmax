@@ -5,6 +5,7 @@ import logging
 import math
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["HarborEnv", "HarborTrialError"]
 
 _SAFE_TRIAL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_DEFAULT_MODAL_APP_NAME = "harbor-castform"
 _SCORED_AGENT_TERMINATIONS = frozenset(
     {
         "AgentTimeoutError",
@@ -65,6 +67,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         sandbox_credentials: SandboxCredentials | None = None,
         eval_dataset: DatasetConfig | None = None,
         eval_ratio: float = 0.1,
+        max_concurrent_trials: int | None = None,
     ) -> None:
         require_harbor()
         _validate_configuration(
@@ -73,14 +76,20 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
             trial=trial,
             sandbox_credentials=sandbox_credentials,
             eval_ratio=eval_ratio,
+            max_concurrent_trials=max_concurrent_trials,
         )
         self._dataset = dataset.model_copy(deep=True)
         self._eval_dataset = (
             eval_dataset.model_copy(deep=True) if eval_dataset is not None else None
         )
         self._eval_ratio = float(eval_ratio)
-        self._trial = trial
+        self._trial = _with_environment_defaults(trial)
         self._sandbox_credentials = sandbox_credentials
+        self._trial_slots = (
+            asyncio.Semaphore(max_concurrent_trials)
+            if max_concurrent_trials is not None
+            else None
+        )
         self._dataset_cache: dict[Path, HarborDataset] = {}
         self._dataset_cache_lock = asyncio.Lock()
 
@@ -140,6 +149,17 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
             return await super().run_group(requests)
 
     async def run_rollout(
+        self,
+        request: RolloutRequest[TaskConfig],
+    ) -> RolloutAttempt:
+        """Run one trial, waiting for provider capacity when configured."""
+
+        if self._trial_slots is None:
+            return await self._execute_rollout(request)
+        async with self._trial_slots:
+            return await self._execute_rollout(request)
+
+    async def _execute_rollout(
         self,
         request: RolloutRequest[TaskConfig],
     ) -> RolloutAttempt:
@@ -284,6 +304,26 @@ def _sandbox_name(trial: HarborTrialTemplate) -> str:
     return str(getattr(environment.type, "value", environment.type))
 
 
+def _with_environment_defaults(trial: HarborTrialTemplate) -> HarborTrialTemplate:
+    """Apply Castform-owned provider defaults without replacing user settings."""
+
+    from harbor.models.environment_type import EnvironmentType
+
+    environment = trial.environment
+    if environment.type != EnvironmentType.MODAL:
+        return trial
+
+    kwargs = dict(environment.kwargs)
+    if "app_name" in kwargs:
+        return trial
+
+    kwargs["app_name"] = _DEFAULT_MODAL_APP_NAME
+    return replace(
+        trial,
+        environment=environment.model_copy(deep=True, update={"kwargs": kwargs}),
+    )
+
+
 def _validate_configuration(
     *,
     dataset: object,
@@ -291,6 +331,7 @@ def _validate_configuration(
     trial: object,
     sandbox_credentials: object | None,
     eval_ratio: object,
+    max_concurrent_trials: object,
 ) -> None:
     """Validate the complete constructor boundary before retaining any config."""
 
@@ -336,6 +377,12 @@ def _validate_configuration(
             "sandbox_credentials must implement SandboxCredentials, got "
             f"{type(sandbox_credentials).__name__}"
         )
+    if max_concurrent_trials is not None and (
+        isinstance(max_concurrent_trials, bool)
+        or not isinstance(max_concurrent_trials, int)
+        or max_concurrent_trials <= 0
+    ):
+        raise ValueError("max_concurrent_trials must be a positive integer or None")
 
     _validate_trial_orchestration(trial)
     _validate_sandbox_credentials(trial, sandbox_credentials)

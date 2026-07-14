@@ -108,6 +108,7 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
 
     for index in (1, 2):
         config = configs[f"rollout-{index}"]
+        assert config.environment.kwargs["app_name"] == "benchmax-test"
         assert config.agent.model_name == "openai/configured-rollout-model"
         assert config.agent.env == {
             "AGENT_SETTING": "kept",
@@ -123,6 +124,94 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
     assert template.agent.env == {"AGENT_SETTING": "kept"}
     assert "MODAL_TOKEN_ID" not in os.environ
     assert "MODAL_TOKEN_SECRET" not in os.environ
+
+
+@pytest.mark.asyncio
+async def test_harbor_limits_active_trials_across_groups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = HarborEnv(
+        dataset=DatasetConfig(path=tmp_path),
+        trial=HarborTrialTemplate(
+            agent=AgentConfig(name="mini-swe-agent"),
+            environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
+            verifier=VerifierConfig(),
+            trials_dir=tmp_path / "trials",
+        ),
+        max_concurrent_trials=2,
+    )
+    release = asyncio.Event()
+    two_started = asyncio.Event()
+    started = 0
+    active = 0
+    max_active = 0
+
+    class FakeTrial:
+        async def run(self) -> Any:
+            nonlocal started, active, max_active
+            started += 1
+            active += 1
+            max_active = max(max_active, active)
+            if started == 2:
+                two_started.set()
+            await release.wait()
+            active -= 1
+            return SimpleNamespace(
+                verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
+                exception_info=None,
+            )
+
+    async def create_trial(config: Any) -> FakeTrial:
+        return FakeTrial()
+
+    monkeypatch.setattr(Trial, "create", staticmethod(create_trial))
+    first_group = asyncio.create_task(
+        env.run_group(
+            [_request(tmp_path, rollout_id=f"rollout-{index}") for index in range(2)]
+        )
+    )
+    second_group = asyncio.create_task(
+        env.run_group([_request(tmp_path, rollout_id="rollout-2")])
+    )
+
+    await asyncio.wait_for(two_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert started == 2
+    release.set()
+    first_outcomes, second_outcomes = await asyncio.gather(first_group, second_group)
+
+    assert len(first_outcomes) + len(second_outcomes) == 3
+    assert max_active == 2
+
+
+def test_harbor_modal_environment_gets_castform_app_default(tmp_path: Path) -> None:
+    env = HarborEnv(
+        dataset=DatasetConfig(path=tmp_path),
+        trial=HarborTrialTemplate(
+            agent=AgentConfig(name="mini-swe-agent"),
+            environment=EnvironmentConfig(type=EnvironmentType.MODAL),
+            verifier=VerifierConfig(),
+            trials_dir=tmp_path / "trials",
+        ),
+        sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+    )
+
+    assert env._trial.environment.kwargs["app_name"] == "harbor-castform"
+
+
+def test_harbor_non_modal_environment_has_no_modal_app_default(tmp_path: Path) -> None:
+    env = HarborEnv(
+        dataset=DatasetConfig(path=tmp_path),
+        trial=HarborTrialTemplate(
+            agent=AgentConfig(name="mini-swe-agent"),
+            environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
+            verifier=VerifierConfig(),
+            trials_dir=tmp_path / "trials",
+        ),
+    )
+
+    assert "app_name" not in env._trial.environment.kwargs
 
 
 def test_sandbox_credential_repr_hides_secret_values() -> None:
