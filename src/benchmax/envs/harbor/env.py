@@ -36,6 +36,8 @@ __all__ = ["HarborEnv", "HarborTrialError"]
 
 _SAFE_TRIAL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DEFAULT_MODAL_APP_NAME = "harbor-castform"
+_DEFAULT_MODAL_SANDBOX_TIMEOUT_SECS = 3600
+_DEFAULT_MODAL_SANDBOX_IDLE_TIMEOUT_SECS = 1800
 _SCORED_AGENT_TERMINATIONS = frozenset(
     {
         "AgentTimeoutError",
@@ -314,10 +316,15 @@ def _with_environment_defaults(trial: HarborTrialTemplate) -> HarborTrialTemplat
         return trial
 
     kwargs = dict(environment.kwargs)
-    if "app_name" in kwargs:
-        return trial
-
-    kwargs["app_name"] = _DEFAULT_MODAL_APP_NAME
+    kwargs.setdefault("app_name", _DEFAULT_MODAL_APP_NAME)
+    kwargs.setdefault(
+        "sandbox_timeout_secs",
+        _DEFAULT_MODAL_SANDBOX_TIMEOUT_SECS,
+    )
+    kwargs.setdefault(
+        "sandbox_idle_timeout_secs",
+        _DEFAULT_MODAL_SANDBOX_IDLE_TIMEOUT_SECS,
+    )
     return replace(
         trial,
         environment=environment.model_copy(deep=True, update={"kwargs": kwargs}),
