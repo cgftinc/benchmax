@@ -270,7 +270,7 @@ def _exception_termination_reason(exception_type: str) -> str:
 def _openai_model_name(model: str) -> str:
     """Give Harbor agents a provider-qualified default for the TITO endpoint."""
 
-    return model if "/" in model else f"openai/{model}"
+    return model if model.startswith("openai/") else f"openai/{model}"
 
 
 def _sandbox_name(trial: HarborTrialTemplate) -> str:
