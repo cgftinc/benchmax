@@ -62,6 +62,10 @@ The sandbox is selected explicitly by `TrialEnvironmentConfig.type` or its
 Custom sandboxes normally implement Harbor's `BaseEnvironment` and use
 `import_path`; they do not subclass `HarborEnv`.
 
+For Modal environments, Castform defaults Harbor's `app_name` to
+`harbor-castform`. Set `environment.kwargs["app_name"]` explicitly to group
+sandboxes under a different Modal App. Non-Modal environments are unaffected.
+
 Modal and Daytona require explicit `sandbox_credentials`; `HarborEnv` does not
 read their credentials from the launching shell. `DaytonaCredentials` accepts
 either an API key or a JWT plus organization ID, with an optional named target.
