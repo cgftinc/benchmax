@@ -8,6 +8,9 @@ from typing import Any
 
 import pytest
 from harbor import DatasetConfig, EnvironmentType
+from harbor.agents.base import BaseAgent
+from harbor.agents.factory import AgentFactory
+from harbor.agents.installed.mini_swe_agent import MiniSweAgent
 from harbor.models.trial.config import (
     AgentConfig,
     EnvironmentConfig,
@@ -23,6 +26,27 @@ from benchmax.envs.harbor import (
     HarborTrialTemplate,
     ModalCredentials,
 )
+
+
+class _UserHarness(BaseAgent):
+    """Small import-path agent used to prove user harness resolution."""
+
+    def __init__(self, *args: Any, marker: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.marker = marker
+
+    @staticmethod
+    def name() -> str:
+        return "user-harness"
+
+    def version(self) -> str:
+        return "test"
+
+    async def setup(self, environment: Any) -> None:
+        pass
+
+    async def run(self, instruction: str, environment: Any, context: Any) -> None:
+        pass
 
 
 @pytest.mark.asyncio
@@ -242,6 +266,49 @@ def test_harbor_non_modal_environment_has_no_modal_app_default(tmp_path: Path) -
     )
 
     assert "app_name" not in env._trial.environment.kwargs
+
+
+@pytest.mark.parametrize(
+    ("agent", "expected_type", "expected_marker"),
+    [
+        (
+            AgentConfig(name="mini-swe-agent", kwargs={"version": "2.4.5"}),
+            MiniSweAgent,
+            None,
+        ),
+        (
+            AgentConfig(
+                import_path="tests.new.harbor.test_harbor_env:_UserHarness",
+                kwargs={"marker": "custom"},
+            ),
+            _UserHarness,
+            "custom",
+        ),
+    ],
+)
+def test_harbor_resolves_builtin_and_user_harnesses(
+    tmp_path: Path,
+    agent: AgentConfig,
+    expected_type: type[BaseAgent],
+    expected_marker: str | None,
+) -> None:
+    env = HarborEnv(
+        dataset=DatasetConfig(path=tmp_path),
+        trial=HarborTrialTemplate(
+            agent=agent,
+            environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
+            verifier=VerifierConfig(),
+            trials_dir=tmp_path / "trials",
+        ),
+    )
+
+    resolved = AgentFactory.create_agent_from_config(
+        env._trial.agent,
+        logs_dir=tmp_path / "agent-logs",
+    )
+
+    assert isinstance(resolved, expected_type)
+    assert getattr(resolved, "marker", None) == expected_marker
 
 
 def test_sandbox_credential_repr_hides_secret_values() -> None:

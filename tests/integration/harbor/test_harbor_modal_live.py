@@ -38,7 +38,8 @@ async def test_harbor_env_runs_miniswe_agent_in_modal(tmp_path: Path) -> None:
         trial=HarborTrialTemplate(
             agent=TrialAgentConfig(
                 name="mini-swe-agent",
-                kwargs={"max_tokens": 2048},
+                override_timeout_sec=120,
+                kwargs={"version": "2.4.5", "max_tokens": 2048},
             ),
             environment=TrialEnvironmentConfig(
                 type=EnvironmentType.MODAL,
