@@ -19,13 +19,11 @@ from benchmax.platform.validation import ValidationReport
 
 # --- project loader ------------------------------------------------------
 
-_ENV_SRC = (
-    "from benchmax.envs.base_env import BaseEnv\n\nclass {name}(BaseEnv):\n    pass\n"
-)
+_ENV_SRC = "from benchmax.envs import BaseEnv\n\nclass {name}(BaseEnv):\n    pass\n"
 
 
 def _write_run(tmp_path, *names):
-    body = "from benchmax.envs.base_env import BaseEnv\n\n"
+    body = "from benchmax.envs import BaseEnv\n\n"
     for n in names:
         body += f"class {n}(BaseEnv):\n    pass\n\n"
     p = tmp_path / "main.py"
@@ -42,7 +40,7 @@ def test_discover_no_env_raises(tmp_path):
     p = tmp_path / "main.py"
     p.write_text("x = 1\n")
     mod = _load_module_from_file(p)
-    with pytest.raises(ProjectError, match="No BaseEnv"):
+    with pytest.raises(ProjectError, match="No Environment"):
         discover_env_class(mod)
 
 
@@ -214,16 +212,15 @@ def test_validate_probe_renders_at_command_layer(monkeypatch, capsys):
     row here proves the probe fires at the COMMAND layer — not inside validate_env
     (the original _run_local_checks defect: local checks don't run on default
     remote validate, so a probe there would be inert)."""
-    from benchmax.envs.base_env import BaseEnv
+    from benchmax.envs import BaseEnv
 
     class _ProbeEnv(BaseEnv):
-        async def list_tools(self):
-            return []
+        async def create_dataset(self, split, base_dir):
+            raise NotImplementedError
 
-        async def run_tool(self, rollout_id, tool_name, **k):
-            return ""
-
-        async def compute_reward(self, rollout_id, messages, task, **k):
+        async def compute_reward(
+            self, rollout_id, messages, example_args, *, termination_reason
+        ):
             return {}
 
         async def validate_probe(self, eval_dataset):

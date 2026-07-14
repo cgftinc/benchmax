@@ -1,5 +1,10 @@
 # Telestich Environment
 
+> **Native-contract status:** this environment still depends on legacy
+> group-relative scoring and is not a valid per-rollout `BaseEnv` yet. Its
+> `compute_reward` fails loudly until a separate group-scoring contract is
+> designed; do not use it as an example of the new environment boundary.
+
 `TelestichEnv` rewards a model for writing **telestich** poems — poems where the
 last letter of each line, read top to bottom, spells out a hidden target word
 given in the prompt. English-only.

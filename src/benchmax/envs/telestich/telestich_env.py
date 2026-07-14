@@ -21,19 +21,29 @@ import logging
 import math
 import re
 from collections import Counter
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any
 
-import pronouncing
-from english_words import get_english_words_set
-from wordfreq import word_frequency
+import pronouncing  # pyright: ignore[reportMissingImports]
+from english_words import get_english_words_set  # pyright: ignore[reportMissingImports]
+from wordfreq import word_frequency  # pyright: ignore[reportMissingImports]
 
-from benchmax.envs.base_env import BaseEnv
-from benchmax.envs.example_id import make_example
-from benchmax.envs.logging import rollout_context
+from benchmax.envs import (
+    BaseEnv,
+    DatasetSplit,
+    Example,
+    JsonRow,
+    JsonlDataset,
+    Messages,
+    Tool,
+    canonical_example_id,
+)
+from benchmax.envs.logging import rollout_context as bind_rollout_context
 from benchmax.envs.reward_helpers import extract_completion_text
-from benchmax.envs.types import Example, Messages, ToolDefinition
 from benchmax.rubrics.rubric import Rubric, evaluate_rubric_ranking
 
 logger = logging.getLogger(__name__)
@@ -872,59 +882,84 @@ then stop."""
         judge_base_url: str,
         judge_timeout: float = 90.0,
         max_tool_calls: int = 3,
-        **kwargs: Any,
+        max_turns: int | None = None,
+        system_prompt: str | None = None,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(
+            max_turns=max_tool_calls + 1 if max_turns is None else max_turns,
+            max_tool_calls=max_tool_calls,
+        )
+        self._system_prompt = (
+            self.system_prompt if system_prompt is None else system_prompt
+        )
         self._judge_base_url = judge_base_url
         self._judge_timeout = judge_timeout
         self._max_tool_calls = max_tool_calls
         self._tool_calls: dict[str, int] = {}
 
-    @classmethod
-    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
-        prompt = example.get("prompt", "")
-        return make_example(
-            prompt_messages=[{"role": "user", "content": prompt}],
-            task={
-                "prompt": prompt,
-                "ground_truth": example.get("ground_truth", ""),
-                "acceptable_refs": example.get("acceptable_refs", []),
-                "great_refs": example.get("great_refs", []),
-            },
-            system_prompt=cls.system_prompt,
+    async def create_dataset(
+        self, split: DatasetSplit, base_dir: Path
+    ) -> JsonlDataset[JsonRow]:
+        return JsonlDataset(
+            base_dir / f"{split}.jsonl",
+            row_to_example=self._example_from_row,
         )
 
-    async def list_tools(self) -> list[ToolDefinition]:
+    def _example_from_row(self, row: JsonRow) -> Example[JsonRow]:
+        prompt = row.get("prompt", "")
+        if not isinstance(prompt, str):
+            raise TypeError("TelestichEnv dataset 'prompt' must be a string")
+        messages: Messages = []
+        if self._system_prompt:
+            messages.append({"role": "system", "content": self._system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        payload: JsonRow = {
+            "prompt_messages": messages,
+            "prompt": prompt,
+            "ground_truth": row.get("ground_truth", ""),
+            "acceptable_refs": row.get("acceptable_refs", []),
+            "great_refs": row.get("great_refs", []),
+        }
+        return Example(
+            id=canonical_example_id(payload),
+            payload=payload,
+        )
+
+    async def list_tools(self) -> list[Tool]:
         return [
-            ToolDefinition(
-                name="feedback",
-                description=(
-                    "Feedback on a DRAFT telestich (up to 3 calls): pass your draft ('poem') "
-                    "AND the hidden word it should spell ('word'); it checks every line ending "
-                    "against that word — so you don't have to verify each last letter yourself "
-                    "— and flags over-long (prose run-on) lines and filler endings, both of "
-                    "which lower your score. Recommended flow: write a full draft, send it here "
-                    "to check the endings and tighten, then put your revised best in <answer>. "
-                    "Use it sparingly (often one pass is enough); a correct poem written with no "
-                    "calls earns a small efficiency bonus, so wean off once you can reliably nail "
-                    "it on the first try."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "poem": {
-                            "type": "string",
-                            "description": "your full draft poem, one line per letter",
+            {
+                "type": "function",
+                "function": {
+                    "name": "feedback",
+                    "description": (
+                        "Feedback on a DRAFT telestich (up to 3 calls): pass your draft ('poem') "
+                        "AND the hidden word it should spell ('word'); it checks every line ending "
+                        "against that word — so you don't have to verify each last letter yourself "
+                        "— and flags over-long (prose run-on) lines and filler endings, both of "
+                        "which lower your score. Recommended flow: write a full draft, send it here "
+                        "to check the endings and tighten, then put your revised best in <answer>. "
+                        "Use it sparingly (often one pass is enough); a correct poem written with no "
+                        "calls earns a small efficiency bonus, so wean off once you can reliably nail "
+                        "it on the first try."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "poem": {
+                                "type": "string",
+                                "description": "your full draft poem, one line per letter",
+                            },
+                            "word": {
+                                "type": "string",
+                                "description": "the hidden word your poem should spell "
+                                "(the exact target word from the request)",
+                            },
                         },
-                        "word": {
-                            "type": "string",
-                            "description": "the hidden word your poem should spell "
-                            "(the exact target word from the request)",
-                        },
+                        "required": ["poem", "word"],
                     },
-                    "required": ["poem", "word"],
+                    "strict": False,
                 },
-            )
+            }
         ]
 
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> Any:
@@ -970,13 +1005,29 @@ then stop."""
             )
         return good + last_note
 
-    async def release_rollout(self, rollout_id: str) -> None:
-        self._tool_calls.pop(rollout_id, None)  # avoid unbounded growth over a run
+    @asynccontextmanager
+    async def rollout_context(
+        self,
+        rollout_id: str,
+        example: Example[JsonRow],
+    ) -> AsyncGenerator[None]:
+        try:
+            yield
+        finally:
+            self._tool_calls.pop(rollout_id, None)
 
     async def compute_reward(
-        self, rollout_id, messages, task, **kwargs
+        self,
+        rollout_id: str,
+        messages: Messages,
+        example_args: Mapping[str, Any],
+        *,
+        termination_reason: str,
     ) -> dict[str, float]:
-        return {}  # all logic is group-level (compute_group_reward)
+        raise NotImplementedError(
+            "TelestichEnv still requires group-relative scoring and is not yet "
+            "compatible with the per-rollout BaseEnv contract"
+        )
 
     async def _quality(
         self,
@@ -1239,8 +1290,14 @@ then stop."""
             f"{conc_line}"
         )
 
-    async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kwargs):
-        task = tasks[0] or {}
+    async def compute_group_reward(
+        self,
+        rollout_ids,
+        messages_list,
+        example_args_list,
+        termination_reasons,
+    ):
+        task = example_args_list[0] or {}
         target = str(task.get("ground_truth") or "")
         prompt = str(task.get("prompt") or "")
         acceptable = _first_ref(task.get("acceptable_refs"))
@@ -1293,7 +1350,7 @@ then stop."""
         # Path B (why): a full component breakdown for poems that passed the gate.
         out = []
         for r in rolls:
-            with rollout_context(r.rollout_id):
+            with bind_rollout_context(r.rollout_id):
                 logger.info(self._fmt_rollout(r, budget))
                 if r.correct:  # full breakdown only for judged poems
                     logger.info(self._explain_rollout(r, budget))

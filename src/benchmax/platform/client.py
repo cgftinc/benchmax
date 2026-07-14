@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from types import ModuleType
 
-    from benchmax.envs.base_env import BaseEnv
+    from benchmax.envs.environment import Environment
 
 
 @dataclass(frozen=True)
@@ -1196,7 +1196,7 @@ class RolloutClient:
         env_metadata_path: str | None = None,
         n: int = 2,
         *,
-        env_class: type[BaseEnv] | None = None,
+        env_class: type[Environment[Any]] | None = None,
         constructor_args: dict[str, Any] | None = None,
         pip_dependencies: list[str] | None = None,
         local_modules: list[ModuleType] | None = None,
@@ -1224,7 +1224,7 @@ class RolloutClient:
             env_cls_path:       Blob path to the uploaded env .pkl file.
             env_metadata_path:  Blob path to the uploaded env-meta .json file.
             n:                  Number of examples to validate (default 2).
-            env_class:          BaseEnv subclass to bundle and validate without
+            env_class:          Environment implementation to bundle and validate without
                                 uploading. Mutually exclusive with paths/bytes.
             constructor_args:   kwargs baked into the env bundle (env_class only).
             pip_dependencies:   Pip deps recorded in the bundle (env_class only).
@@ -1318,7 +1318,7 @@ class RolloutClient:
             if verbose:
                 print(_info(f"\n  Example {i} — {json.dumps(example)[:120]}"))
             try:
-                rollout_kwargs = dict(
+                rollout_kwargs: dict[str, Any] = dict(
                     raw_example=example,
                     env_cls_path=env_cls_path,
                     env_metadata_path=env_metadata_path,

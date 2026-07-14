@@ -11,9 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from benchmax import config
+from benchmax.platform.config import PlatformConfig
 from benchmax.rag.qa_generation.retrieval_query import QueryRewriteConfig
 from benchmax.rag.qa_generation.scoring import ScoringConfig
 
@@ -192,20 +191,6 @@ class EnvBundleConfig:
 
     def has_files(self) -> bool:
         return bool(self.env_cls_file and self.env_metadata_file)
-
-
-@dataclass
-class PlatformConfig:
-    """Top-level credentials."""
-
-    # Default to the credential seam (empty key → platform_bearer), matching
-    # every sibling config here and the keyless clients: pipeline.py threads this
-    # through resolve_token_provider / the now-keyless PostgresChunkSource +
-    # RolloutClient, so PlatformConfig() works without a baked key.
-    api_key: str = ""
-    base_url: str = config.platform_url()
-    llm_api_key: str = ""
-    llm_base_url: str = field(default_factory=config.llm_url)
 
 
 @dataclass
@@ -895,8 +880,11 @@ def _collect_removed_config_keys(raw: dict[str, Any]) -> list[str]:
 
 def load_pipeline_config(path: str | Path) -> PipelineConfig:
     """Load `PipelineConfig` from YAML."""
+    from ruamel.yaml import YAML  # pyright: ignore[reportMissingImports]
+
+    yaml = YAML(typ="safe")
     with Path(path).open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
+        raw = yaml.load(fh) or {}
 
     removed_keys = _collect_removed_config_keys(raw)
     if removed_keys:

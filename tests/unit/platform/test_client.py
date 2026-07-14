@@ -578,16 +578,15 @@ def test_validation_result_ok_property():
 def _make_smoke_env():
     """A minimal concrete BaseEnv defined in a local scope so cloudpickle
     pickles it by value (no local-module ref for dump_bundle to reject)."""
-    from benchmax.envs.base_env import BaseEnv
+    from benchmax.envs import BaseEnv
 
     class _SmokeEnv(BaseEnv):
-        async def list_tools(self):
-            return []
-
-        async def run_tool(self, rollout_id, tool_name, **tool_args):
+        async def create_dataset(self, split, base_dir):
             raise NotImplementedError
 
-        async def compute_reward(self, rollout_id, messages, task, **kwargs):
+        async def compute_reward(
+            self, rollout_id, messages, example_args, *, termination_reason
+        ):
             return {"reward": 1.0}
 
     return _SmokeEnv
@@ -779,19 +778,24 @@ def _make_group_env():
     """A concrete BaseEnv that OVERRIDES compute_group_reward so the group check
     fires. The body never runs here — the group reward executes server-side,
     which run_group mocks away."""
-    from benchmax.envs.base_env import BaseEnv
+    from benchmax.envs import BaseEnv
 
     class _GroupEnv(BaseEnv):
-        async def list_tools(self):
-            return []
-
-        async def run_tool(self, rollout_id, tool_name, **tool_args):
+        async def create_dataset(self, split, base_dir):
             raise NotImplementedError
 
-        async def compute_reward(self, rollout_id, messages, task, **kwargs):
+        async def compute_reward(
+            self, rollout_id, messages, example_args, *, termination_reason
+        ):
             return {"r": 1.0}
 
-        async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kw):
+        async def compute_group_reward(
+            self,
+            rollout_ids,
+            messages_list,
+            example_args_list,
+            termination_reasons,
+        ):
             return [{"r": 1.0} for _ in rollout_ids]
 
     return _GroupEnv

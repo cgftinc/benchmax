@@ -1,6 +1,6 @@
 """Public-API guards for the keyless device-auth surface.
 
-Two contracts the wizard codegen relies on (generated run.py scripts):
+Two public behaviors the wizard codegen relies on (generated run.py scripts):
   - ``platform_bearer`` is importable from ``benchmax.platform`` — generated
     scripts hand it to a raw OpenAI client (e.g. the traces pivot).
   - ``PlatformConfig()`` constructs with no key — an empty key resolves through
@@ -9,9 +9,8 @@ Two contracts the wizard codegen relies on (generated run.py scripts):
 
 from __future__ import annotations
 
-import pytest
-
 import benchmax.platform as platform
+from benchmax.platform import PlatformConfig
 
 
 def test_platform_bearer_is_public() -> None:
@@ -25,12 +24,9 @@ def test_platform_bearer_is_public() -> None:
 
 
 def test_platform_config_is_keyless_by_default() -> None:
-    PlatformConfig = pytest.importorskip(
-        "benchmax.rag.qa_generation.pipeline_config"
-    ).PlatformConfig
-
     cfg = PlatformConfig()  # no api_key — must not raise
     assert cfg.api_key == ""
     # URLs still resolve from config (session/env-derived), never None.
     assert cfg.base_url
     assert cfg.llm_base_url
+    assert "PlatformConfig" in platform.__all__

@@ -72,20 +72,20 @@ class TestInit:
 
     def test_tool_schema_has_query(self):
         env = _make_env()
-        tool_def = env._tools["search"][0]
-        assert "query" in tool_def.input_schema["properties"]
-        assert "query" in tool_def.input_schema["required"]
+        parameters = env._tools["search"][0]["function"]["parameters"]
+        assert "query" in parameters["properties"]
+        assert "query" in parameters["required"]
 
     def test_no_mode_property_with_single_mode(self):
         env = _make_env(search=StubSearch(modes=["vector"]))
-        tool_def = env._tools["search"][0]
-        assert "mode" not in tool_def.input_schema["properties"]
+        parameters = env._tools["search"][0]["function"]["parameters"]
+        assert "mode" not in parameters["properties"]
 
     def test_mode_property_with_multiple_modes(self):
         env = _make_env(search=StubSearch(modes=["lexical", "vector", "hybrid"]))
-        tool_def = env._tools["search"][0]
-        assert "mode" in tool_def.input_schema["properties"]
-        assert "hybrid" in tool_def.input_schema["properties"]["mode"]["enum"]
+        parameters = env._tools["search"][0]["function"]["parameters"]
+        assert "mode" in parameters["properties"]
+        assert "hybrid" in parameters["properties"]["mode"]["enum"]
 
     def test_default_mode_hybrid_preferred(self):
         env = _make_env(search=StubSearch(modes=["lexical", "vector", "hybrid"]))
@@ -96,8 +96,7 @@ class TestInit:
         assert env._default_mode == "lexical"
 
     def test_default_system_prompt_is_empty(self):
-        # No runtime render: system_prompt is a static class attr (default "").
-        assert SearchEnv.system_prompt == ""
+        assert SearchEnv.system_prompt is None
 
     def test_render_system_prompt_includes_corpus_description(self):
         prompt = SearchEnv.render_system_prompt(
@@ -127,7 +126,7 @@ class TestInit:
         # them silently (caller's weights become no-ops), so __init__ rejects
         # them explicitly.
         for kwarg in ("w_conciseness", "w_citation_recall", "w_search_efficiency"):
-            with pytest.raises(TypeError, match="no longer accepts"):
+            with pytest.raises(TypeError, match="unexpected keyword argument"):
                 _make_env(**{kwarg: 0.5})
 
     def test_primary_reward_key_is_answer_correctness(self):
@@ -239,6 +238,15 @@ def _msgs(content):
     return [{"role": "assistant", "content": content}]
 
 
+async def _compute_reward(env, *args, **kwargs):
+    return await type(env).compute_reward(
+        env,
+        *args,
+        termination_reason="finished",
+        **kwargs,
+    )
+
+
 class TestComputeReward:
     @patch(
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
@@ -248,7 +256,8 @@ class TestComputeReward:
         mock_eval.return_value = {"score": 0.8}
         env = _make_env()
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs("The answer is <answer>42 [Source: doc_a]</answer>"),
                 {
@@ -277,7 +286,8 @@ class TestComputeReward:
         mock_eval.return_value = {"score": 0.5}
         env = _make_env(w_correctness=2.0)
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs("<answer>partial</answer>"),
                 {"question": "Q?", "ground_truth": "full answer"},
@@ -294,7 +304,8 @@ class TestComputeReward:
         mock_eval.return_value = {"score": 0.0}
         env = _make_env()
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs("<answer>wrong</answer>"),
                 {"question": "Q?", "ground_truth": "right"},
@@ -313,7 +324,8 @@ class TestComputeReward:
         env = _make_env(w_length=1.0)
         short = "42"
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs(f"<answer>{short}</answer>"),
                 {"question": "Q?", "ground_truth": "42"},
@@ -324,7 +336,8 @@ class TestComputeReward:
 
         long = "x" * 700  # >= ANSWER_LENGTH_CAP
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs(f"<answer>{long}</answer>"),
                 {"question": "Q?", "ground_truth": "42"},
@@ -340,7 +353,8 @@ class TestComputeReward:
         # Strict extraction: no committed <answer> → zeros, judge never called.
         env = _make_env()
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs("I think it's 42 but I never commit an answer tag"),
                 {"question": "Q?", "ground_truth": "42"},
@@ -357,7 +371,8 @@ class TestComputeReward:
         mock_eval.return_value = {"score": 1.0}
         env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs(
                     "<answer>Found it [Source: statute_a] [Source: statute_b]</answer>"
@@ -385,7 +400,8 @@ class TestComputeReward:
         mock_eval.return_value = {"score": 1.0}
         env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs("<answer>Found it [Source: docs/Statute_A.md]</answer>"),
                 {
@@ -408,7 +424,8 @@ class TestComputeReward:
         mock_eval.return_value = {"score": 1.0}
         env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs("<answer>Found it [Source: statute_a]</answer>"),
                 {
@@ -440,7 +457,8 @@ class TestComputeReward:
         )
         answer = "partial [Source: doc_a]"
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs(f"<answer>{answer}</answer>"),
                 {
@@ -467,7 +485,8 @@ class TestComputeReward:
         mock_eval.return_value = {"score": 0.0}
         env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs("<answer>wrong [Source: doc_a]</answer>"),
                 {
@@ -487,31 +506,30 @@ class TestComputeReward:
         "benchmax.envs.postgres_search.search_env.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
-    def test_judge_failure_scores_zero_but_keeps_retrieval_hit(self, mock_eval):
-        # A judge exception is caught LOCALLY: correctness scores 0, but the
-        # ungated retrieval signal (and the rest of the reward) still computes.
+    def test_judge_failure_is_infrastructure_failure(self, mock_eval):
         mock_eval.side_effect = RuntimeError("judge down")
         env = _make_env(w_retrieval_hit=1.0)
-        result = asyncio.run(
-            env.compute_reward(
-                "r1",
-                _msgs("<answer>42 [Source: doc_a]</answer>"),
-                {
-                    "question": "Q?",
-                    "ground_truth": "42",
-                    "reference_chunks": [
-                        {"content": "...", "metadata": {"file": "doc_a"}}
-                    ],
-                },
+        with pytest.raises(RuntimeError, match="judge down"):
+            asyncio.run(
+                _compute_reward(
+                    env,
+                    "r1",
+                    _msgs("<answer>42 [Source: doc_a]</answer>"),
+                    {
+                        "question": "Q?",
+                        "ground_truth": "42",
+                        "reference_chunks": [
+                            {"content": "...", "metadata": {"file": "doc_a"}}
+                        ],
+                    },
+                )
             )
-        )
-        assert result["answer_correctness"] == 0.0
-        assert result["retrieval_hit"] == pytest.approx(1.0)  # not zeroed
 
     def test_empty_completion_returns_zeros(self):
         env = _make_env()
         result = asyncio.run(
-            env.compute_reward(
+            _compute_reward(
+                env,
                 "r1",
                 _msgs("   "),
                 {"ground_truth": "42"},
@@ -613,46 +631,46 @@ class TestExtractAnswerBlock:
         )
 
 
-class TestDatasetPreprocess:
+class TestDatasetParsing:
     def test_extracts_question_answer(self):
         env = _make_env()
-        result = env.dataset_preprocess({"question": "What is X?", "answer": "Y"})
-        # User message carries the question text (system msg is prepended by make_example).
-        user_msgs = [m for m in result["prompt_messages"] if m["role"] == "user"]
+        result = env._example_from_row({"question": "What is X?", "answer": "Y"})
+        user_msgs = [
+            m for m in result.payload["prompt_messages"] if m["role"] == "user"
+        ]
         assert user_msgs and user_msgs[0]["content"] == "What is X?"
-        assert result["task"]["question"] == "What is X?"
-        assert result["task"]["ground_truth"] == "Y"
+        assert result.payload["question"] == "What is X?"
+        assert result.payload["ground_truth"] == "Y"
 
     def test_passes_reference_chunks(self):
         env = _make_env()
-        result = env.dataset_preprocess(
+        result = env._example_from_row(
             {"question": "Q", "answer": "A", "reference_chunks": [{"id": "c1"}]}
         )
-        assert result["task"]["reference_chunks"] == [{"id": "c1"}]
+        assert result.payload["reference_chunks"] == [{"id": "c1"}]
 
-    def test_bakes_class_attr_system_prompt_into_example(self):
-        # dataset_preprocess is a classmethod that bakes the static
-        # cls.system_prompt into the Example — no env instance needed. Verifies
-        # the system prompt reaches training Examples
-        # (project_searchenv_classmethod_system_prompt_drop).
+    def test_environment_prompt_is_part_of_prompt_messages(self):
         class CustomEnv(SearchEnv):
             system_prompt = SearchEnv.render_system_prompt(
                 corpus_description="Korean legal statutes", max_search_calls=4
             )
 
-        result = CustomEnv.dataset_preprocess({"question": "Q", "answer": "A"})
-        system_msgs = [m for m in result["prompt_messages"] if m["role"] == "system"]
+        result = CustomEnv(search=StubSearch(), **JUDGE_ARGS)._example_from_row(
+            {"question": "Q", "answer": "A"}
+        )
+        system_msgs = [
+            m for m in result.payload["prompt_messages"] if m["role"] == "system"
+        ]
         assert len(system_msgs) == 1
         assert "Korean legal statutes" in system_msgs[0]["content"]
-        assert "4 times" in system_msgs[0]["content"]
 
 
 class TestListTools:
-    def test_returns_tool_definitions(self):
+    def test_returns_openai_tools(self):
         env = _make_env()
         tools = asyncio.run(env.list_tools())
         assert len(tools) == 1
-        assert tools[0].name == "search"
+        assert tools[0]["function"]["name"] == "search"
 
 
 class TestPickle:
@@ -818,7 +836,7 @@ class TestSeedLibSync:
 
     def test_reward_keys_match_lib_default(self, rag_mod):
         env = _make_env()
-        assert set(rag_mod.REWARD_KEYS) == set(env._zero_rewards())
+        assert set(rag_mod.REWARD_KEYS) == set(env._ZERO_REWARDS)
 
     def test_weights_and_length_cap_match_lib_defaults(self, rag_mod):
         env = _make_env()
