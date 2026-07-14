@@ -185,7 +185,7 @@ async def test_harbor_limits_active_trials_across_groups(
     assert max_active == 2
 
 
-def test_harbor_modal_environment_gets_castform_app_default(tmp_path: Path) -> None:
+def test_harbor_modal_environment_gets_castform_defaults(tmp_path: Path) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
         trial=HarborTrialTemplate(
@@ -197,7 +197,37 @@ def test_harbor_modal_environment_gets_castform_app_default(tmp_path: Path) -> N
         sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
     )
 
-    assert env._trial.environment.kwargs["app_name"] == "harbor-castform"
+    assert env._trial.environment.kwargs == {
+        "app_name": "harbor-castform",
+        "sandbox_timeout_secs": 3600,
+        "sandbox_idle_timeout_secs": 1800,
+    }
+
+
+def test_harbor_modal_environment_preserves_user_overrides(tmp_path: Path) -> None:
+    env = HarborEnv(
+        dataset=DatasetConfig(path=tmp_path),
+        trial=HarborTrialTemplate(
+            agent=AgentConfig(name="mini-swe-agent"),
+            environment=EnvironmentConfig(
+                type=EnvironmentType.MODAL,
+                kwargs={
+                    "app_name": "custom-app",
+                    "sandbox_timeout_secs": 7200,
+                    "sandbox_idle_timeout_secs": 2400,
+                },
+            ),
+            verifier=VerifierConfig(),
+            trials_dir=tmp_path / "trials",
+        ),
+        sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+    )
+
+    assert env._trial.environment.kwargs == {
+        "app_name": "custom-app",
+        "sandbox_timeout_secs": 7200,
+        "sandbox_idle_timeout_secs": 2400,
+    }
 
 
 def test_harbor_non_modal_environment_has_no_modal_app_default(tmp_path: Path) -> None:
