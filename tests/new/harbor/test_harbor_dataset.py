@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,7 @@ async def test_harbor_dataset_identity_is_content_addressed_and_snapshotted(
 
     assert len(first) == len(second) == 1
     assert first[0].id == second[0].id
-    assert first[0].id.startswith("sha256:")
+    assert re.fullmatch(r"[0-9a-f]{64}", first[0].id)
     assert first[0].payload.path != second[0].payload.path
     assert first[0].payload.path.is_relative_to(tmp_path / "cache-a")
     assert second[0].payload.path.is_relative_to(tmp_path / "cache-b")

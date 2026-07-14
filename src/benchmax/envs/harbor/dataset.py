@@ -76,7 +76,7 @@ class HarborDataset(FrozenDataset[Any]):
                 Packager.compute_content_hash,
                 download.path,
             )
-            example_id = f"sha256:{content_hash}"
+            example_id = content_hash
             if example_id in seen_ids:
                 raise ValueError(
                     f"Harbor dataset contains duplicate task content: {example_id}"
