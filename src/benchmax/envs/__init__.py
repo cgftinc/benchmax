@@ -10,6 +10,7 @@ from benchmax.envs.base import (
 from benchmax.envs.dataset import Dataset, FrozenDataset
 from benchmax.envs.environment import Environment
 from benchmax.envs.identity import canonical_example_id
+from benchmax.envs.math import MathDataset, MathEnv
 from benchmax.envs.shared_types import (
     DatasetSplit,
     Example,
@@ -31,6 +32,8 @@ __all__ = [
     "JsonlDataset",
     "Message",
     "Messages",
+    "MathDataset",
+    "MathEnv",
     "RewardMap",
     "RolloutAttempt",
     "RolloutOutcome",

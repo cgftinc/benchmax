@@ -21,6 +21,8 @@ The suite proves:
 - individual and group reward dimensions merge without silent key conflicts;
 - either individual or group scoring can provide the complete reward; and
 - model infrastructure failures are not silently converted into rewards.
+- the bundled MathEnv loads explicit train/eval JSONL splits and completes its
+  real OpenAI-compatible arithmetic tool loop with discriminating rewards.
 
 It does not validate the existing bundled environments, real Harbor execution,
 TITO collection, trainer retries, or legacy consumers. Those are follow-up
