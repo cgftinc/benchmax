@@ -35,8 +35,7 @@ Line length is 100. Ruff rules: E, F, I, N, W, UP. Python 3.12 required.
 ```
 src/benchmax/
 ├── envs/             # core — env primitives + built-in envs
-│   ├── base/             # default chat/tool env + JSONL dataset
-│   ├── harbor/           # optional native Harbor adapter
+│   ├── base_env.py / types.py / tracking.py
 │   ├── mcp/                  ([mcp] extra)
 │   ├── excel/, crm/          (env-specific extras)
 │   ├── math/, wikipedia/

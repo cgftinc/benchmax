@@ -341,15 +341,16 @@ def test_launcher_args_from_config_ignores_reserved_keys():
 def test_launch_warns_when_estimate_exceeds_budget(monkeypatch, capsys):
     """The pre-confirm truncation guard warns when the env's estimated rollout
     tokens exceed max_rollout_len (a truncated rollout is dropped from the loss)."""
-    from benchmax.envs import BaseEnv
+    from benchmax.envs.base_env import BaseEnv
 
     class _BigEnv(BaseEnv):
-        async def create_dataset(self, split, base_dir):
-            raise NotImplementedError
+        async def list_tools(self):
+            return []
 
-        async def compute_reward(
-            self, rollout_id, messages, example_args, *, termination_reason
-        ):
+        async def run_tool(self, rollout_id, tool_name, **k):
+            return ""
+
+        async def compute_reward(self, rollout_id, messages, task, **k):
             return {}
 
         def estimate_rollout_tokens(self):
@@ -406,15 +407,16 @@ def test_estimate_rollout_tokens_prefers_env_then_falls_back():
 def test_launch_guard_uses_schema_default_when_budget_omitted(monkeypatch, capsys):
     """When max_rollout_len is omitted, the guard must fall back to the schema
     default (the effective view), not silently skip — so a big env still warns."""
-    from benchmax.envs import BaseEnv
+    from benchmax.envs.base_env import BaseEnv
 
     class _Big(BaseEnv):
-        async def create_dataset(self, split, base_dir):
-            raise NotImplementedError
+        async def list_tools(self):
+            return []
 
-        async def compute_reward(
-            self, rollout_id, messages, example_args, *, termination_reason
-        ):
+        async def run_tool(self, rollout_id, tool_name, **k):
+            return ""
+
+        async def compute_reward(self, rollout_id, messages, task, **k):
             return {}
 
         def estimate_rollout_tokens(self):

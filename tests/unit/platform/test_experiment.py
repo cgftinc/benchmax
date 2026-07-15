@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import dataclasses
 import sys
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 import pytest
 
-from benchmax.envs import BaseEnv
+from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.types import Messages, ToolDefinition
 from benchmax.platform import (
     UploadedTrainingRun,
     upload_training_run,
@@ -24,14 +25,24 @@ _TEST_MODULE = sys.modules[__name__]
 class MinimalEnv(BaseEnv):
     """Minimal valid BaseEnv subclass for bundling tests."""
 
+    system_prompt = "test"
+
     def __init__(self, greeting: str = "hello"):
-        super().__init__(max_turns=1)
         self.greeting = greeting
 
-    async def create_dataset(self, split, base_dir):
-        raise NotImplementedError
+    async def list_tools(self) -> List[ToolDefinition]:
+        return []
 
-    async def compute_reward(self, *args, **kwargs):
+    async def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
+        return None
+
+    async def compute_reward(
+        self,
+        rollout_id: str,
+        messages: Messages,
+        task: Optional[Dict[str, Any]],
+        **kwargs: Any,
+    ) -> Dict[str, float]:
         return {"score": 0.0}
 
 
@@ -143,9 +154,7 @@ def test_upload_training_run_respects_env_prefix_override():
         "custom/env/path/env-metadata.json",
     }
     # Datasets still use the default layout.
-    assert all(
-        p.startswith("datasets/run-x/") for p in paths if p.startswith("datasets/")
-    )
+    assert all(p.startswith("datasets/run-x/") for p in paths if p.startswith("datasets/"))
 
 
 def test_upload_training_run_respects_dataset_prefix_override():
@@ -175,12 +184,7 @@ def test_upload_training_run_writes_jsonl_one_object_per_line():
     class CapturingStorage:
         def upload_local_file(self, path, file_path, **kwargs):
             captured[path] = Path(file_path).read_bytes()
-            return {
-                "blobPath": f"blob://{path}",
-                "uploadUrl": "",
-                "expiresAt": "",
-                "willOverwrite": False,
-            }
+            return {"blobPath": f"blob://{path}", "uploadUrl": "", "expiresAt": "", "willOverwrite": False}
 
     upload_training_run(
         env_class=MinimalEnv,
@@ -196,7 +200,6 @@ def test_upload_training_run_writes_jsonl_one_object_per_line():
     eval_lines = captured["fixed/ds/eval.jsonl"].decode().splitlines()
 
     import json
-
     assert [json.loads(line) for line in train_lines] == [{"a": 1}, {"a": 2}]
     assert [json.loads(line) for line in eval_lines] == [{"b": 3}]
 
@@ -264,12 +267,7 @@ def test_upload_training_run_passes_constructor_args_through_to_bundle():
     class CapturingStorage:
         def upload_local_file(self, path, file_path, **kwargs):
             captured[path] = Path(file_path).read_bytes()
-            return {
-                "blobPath": f"blob://{path}",
-                "uploadUrl": "",
-                "expiresAt": "",
-                "willOverwrite": False,
-            }
+            return {"blobPath": f"blob://{path}", "uploadUrl": "", "expiresAt": "", "willOverwrite": False}
 
     upload_training_run(
         env_class=MinimalEnv,
@@ -283,6 +281,5 @@ def test_upload_training_run_passes_constructor_args_through_to_bundle():
     )
 
     import cloudpickle
-
     _, ctor_args = cloudpickle.loads(captured["fixed/env/env-cls.pkl"])
     assert ctor_args == {"greeting": "hola"}

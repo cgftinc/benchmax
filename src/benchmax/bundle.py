@@ -15,7 +15,7 @@ from typing import Any
 
 import cloudpickle
 
-from benchmax.envs.environment import Environment
+from benchmax.envs.base_env import BaseEnv
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class Bundle:
 
 
 def dump_bundle(
-    env_class: type[Environment[Any]],
+    env_class: type[BaseEnv],
     *,
     constructor_args: dict[str, Any] | None = None,
     pip_dependencies: list[str] | None = None,
@@ -82,7 +82,7 @@ def dump_bundle(
     """Pickle ``(env_class, constructor_args)`` and stamp metadata.
 
     Args:
-        env_class: A concrete Environment implementation.
+        env_class: A concrete BaseEnv subclass.
         constructor_args: kwargs for ``env_class(**...)`` on load.
         pip_dependencies: Recorded in metadata. NOT installed by this call.
         local_modules: Modules to pickle by-value. Required when the env class
@@ -205,7 +205,7 @@ def load_bundle(
     bundle: Bundle,
     *,
     instantiate: bool = True,
-) -> Environment[Any] | tuple[type[Environment[Any]], dict[str, Any]]:
+) -> BaseEnv | tuple[type[BaseEnv], dict[str, Any]]:
     """Unpickle and (optionally) instantiate.
 
     Verifies ``python_version`` matches. Never installs pip deps — image must.
@@ -217,7 +217,7 @@ def load_bundle(
 
     Raises:
         IncompatiblePythonError: bundle's python_version != current.
-        BundlingError: corrupt bytes or a class that does not implement Environment.
+        BundlingError: corrupt bytes or non-BaseEnv payload.
     """
     current = f"{sys.version_info.major}.{sys.version_info.minor}"
     if bundle.metadata.python_version != current:
@@ -237,10 +237,9 @@ def load_bundle(
             "(env_class, constructor_args) tuple."
         )
     env_class, constructor_args = payload
-    if not (isinstance(env_class, type) and issubclass(env_class, Environment)):
+    if not (isinstance(env_class, type) and issubclass(env_class, BaseEnv)):
         raise BundlingError(
-            f"Unpickled class is {type(env_class).__name__}, "
-            "not an Environment implementation."
+            f"Unpickled class is {type(env_class).__name__}, not a BaseEnv subclass."
         )
     if not isinstance(constructor_args, dict):
         raise BundlingError(
@@ -253,13 +252,11 @@ def load_bundle(
     return env_class, constructor_args
 
 
-def _check_env_class(env_class: type[Environment[Any]]) -> None:
-    if not (isinstance(env_class, type) and issubclass(env_class, Environment)):
-        raise BundlingError(f"{env_class!r} does not implement Environment.")
-    if env_class is Environment:
-        raise BundlingError(
-            "Cannot bundle the Environment protocol; provide a concrete implementation."
-        )
+def _check_env_class(env_class: type[BaseEnv]) -> None:
+    if not (isinstance(env_class, type) and issubclass(env_class, BaseEnv)):
+        raise BundlingError(f"{env_class!r} is not a BaseEnv subclass.")
+    if env_class is BaseEnv:
+        raise BundlingError("Cannot bundle BaseEnv directly; provide a concrete subclass.")
     abstract = getattr(env_class, "__abstractmethods__", frozenset())
     if abstract:
         raise BundlingError(
@@ -268,7 +265,7 @@ def _check_env_class(env_class: type[Environment[Any]]) -> None:
         )
 
 
-def _get_source(env_class: type[Environment[Any]]) -> str | None:
+def _get_source(env_class: type[BaseEnv]) -> str | None:
     try:
         return inspect.getsource(env_class)
     except (OSError, TypeError) as e:

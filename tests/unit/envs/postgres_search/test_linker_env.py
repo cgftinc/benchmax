@@ -31,6 +31,8 @@ class StubSearch:
 
 class TestSystemPrompt:
     def test_system_prompt_is_a_class_attribute(self):
+        # Must live on the class (not just the instance) so the
+        # dataset_preprocess classmethod can read it via cls.system_prompt.
         assert LinkerEnv.system_prompt == _SYSTEM_PROMPT
         assert LinkerEnv.system_prompt
 
@@ -39,24 +41,25 @@ class TestSystemPrompt:
         assert env.system_prompt == _SYSTEM_PROMPT
 
 
-class TestDatasetParsing:
-    def test_system_prompt_is_in_prompt_messages(self):
-        result = LinkerEnv(search=StubSearch())._example_from_row(
+class TestDatasetPreprocess:
+    def test_bakes_system_prompt_into_example_via_classmethod(self):
+        # Regression: dataset_preprocess is a classmethod reading
+        # cls.system_prompt. Before the fix the prompt was only set on the
+        # instance, so cls.system_prompt resolved to BaseEnv's "" and the
+        # system message was silently dropped from training Examples.
+        result = LinkerEnv.dataset_preprocess(
             {"target_n": 2, "reasoning_mode": "", "prompt": "Primary chunk text."}
         )
-        system_msgs = [
-            m for m in result.payload["prompt_messages"] if m["role"] == "system"
-        ]
-        assert system_msgs == [{"role": "system", "content": _SYSTEM_PROMPT}]
+        system_msgs = [m for m in result["prompt_messages"] if m["role"] == "system"]
+        assert len(system_msgs) == 1
+        assert "evidence chain" in system_msgs[0]["content"]
 
     def test_templates_user_prompt(self):
-        result = LinkerEnv(search=StubSearch())._example_from_row(
+        result = LinkerEnv.dataset_preprocess(
             {"target_n": 3, "reasoning_mode": "", "prompt": "Primary chunk text."}
         )
-        user_msgs = [
-            m for m in result.payload["prompt_messages"] if m["role"] == "user"
-        ]
+        user_msgs = [m for m in result["prompt_messages"] if m["role"] == "user"]
         assert user_msgs
         assert "Find 3 secondary chunk(s)" in user_msgs[0]["content"]
         assert "Primary chunk text." in user_msgs[0]["content"]
-        assert result.payload["target_n"] == 3
+        assert result["task"]["target_n"] == 3

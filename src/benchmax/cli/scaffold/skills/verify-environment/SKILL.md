@@ -94,7 +94,7 @@ Read the card top-down:
   checks
   ✓  no reward errors             2/2 rollouts ok
   ✓  rewards vary across rollouts
-  ·  group reward                 legacy check only
+  ·  group reward                 not run (no compute_group_reward)
 
   ✓ validate passed
   → GREEN baseline — iterate (improve reward/data) or launch.
@@ -110,8 +110,7 @@ Read the card top-down:
   - `rewards vary across rollouts` / `⚠ rewards DON'T vary` (every component
     constant) / `⚠ some components constant` (lists which). Constant = the reward
     isn't discriminating, or the rows are all too easy/hard.
-  - `group reward` — legacy rollout-service check; it is not part of the clean
-    BaseEnv contract. `mean …` (ran), `not run` (no legacy hook, or the
+  - `group reward` — `mean …` (ran), `not run` (no `compute_group_reward`, or the
     server skipped it — expected, not an error), or `⚠ FAILED — …` (it raised or
     broke its contract).
     If a group-only component looks constant in an ungrouped per-example view, verify

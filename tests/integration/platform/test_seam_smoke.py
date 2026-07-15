@@ -16,7 +16,7 @@ import os
 
 import pytest
 
-from benchmax.envs import BaseEnv, Example, JsonlDataset, canonical_example_id
+from benchmax.envs.base_env import BaseEnv
 from benchmax.platform.client import RolloutClient
 
 pytestmark = pytest.mark.integration
@@ -31,21 +31,13 @@ def _make_echo_env():
     dump_bundle to reject (mirrors the unit-test smoke env)."""
 
     class _EchoEnv(BaseEnv):
-        max_turns = 1
+        system_prompt = "Reply with one short word."
 
-        async def create_dataset(self, split, base_dir):
-            def make_example(row):
-                payload = {
-                    "prompt_messages": [
-                        {"role": "system", "content": "Reply with one short word."},
-                        {"role": "user", "content": str(row["prompt"])},
-                    ]
-                }
-                return Example(id=canonical_example_id(payload), payload=payload)
+        async def list_tools(self):
+            return []
 
-            return JsonlDataset(
-                base_dir / f"{split}.jsonl", row_to_example=make_example
-            )
+        async def run_tool(self, *a, **k):
+            raise NotImplementedError
 
         async def compute_reward(self, *a, **k):
             return {"reward": 1.0}

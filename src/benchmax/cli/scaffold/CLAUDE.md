@@ -46,18 +46,18 @@ instead of `castform login`.
 
 ## Project files (the convention `castform validate` / `launch` expect)
 
-- `main.py` — defines your environment: normally a single `BaseEnv` subclass.
+- `main.py` — defines your environment: a single `BaseEnv` subclass.
 - `train_dataset.jsonl` / `eval_dataset.jsonl` — one JSON object per line; each
   needs at least a `prompt` (and usually a `ground_truth`).
 
-`castform validate`/`launch` import the one env subclass from `main.py` and
+`castform validate`/`launch` import the one `BaseEnv` subclass from `main.py` and
 load those two files. Keep that layout.
 
 ## The loop
 
 1. **Design the environment** with `design-environment`. `main.py` should expose one
-   `BaseEnv` subclass with `list_tools`, `run_tool`, and `compute_reward`.
-   No tools needed? Return `[]`.
+   `BaseEnv` subclass with `list_tools`, `run_tool`, and `compute_reward` (plus
+   optional `compute_group_reward`). No tools needed? Return `[]`.
 2. **Make the data** with `generate-data`. Keep `train_dataset.jsonl` and
    `eval_dataset.jsonl` disjoint; each row needs the fields your reward reads from
    `task`.
@@ -90,9 +90,12 @@ Rewards are the training signal; robust rewards matter more than anything else.
   missing, citation/style/brevity/tool-use rewards should usually pay `0` (or be
   multiplied by correctness). Otherwise the model can learn to bank bonuses while
   failing the task.
-- **Use fixed task references** for qualitative/LLM-judge scoring: compare the
-  completion against task-owned `ground_truth`. Group-relative scoring is not
-  part of the current BaseEnv contract.
+- **Prefer comparative rewards** for qualitative/LLM-judge scoring: compare the
+  completion against `ground_truth`, or use `compute_group_reward` to *rank*
+  completions within a group rather than score them absolutely. Ranking is far
+  more stable than an absolute 1–10 judge score. A "finer" absolute LLM judge often
+  collapses back to the same 0/1 decisions; use pairwise/listwise ranking when you
+  need tie-breaking resolution.
 <!-- rag:start -->
 - **For RAG, audit the reward before launch** (`castform validate --reward-audit`).
   The `SearchEnv` default already implements the audited shape: it extracts only a
@@ -122,8 +125,9 @@ you call the SDK directly, pass them to `upload_training_run`.
   rollout needs (clients, resolved config, budgets) must be set in `__init__` or it
   won't exist at rollout time.
 - **`max_turns` defaults to 4, `max_tool_calls` to 8.** A multi-turn env that
-  needs more is silently truncated. Keep executor limits aligned with the env's
-  own enforced limits: `castform validate --max-turns N --max-tool-calls N` (both
+  needs more is silently truncated, and the trainer does **not** consult an env's
+  `recommended_max_*` (it never passes the env class to the limit resolver). Set the
+  budget explicitly: `castform validate --max-turns N --max-tool-calls N` (both
   settable) and `castform launch --set max_turns=N`. ⚠ At launch `max_tool_calls` is
   **not** a `--set` knob (stays 8), so a tool-heavy env that makes more than 8 tool
   calls is capped in training — keep its per-rollout tool-call count ≤ 8 unless

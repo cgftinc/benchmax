@@ -6,10 +6,10 @@ import ipaddress
 import json
 import socket
 from dataclasses import dataclass, field
-from typing import Any, Protocol, TypedDict, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
-from benchmax.envs.base.openai_types import Message
+from benchmax.envs.types import ChatMessage, ToolCall  # noqa: F401 — re-export ToolCall
 
 # ---------------------------------------------------------------------------
 # Credentials
@@ -103,40 +103,6 @@ def validate_provider_url(url: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-class _ToolCallFunction(TypedDict):
-    name: str
-    arguments: str
-
-
-class _ToolCallDict(TypedDict):
-    id: str
-    type: str
-    function: _ToolCallFunction
-
-
-@dataclass(frozen=True)
-class ToolCall:
-    """Normalized tool invocation used by imported trace data."""
-
-    name: str
-    arguments: str = "{}"
-    id: str | None = None
-
-    def to_dict(self) -> _ToolCallDict:
-        return _ToolCallDict(
-            id=self.id or "",
-            type="function",
-            function=_ToolCallFunction(name=self.name, arguments=self.arguments),
-        )
-
-    def arguments_dict(self) -> dict[str, Any]:
-        try:
-            value = json.loads(self.arguments)
-        except (json.JSONDecodeError, TypeError):
-            return {}
-        return value if isinstance(value, dict) else {}
-
-
 @dataclass(frozen=True)
 class TraceMessage:
     """Single message in a normalised conversation."""
@@ -147,21 +113,20 @@ class TraceMessage:
     tool_call_id: str | None = None
     name: str | None = None  # tool name for role="tool"
 
-    def to_dict(self) -> Message:
-        """Serialise to an OpenAI-compatible message dict.
+    def to_dict(self) -> ChatMessage:
+        """Serialise to a :class:`ChatMessage` dict.
 
         All fields are always present with type-safe defaults (empty
         list / empty string, never None) for Arrow serialization safety.
         """
-        return {
-            "role": self.role,
-            "content": self.content,
-            "tool_calls": [tc.to_dict() for tc in self.tool_calls]
-            if self.tool_calls
-            else [],
-            "tool_call_id": self.tool_call_id or "",
-            "name": self.name or "",
-        }  # type: ignore[return-value]
+        return ChatMessage(
+            role=self.role,
+            content=self.content,
+            tool_calls=[tc.to_dict() for tc in self.tool_calls] if self.tool_calls else [],
+            tool_call_id=self.tool_call_id or "",
+            name=self.name or "",
+        )
+
 
 
 @dataclass(frozen=True)
@@ -310,33 +275,27 @@ def _extract_tool_calls(msg: dict[str, Any]) -> list[ToolCall]:
                 continue
             func = tc.get("function")
             if isinstance(func, dict) and "name" in func:
-                calls.append(
-                    ToolCall(
-                        name=func["name"],
-                        arguments=_ensure_json_string(func.get("arguments", "{}")),
-                        id=tc.get("id"),
-                    )
-                )
+                calls.append(ToolCall(
+                    name=func["name"],
+                    arguments=_ensure_json_string(func.get("arguments", "{}")),
+                    id=tc.get("id"),
+                ))
             elif "name" in tc:
-                calls.append(
-                    ToolCall(
-                        name=tc["name"],
-                        arguments=_ensure_json_string(tc.get("arguments", "{}")),
-                        id=tc.get("id"),
-                    )
-                )
+                calls.append(ToolCall(
+                    name=tc["name"],
+                    arguments=_ensure_json_string(tc.get("arguments", "{}")),
+                    id=tc.get("id"),
+                ))
         if calls:
             return calls
 
     func = msg.get("function")
     if isinstance(func, dict) and "name" in func:
-        return [
-            ToolCall(
-                name=func["name"],
-                arguments=_ensure_json_string(func.get("arguments", "{}")),
-                id=msg.get("id"),
-            )
-        ]
+        return [ToolCall(
+            name=func["name"],
+            arguments=_ensure_json_string(func.get("arguments", "{}")),
+            id=msg.get("id"),
+        )]
 
     return []
 
@@ -361,12 +320,7 @@ def normalize_message(msg: dict[str, Any]) -> TraceMessage:
     content = msg.get("content", "")
     tool_calls: list[ToolCall] = []
 
-    if (
-        isinstance(content, list)
-        and content
-        and isinstance(content[0], dict)
-        and "type" in content[0]
-    ):
+    if isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
         text_parts: list[str] = []
         for block in content:
             if not isinstance(block, dict):
@@ -375,13 +329,11 @@ def normalize_message(msg: dict[str, Any]) -> TraceMessage:
             if btype == "text":
                 text_parts.append(block.get("text", ""))
             elif btype == "toolCall":
-                tool_calls.append(
-                    ToolCall(
-                        name=block.get("name", ""),
-                        arguments=_ensure_json_string(block.get("arguments", "{}")),
-                        id=block.get("id"),
-                    )
-                )
+                tool_calls.append(ToolCall(
+                    name=block.get("name", ""),
+                    arguments=_ensure_json_string(block.get("arguments", "{}")),
+                    id=block.get("id"),
+                ))
         content = "\n".join(text_parts) if text_parts else ""
     else:
         if content is None:

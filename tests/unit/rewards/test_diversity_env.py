@@ -7,21 +7,13 @@ and validate_env compatibility. Uses ngram clustering to avoid LLM calls.
 from __future__ import annotations
 
 import pickle
-from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import cloudpickle
 import pytest
 
-from benchmax.envs import (
-    BaseEnv,
-    Example,
-    JsonRow,
-    JsonlDataset,
-    Messages,
-    Tool,
-    canonical_example_id,
-)
+from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.types import Messages, ToolDefinition
 from benchmax.rewards.diversity import DiversityConfig, scale_by_diversity
 
 
@@ -34,34 +26,17 @@ _DIVERSITY_CFG = DiversityConfig(method="ngram", ngram_n=3, similarity_threshold
 
 class _DiversityEnv(BaseEnv):
     system_prompt = "You are a helpful assistant."
-    max_turns = 1
 
-    async def create_dataset(self, split, base_dir: Path) -> JsonlDataset[JsonRow]:
-        def make_example(row: JsonRow) -> Example[JsonRow]:
-            payload: JsonRow = {
-                "prompt_messages": [
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": str(row.get("prompt", ""))},
-                ],
-                **{key: value for key, value in row.items() if key != "prompt"},
-            }
-            return Example(id=canonical_example_id(payload), payload=payload)
-
-        return JsonlDataset(base_dir / f"{split}.jsonl", row_to_example=make_example)
-
-    async def list_tools(self) -> list[Tool]:
+    async def list_tools(self) -> List[ToolDefinition]:
         return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "echo",
-                    "description": "Echo back input text",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"text": {"type": "string"}},
-                    },
+            ToolDefinition(
+                name="echo",
+                description="Echo back input text",
+                input_schema={
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
                 },
-            }
+            )
         ]
 
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
@@ -71,9 +46,8 @@ class _DiversityEnv(BaseEnv):
         self,
         rollout_id: str,
         messages: Messages,
-        example_args: Dict[str, Any],
-        *,
-        termination_reason: str,
+        task: Optional[Dict[str, Any]],
+        **kwargs: Any,
     ) -> Dict[str, float]:
         return {"quality": 1.0}
 
@@ -81,22 +55,15 @@ class _DiversityEnv(BaseEnv):
         self,
         rollout_ids: List[str],
         messages_list: List[Messages],
-        example_args_list: List[Dict[str, Any]],
-        termination_reasons: List[str],
+        tasks: List[Optional[Dict[str, Any]]],
+        **kwargs: Any,
     ) -> List[Dict[str, float]]:
         raw_rewards = []
-        for rid, msgs, example_args, reason in zip(
-            rollout_ids, messages_list, example_args_list, termination_reasons
-        ):
-            r = await self.compute_reward(
-                rid,
-                msgs,
-                example_args,
-                termination_reason=reason,
-            )
+        for rid, msgs, task in zip(rollout_ids, messages_list, tasks):
+            r = await self.compute_reward(rid, msgs, task)
             raw_rewards.append(r)
         texts = [msgs[-1]["content"] if msgs else "" for msgs in messages_list]
-        context = example_args_list[0].get("behavior", "") if example_args_list else ""
+        context = (tasks[0] or {}).get("behavior", "") if tasks else ""
         scaled, _ = await scale_by_diversity(
             raw_rewards, texts, _DIVERSITY_CFG, context=context
         )
@@ -134,9 +101,7 @@ class TestEnvIntegrated:
         ]
         tasks = [_make_task(), _make_task(), _make_task()]
 
-        rewards = await env.compute_group_reward(
-            rollout_ids, messages_list, tasks, ["finished"] * len(rollout_ids)
-        )
+        rewards = await env.compute_group_reward(rollout_ids, messages_list, tasks)
 
         assert len(rewards) == 3
         # All are dicts with "quality"
@@ -158,9 +123,7 @@ class TestEnvIntegrated:
         ]
         tasks = [_make_task(), _make_task(), _make_task()]
 
-        rewards = await env.compute_group_reward(
-            rollout_ids, messages_list, tasks, ["finished"] * len(rollout_ids)
-        )
+        rewards = await env.compute_group_reward(rollout_ids, messages_list, tasks)
 
         # All unique → all get full reward
         for r in rewards:
@@ -173,7 +136,6 @@ class TestEnvIntegrated:
             ["r1"],
             [_make_messages("solo strategy")],
             [_make_task()],
-            ["finished"],
         )
         assert len(rewards) == 1
         assert rewards[0]["quality"] == pytest.approx(1.0)
@@ -198,9 +160,7 @@ class TestPickleRoundTripEnv:
         ]
         tasks = [_make_task(), _make_task()]
 
-        rewards = await env.compute_group_reward(
-            rollout_ids, messages_list, tasks, ["finished"] * len(rollout_ids)
-        )
+        rewards = await env.compute_group_reward(rollout_ids, messages_list, tasks)
 
         assert len(rewards) == 2
         # Duplicates → halved

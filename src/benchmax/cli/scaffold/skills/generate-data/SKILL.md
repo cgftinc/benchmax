@@ -182,11 +182,11 @@ castform data traces --project my-agent            # → train_dataset.jsonl + e
 ```
 
 It fetches the project's traces, detects the **system prompt + tools**, and writes
-`{prompt_messages, ground_truth, rollout_args}` rows. **Confirm the detection
+`{prompt_messages, ground_truth, init_rollout_args}` rows. **Confirm the detection
 first:** `--dry-run` prints the full detected system prompt + tools and writes nothing —
 check they match the agent before generating. Pass `--project-id` (or `BT_PROJECT_ID`)
 instead of `--project` if you have the id, and `--limit N` to cap the fetch. Then author
-the env's dataset `row_to_example` callback to match those rows — see **design-environment**'s traces
+the env's `dataset_preprocess` to match those rows — see **design-environment**'s traces
 note.
 
 > Generated trace rows skew **text-reply heavy**, with action/tool rows landing late in

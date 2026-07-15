@@ -9,10 +9,11 @@ override path and the introspection gap it exists to paper over.
 from __future__ import annotations
 
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from benchmax.bundle import _get_source, dump_bundle
-from benchmax.envs import BaseEnv
+from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.types import Messages, ToolDefinition
 
 # Defined at module scope so cloudpickle can pickle it by-value when the test
 # module is registered as a local module (dump_bundle enforces this).
@@ -22,10 +23,21 @@ _TEST_MODULE = sys.modules[__name__]
 class MinimalEnv(BaseEnv):
     """Minimal valid BaseEnv subclass for bundling tests."""
 
-    async def create_dataset(self, split, base_dir):
-        raise NotImplementedError
+    system_prompt = "test"
 
-    async def compute_reward(self, *args, **kwargs):
+    async def list_tools(self) -> List[ToolDefinition]:
+        return []
+
+    async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> Any:
+        return None
+
+    async def compute_reward(
+        self,
+        rollout_id: str,
+        messages: Messages,
+        task: Optional[Dict[str, Any]],
+        **kwargs: Any,
+    ) -> Dict[str, float]:
         return {"score": 0.0}
 
 
@@ -54,9 +66,11 @@ def test_exec_defined_class_has_no_introspectable_source() -> None:
     source file, so _get_source returns None — which is why the override
     parameter is needed."""
     source_code = (
-        "from benchmax.envs import BaseEnv\n"
+        "from benchmax.envs.base_env import BaseEnv\n"
         "class GeneratedEnv(BaseEnv):\n"
-        "    async def create_dataset(self, *a, **k): raise NotImplementedError\n"
+        "    system_prompt = 'x'\n"
+        "    async def list_tools(self): return []\n"
+        "    async def run_tool(self, *a, **k): return None\n"
         "    async def compute_reward(self, *a, **k): return {'score': 0.0}\n"
     )
     namespace: Dict[str, Any] = {

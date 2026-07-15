@@ -116,7 +116,7 @@ class TrainingExample:
     Dual representation:
     - ``prompt_messages`` / ``completion_messages`` — structured
       ``TraceMessage`` lists.  These are the authoritative training data,
-      used by ``to_jsonl_dict()`` and consumed by a BaseEnv dataset parser.
+      used by ``to_jsonl_dict()`` and consumed by ``dataset_preprocess``.
     - ``prompt`` / ``ground_truth`` — human-readable summaries for display.
       These are lossy (tool call arguments are flattened to text) and
       should NOT be used for training.
@@ -165,7 +165,7 @@ class TrainingExample:
         )
 
     def to_jsonl_dict(self) -> dict[str, Any]:
-        """Serialise to the JSONL schema consumed by a BaseEnv dataset parser.
+        """Serialise to the JSONL schema consumed by ``dataset_preprocess``.
 
         Both ``prompt_messages`` and ``ground_truth`` use ``to_dict()``
         with structured ``tool_calls`` (arguments as JSON strings). The
@@ -177,7 +177,7 @@ class TrainingExample:
             {
                 "prompt_messages": list[{role, content, tool_calls, ...}],
                 "ground_truth": {role, content, tool_calls, ...},
-                "rollout_args": {
+                "init_rollout_args": {
                     "trace_id": str,
                     "turn_index": int,
                     "total_messages": int,
@@ -190,7 +190,7 @@ class TrainingExample:
         return {
             "prompt_messages": [m.to_dict() for m in self.prompt_messages],
             "ground_truth": gt,
-            "rollout_args": {
+            "init_rollout_args": {
                 "trace_id": self.trace_id,
                 "turn_index": self.turn_index,
                 "total_messages": len(self.prompt_messages) + len(self.completion_messages),

@@ -89,7 +89,7 @@ def upload_training_run(
     train+eval JSONL bytes (datasets), truncated to 16 / 8 hex chars.
 
     Args:
-        env_class: Environment implementation to bundle.
+        env_class: BaseEnv subclass to bundle.
         train_dataset: Training examples (list of dicts).
         eval_dataset: Eval examples (list of dicts).
         run_name: Training run identifier; used as the storage path segment.

@@ -23,25 +23,18 @@ import asyncio
 import logging
 import math
 import re
-from collections.abc import Callable, Mapping
-from pathlib import Path
+import traceback
+from collections.abc import Callable
 from typing import Any
 
-from benchmax.envs import (
-    BaseEnv,
-    DatasetSplit,
-    Example,
-    JsonRow,
-    JsonlDataset,
-    Messages,
-    Tool,
-    canonical_example_id,
-)
+from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.example_id import make_example
 from benchmax.envs.reward_helpers import (
     clip01,
     extract_completion_text,
     search_within_budget,
 )
+from benchmax.envs.types import Example, Messages, ToolDefinition
 from benchmax.platform.credentials import (
     TokenProvider,
     as_token_provider,
@@ -338,13 +331,6 @@ class SearchEnv(BaseEnv):
     # The gate component — `castform validate --reward-audit` judges the
     # secondary components for redundancy against this key.
     PRIMARY_REWARD_KEY = "answer_correctness"
-    system_prompt: str | None = None
-    _ZERO_REWARDS = {
-        "answer_correctness": 0.0,
-        "retrieval_hit": 0.0,
-        "citation_precision": 0.0,
-        "answer_length": 0.0,
-    }
 
     SYSTEM_PROMPT_TEMPLATE = """\
 Answer the given question by searching over {corpus_description}.
@@ -406,28 +392,27 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         w_citation_precision: float = 0.3,
         w_length: float = 0.2,
         max_search_calls: int = 10,
-        max_turns: int | None = None,
-        system_prompt: str | None = None,
+        **kwargs: Any,
     ) -> None:
+        # Fail loudly on the pre-audit weight kwargs (**kwargs would otherwise
+        # swallow them silently and the caller's weights would be no-ops).
+        removed = {"w_conciseness", "w_citation_recall", "w_search_efficiency"} & set(
+            kwargs
+        )
+        if removed:
+            raise TypeError(
+                f"SearchEnv no longer accepts {sorted(removed)}; the default reward "
+                "is the audited 4-component shape (answer_correctness / "
+                "retrieval_hit / citation_precision / answer_length). Use "
+                "w_retrieval_hit / w_length, or override compute_reward with the "
+                "opt-in helpers (judge_answer_quality, score_search_efficiency)."
+            )
         if not judge_base_url or not judge_model:
             raise ValueError(
                 "SearchEnv requires judge_base_url and judge_model; both must be "
                 "non-empty. The judge credential is resolved at call time via "
                 "judge_token_provider (default: platform_bearer)."
             )
-        if (
-            isinstance(max_search_calls, bool)
-            or not isinstance(max_search_calls, int)
-            or max_search_calls < 1
-        ):
-            raise ValueError("max_search_calls must be a positive integer")
-        super().__init__(
-            max_turns=max_search_calls + 1 if max_turns is None else max_turns,
-            max_tool_calls=max_search_calls,
-        )
-        self._system_prompt = (
-            self.system_prompt if system_prompt is None else system_prompt
-        )
 
         self._search = search
         self._judge_base_url = judge_base_url
@@ -476,20 +461,16 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
                 ),
             }
 
-        search_tool: Tool = {
-            "type": "function",
-            "function": {
-                "name": "search",
-                "description": "Search the corpus.",
-                "parameters": {
-                    "type": "object",
-                    "properties": search_props,
-                    "required": ["query"],
-                },
-                "strict": False,
+        search_tool = ToolDefinition(
+            name="search",
+            description="Search the corpus.",
+            input_schema={
+                "type": "object",
+                "properties": search_props,
+                "required": ["query"],
             },
-        }
-        self._tools: dict[str, tuple[Tool, Callable]] = {
+        )
+        self._tools: dict[str, tuple[ToolDefinition, Callable]] = {
             "search": (search_tool, self._search_tool),
         }
 
@@ -502,15 +483,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     # BaseEnv interface
     # ------------------------------------------------------------------
 
-    async def create_dataset(
-        self, split: DatasetSplit, base_dir: Path
-    ) -> JsonlDataset[JsonRow]:
-        return JsonlDataset(
-            base_dir / f"{split}.jsonl",
-            row_to_example=self._example_from_row,
-        )
-
-    async def list_tools(self) -> list[Tool]:
+    async def list_tools(self) -> list[ToolDefinition]:
         return [self._tools[k][0] for k in sorted(self._tools)]
 
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> Any:
@@ -519,32 +492,25 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         _, tool_function = self._tools[tool_name]
         return await tool_function(**tool_args)
 
-    def _example_from_row(self, row: JsonRow) -> Example[JsonRow]:
-        question = row.get("question", "")
-        if not isinstance(question, str):
-            raise TypeError("SearchEnv dataset 'question' must be a string")
-        messages: Messages = []
-        if self._system_prompt:
-            messages.append({"role": "system", "content": self._system_prompt})
-        messages.append({"role": "user", "content": question})
-        payload: JsonRow = {
-            "prompt_messages": messages,
-            "question": question,
-            "ground_truth": row.get("answer"),
-            "reference_chunks": row.get("reference_chunks", []),
-        }
-        return Example(
-            id=canonical_example_id(payload),
-            payload=payload,
+    @classmethod
+    def dataset_preprocess(cls, example: Any, **kwargs) -> Example:
+        question = example.get("question", "")
+        return make_example(
+            prompt_messages=[{"role": "user", "content": question}],
+            task={
+                "question": question,
+                "ground_truth": example.get("answer"),
+                "reference_chunks": example.get("reference_chunks", []),
+            },
+            system_prompt=cls.system_prompt,
         )
 
     async def compute_reward(
         self,
         rollout_id: str,
         messages: Messages,
-        example_args: Mapping[str, Any],
-        *,
-        termination_reason: str,
+        task: dict[str, Any] | None,
+        **kwargs: Any,
     ) -> dict[str, float]:
         """The audited 4-component reward.
 
@@ -553,47 +519,69 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         can't be earned on a wrong answer. ``retrieval_hit`` is UNGATED — citing
         a gold source is rewarded even when the answer is wrong.
         """
-        # No committed answer is a valid terminal attempt with zero reward.
-        answer = _extract_answer_block(extract_completion_text(messages))
-        if not answer.strip():
-            return dict(self._ZERO_REWARDS)
+        zeros = self._zero_rewards()
+        try:
+            # Strict extraction: no committed <answer> → "" → scores 0 (the
+            # model's reasoning is never scored as the answer).
+            answer = _extract_answer_block(extract_completion_text(messages))
+            if not answer.strip():
+                return zeros
 
-        t = example_args
-        prompt = str(t.get("question") or t.get("prompt") or "")
-        gt_str = str(t.get("ground_truth") or "")
-        reference_chunks = t.get("reference_chunks", [])
+            t = task or {}
+            prompt = str(t.get("question") or t.get("prompt") or "")
+            gt_str = str(t.get("ground_truth") or "")
+            reference_chunks = t.get("reference_chunks", [])
 
-        logger.info(
-            "[SearchEnv] Q: %s\n  GT: %s\n  A: %s",
-            prompt[:200],
-            gt_str[:200],
-            answer[:200],
-        )
+            logger.info(
+                "[SearchEnv] Q: %s\n  GT: %s\n  A: %s",
+                prompt[:200],
+                gt_str[:200],
+                answer[:200],
+            )
 
-        # A judge/verifier failure is infrastructure failure, not evidence that
-        # the model earned a zero. Let it propagate to the rollout executor.
-        result = await evaluate_single_rubric(
-            rubric=CORRECTNESS_RUBRIC,
-            question=prompt,
-            ground_truth=gt_str,
-            response=answer,
-            model_name=self._judge_model,
-            base_url=self._judge_base_url,
-            api_key=self._judge_token_provider(),
-            timeout=self._judge_timeout,
-        )
-        correctness = clip01(result.get("score", 0.0))
+            # 1. Correctness judge — ONE rubric call. A judge failure means "not
+            # verified correct" (0) and must NOT zero the ungated retrieval
+            # signal below, so it's caught locally.
+            try:
+                result = await evaluate_single_rubric(
+                    rubric=CORRECTNESS_RUBRIC,
+                    question=prompt,
+                    ground_truth=gt_str,
+                    response=answer,
+                    model_name=self._judge_model,
+                    base_url=self._judge_base_url,
+                    api_key=self._judge_token_provider(),
+                    timeout=self._judge_timeout,
+                )
+                correctness = clip01(result.get("score", 0.0))
+            except Exception:
+                logger.warning("[SearchEnv] correctness judge failed; scoring 0")
+                correctness = 0.0
 
-        recall, precision = self._score_citations(answer, reference_chunks)
-        length_score = clip01(1.0 - len(answer) / ANSWER_LENGTH_CAP)
-        rewards: dict[str, float] = {
-            "answer_correctness": self._w_correctness * correctness,
-            "retrieval_hit": self._w_retrieval_hit * recall,
-            "citation_precision": self._w_citation_precision * precision * correctness,
-            "answer_length": self._w_length * length_score * correctness,
-        }
-        logger.info("[SearchEnv] rewards=%s", rewards)
-        return rewards
+            # 2. Citations (recall → the UNGATED retrieval_hit; precision gated).
+            # retrieval_hit is an answer-side proxy: gold sources cited in the
+            # final <answer>, NOT what the search tool actually returned.
+            recall, precision = self._score_citations(answer, reference_chunks)
+            # 3. Deterministic brevity: shorter (still-correct) answers score higher.
+            length_score = clip01(1.0 - len(answer) / ANSWER_LENGTH_CAP)
+
+            rewards: dict[str, float] = {
+                "answer_correctness": self._w_correctness * correctness,
+                "retrieval_hit": self._w_retrieval_hit * recall,  # UNGATED
+                "citation_precision": self._w_citation_precision
+                * precision
+                * correctness,
+                "answer_length": self._w_length * length_score * correctness,
+            }
+
+            logger.info("[SearchEnv] rewards=%s", rewards)
+            return rewards
+
+        except Exception:
+            # A reward bug must not crash the rollout — score 0, but LOG it: a
+            # silent all-zero reward is the hardest reward bug to diagnose.
+            logger.exception("[SearchEnv] compute_reward failed")
+            return zeros
 
     # ------------------------------------------------------------------
     # Search tool
@@ -611,13 +599,11 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             return "Error: Missing required parameter: 'query'"
 
         effective_mode = mode or self._default_mode
-        results = await asyncio.to_thread(
-            self._search.search,
-            query=query,
-            mode=effective_mode,
-            top_k=limit,
-        )
-        return self._format_results(results)
+        try:
+            results = self._search.search(query=query, mode=effective_mode, top_k=limit)
+            return self._format_results(results)
+        except Exception:
+            return f"Error:\n{traceback.format_exc()}"
 
     def _format_results(self, results: list[dict[str, Any]]) -> str:
         """Format search results with source labels and metadata."""
@@ -728,3 +714,11 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _zero_rewards(self) -> dict[str, float]:
+        return {
+            "answer_correctness": 0.0,
+            "retrieval_hit": 0.0,
+            "citation_precision": 0.0,
+            "answer_length": 0.0,
+        }

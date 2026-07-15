@@ -9,7 +9,7 @@ from __future__ import annotations
 _GUARDED_MAIN = """\
 from typing import Any
 
-from benchmax.envs import BaseEnv
+from benchmax.envs.base_env import BaseEnv
 
 
 class MyEnv(BaseEnv):
@@ -50,7 +50,7 @@ def test_loader_skips_main_guard_import_safe(tmp_path):
 
 def test_loader_discovers_env_via_load_module(tmp_path):
     """`_load_module_from_file` + `discover_env_class` — the same path the scaffold
-    tests use — resolves the single Environment implementation under the new stem."""
+    tests use — resolves the single BaseEnv subclass under the new stem."""
     from benchmax.cli._project import _load_module_from_file, discover_env_class
 
     (tmp_path / "main.py").write_text(_GUARDED_MAIN)

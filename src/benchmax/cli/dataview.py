@@ -161,17 +161,13 @@ def _normalize_traces(records: list[Any], variant: str) -> list[dict[str, Any]]:
         completion_messages = (
             [normalize_message(gt).to_dict()] if isinstance(gt, dict) and gt else []
         )
-        rollout_args = record.get("rollout_args")
-        rollout_args = rollout_args if isinstance(rollout_args, dict) else {}
-        metadata = {
-            k: v
-            for k, v in rollout_args.items()
-            if k not in ("trace_id", "turn_index", "scores")
-        }
+        init = record.get("init_rollout_args")
+        init = init if isinstance(init, dict) else {}
+        metadata = {k: v for k, v in init.items() if k not in ("trace_id", "turn_index", "scores")}
         out.append({
-            "id": rollout_args.get("trace_id", ""),
-            "turn_index": rollout_args.get("turn_index"),
-            "scores": rollout_args.get("scores", {}),
+            "id": init.get("trace_id", ""),
+            "turn_index": init.get("turn_index"),
+            "scores": init.get("scores", {}),
             "metadata": metadata,
             "prompt_messages": prompt_messages,
             "completion_messages": completion_messages,
@@ -265,7 +261,7 @@ def _reshape_claude_transcript(records: list[Any]) -> dict[str, Any]:
         m = r.get("message")
         if not isinstance(m, dict):
             continue
-        role = str(m.get("role") or r.get("type") or "")
+        role = m.get("role") or r.get("type")
         content = m.get("content")
         if isinstance(content, str):
             if content.strip():

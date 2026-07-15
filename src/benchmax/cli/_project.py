@@ -1,7 +1,7 @@
 """Load a benchmax project (env class + datasets) from a directory.
 
 Convention mirrors the web-app scaffold (``buildAgentContextBody``): ``main.py``
-defines a single environment class; ``train_dataset.jsonl`` /
+defines a single :class:`BaseEnv` subclass; ``train_dataset.jsonl`` /
 ``eval_dataset.jsonl`` hold one JSON object per line. ``validate`` and ``launch``
 share this loader. An importable module path (``--module``) is an alternative to
 ``main.py`` for shipped envs / fixtures.
@@ -98,23 +98,17 @@ def _load_module_from_file(path: Path) -> ModuleType:
 
 def discover_env_class(module: ModuleType, explicit: str | None = None) -> type:
     """Find the env class in ``module``. With no ``explicit`` name, require exactly
-    one Environment implementation *defined in* the module."""
-    from benchmax.envs.environment import Environment
+    one BaseEnv subclass *defined in* the module (imported ones are ignored)."""
+    from benchmax.envs.base_env import BaseEnv
 
     def _is_env(obj: Any) -> bool:
-        return (
-            inspect.isclass(obj)
-            and issubclass(obj, Environment)
-            and obj is not Environment
-        )
+        return inspect.isclass(obj) and issubclass(obj, BaseEnv) and obj is not BaseEnv
 
     if explicit:
         for obj in vars(module).values():
             if _is_env(obj) and obj.__name__ == explicit:
                 return obj
-        raise ProjectError(
-            f"No Environment implementation named {explicit!r} in the module."
-        )
+        raise ProjectError(f"No BaseEnv subclass named {explicit!r} in the module.")
 
     defined_here = [
         obj
@@ -122,7 +116,7 @@ def discover_env_class(module: ModuleType, explicit: str | None = None) -> type:
         if _is_env(obj) and obj.__module__ == module.__name__
     ]
     if not defined_here:
-        raise ProjectError("No Environment implementation defined in the module.")
+        raise ProjectError("No BaseEnv subclass defined in the module.")
     if len(defined_here) > 1:
         names = sorted(c.__name__ for c in defined_here)
         raise ProjectError(

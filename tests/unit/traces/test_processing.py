@@ -194,7 +194,7 @@ class TestBuildTrainingExamples:
                 _msg("assistant", "4"),
             ])
         ]
-        # Default: include_system_prompt=False (system prompt comes from BaseEnv)
+        # Default: include_system_prompt=False (system prompt goes on BaseEnv)
         examples = build_training_examples(traces)
         assert len(examples) == 1
         ex = examples[0]
@@ -312,11 +312,11 @@ class TestTrainingExampleSerialization:
         # ground_truth is the completion message dict
         assert isinstance(d["ground_truth"], dict)
         assert d["ground_truth"]["role"] == "assistant"
-        # metadata goes in rollout_args
-        assert d["rollout_args"]["trace_id"] == "t1"
-        assert d["rollout_args"]["turn_index"] == 0
-        assert d["rollout_args"]["scores"] == {"quality": 0.9}
-        assert d["rollout_args"]["raw_prompt"] == "[USER] Q"
+        # metadata goes in init_rollout_args
+        assert d["init_rollout_args"]["trace_id"] == "t1"
+        assert d["init_rollout_args"]["turn_index"] == 0
+        assert d["init_rollout_args"]["scores"] == {"quality": 0.9}
+        assert d["init_rollout_args"]["raw_prompt"] == "[USER] Q"
 
     def test_to_dict_roundtrip(self):
         ex = TrainingExample(
@@ -598,7 +598,7 @@ class TestSplitDataset:
         examples = self._make_examples(20)
         train, _ = split_dataset(examples, train_count=16, eval_count=4)
         # With shuffle, first train example should NOT always be t0
-        trace_ids = [row["rollout_args"]["trace_id"] for row in train]
+        trace_ids = [row["init_rollout_args"]["trace_id"] for row in train]
         assert trace_ids != [f"t{i}" for i in range(16)]  # not in original order
 
     def test_min_train_samples_enforced(self):
@@ -619,9 +619,9 @@ class TestSplitDataset:
         assert isinstance(row["prompt_messages"], list)  # structured message dicts
         assert "ground_truth" in row
         assert isinstance(row["ground_truth"], dict)  # completion message dict
-        assert "rollout_args" in row
-        assert "trace_id" in row["rollout_args"]
-        assert "turn_index" in row["rollout_args"]
+        assert "init_rollout_args" in row
+        assert "trace_id" in row["init_rollout_args"]
+        assert "turn_index" in row["init_rollout_args"]
 
 
 # ---------------------------------------------------------------------------

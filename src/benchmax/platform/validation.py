@@ -8,11 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 import math
 from dataclasses import dataclass
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -91,7 +88,7 @@ def _build_dummy_args(
 def _ensure_nest_asyncio() -> None:
     """Patch asyncio for Jupyter notebooks (running event loop)."""
     try:
-        import nest_asyncio  # pyright: ignore[reportMissingImports]
+        import nest_asyncio
 
         nest_asyncio.apply()
     except ImportError:
@@ -101,13 +98,14 @@ def _ensure_nest_asyncio() -> None:
 def overrides_compute_group_reward(env_or_cls: type | Any) -> bool:
     """True if the env (class or instance) overrides ``compute_group_reward``.
 
-    BaseEnv has no group-reward hook. There is nothing to validate unless the
-    concrete environment supplies its own group-relative scoring method.
+    The ``BaseEnv`` default is a no-op returning one empty dict per rollout, so
+    there's nothing to validate unless the env supplies its own group-relative
+    scoring. Guard the group-reward checks with this to skip the common case.
     """
+    from benchmax.envs.base_env import BaseEnv
+
     cls = env_or_cls if isinstance(env_or_cls, type) else type(env_or_cls)
-    return isinstance(cls, type) and callable(
-        getattr(cls, "compute_group_reward", None)
-    )
+    return cls.compute_group_reward is not BaseEnv.compute_group_reward
 
 
 def overrides_validate_probe(env_or_cls: type | Any) -> bool:
@@ -116,8 +114,14 @@ def overrides_validate_probe(env_or_cls: type | Any) -> bool:
     ``None``, so there's nothing to run unless the env supplies its own probe. The
     ``issubclass`` guard keeps this safe on the command-layer call path, where a
     non-BaseEnv class would otherwise ``AttributeError`` on ``.validate_probe``."""
+    from benchmax.envs.base_env import BaseEnv
+
     cls = env_or_cls if isinstance(env_or_cls, type) else type(env_or_cls)
-    return isinstance(cls, type) and callable(getattr(cls, "validate_probe", None))
+    return (
+        isinstance(cls, type)
+        and issubclass(cls, BaseEnv)
+        and cls.validate_probe is not BaseEnv.validate_probe
+    )
 
 
 def run_validate_probe(
@@ -164,8 +168,8 @@ def assert_group_reward_contract(
     env: Any,
     rollout_ids: list[str],
     messages_list: list[list[dict[str, Any]]],
-    example_args_list: list[dict[str, Any]],
-    termination_reasons: list[str] | None = None,
+    tasks: list[dict[str, Any] | None],
+    init_args: dict[str, Any] | None = None,
 ) -> str:
     """Call ``compute_group_reward`` on one group and assert the trainer contract.
 
@@ -181,13 +185,13 @@ def assert_group_reward_contract(
     skip-vs-fail. Guard with :func:`overrides_compute_group_reward` first — a
     non-overriding env would trivially pass against the no-op default.
     """
-    termination_reasons = termination_reasons or ["finished"] * len(rollout_ids)
+    init_args = init_args or {}
     rewards = _run_async(
         env.compute_group_reward(
             rollout_ids=rollout_ids,
             messages_list=messages_list,
-            example_args_list=example_args_list,
-            termination_reasons=termination_reasons,
+            tasks=tasks,
+            **init_args,
         )
     )
 
@@ -224,7 +228,7 @@ def _run_local_checks(
 ) -> tuple[int, int]:
     """Run the local (no-network) contract checks for ``validate_env``.
 
-    Mirrors the BaseEnv payload/tool/reward calls —
+    Mirrors how the trainer calls env methods — dataset_preprocess,
     list_tools/run_tool, compute_reward, a simulated rollout,
     compute_group_reward (when overridden), and pickle round-trips. Prints
     colored progress as it goes.
@@ -259,46 +263,63 @@ def _run_local_checks(
 
     print("Environment Validation")
 
-    # ── 1. Instantiate env + create one dataset snapshot ────────
+    # ── 1. dataset_preprocess ────────────────────────────────────
+    preprocessed = None
+    try:
+        preprocessed = env_class.dataset_preprocess(examples[0])
+        required = {"id", "prompt_messages"}
+        if not isinstance(preprocessed, dict) or not required.issubset(preprocessed):
+            missing = (
+                required - set(preprocessed)
+                if isinstance(preprocessed, dict)
+                else required
+            )
+            print(
+                f"  \u2717 dataset_preprocess did not return Example "
+                f"(missing {sorted(missing)})"
+            )
+            print(
+                "    Fix: return benchmax.envs.example_id.make_example("
+                "prompt_messages=[...], task=...)."
+            )
+            failed += 1
+        else:
+            print(
+                "  \u2713 dataset_preprocess returns Example with id + prompt_messages"
+            )
+            passed += 1
+    except Exception as exc:
+        print(f"  \u2717 dataset_preprocess raised {type(exc).__name__}: {exc}")
+        failed += 1
+
+    # ── 2. prompt_messages shape ───────────────────────────────────
+    if (
+        preprocessed
+        and isinstance(preprocessed, dict)
+        and "prompt_messages" in preprocessed
+    ):
+        seed = preprocessed["prompt_messages"]
+        if not isinstance(seed, list) or not all(
+            isinstance(mm, dict) and "role" in mm and "content" in mm for mm in seed
+        ):
+            print("  \u2717 prompt_messages is not a list of {role,content} dicts")
+            failed += 1
+        elif not seed:
+            print("  \u2717 prompt_messages is empty")
+            failed += 1
+        else:
+            print(f"  \u2713 prompt_messages is a {len(seed)}-message chat list")
+            passed += 1
+    else:
+        print("  - prompt_messages shape check: skipped (no preprocessed result)")
+
+    # ── 3. Instantiate env + list_tools + run_tool ───────────────
     env = None
     try:
         env = env_class(**env_args)
     except Exception as exc:
         print(f"  \u2717 env instantiation failed: {type(exc).__name__}: {exc}")
         failed += 1
-
-    payload: dict[str, Any] | None = None
-    if env is not None:
-        try:
-            with TemporaryDirectory() as temp_dir:
-                dataset_dir = Path(temp_dir)
-                (dataset_dir / "train.jsonl").write_text(
-                    "\n".join(json.dumps(row) for row in examples) + "\n",
-                    "utf-8",
-                )
-                dataset = _run_async(env.create_dataset("train", dataset_dir))
-            if len(dataset) == 0:
-                raise ValueError("create_dataset returned an empty dataset")
-            payload = dataset[0].payload
-            if not isinstance(payload, dict):
-                raise TypeError("dataset example payload must be a JSON object")
-            seed = payload.get("prompt_messages")
-            print("  \u2713 create_dataset returns Example payloads")
-            passed += 1
-            if not isinstance(seed, list) or not all(
-                isinstance(message, dict) and "role" in message for message in seed
-            ):
-                print("  \u2717 prompt_messages is not a list of message mappings")
-                failed += 1
-            elif not seed:
-                print("  \u2717 prompt_messages is empty")
-                failed += 1
-            else:
-                print(f"  \u2713 prompt_messages contains {len(seed)} message(s)")
-                passed += 1
-        except Exception as exc:
-            print(f"  \u2717 create_dataset raised {type(exc).__name__}: {exc}")
-            failed += 1
 
     if env is not None:
         try:
@@ -308,21 +329,16 @@ def _run_local_checks(
 
             if tools:
                 tool = tools[0]
-                function = tool.get("function", {})
-                tool_name = function.get("name")
-                schema = function.get("parameters", {})
-                if not isinstance(tool_name, str) or not isinstance(schema, dict):
-                    raise TypeError("list_tools must return OpenAI-compatible tools")
-                dummy_args = _build_dummy_args(schema, "test query")
+                dummy_args = _build_dummy_args(tool.input_schema, "test query")
 
                 try:
                     result = _run_async(
                         env.run_tool(
-                            rollout_id="test", tool_name=tool_name, **dummy_args
+                            rollout_id="test", tool_name=tool.name, **dummy_args
                         )
                     )
                     if isinstance(result, str):
-                        print(f"  \u2713 run_tool returns string (tested: {tool_name})")
+                        print(f"  \u2713 run_tool returns string (tested: {tool.name})")
                         passed += 1
                     else:
                         print(
@@ -345,17 +361,19 @@ def _run_local_checks(
             failed += 1
 
     # ── 5. compute_reward with trainer-style args ────────────────
-    if env is not None and payload is not None:
+    if (
+        env is not None
+        and isinstance(preprocessed, dict)
+        and "prompt_messages" in preprocessed
+    ):
         try:
-            prompt_messages = payload["prompt_messages"]
-            example_args = {
-                key: value for key, value in payload.items() if key != "prompt_messages"
-            }
+            task = preprocessed.get("task")
+            init_args = preprocessed.get("init_rollout_args") or {}
 
             # Simulate the trainer's call: a fake one-turn transcript echoing
             # the seed plus a stub assistant turn. compute_reward receives
-            # example data verbatim as one mapping.
-            messages = list(prompt_messages) + [
+            # task verbatim and runtime kwargs (init_rollout_args fields).
+            messages = list(preprocessed["prompt_messages"]) + [
                 {
                     "role": "assistant",
                     "content": "I found the answer based on the search results.",
@@ -366,8 +384,8 @@ def _run_local_checks(
                 env.compute_reward(
                     rollout_id="test-rollout",
                     messages=messages,
-                    example_args=example_args,
-                    termination_reason="finished",
+                    task=task,
+                    **init_args,
                 )
             )
 
@@ -407,18 +425,21 @@ def _run_local_checks(
         except Exception as exc:
             print(f"  \u2717 compute_reward raised {type(exc).__name__}: {exc}")
             print(
-                "    Fix: compute_reward signature is "
-                "(rollout_id, messages, example_args, *, termination_reason)."
+                "    Fix: compute_reward signature is (rollout_id, messages, task, **kwargs)."
             )
+            print("    Read example data from `task`, runtime fields from `kwargs`.")
             failed += 1
 
     # ── 5b. Simulated rollout (E2E) ──────────────────────────────
-    if env is not None and payload is not None:
+    if (
+        env is not None
+        and isinstance(preprocessed, dict)
+        and "prompt_messages" in preprocessed
+    ):
         try:
-            prompt_messages = payload["prompt_messages"]
-            example_args = {
-                key: value for key, value in payload.items() if key != "prompt_messages"
-            }
+            prompt_messages = preprocessed["prompt_messages"]
+            task = preprocessed.get("task")
+            init_args = preprocessed.get("init_rollout_args") or {}
 
             tools = _run_async(env.list_tools())
 
@@ -433,17 +454,12 @@ def _run_local_checks(
             transcript: list[dict[str, Any]] = list(prompt_messages)
             tool_call_count = 0
             for tool in tools:
-                function = tool.get("function", {})
-                tool_name = function.get("name")
-                schema = function.get("parameters", {})
-                if not isinstance(tool_name, str) or not isinstance(schema, dict):
-                    raise TypeError("list_tools must return OpenAI-compatible tools")
-                tool_args = _build_dummy_args(schema, query_text)
+                tool_args = _build_dummy_args(tool.input_schema, query_text)
                 for _ in range(2):
                     result = _run_async(
                         env.run_tool(
                             rollout_id="sim-rollout",
-                            tool_name=tool_name,
+                            tool_name=tool.name,
                             **tool_args,
                         )
                     )
@@ -452,7 +468,7 @@ def _run_local_checks(
                     tool_call_count += 1
 
             # Final assistant message echoing ground truth if available.
-            gt = example_args.get("ground_truth")
+            gt = (task or {}).get("ground_truth")
             transcript.append(
                 {"role": "assistant", "content": str(gt or "test answer")}
             )
@@ -461,8 +477,8 @@ def _run_local_checks(
                 env.compute_reward(
                     rollout_id="sim-rollout",
                     messages=transcript,
-                    example_args=example_args,
-                    termination_reason="finished",
+                    task=task,
+                    **init_args,
                 )
             )
 
@@ -496,10 +512,15 @@ def _run_local_checks(
             failed += 1
 
     # 5c. compute_group_reward (group-relative scoring) ----------------------
-    # Only envs defining the optional method have group logic to check. Feed it a small
+    # Only envs that override the BaseEnv no-op have group logic to check. The
+    # trainer batches a whole rollout GROUP into this call, so feed it a small
     # group: the same example sampled twice, with distinct answers so any
     # diversity/ranking logic has something to compare.
-    if env is not None and payload is not None:
+    if (
+        env is not None
+        and isinstance(preprocessed, dict)
+        and "prompt_messages" in preprocessed
+    ):
         if not overrides_compute_group_reward(env):
             print(
                 "  - compute_group_reward: skipped"
@@ -507,12 +528,9 @@ def _run_local_checks(
             )
         else:
             try:
-                example_args = {
-                    key: value
-                    for key, value in payload.items()
-                    if key != "prompt_messages"
-                }
-                seed = list(payload["prompt_messages"])
+                task = preprocessed.get("task")
+                init_args = preprocessed.get("init_rollout_args") or {}
+                seed = list(preprocessed["prompt_messages"])
                 group = [
                     seed
                     + [{"role": "assistant", "content": "First candidate answer."}],
@@ -523,8 +541,8 @@ def _run_local_checks(
                     env,
                     rollout_ids=["grp-0", "grp-1"],
                     messages_list=group,
-                    example_args_list=[example_args, example_args],
-                    termination_reasons=["finished", "finished"],
+                    tasks=[task, task],
+                    init_args=init_args,
                 )
                 print(
                     "  \u2713 compute_group_reward returns"
@@ -537,7 +555,7 @@ def _run_local_checks(
                 )
                 print(
                     "    Fix: compute_group_reward(rollout_ids, messages_list,"
-                    " example_args_list, termination_reasons) must return"
+                    " tasks, **kwargs) must return"
                 )
                 print(
                     "    one finite dict[str, float] per rollout_id, paired by index."
@@ -770,7 +788,7 @@ def validate_env(
 
     1. **Local contract checks** (``local=True``, the default) — run in-process
        with no network, mirroring how the trainer calls env methods
-       (create_dataset, list_tools/run_tool, compute_reward,
+       (dataset_preprocess, list_tools/run_tool, compute_reward,
        a simulated rollout, compute_group_reward, pickle round-trips).
     2. **Remote smoke rollout** (runs when ``api_key`` is given) — bundles the
        env inline and runs ``remote_examples`` real rollouts on the platform,
@@ -834,7 +852,7 @@ def validate_env(
             to match an env that advertises a larger budget (e.g. a SearchEnv with
             ``MAX_SEARCH_CALLS=6`` needs ``max_turns`` ~7 — one turn per search
             plus the answer) so the rollout isn't truncated below what the prompt
-            instructs. Executor launch limits must remain aligned with the env.
+            instructs. The trainer ignores the env's own ``recommended_max_*``.
         max_tool_calls: Max tool calls across the whole rollout (default 8). Raise
             it alongside ``max_turns`` for tool-heavy envs (each search is one tool
             call, so ``MAX_SEARCH_CALLS=6`` needs ``max_tool_calls`` >= 6).

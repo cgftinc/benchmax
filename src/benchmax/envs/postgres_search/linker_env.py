@@ -7,21 +7,12 @@ no reward components, no citation tracking, no answer correctness.
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Mapping
-from pathlib import Path
+import traceback
 from typing import Any
 
-from benchmax.envs import (
-    BaseEnv,
-    DatasetSplit,
-    Example,
-    JsonRow,
-    JsonlDataset,
-    Messages,
-    Tool,
-    canonical_example_id,
-)
+from benchmax.envs.base_env import BaseEnv
+from benchmax.envs.example_id import make_example
+from benchmax.envs.types import Example, Messages, ToolDefinition
 
 from benchmax.rag.corpus.search_client import SearchClient
 
@@ -107,30 +98,21 @@ class LinkerEnv(BaseEnv):
         max_search_calls: Maximum number of search calls allowed.
     """
 
-    # Environment-specific prompt configuration; BaseEnv has no prompt policy.
-    system_prompt: str | None = _SYSTEM_PROMPT
+    # Static prompt exposed as a class attribute (not assigned on the
+    # instance) so the ``dataset_preprocess`` classmethod can read it via
+    # ``cls.system_prompt``. Setting it only on ``self`` left
+    # ``cls.system_prompt`` resolving to BaseEnv's "" — dropping the prompt
+    # from training Examples. See BaseEnv.dataset_preprocess for the
+    # classmethod-vs-instance-method rationale.
+    system_prompt: str = _SYSTEM_PROMPT
 
     def __init__(
         self,
         search: SearchClient,
         *,
         max_search_calls: int = 3,
-        max_turns: int | None = None,
-        system_prompt: str | None = None,
+        **kwargs: Any,
     ) -> None:
-        if (
-            isinstance(max_search_calls, bool)
-            or not isinstance(max_search_calls, int)
-            or max_search_calls < 1
-        ):
-            raise ValueError("max_search_calls must be a positive integer")
-        super().__init__(
-            max_turns=max_search_calls + 1 if max_turns is None else max_turns,
-            max_tool_calls=max_search_calls,
-        )
-        self._system_prompt = (
-            self.system_prompt if system_prompt is None else system_prompt
-        )
         self._search = search
         self._max_search_calls = max_search_calls
 
@@ -144,29 +126,25 @@ class LinkerEnv(BaseEnv):
         else:
             self._default_mode = "lexical"
 
-        search_tool: Tool = {
-            "type": "function",
-            "function": {
-                "name": "search",
-                "description": "Search the corpus for related content.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query string.",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max results to return (default 10).",
-                        },
+        search_tool = ToolDefinition(
+            name="search",
+            description="Search the corpus for related content.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query string.",
                     },
-                    "required": ["query"],
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results to return (default 10).",
+                    },
                 },
-                "strict": False,
+                "required": ["query"],
             },
-        }
-        self._tools: dict[str, tuple[Tool, Any]] = {
+        )
+        self._tools: dict[str, tuple[ToolDefinition, Any]] = {
             "search": (search_tool, self._search_tool),
         }
 
@@ -174,15 +152,7 @@ class LinkerEnv(BaseEnv):
     # BaseEnv interface
     # ------------------------------------------------------------------
 
-    async def create_dataset(
-        self, split: DatasetSplit, base_dir: Path
-    ) -> JsonlDataset[JsonRow]:
-        return JsonlDataset(
-            base_dir / f"{split}.jsonl",
-            row_to_example=self._example_from_row,
-        )
-
-    async def list_tools(self) -> list[Tool]:
+    async def list_tools(self) -> list[ToolDefinition]:
         return [self._tools[k][0] for k in sorted(self._tools)]
 
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> Any:
@@ -191,9 +161,10 @@ class LinkerEnv(BaseEnv):
         _, tool_fn = self._tools[tool_name]
         return await tool_fn(**tool_args)
 
-    def _example_from_row(self, row: JsonRow) -> Example[JsonRow]:
-        target_n = row.get("target_n", 1)
-        reasoning_mode = row.get("reasoning_mode", "")
+    @classmethod
+    def dataset_preprocess(cls, example: Any, **kwargs: Any) -> Example:
+        target_n = example.get("target_n", 1)
+        reasoning_mode = example.get("reasoning_mode", "")
         mode_hint = _REASONING_MODE_HINTS.get(reasoning_mode, "")
 
         prompt = (
@@ -201,29 +172,20 @@ class LinkerEnv(BaseEnv):
             f"evidence chain with the following primary chunk. Each "
             f"secondary must contribute UNIQUE, NECESSARY information "
             f"— not just topically related content.{mode_hint}\n\n"
-            f"Primary chunk:\n{row.get('prompt', '')}"
+            f"Primary chunk:\n{example.get('prompt', '')}"
         )
-        messages: Messages = []
-        if self._system_prompt:
-            messages.append({"role": "system", "content": self._system_prompt})
-        messages.append({"role": "user", "content": prompt})
-        payload: JsonRow = {
-            "prompt_messages": messages,
-            "target_n": target_n,
-            "reasoning_mode": reasoning_mode,
-        }
-        return Example(
-            id=canonical_example_id(payload),
-            payload=payload,
+        return make_example(
+            prompt_messages=[{"role": "user", "content": prompt}],
+            task={"target_n": target_n, "reasoning_mode": reasoning_mode},
+            system_prompt=cls.system_prompt,
         )
 
     async def compute_reward(
         self,
         rollout_id: str,
         messages: Messages,
-        example_args: Mapping[str, Any],
-        *,
-        termination_reason: str,
+        task: dict[str, Any] | None,
+        **kwargs: Any,
     ) -> dict[str, float]:
         return {"linking": 1.0}
 
@@ -239,13 +201,13 @@ class LinkerEnv(BaseEnv):
     ) -> str:
         if not query:
             return "Error: Missing required parameter: 'query'"
-        results = await asyncio.to_thread(
-            self._search.search,
-            query=query,
-            mode=self._default_mode,
-            top_k=limit,
-        )
-        return self._format_results(results)
+        try:
+            results = self._search.search(
+                query=query, mode=self._default_mode, top_k=limit
+            )
+            return self._format_results(results)
+        except Exception:
+            return f"Error:\n{traceback.format_exc()}"
 
     def _format_results(self, results: list[dict[str, Any]]) -> str:
         if not results:

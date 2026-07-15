@@ -116,8 +116,12 @@ def _env_token_estimate(env_class: type, env_args: dict) -> int | None:
     """The env's own `estimate_rollout_tokens()` if it overrides it — else None.
     Constructs the env best-effort (no network at __init__ for the scaffold envs);
     any failure degrades to None so the launch guard falls back to a coarse estimate."""
-    if not isinstance(env_class, type) or not callable(
-        getattr(env_class, "estimate_rollout_tokens", None)
+    from benchmax.envs.base_env import BaseEnv
+
+    if not (
+        isinstance(env_class, type)
+        and issubclass(env_class, BaseEnv)
+        and env_class.estimate_rollout_tokens is not BaseEnv.estimate_rollout_tokens
     ):
         return None
     try:
@@ -285,7 +289,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
         # deps (--pip + the env's PIP_DEPENDENCIES slot + --provider's SDK).
         pip_deps = resolve_pip_dependencies(args.pip, project.env_class, args.provider)
         # max_turns defaults to 4 server-side and the trainer never consults
-        # Warn on omission so multi-turn envs are not silently capped.
+        # recommended_max_* — warn on omit so multi-turn envs aren't silently capped.
         if "max_turns" not in launcher_args:
             print(
                 "Note: max_turns not set (no --set max_turns / LAUNCH_CONFIG) — "

@@ -7,13 +7,11 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from typing import Any
 
 _ANSWER_TAG_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
-
-Completion = str | Sequence[Mapping[str, Any]]
 
 
 def percent_of_text_a_in_text_b(text_a: str, text_b: str) -> float:
@@ -26,7 +24,7 @@ def percent_of_text_a_in_text_b(text_a: str, text_b: str) -> float:
 
 
 def overlap_reward(
-    completion: Completion,
+    completion: str | list[dict[str, Any]],
     ground_truth: Any,
     **kwargs: Any,
 ) -> float:
@@ -39,21 +37,21 @@ def overlap_reward(
     reference_chunks = kwargs.get("reference_chunks", [])
     if reference_chunks:
         reference_string = " ".join(
-            chunk.get("content", "") if isinstance(chunk, Mapping) else str(chunk)
+            chunk.get("content", "") if isinstance(chunk, dict) else str(chunk)
             for chunk in reference_chunks
         )
     else:
         reference_string = str(ground_truth or "")
 
     completion_str = completion if isinstance(completion, str) else ""
-    if not isinstance(completion, str):
+    if isinstance(completion, list):
         completion_str = " ".join(
             c.get("content", "")
             for c in completion
-            if isinstance(c, Mapping) and c.get("role", "") != "assistant"
+            if isinstance(c, dict) and c.get("role", "") != "assistant"
         )
         for msg in completion:
-            if not isinstance(msg, Mapping):
+            if not isinstance(msg, dict):
                 continue
             if msg.get("role", "") != "assistant":
                 continue
@@ -68,15 +66,15 @@ def overlap_reward(
     return 0.0
 
 
-def extract_completion_text(completion: Completion) -> str:
+def extract_completion_text(completion: str | list[dict[str, Any]]) -> str:
     """Extract text from a completion (string or message list)."""
     if isinstance(completion, str):
         return completion
-    if not isinstance(completion, Sequence):
+    if not isinstance(completion, list):
         return ""
     parts: list[str] = []
     for msg in completion:
-        if isinstance(msg, Mapping) and msg.get("role") == "assistant":
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
             content = msg.get("content", "")
             if isinstance(content, str) and content.strip():
                 parts.append(content)
@@ -97,15 +95,15 @@ def clip01(value: Any) -> float:
         return 0.0
 
 
-def count_search_calls(completion: Completion) -> int:
+def count_search_calls(completion: str | list[dict[str, Any]]) -> int:
     """Count search tool calls in a completion."""
     if isinstance(completion, str):
         return completion.count("<tool_call>")
-    if not isinstance(completion, Sequence):
+    if not isinstance(completion, list):
         return 0
     count = 0
     for msg in completion:
-        if isinstance(msg, Mapping) and msg.get("role") == "assistant":
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
             content = msg.get("content", "")
             if isinstance(content, str):
                 count += content.count("<tool_call>")
@@ -123,7 +121,7 @@ _SOURCE_CITE_RE = re.compile(r"\[Source:\s*([^\]]+)\]", re.IGNORECASE)
 
 
 def citation_score(
-    completion: Completion,
+    completion: str | list[dict[str, Any]],
     reference_chunks: list[dict[str, Any]],
     *,
     source_field: str | list[str] = "source_id",
@@ -153,7 +151,7 @@ def citation_score(
     ref_ids: set[str] = set()
     for chunk in reference_chunks:
         meta = chunk.get("metadata", {})
-        if not isinstance(meta, Mapping):
+        if not isinstance(meta, dict):
             continue
         for field in fields:
             sid = meta.get(field)
@@ -178,7 +176,7 @@ _DEFAULT_DECAY_RATE = 0.2
 
 
 def tool_call_efficiency(
-    completion: Completion,
+    completion: str | list[dict[str, Any]],
     *,
     correctness_raw: float = 1.0,
     reference_chunk_count: int = 0,

@@ -1,22 +1,13 @@
-# Environments
+# Envs
 
-```text
-environment.py       Environment ABC and standard group executor
-base/                Default chat/tool loop, JSONL loader, and authoring guide
-dataset.py           Dataset protocol and frozen in-memory implementation
-identity.py          Canonical hashing helper for JSON semantics
-shared_types.py      Shared request, attempt, and outcome types
-harbor/              Concrete optional adapter over native Harbor configs
-postgres_search/     Search environment implementations
-telestich/           Group-relative example environment
+This directory contains:
+```bash
+├── postgres_search/  # Search/RAG env helpers
+├── telestich/        # Example text-task env
+├── types.py          # Shared types
+└── base_env.py       # Base env class
 ```
 
-Most custom environments inherit [`BaseEnv`](base/env.py). It supplies the
-conversation loop and optional tool dispatch. Subclasses own dataset semantics,
-stable identity, and rewards.
-
-Custom rollout loops can inherit `Environment` directly. `HarborEnv` follows
-this path because Harbor owns the complete harness loop. Most Harbor users only
-pass native configuration; see [harbor/README.md](harbor/README.md).
-
-See the [BaseEnv authoring guide](base/README.md).
+Legacy bundled MCP-backed envs were removed from the base SDK. New projects should
+define their env in a project-local `main.py` and use JSONL datasets; see
+[how-to-extend-base-env.md](how-to-extend-base-env.md).

@@ -25,7 +25,7 @@ reference_chunks}` rows — generate them from your corpus with
 with `castform corpus ingest <folder> --name <CORPUS_NAME>`.
 
 Footgun: do NOT pass `benchmax` in `local_modules` at launch — it re-imports the
-package by value and breaks Environment runtime checks. benchmax is already on the
+package by value and breaks `issubclass(env, BaseEnv)`. benchmax is already on the
 trainer image; only your own local modules need bundling.
 """
 
@@ -37,7 +37,6 @@ import dataclasses
 import json
 import logging
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -46,13 +45,12 @@ from benchmax.envs.postgres_search.search_env import (
     ANSWER_LENGTH_CAP,
     CORRECTNESS_RUBRIC,
     SearchEnv,
-    TOOL_OUTPUT_TRUNCATION_SUFFIX,
     canonicalize_source_id_loose,
     extract_answer_block,
     score_citations,
 )
 from benchmax.envs.reward_helpers import clip01, extract_completion_text
-from benchmax.envs import Messages
+from benchmax.envs.types import Messages
 from benchmax.platform.client import TrainerClient
 from benchmax.platform.login import ensure_session
 from benchmax.platform.training_run import upload_training_run
@@ -149,18 +147,10 @@ class CustomSearchEnv(SearchEnv):
         )
 
     @staticmethod
-    def _truncate_tool_output(
-        text: str,
-        max_chars: int = MAX_TOOL_OUTPUT_CHARS,
-        suffix: str = TOOL_OUTPUT_TRUNCATION_SUFFIX,
-    ) -> str:
+    def _truncate_tool_output(text: str, max_chars: int = MAX_TOOL_OUTPUT_CHARS, **_kw):
         # Scale the per-result char cap down so MAX_SEARCH_CALLS searches fit the
         # rollout token budget (the base default is larger; see MAX_TOOL_OUTPUT_CHARS).
-        return SearchEnv._truncate_tool_output(
-            text,
-            max_chars=max_chars,
-            suffix=suffix,
-        )
+        return SearchEnv._truncate_tool_output(text, max_chars=max_chars)
 
     def _canonicalize_id(self, source_id: str) -> str:
         """Match citations by id-hash OR title-path (the lib default — lowercase,
@@ -184,9 +174,8 @@ class CustomSearchEnv(SearchEnv):
         self,
         rollout_id: str,
         messages: Messages,
-        example_args: Mapping[str, Any],
-        *,
-        termination_reason: str,
+        task: dict[str, Any] | None,
+        **kwargs: Any,
     ) -> dict[str, float]:
         """The reward — the whole training signal. Edit freely; audit with
         `castform validate --reward-audit` before launching.
@@ -203,7 +192,7 @@ class CustomSearchEnv(SearchEnv):
             answer = extract_answer_block(extract_completion_text(messages))
             if not answer.strip():
                 return zeros
-            t = example_args
+            t = task or {}
             reference_chunks = t.get("reference_chunks", [])
 
             # Correctness judge — ONE rubric call (no separate conciseness judge;
@@ -310,7 +299,7 @@ VALIDATE_CONFIG = {
     "examples": 6,  # a few real rollouts make --reward-audit's per-component read sharper
 }
 
-# Keep executor launch limits aligned with the environment's enforced limits. NOTE
+# The trainer ignores an env's recommended_max_*, so bake the budget here. NOTE
 # max_tool_calls is NOT a launch knob (stays 8) — keep MAX_SEARCH_CALLS <= 8. The
 # accepted arg set is `castform launch --list-args`; an unknown key here is skipped
 # with a warning.
@@ -357,7 +346,7 @@ def _load_jsonl(path: str) -> list[dict[str, Any]]:
 
 
 def _run_name() -> str:
-    return str(LAUNCH_CONFIG.get("name") or CustomSearchEnv.__name__.lower())
+    return LAUNCH_CONFIG.get("name") or CustomSearchEnv.__name__.lower()
 
 
 def generate_data(force: bool = False) -> bool:
@@ -410,7 +399,6 @@ def validate() -> Any:
     """Baseline the env on a real-rollout subset (no GPU). Returns the report."""
     train = _load_jsonl(TRAIN_FILE)
     eval_ds = _load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else []
-    model = VALIDATE_CONFIG.get("model")
     report = validate_env(
         env_class=CustomSearchEnv,
         env_args=ENV_ARGS,
@@ -420,7 +408,7 @@ def validate() -> Any:
         local=False,  # run the remote real-rollout subset (matches `castform validate`)
         remote_examples=VALIDATE_CONFIG.get("examples", 2),
         group_reward_samples=VALIDATE_CONFIG.get("group_samples", 2),
-        llm_model=str(model) if model is not None else None,
+        llm_model=VALIDATE_CONFIG.get("model"),
         max_turns=VALIDATE_CONFIG.get("max_turns", 4),
         max_tool_calls=VALIDATE_CONFIG.get("max_tool_calls", 8),
     )

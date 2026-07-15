@@ -314,9 +314,7 @@ def test_rag_scaffold_reward_threads_canonicalize_and_timeout(tmp_path, monkeypa
         "ground_truth": "x",
         "reference_chunks": [{"metadata": {"file": "doca"}}],
     }
-    reward = asyncio.run(
-        env.compute_reward("r", msgs, task, termination_reason="finished")
-    )
+    reward = asyncio.run(env.compute_reward("r", msgs, task))
 
     assert captured["timeout"] == 99.0  # #6: env judge_timeout threaded
     # #0: "DOCA" cite matched gold "doca" via the injected lowercasing canonicalizer
