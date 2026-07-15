@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import re
@@ -229,7 +230,11 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
             )
             trial = await Trial.create(trial_config)
             result = await trial.run()
-            rollout = _rollout_attempt(request.rollout_id, result)
+            rollout = _rollout_attempt(
+                request.rollout_id,
+                result,
+                trial_dir=Path(trial_config.trials_dir) / request.rollout_id,
+            )
             logger.info(
                 "harbor.rollout.done rollout_id=%s termination_reason=%s rewards=%s",
                 request.rollout_id,
@@ -242,7 +247,12 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         """Harbor trials own and close their individual sandbox resources."""
 
 
-def _rollout_attempt(rollout_id: str, result: TrialResult) -> RolloutAttempt:
+def _rollout_attempt(
+    rollout_id: str,
+    result: TrialResult,
+    *,
+    trial_dir: Path,
+) -> RolloutAttempt:
     """Accept scored task terminations, but reject infrastructure failures."""
 
     verifier_result = result.verifier_result
@@ -274,11 +284,62 @@ def _rollout_attempt(rollout_id: str, result: TrialResult) -> RolloutAttempt:
         if result.exception_info is None
         else _exception_termination_reason(result.exception_info.exception_type)
     )
+    normalized_rewards = {str(key): float(value) for key, value in rewards.items()}
+    if result.exception_info is None and "partial_credit" not in normalized_rewards:
+        partial_credit = _rewardkit_partial_credit(trial_dir)
+        if partial_credit is not None:
+            normalized_rewards["partial_credit"] = partial_credit
     return RolloutAttempt(
         rollout_id=rollout_id,
         termination_reason=termination_reason,
-        rewards={str(key): float(value) for key, value in rewards.items()},
+        rewards=normalized_rewards,
     )
+
+
+def _rewardkit_partial_credit(trial_dir: Path) -> float | None:
+    """Derive weighted criterion credit when a Harbor verifier used RewardKit."""
+
+    details_path = trial_dir / "verifier" / "reward-details.json"
+    if not details_path.is_file():
+        return None
+    try:
+        payload = json.loads(details_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.warning(
+            "harbor.rewardkit.invalid_details path=%s",
+            details_path,
+            exc_info=True,
+        )
+        return None
+
+    reward = payload.get("reward", payload) if isinstance(payload, Mapping) else None
+    criteria = reward.get("criteria") if isinstance(reward, Mapping) else None
+    if not isinstance(criteria, list) or not criteria:
+        return None
+
+    total_weight = 0.0
+    earned_credit = 0.0
+    for criterion in criteria:
+        if not isinstance(criterion, Mapping):
+            return None
+        weight = criterion.get("weight", 1.0)
+        value = criterion.get("value", 0.0)
+        if (
+            isinstance(weight, bool)
+            or not isinstance(weight, (int, float))
+            or not math.isfinite(weight)
+            or weight < 0
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            return None
+        total_weight += float(weight)
+        earned_credit += float(weight) * float(value)
+
+    if total_weight <= 0:
+        return None
+    return earned_credit / total_weight
 
 
 def _exception_termination_reason(exception_type: str) -> str:

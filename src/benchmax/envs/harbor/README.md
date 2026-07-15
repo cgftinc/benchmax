@@ -78,6 +78,11 @@ Agent timeouts, context/output limits, and ordinary nonzero harness exits remain
 scored attempts. Sandbox, verifier, transport, and provider failures fail the
 group even if Harbor happened to retain a partial reward.
 
+Verifier rewards are preserved as returned by Harbor. When a successful trial
+also contains RewardKit's `verifier/reward-details.json`, `HarborEnv` adds the
+weighted criterion score as `partial_credit` unless the verifier already
+provided that reward key.
+
 Install `benchmax[harbor]` while authoring. Add the chosen Harbor provider extra
 to the rollout bundle's pip dependencies, for example `harbor[modal]>=0.18,<0.19`
 or `harbor[daytona]>=0.18,<0.19`.

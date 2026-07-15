@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -415,6 +416,61 @@ async def test_harbor_uses_request_model_when_template_omits_one(
 
     assert captured_model == "openai/Qwen/Qwen3.5-4B"
     assert outcomes["rollout-1"].rewards == {"reward": 1.0}
+
+
+@pytest.mark.asyncio
+async def test_harbor_enriches_native_rewards_with_rewardkit_partial_credit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trials_dir = tmp_path / "trials"
+    env = HarborEnv(
+        dataset=DatasetConfig(path=tmp_path),
+        trial=HarborTrialTemplate(
+            agent=AgentConfig(name="mini-swe-agent"),
+            environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
+            verifier=VerifierConfig(),
+            trials_dir=trials_dir,
+        ),
+    )
+
+    class FakeTrial:
+        def __init__(self, config: Any) -> None:
+            self.config = config
+
+        async def run(self) -> Any:
+            verifier_dir = (
+                Path(self.config.trials_dir) / self.config.trial_name / "verifier"
+            )
+            verifier_dir.mkdir(parents=True)
+            (verifier_dir / "reward-details.json").write_text(
+                json.dumps(
+                    {
+                        "reward": {
+                            "criteria": [
+                                {"weight": 1, "value": 1},
+                                {"weight": 3, "value": 0.5},
+                            ]
+                        }
+                    }
+                )
+            )
+            return SimpleNamespace(
+                verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
+                exception_info=None,
+            )
+
+    async def create_trial(config: Any) -> FakeTrial:
+        return FakeTrial(config)
+
+    monkeypatch.setattr(Trial, "create", staticmethod(create_trial))
+
+    outcomes = await env.run_group([_request(tmp_path, rollout_id="rollout-1")])
+
+    assert outcomes["rollout-1"].rewards == {
+        "reward": 1.0,
+        "partial_credit": 0.625,
+    }
 
 
 @pytest.mark.asyncio
