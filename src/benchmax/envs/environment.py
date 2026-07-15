@@ -23,7 +23,7 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
 
     @property
     def requires_public_model_endpoint(self) -> bool:
-        """Whether rollout code runs outside the trainer's private network."""
+        """Use a public model URL when rollouts run in a remote sandbox."""
 
         return False
 

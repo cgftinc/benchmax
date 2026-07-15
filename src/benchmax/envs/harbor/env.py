@@ -64,9 +64,9 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
 
     @property
     def requires_public_model_endpoint(self) -> bool:
-        """Harbor harnesses reach the model from external sandboxes."""
+        """Use a public model URL when Harbor runs in a remote sandbox."""
 
-        return True
+        return self._requires_public_model_endpoint
 
     def __init__(
         self,
@@ -77,6 +77,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         eval_dataset: DatasetConfig | None = None,
         eval_ratio: float = 0.1,
         max_concurrent_trials: int | None = None,
+        requires_public_model_endpoint: bool = True,
     ) -> None:
         require_harbor()
         _validate_configuration(
@@ -94,6 +95,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         self._eval_ratio = float(eval_ratio)
         self._trial = _with_environment_defaults(trial)
         self._sandbox_credentials = sandbox_credentials
+        self._requires_public_model_endpoint = requires_public_model_endpoint
         self._trial_slots = (
             asyncio.Semaphore(max_concurrent_trials)
             if max_concurrent_trials is not None

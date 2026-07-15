@@ -79,6 +79,7 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
         trial=template,
         sandbox_credentials=credentials,
     )
+    assert env.requires_public_model_endpoint is True
 
     barrier = asyncio.Barrier(2)
     configs: dict[str, Any] = {}
@@ -267,6 +268,21 @@ def test_harbor_non_modal_environment_has_no_modal_app_default(tmp_path: Path) -
     )
 
     assert "app_name" not in env._trial.environment.kwargs
+
+
+def test_harbor_can_use_a_private_model_endpoint(tmp_path: Path) -> None:
+    env = HarborEnv(
+        dataset=DatasetConfig(path=tmp_path),
+        trial=HarborTrialTemplate(
+            agent=AgentConfig(name="mini-swe-agent"),
+            environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
+            verifier=VerifierConfig(),
+            trials_dir=tmp_path / "trials",
+        ),
+        requires_public_model_endpoint=False,
+    )
+
+    assert env.requires_public_model_endpoint is False
 
 
 @pytest.mark.parametrize(
