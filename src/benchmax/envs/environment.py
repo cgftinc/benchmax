@@ -21,6 +21,12 @@ __all__ = ["Environment"]
 class Environment[Payload, Attempt: RolloutAttempt](ABC):
     """Group-native environment with one-attempt implementation hooks."""
 
+    @property
+    def requires_public_model_endpoint(self) -> bool:
+        """Whether rollout code runs outside the trainer's private network."""
+
+        return False
+
     @abstractmethod
     async def create_dataset(
         self,

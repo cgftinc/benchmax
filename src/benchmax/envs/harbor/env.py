@@ -62,6 +62,12 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
 
     PIP_DEPENDENCIES = ["harbor>=0.18.0,<0.19"]
 
+    @property
+    def requires_public_model_endpoint(self) -> bool:
+        """Harbor harnesses reach the model from external sandboxes."""
+
+        return True
+
     def __init__(
         self,
         *,
