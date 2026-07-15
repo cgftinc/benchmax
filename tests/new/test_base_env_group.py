@@ -206,7 +206,7 @@ async def test_base_env_dispatches_an_advertised_tool_and_continues() -> None:
     def respond(session_id, call_index, body):
         if call_index == 0:
             return 200, completion_response(
-                content="",
+                content=None,
                 finish_reason="tool_calls",
                 tool_calls=[
                     {
@@ -224,7 +224,7 @@ async def test_base_env_dispatches_an_advertised_tool_and_continues() -> None:
             {"role": "user", "content": "What is 6 × 7?"},
             {
                 "role": "assistant",
-                "content": "",
+                "content": None,
                 "tool_calls": [
                     {
                         "id": "call-1",
@@ -282,7 +282,7 @@ async def test_model_authored_tool_errors_are_returned_to_the_model() -> None:
     def respond(session_id, call_index, body):
         if call_index == 0:
             return 200, completion_response(
-                content="",
+                content=None,
                 finish_reason="tool_calls",
                 tool_calls=tool_calls,
             )

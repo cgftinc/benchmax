@@ -60,7 +60,7 @@ async def test_math_env_runs_tools_and_discriminates_answers(tmp_path: Path) -> 
     def respond(session_id: str, call_index: int, body: dict[str, object]):
         if call_index == 0:
             return 200, completion_response(
-                content="",
+                content=None,
                 finish_reason="tool_calls",
                 tool_calls=[
                     {

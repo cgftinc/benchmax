@@ -22,7 +22,7 @@ class ModelRequest:
 
 def completion_response(
     *,
-    content: str,
+    content: str | None,
     finish_reason: str = "stop",
     model: str = "test-model",
     tool_calls: list[dict[str, Any]] | None = None,

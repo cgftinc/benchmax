@@ -332,7 +332,7 @@ def _to_assistant_message(
 
     assistant_message: ChatCompletionAssistantMessageParam = {
         "role": "assistant",
-        "content": message.content or "",
+        "content": message.content,
     }
     if tool_calls:
         call_params: list[ChatCompletionMessageFunctionToolCallParam] = [
