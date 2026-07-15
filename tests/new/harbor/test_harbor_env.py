@@ -27,6 +27,7 @@ from benchmax.envs.harbor import (
     HarborTrialTemplate,
     ModalCredentials,
 )
+from benchmax.envs.harbor.credentials import sandbox_credentials_scope
 
 
 class _UserHarness(BaseAgent):
@@ -333,6 +334,33 @@ def test_sandbox_credential_repr_hides_secret_values() -> None:
 
     assert "modal-id" not in repr(credentials)
     assert "modal-secret" not in repr(credentials)
+
+
+@pytest.mark.asyncio
+async def test_modal_credentials_scope_sets_bounded_throttle_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MODAL_MAX_THROTTLE_WAIT", "7")
+    credentials = ModalCredentials(
+        "modal-id",
+        "modal-secret",
+        max_throttle_wait_seconds=90,
+    )
+
+    async with sandbox_credentials_scope(credentials):
+        assert os.environ["MODAL_MAX_THROTTLE_WAIT"] == "90"
+
+    assert os.environ["MODAL_MAX_THROTTLE_WAIT"] == "7"
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True])
+def test_modal_credentials_reject_invalid_throttle_wait(value: Any) -> None:
+    with pytest.raises(ValueError, match="non-negative integer"):
+        ModalCredentials(
+            "modal-id",
+            "modal-secret",
+            max_throttle_wait_seconds=value,
+        )
 
 
 @pytest.mark.asyncio

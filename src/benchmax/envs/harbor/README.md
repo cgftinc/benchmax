@@ -69,6 +69,8 @@ sandboxes under a different Modal App. Non-Modal environments are unaffected.
 Modal and Daytona require explicit `sandbox_credentials`; `HarborEnv` does not
 read their credentials from the launching shell. `DaytonaCredentials` accepts
 either an API key or a JWT plus organization ID, with an optional named target.
+`ModalCredentials` lets the Modal client wait up to 60 seconds for API
+throttling by default; set `max_throttle_wait_seconds=0` to disable that retry.
 
 The rollout request supplies the per-attempt TITO URL and key. `HarborEnv`
 injects them only into the agent configuration and leaves verifier/judge
@@ -87,6 +89,6 @@ Install `benchmax[harbor]` while authoring. Add the chosen Harbor provider extra
 to the rollout bundle's pip dependencies, for example `harbor[modal]>=0.18,<0.19`
 or `harbor[daytona]>=0.18,<0.19`.
 
-Benchmax owns rollout-group concurrency and retry policy. Harbor's job-queue-only
-`agent.n_concurrent` and `agent.concurrency_group` settings are rejected rather
-than silently ignored.
+Benchmax owns rollout-group concurrency and whole-group retry policy. Harbor's
+job-queue-only `agent.n_concurrent` and `agent.concurrency_group` settings are
+rejected rather than silently ignored.

@@ -28,20 +28,34 @@ class SandboxCredentials(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ModalCredentials:
-    """Explicit Modal credentials, translated only while Harbor is running."""
+    """Modal host configuration exposed only while Harbor is running.
+
+    ``max_throttle_wait_seconds`` lets Modal's client back off and retry when
+    its API throttles sandbox creation. Set it to zero to disable that retry.
+    """
 
     provider: str = field(default="modal", init=False, repr=False)
     token_id: str = field(repr=False)
     token_secret: str = field(repr=False)
+    max_throttle_wait_seconds: int = 60
 
     def __post_init__(self) -> None:
         _require_secret(self.token_id, "Modal token_id")
         _require_secret(self.token_secret, "Modal token_secret")
+        if (
+            isinstance(self.max_throttle_wait_seconds, bool)
+            or not isinstance(self.max_throttle_wait_seconds, int)
+            or self.max_throttle_wait_seconds < 0
+        ):
+            raise ValueError(
+                "Modal max_throttle_wait_seconds must be a non-negative integer"
+            )
 
     def host_environment(self) -> Mapping[str, str]:
         return {
             "MODAL_TOKEN_ID": self.token_id,
             "MODAL_TOKEN_SECRET": self.token_secret,
+            "MODAL_MAX_THROTTLE_WAIT": str(self.max_throttle_wait_seconds),
         }
 
 
