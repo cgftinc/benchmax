@@ -28,7 +28,7 @@ class MathEnv(BaseEnv):
         *,
         train_dataset_path: str,
         eval_dataset_path: str,
-        max_turns: int = 3,
+        max_turns: int = 5,
         max_tool_calls: int | None = None,
     ) -> None:
         super().__init__(max_turns=max_turns, max_tool_calls=max_tool_calls)

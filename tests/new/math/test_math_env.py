@@ -45,7 +45,7 @@ async def test_math_env_runs_tools_and_discriminates_answers(tmp_path: Path) -> 
                 "role": "system",
                 "content": "Use a tool and put the result in <answer> tags.",
             },
-            {"role": "user", "content": "What is 6 * 7?"},
+            {"role": "user", "content": "What is 6 * 7 + 3 - 3?"},
         ],
         "answer": "42",
     }
@@ -58,17 +58,23 @@ async def test_math_env_runs_tools_and_discriminates_answers(tmp_path: Path) -> 
     example = (await env.create_dataset("train", tmp_path))[0]
 
     def respond(session_id: str, call_index: int, body: dict[str, object]):
-        if call_index == 0:
+        tool_calls = (
+            ("multiply", '{"a":6,"b":7}'),
+            ("add", '{"a":42,"b":3}'),
+            ("subtract", '{"a":45,"b":3}'),
+        )
+        if call_index < len(tool_calls):
+            tool_name, arguments = tool_calls[call_index]
             return 200, completion_response(
                 content=None,
                 finish_reason="tool_calls",
                 tool_calls=[
                     {
-                        "id": f"multiply-{session_id}",
+                        "id": f"{tool_name}-{session_id}",
                         "type": "function",
                         "function": {
-                            "name": "multiply",
-                            "arguments": '{"a":6,"b":7}',
+                            "name": tool_name,
+                            "arguments": arguments,
                         },
                     }
                 ],
@@ -92,7 +98,7 @@ async def test_math_env_runs_tools_and_discriminates_answers(tmp_path: Path) -> 
 
     assert outcomes["correct"].rewards == {"correctness": 1.0}
     assert outcomes["incorrect"].rewards == {"correctness": 0.0}
-    second_calls = [request for request in server.requests if request.call_index == 1]
+    final_calls = [request for request in server.requests if request.call_index == 3]
     assert all(
-        request.body["messages"][-1]["content"] == "42.0" for request in second_calls
+        request.body["messages"][-1]["content"] == "42.0" for request in final_calls
     )
