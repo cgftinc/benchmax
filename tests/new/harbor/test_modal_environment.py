@@ -10,8 +10,8 @@ from benchmax.envs.harbor.modal import BoundedModalEnvironment
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["upload", "download"])
-async def test_modal_filesystem_transfers_have_a_deadline(
+@pytest.mark.parametrize("operation", ["upload", "download", "stat"])
+async def test_modal_filesystem_operations_have_a_deadline(
     operation: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -41,6 +41,15 @@ async def test_modal_filesystem_transfers_have_a_deadline(
     ) -> None:
         await hang()
 
+    async def hanging_stat(
+        self: ModalEnvironment,
+        path: str,
+        user: str | int | None = None,
+    ) -> bool:
+        del path, user
+        await hang()
+        return False
+
     environment = object.__new__(BoundedModalEnvironment)
     environment._transfer_timeout_secs = 0.01
 
@@ -48,7 +57,7 @@ async def test_modal_filesystem_transfers_have_a_deadline(
         if operation == "upload":
             monkeypatch.setattr(ModalEnvironment, "upload_dir", hanging_upload)
             await environment.upload_dir(tmp_path, "/app")
-        else:
+        elif operation == "download":
             monkeypatch.setattr(
                 ModalEnvironment,
                 "download_dir",
@@ -58,6 +67,9 @@ async def test_modal_filesystem_transfers_have_a_deadline(
                 "/logs/artifacts",
                 tmp_path,
             )
+        else:
+            monkeypatch.setattr(ModalEnvironment, "is_dir", hanging_stat)
+            await environment.is_dir("/logs/artifacts", user="root")
 
     assert transfer_cancelled.is_set()
     assert attempts == 1

@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Awaitable, override
+from typing import Any, Awaitable, TypeVar, override
 
 from harbor.environments.modal import ModalEnvironment
 
@@ -12,9 +12,11 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["BoundedModalEnvironment"]
 
+ResultT = TypeVar("ResultT")
+
 
 class BoundedModalEnvironment(ModalEnvironment):
-    """Modal environment with deadlines around provider filesystem transfers."""
+    """Modal environment with deadlines around provider filesystem operations."""
 
     def __init__(
         self,
@@ -34,7 +36,7 @@ class BoundedModalEnvironment(ModalEnvironment):
         target_path: str,
     ) -> None:
         upload = super().upload_file
-        await self._bounded_transfer(
+        await self._bounded_filesystem_operation(
             lambda: upload(source_path, target_path),
             operation="upload_file",
             source=str(source_path),
@@ -48,7 +50,7 @@ class BoundedModalEnvironment(ModalEnvironment):
         target_dir: str,
     ) -> None:
         upload = super().upload_dir
-        await self._bounded_transfer(
+        await self._bounded_filesystem_operation(
             lambda: upload(source_dir, target_dir),
             operation="upload_dir",
             source=str(source_dir),
@@ -62,7 +64,7 @@ class BoundedModalEnvironment(ModalEnvironment):
         target_path: Path | str,
     ) -> None:
         download = super().download_file
-        await self._bounded_transfer(
+        await self._bounded_filesystem_operation(
             lambda: download(source_path, target_path),
             operation="download_file",
             source=source_path,
@@ -76,7 +78,7 @@ class BoundedModalEnvironment(ModalEnvironment):
         target_dir: Path | str,
     ) -> None:
         download = super().download_dir
-        await self._bounded_transfer(
+        await self._bounded_filesystem_operation(
             lambda: download(source_dir, target_dir),
             operation="download_dir",
             source=source_dir,
@@ -99,7 +101,7 @@ class BoundedModalEnvironment(ModalEnvironment):
             )
             return
         download = super().service_download_file
-        await self._bounded_transfer(
+        await self._bounded_filesystem_operation(
             lambda: download(source_path, target_path, service=service),
             operation="download_file",
             source=source_path,
@@ -123,7 +125,7 @@ class BoundedModalEnvironment(ModalEnvironment):
             )
             return
         download = super().service_download_dir
-        await self._bounded_transfer(
+        await self._bounded_filesystem_operation(
             lambda: download(source_dir, target_dir, service=service),
             operation="download_dir",
             source=source_dir,
@@ -141,7 +143,7 @@ class BoundedModalEnvironment(ModalEnvironment):
         service: str | None = None,
     ) -> None:
         download = super().service_download_dir_with_exclusions
-        await self._bounded_transfer(
+        await self._bounded_filesystem_operation(
             lambda: download(
                 source_dir=source_dir,
                 target_dir=target_dir,
@@ -154,32 +156,40 @@ class BoundedModalEnvironment(ModalEnvironment):
             service=service,
         )
 
-    async def _bounded_transfer(
+    @override
+    async def is_dir(
         self,
-        transfer: Callable[[], Awaitable[None]],
+        path: str,
+        user: str | int | None = None,
+    ) -> bool:
+        is_dir = super().is_dir
+        return await self._bounded_filesystem_operation(
+            lambda: is_dir(path, user=user),
+            operation="is_dir",
+            source=path,
+            target="-",
+        )
+
+    async def _bounded_filesystem_operation(
+        self,
+        operation_call: Callable[[], Awaitable[ResultT]],
         *,
         operation: str,
         source: str,
         target: str,
         service: str | None = None,
-        attempts: int = 1,
-    ) -> None:
-        for attempt in range(1, attempts + 1):
-            try:
-                async with asyncio.timeout(self._transfer_timeout_secs):
-                    await transfer()
-                return
-            except TimeoutError:
-                logger.warning(
-                    "Harbor Modal transfer timed out after %.1fs "
-                    "operation=%s source=%s target=%s service=%s attempt=%d/%d",
-                    self._transfer_timeout_secs,
-                    operation,
-                    source,
-                    target,
-                    service or "main",
-                    attempt,
-                    attempts,
-                )
-                if attempt == attempts:
-                    raise
+    ) -> ResultT:
+        try:
+            async with asyncio.timeout(self._transfer_timeout_secs):
+                return await operation_call()
+        except TimeoutError:
+            logger.warning(
+                "Harbor Modal filesystem operation timed out after %.1fs "
+                "operation=%s source=%s target=%s service=%s",
+                self._transfer_timeout_secs,
+                operation,
+                source,
+                target,
+                service or "main",
+            )
+            raise
