@@ -10,11 +10,29 @@ from benchmax.envs.harbor.modal import BoundedModalEnvironment
 
 
 @pytest.mark.asyncio
-async def test_modal_artifact_directory_transfer_has_a_deadline(
+@pytest.mark.parametrize("operation", ["upload", "download"])
+async def test_modal_filesystem_transfers_have_a_deadline(
+    operation: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     transfer_cancelled = asyncio.Event()
+    attempts = 0
+
+    async def hang() -> None:
+        nonlocal attempts
+        attempts += 1
+        try:
+            await asyncio.Event().wait()
+        finally:
+            transfer_cancelled.set()
+
+    async def hanging_upload(
+        self: ModalEnvironment,
+        source_dir: Path | str,
+        target_dir: str,
+    ) -> None:
+        await hang()
 
     async def hanging_download(
         self: ModalEnvironment,
@@ -23,20 +41,26 @@ async def test_modal_artifact_directory_transfer_has_a_deadline(
         *,
         service: str | None = None,
     ) -> None:
-        try:
-            await asyncio.Event().wait()
-        finally:
-            transfer_cancelled.set()
+        await hang()
 
-    monkeypatch.setattr(ModalEnvironment, "service_download_dir", hanging_download)
     environment = object.__new__(BoundedModalEnvironment)
-    environment._artifact_transfer_timeout_secs = 0.01
+    environment._transfer_timeout_secs = 0.01
 
     with pytest.raises(TimeoutError):
-        await environment.service_download_dir(
-            "/logs/artifacts",
-            tmp_path,
-            service=None,
-        )
+        if operation == "upload":
+            monkeypatch.setattr(ModalEnvironment, "upload_dir", hanging_upload)
+            await environment.upload_dir(tmp_path, "/app")
+        else:
+            monkeypatch.setattr(
+                ModalEnvironment,
+                "service_download_dir",
+                hanging_download,
+            )
+            await environment.service_download_dir(
+                "/logs/artifacts",
+                tmp_path,
+                service=None,
+            )
 
     assert transfer_cancelled.is_set()
+    assert attempts == (2 if operation == "upload" else 1)
