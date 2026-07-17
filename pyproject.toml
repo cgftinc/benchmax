@@ -36,6 +36,7 @@ where = ["src"]
 
 [project.optional-dependencies]
 harbor = ["harbor>=0.18.0,<0.19"]
+geo3k = ["datasets>=4.0.0"]
 telestich = ["english_words", "pronouncing", "wordfreq"]
 rag = [
     "keybert>=0.8",

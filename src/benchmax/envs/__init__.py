@@ -9,6 +9,7 @@ from benchmax.envs.base import (
 )
 from benchmax.envs.dataset import Dataset, FrozenDataset
 from benchmax.envs.environment import Environment
+from benchmax.envs.geo3k import Geo3KDataset, Geo3KEnv
 from benchmax.envs.identity import canonical_example_id
 from benchmax.envs.math import MathDataset, MathEnv
 from benchmax.envs.shared_types import (
@@ -28,6 +29,8 @@ __all__ = [
     "Example",
     "Environment",
     "FrozenDataset",
+    "Geo3KDataset",
+    "Geo3KEnv",
     "JsonRow",
     "JsonlDataset",
     "Message",
