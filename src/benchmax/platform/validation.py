@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 
 import cloudpickle
 
+from benchmax.envs.types import FinishRollout
+
 if TYPE_CHECKING:
     from .client import ValidationResult
 
@@ -337,7 +339,12 @@ def _run_local_checks(
                             rollout_id="test", tool_name=tool.name, **dummy_args
                         )
                     )
-                    if isinstance(result, str):
+                    if isinstance(result, FinishRollout):
+                        print(
+                            f"  \u2713 run_tool finishes rollout (tested: {tool.name})"
+                        )
+                        passed += 1
+                    elif isinstance(result, str):
                         print(f"  \u2713 run_tool returns string (tested: {tool.name})")
                         passed += 1
                     else:
@@ -453,6 +460,7 @@ def _run_local_checks(
             # ── Call each tool twice (catch stateful bugs) ──────
             transcript: list[dict[str, Any]] = list(prompt_messages)
             tool_call_count = 0
+            finish_after_tool = False
             for tool in tools:
                 tool_args = _build_dummy_args(tool.input_schema, query_text)
                 for _ in range(2):
@@ -464,14 +472,20 @@ def _run_local_checks(
                         )
                     )
                     transcript.append({"role": "assistant", "content": "Calling tool."})
-                    transcript.append({"role": "tool", "content": str(result)[:500]})
                     tool_call_count += 1
+                    if isinstance(result, FinishRollout):
+                        finish_after_tool = True
+                        break
+                    transcript.append({"role": "tool", "content": str(result)[:500]})
+                if finish_after_tool:
+                    break
 
             # Final assistant message echoing ground truth if available.
-            gt = (task or {}).get("ground_truth")
-            transcript.append(
-                {"role": "assistant", "content": str(gt or "test answer")}
-            )
+            if not finish_after_tool:
+                gt = (task or {}).get("ground_truth")
+                transcript.append(
+                    {"role": "assistant", "content": str(gt or "test answer")}
+                )
 
             reward = _run_async(
                 env.compute_reward(

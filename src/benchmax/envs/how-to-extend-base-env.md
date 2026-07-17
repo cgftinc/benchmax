@@ -85,3 +85,26 @@ class SimpleMathEnv(BaseEnv):
         return tool_fn(**tool_args)
 ```
 
+### 5. **End the rollout from a tool**
+
+Compare the current `tool_name` with the environment's terminal tools. Execute
+the tool first, then return `finish_rollout()` to end without another model
+turn:
+
+```python
+from benchmax.envs.types import finish_rollout
+
+
+class SubmissionEnv(BaseEnv):
+    terminal_tools = {"submit", "finalize"}
+
+    async def run_tool(self, rollout_id: str, tool_name: str, **tool_args) -> Any:
+        result = await self.tools[tool_name](**tool_args)
+        if tool_name in self.terminal_tools:
+            return finish_rollout()
+        return result
+```
+
+`finish_rollout()` stops dispatch immediately. The terminal tool's work has
+already completed, remaining calls are not dispatched, and buffered tool
+responses from that assistant turn are not added to the transcript.
