@@ -71,6 +71,11 @@ class MathEnv(BaseEnv):
     async def compute_reward(self, rollout: BaseRollout) -> RewardMap:
         """Reward a tool-assisted numeric answer inside ``<answer>`` tags."""
 
+        return self._score_rollout(rollout)
+
+    def _score_rollout(self, rollout: BaseRollout) -> RewardMap:
+        """Compute the reusable arithmetic correctness reward."""
+
         answer = rollout.example_args.get("answer")
         prediction = _answer_from_messages(rollout)
         used_tool = any(
