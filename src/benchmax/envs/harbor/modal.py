@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Awaitable, TypeVar, override
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["BoundedModalEnvironment"]
 
 ResultT = TypeVar("ResultT")
+_SLOW_FILESYSTEM_OPERATION_SECS = 10.0
 
 
 class BoundedModalEnvironment(ModalEnvironment):
@@ -179,11 +181,13 @@ class BoundedModalEnvironment(ModalEnvironment):
         target: str,
         service: str | None = None,
     ) -> ResultT:
+        started_at = time.monotonic()
+        operation_logger = getattr(self, "logger", logger)
         try:
             async with asyncio.timeout(self._transfer_timeout_secs):
-                return await operation_call()
+                result = await operation_call()
         except TimeoutError:
-            logger.warning(
+            operation_logger.warning(
                 "Harbor Modal filesystem operation timed out after %.1fs "
                 "operation=%s source=%s target=%s service=%s",
                 self._transfer_timeout_secs,
@@ -193,3 +197,28 @@ class BoundedModalEnvironment(ModalEnvironment):
                 service or "main",
             )
             raise
+        except Exception as exc:
+            operation_logger.warning(
+                "Harbor Modal filesystem operation failed after %.1fs "
+                "operation=%s source=%s target=%s service=%s error=%s",
+                time.monotonic() - started_at,
+                operation,
+                source,
+                target,
+                service or "main",
+                type(exc).__name__,
+            )
+            raise
+
+        elapsed = time.monotonic() - started_at
+        if elapsed >= _SLOW_FILESYSTEM_OPERATION_SECS:
+            operation_logger.warning(
+                "Harbor Modal filesystem operation was slow elapsed=%.1fs "
+                "operation=%s source=%s target=%s service=%s",
+                elapsed,
+                operation,
+                source,
+                target,
+                service or "main",
+            )
+        return result
