@@ -39,7 +39,6 @@ class BoundedModalEnvironment(ModalEnvironment):
             operation="upload_file",
             source=str(source_path),
             target=target_path,
-            attempts=2,
         )
 
     @override
@@ -54,7 +53,34 @@ class BoundedModalEnvironment(ModalEnvironment):
             operation="upload_dir",
             source=str(source_dir),
             target=target_dir,
-            attempts=2,
+        )
+
+    @override
+    async def download_file(
+        self,
+        source_path: str,
+        target_path: Path | str,
+    ) -> None:
+        download = super().download_file
+        await self._bounded_transfer(
+            lambda: download(source_path, target_path),
+            operation="download_file",
+            source=source_path,
+            target=str(target_path),
+        )
+
+    @override
+    async def download_dir(
+        self,
+        source_dir: str,
+        target_dir: Path | str,
+    ) -> None:
+        download = super().download_dir
+        await self._bounded_transfer(
+            lambda: download(source_dir, target_dir),
+            operation="download_dir",
+            source=source_dir,
+            target=str(target_dir),
         )
 
     @override
@@ -65,6 +91,13 @@ class BoundedModalEnvironment(ModalEnvironment):
         *,
         service: str | None = None,
     ) -> None:
+        if self.is_main_service(service):
+            await super().service_download_file(
+                source_path,
+                target_path,
+                service=service,
+            )
+            return
         download = super().service_download_file
         await self._bounded_transfer(
             lambda: download(source_path, target_path, service=service),
@@ -82,6 +115,13 @@ class BoundedModalEnvironment(ModalEnvironment):
         *,
         service: str | None = None,
     ) -> None:
+        if self.is_main_service(service):
+            await super().service_download_dir(
+                source_dir,
+                target_dir,
+                service=service,
+            )
+            return
         download = super().service_download_dir
         await self._bounded_transfer(
             lambda: download(source_dir, target_dir, service=service),

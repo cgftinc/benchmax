@@ -38,8 +38,6 @@ async def test_modal_filesystem_transfers_have_a_deadline(
         self: ModalEnvironment,
         source_dir: str,
         target_dir: Path | str,
-        *,
-        service: str | None = None,
     ) -> None:
         await hang()
 
@@ -53,14 +51,13 @@ async def test_modal_filesystem_transfers_have_a_deadline(
         else:
             monkeypatch.setattr(
                 ModalEnvironment,
-                "service_download_dir",
+                "download_dir",
                 hanging_download,
             )
-            await environment.service_download_dir(
+            await environment.download_dir(
                 "/logs/artifacts",
                 tmp_path,
-                service=None,
             )
 
     assert transfer_cancelled.is_set()
-    assert attempts == (2 if operation == "upload" else 1)
+    assert attempts == 1
