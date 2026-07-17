@@ -128,6 +128,16 @@ class Example(TypedDict):
 # ---------------------------------------------------------------------------
 
 
+class FinishRollout:
+    """Signal that the current tool call should end the rollout."""
+
+
+def finish_rollout() -> FinishRollout:
+    """Return from ``run_tool`` to end the rollout immediately."""
+
+    return FinishRollout()
+
+
 @dataclass
 class ToolDefinition:
     """Definition of a tool's interface"""
