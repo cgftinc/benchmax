@@ -76,8 +76,10 @@ class RolloutOutcome:
     Rewards are always named and non-empty, e.g. ``{"correctness": 1.0}``.
     Infrastructure failures raise instead.
 
-    ``termination_reason`` is tracking metadata, e.g. ``finished``,
-    ``context_exceeded``, ``max_turns_exceeded``, or ``harness_timeout``.
+    ``termination_reason`` is extensible tracking metadata. Built-in reasons
+    include ``finished``, ``context_exceeded``, ``output_exceeded``,
+    ``max_turns_exceeded``, ``tool_budget_exceeded``, ``harness_timeout``,
+    ``harness_error``, and ``unknown``.
     """
 
     rewards: RewardMap

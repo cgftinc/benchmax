@@ -39,14 +39,13 @@ _SAFE_TRIAL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DEFAULT_MODAL_APP_NAME = "harbor-castform"
 _DEFAULT_MODAL_SANDBOX_TIMEOUT_SECS = 3600
 _DEFAULT_MODAL_SANDBOX_IDLE_TIMEOUT_SECS = 1800
-_SCORED_AGENT_TERMINATIONS = frozenset(
-    {
-        "AgentTimeoutError",
-        "ContextLengthExceededError",
-        "NonZeroAgentExitCodeError",
-        "OutputLengthExceededError",
-    }
-)
+_TERMINATION_REASON_BY_EXCEPTION = {
+    "AgentTimeoutError": "harness_timeout",
+    "ContextLengthExceededError": "context_exceeded",
+    "ContextWindowExceededError": "context_exceeded",
+    "NonZeroAgentExitCodeError": "harness_error",
+    "OutputLengthExceededError": "output_exceeded",
+}
 
 
 class HarborTrialError(RuntimeError):
@@ -279,7 +278,7 @@ def _rollout_attempt(
 
     if (
         result.exception_info is not None
-        and result.exception_info.exception_type not in _SCORED_AGENT_TERMINATIONS
+        and result.exception_info.exception_type not in _TERMINATION_REASON_BY_EXCEPTION
     ):
         raise HarborTrialError(
             f"Harbor trial {rollout_id!r} failed with infrastructure exception "
@@ -351,11 +350,9 @@ def _rewardkit_partial_credit(trial_dir: Path) -> float | None:
 
 
 def _exception_termination_reason(exception_type: str) -> str:
-    """Turn Harbor exception class names into stable observability labels."""
+    """Normalize expected Harbor exceptions to Benchmax tracking labels."""
 
-    without_suffix = exception_type.removesuffix("Error")
-    snake_case = re.sub(r"(?<!^)(?=[A-Z])", "_", without_suffix).lower()
-    return snake_case or "harbor_exception"
+    return _TERMINATION_REASON_BY_EXCEPTION[exception_type]
 
 
 def _openai_model_name(model: str) -> str:

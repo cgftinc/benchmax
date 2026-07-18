@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from openai import InternalServerError
+from openai import BadRequestError, InternalServerError
 
 from benchmax.envs import (
     BaseEnv,
@@ -150,7 +150,7 @@ async def test_base_env_group_runs_end_to_end_through_distinct_http_endpoints() 
     assert all(call[2] == {"answer": "42"} for call in env.reward_calls)
 
 
-async def test_context_exceeded_is_still_scored() -> None:
+async def test_output_exceeded_is_still_scored() -> None:
     example = Example(
         id="math-context",
         payload={
@@ -168,9 +168,85 @@ async def test_context_exceeded_is_still_scored() -> None:
     ) as server:
         outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
 
-    assert outcomes["rollout-1"].termination_reason == "context_exceeded"
+    assert outcomes["rollout-1"].termination_reason == "output_exceeded"
     assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
-    assert env.reward_calls[0][3] == "context_exceeded"
+    assert env.reward_calls[0][3] == "output_exceeded"
+
+
+async def test_gateway_context_exhaustion_ends_and_scores_the_partial_rollout() -> None:
+    example = Example(
+        id="math-context",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "Keep working"}],
+            "answer": "42",
+        },
+    )
+    env = _ToolMathEnv(max_tool_calls=1)
+
+    def respond(session_id, call_index, body):
+        if call_index == 0:
+            return 200, completion_response(
+                content=None,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "multiply",
+                            "arguments": '{"left":6,"right":7}',
+                        },
+                    }
+                ],
+            )
+        return 400, {
+            "error": {
+                "message": (
+                    "This model's maximum context length is 32 tokens for this "
+                    "gateway session; no tokens remain for generation."
+                ),
+                "type": "invalid_request_error",
+                "param": "messages",
+                "code": "context_budget_exceeded",
+            }
+        }
+
+    with LocalModelServer(respond) as server:
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
+
+    outcome = outcomes["rollout-1"]
+    assert outcome.termination_reason == "context_exceeded"
+    assert outcome.rewards == {"correctness": 0.0}
+    assert len(server.requests) == 2
+    assert env.tool_calls == [("rollout-1", "multiply", {"left": 6, "right": 7})]
+
+
+async def test_unrelated_bad_request_still_fails_loudly() -> None:
+    example = Example(
+        id="math-bad-request",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "hello"}],
+            "answer": "hello",
+        },
+    )
+    env = _MathEnv()
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (
+            400,
+            {
+                "error": {
+                    "message": "malformed messages",
+                    "type": "invalid_request_error",
+                    "code": "invalid_messages",
+                }
+            },
+        )
+    ) as server:
+        with pytest.raises(BadRequestError):
+            await env.run_group(_requests(server, example, ["rollout-1"]))
+
+    assert env.reward_calls == []
 
 
 async def test_model_infrastructure_failure_is_not_scored_or_retried() -> None:

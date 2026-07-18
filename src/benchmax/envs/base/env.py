@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 from openai.types.chat import (
     ChatCompletion,
     ChatCompletionAssistantMessageParam,
@@ -135,12 +135,18 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                 tool_calls_used = 0
 
                 for _ in range(self.max_turns):
-                    completion = await _create_chat_completion(
-                        client=client,
-                        model=request.model,
-                        messages=messages,
-                        tools=tools,
-                    )
+                    try:
+                        completion = await _create_chat_completion(
+                            client=client,
+                            model=request.model,
+                            messages=messages,
+                            tools=tools,
+                        )
+                    except BadRequestError as error:
+                        if error.code != "context_budget_exceeded":
+                            raise
+                        termination_reason = "context_exceeded"
+                        break
                     assistant_turn = completion.choices[0]
                     tool_calls = _function_tool_calls(assistant_turn.message)
                     messages.append(
@@ -368,7 +374,7 @@ def _termination_reason(finish_reason: str | None) -> str:
     """Map an OpenAI finish reason to Benchmax tracking metadata."""
 
     if finish_reason == "length":
-        return "context_exceeded"
+        return "output_exceeded"
     if finish_reason == "stop":
         return "finished"
     if finish_reason is None:

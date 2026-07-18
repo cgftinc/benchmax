@@ -130,7 +130,7 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
     assert outcomes["rollout-1"].rewards == {"correctness": 1.0}
     assert outcomes["rollout-1"].termination_reason == "finished"
     assert outcomes["rollout-2"].rewards == {"correctness": 0.0}
-    assert outcomes["rollout-2"].termination_reason == "agent_timeout"
+    assert outcomes["rollout-2"].termination_reason == "harness_timeout"
     assert set(configs) == {"rollout-1", "rollout-2"}
 
     for index in (1, 2):
