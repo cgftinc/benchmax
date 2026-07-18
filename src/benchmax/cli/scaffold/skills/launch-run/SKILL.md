@@ -56,7 +56,7 @@ authoritative at runtime):
 | `lora_rank` | `128` | LoRA adapter rank (trainable-parameter count). |
 | `lora_alpha` | `256` | LoRA scaling factor; convention is `2 × lora_rank`. |
 | `max_rollout_len` | model-derived | total tokens across the WHOLE rollout (all turns), not a per-response cap; `> 16384` risks OOM. **`max_response_len` is not a thing** — the server rejects it. Over-budget rollouts are truncated and dropped from the loss, so set it generously while keeping search output compact. |
-| `max_turns` | `4` (trainer default) | max turns per rollout; set it explicitly if your env is multi-turn (the trainer ignores the env's `recommended_max_turns`). |
+| `max_turns` | `4` (trainer default) | max turns per rollout; keep it aligned with the environment's enforced `max_turns`. |
 
 **Tool calls cap at 8 at launch — and you can't raise them.** Unlike `castform validate`
 (which takes `--max-tool-calls`), launch exposes only `max_turns` as a `--set` knob;
@@ -84,7 +84,7 @@ overrides per invocation:
 
 ```python
 LAUNCH_CONFIG = {
-    "max_turns": 7,             # trainer ignores recommended_max_*; bake it here
+    "max_turns": 7,             # keep aligned with the environment limit
     "max_rollout_len": 16384,   # whole-rollout token budget
     "num_epochs": 3,
     # "type": "simple",         # gpu pool; "simple-cpu" for a smoke run
