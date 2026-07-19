@@ -1,0 +1,19 @@
+[project]
+name = "benchmax-example-math"
+version = "0.1.0"
+description = "Arithmetic tool-use environments for Benchmax"
+requires-python = "==3.12.*"
+dependencies = ["benchmax"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["math_dataset", "math_env", "math_group_env"]
+
+[tool.uv.sources]
+benchmax = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=8.4.2", "pytest-asyncio>=1.2.0", "ruff>=0.14.2"]

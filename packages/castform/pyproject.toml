@@ -1,0 +1,54 @@
+[project]
+name = "castform"
+version = "0.1.2.dev36"
+description = "SDK and CLI for the Castform training platform"
+readme = "README.md"
+authors = [{ name = "castie@castform.com" }]
+requires-python = "==3.12.*"
+dependencies = [
+    "benchmax",
+    "httpx[http2]>=0.27.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+castform = "castform.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"castform.cli.scaffold" = ["*.md", "*.py", "*.jsonl", "skills/*/SKILL.md"]
+"castform.cli" = ["templates/*.html"]
+
+[project.optional-dependencies]
+rag = [
+    "keybert>=0.8",
+    "langchain-text-splitters>=0.3.0",
+    "nest-asyncio>=1.5.0",
+    "openai>=2.15.0",
+    "pydantic>=2.0.0",
+    "ruamel-yaml>=0.19.1",
+    "scikit-learn>=1.8.0",
+    "sentence-transformers>=5.2.3",
+    "tqdm>=4.66.0",
+]
+traces = ["tqdm>=4.66.0"]
+chroma = ["chromadb>=1.0.0", "snowballstemmer>=2.2.0"]
+pinecone = ["pinecone>=5.0.0"]
+turbopuffer = ["turbopuffer>=1.16.2"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "python-dotenv>=1.2.1",
+    "ruff>=0.14.2",
+]

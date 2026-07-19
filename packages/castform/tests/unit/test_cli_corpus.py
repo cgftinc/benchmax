@@ -1,0 +1,332 @@
+"""Offline: `castform corpus ingest` (mocked PostgresChunkSource).
+
+Guards the non-interactive contract: the verb must forward ``on_limit="error"`` to
+``populate_from_folder`` (so the lib never reaches its ``input()`` prompt at the
+5-corpus cap) and surface ``CorpusLimitError`` as a clean message.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+
+import castform.rag.corpus.postgres.source as src_mod
+from castform.cli import build_parser, corpus
+from castform.rag.corpus.postgres.exceptions import CorpusLimitError
+
+
+class _Corpus:  # minimal stub: cap message reads .name off existing_corpora
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def _install(monkeypatch, *, raise_exc=None, corpus_id="corpus_abc123"):
+    """Patch the source seam; return a dict capturing how the verb called it."""
+    captured: dict = {}
+
+    class _Fake:
+        def __init__(self, corpus_name, api_key="", base_url=None):
+            captured["corpus_name"] = corpus_name
+
+        def populate_from_folder(self, docs_path, **kwargs):
+            captured["docs_path"] = docs_path
+            captured["populate_kwargs"] = kwargs
+            if raise_exc is not None:
+                raise raise_exc
+
+        @property
+        def corpus_id(self):
+            return corpus_id
+
+    monkeypatch.setattr(src_mod, "PostgresChunkSource", _Fake)
+    return captured
+
+
+def _ns(folder, **kw):
+    base = dict(folder=folder, name=None, json=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_ingest_ok_forwards_on_limit_error(monkeypatch, tmp_path, capsys):
+    captured = _install(monkeypatch)
+    assert corpus._cmd_corpus_ingest(_ns(str(tmp_path))) == 0
+    # The non-interactive guarantee: input() is never reachable.
+    assert captured["populate_kwargs"]["on_limit"] == "error"
+    assert captured["docs_path"] == str(tmp_path)
+    assert "corpus_abc123" in capsys.readouterr().out
+
+
+def test_ingest_default_name_is_folder_basename(monkeypatch, tmp_path):
+    captured = _install(monkeypatch)
+    assert corpus._cmd_corpus_ingest(_ns(str(tmp_path))) == 0
+    assert captured["corpus_name"] == tmp_path.resolve().name
+
+
+def test_ingest_custom_name(monkeypatch, tmp_path):
+    captured = _install(monkeypatch)
+    assert corpus._cmd_corpus_ingest(_ns(str(tmp_path), name="my-docs")) == 0
+    assert captured["corpus_name"] == "my-docs"
+
+
+def test_ingest_json(monkeypatch, tmp_path, capsys):
+    _install(monkeypatch, corpus_id="corpus_xyz")
+    assert corpus._cmd_corpus_ingest(_ns(str(tmp_path), json=True)) == 0
+    out = capsys.readouterr().out
+    assert "corpus_xyz" in out and "corpus_id" in out
+
+
+def test_ingest_not_a_folder(monkeypatch, capsys):
+    _install(monkeypatch)
+    assert corpus._cmd_corpus_ingest(_ns("/tmp/does-not-exist-xyz-123")) == 1
+    assert "not a folder" in capsys.readouterr().err
+
+
+def test_ingest_cap_error_is_clean(monkeypatch, tmp_path, capsys):
+    exc = CorpusLimitError(existing_corpora=[_Corpus("posthog"), _Corpus("karpathy")])
+    _install(monkeypatch, raise_exc=exc)
+    assert corpus._cmd_corpus_ingest(_ns(str(tmp_path))) == 1
+    err = capsys.readouterr().err
+    assert "5-corpus cap" in err and "posthog" in err and "karpathy" in err
+
+
+def test_ingest_missing_rag_dep_hints_install(monkeypatch, tmp_path, capsys):
+    exc = ModuleNotFoundError("No module named 'langchain_text_splitters'")
+    _install(monkeypatch, raise_exc=exc)
+    assert corpus._cmd_corpus_ingest(_ns(str(tmp_path))) == 1
+    assert "pip install castform[rag]" in capsys.readouterr().err
+
+
+# --- corpus list / delete ---------------------------------------------------
+
+import castform.rag.corpus.postgres.client as client_mod  # noqa: E402
+
+
+class _Row:
+    def __init__(self, id_, name):
+        self.id = id_
+        self.name = name
+        from datetime import datetime, timezone
+
+        self.created_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+
+class _FakeClient:
+    rows: list = []
+    deleted: list = []
+    delete_ok = True
+    chunks: list = []  # list[CorpusChunk] for browse
+
+    def __init__(self, base_url=None):
+        pass
+
+    def list_corpora(self):
+        return list(_FakeClient.rows)
+
+    def delete_corpus(self, corpus_id):
+        _FakeClient.deleted.append(corpus_id)
+        return _FakeClient.delete_ok
+
+    def list_corpus_chunks(self, corpus_id, limit=500, cursor=None):
+        # Cursor = an integer offset; cap each page at 2 to simulate a backend
+        # whose page size is below the requested limit (exercises the browse loop).
+        start = int(cursor) if cursor else 0
+        page = _FakeClient.chunks[start : start + min(limit, 2)]
+        nxt = start + len(page)
+        return page, (str(nxt) if nxt < len(_FakeClient.chunks) else None)
+
+
+def _install_client(monkeypatch, *, rows=None, delete_ok=True, chunks=None):
+    _FakeClient.rows = rows if rows is not None else []
+    _FakeClient.deleted = []
+    _FakeClient.delete_ok = delete_ok
+    _FakeClient.chunks = chunks if chunks is not None else []
+    monkeypatch.setattr(client_mod, "CorpusClient", _FakeClient)
+
+
+def _ns_list(**kw):
+    base = dict(json=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _ns_del(corpus_, **kw):
+    base = dict(corpus=corpus_, yes=False, json=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_corpus_list_shows_names_and_cap(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha"), _Row("id2", "beta")])
+    assert corpus._cmd_corpus_list(_ns_list()) == 0
+    out = capsys.readouterr().out
+    assert "2/20 corpora" in out and "alpha" in out and "beta" in out
+
+
+def test_corpus_list_empty(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[])
+    assert corpus._cmd_corpus_list(_ns_list()) == 0
+    assert "No corpora yet" in capsys.readouterr().out
+
+
+def test_corpus_list_json(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")])
+    assert corpus._cmd_corpus_list(_ns_list(json=True)) == 0
+    out = capsys.readouterr().out
+    assert "id1" in out and "alpha" in out
+
+
+def test_corpus_delete_requires_yes(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")])
+    assert corpus._cmd_corpus_delete(_ns_del("alpha")) == 1
+    assert "without --yes" in capsys.readouterr().err
+    assert _FakeClient.deleted == []  # nothing deleted
+
+
+def test_corpus_delete_by_name_with_yes(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha"), _Row("id2", "beta")])
+    assert corpus._cmd_corpus_delete(_ns_del("alpha", yes=True)) == 0
+    assert _FakeClient.deleted == ["id1"]
+    assert "Deleted corpus 'alpha'" in capsys.readouterr().out
+
+
+def test_corpus_delete_by_id_with_yes(monkeypatch):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")])
+    assert corpus._cmd_corpus_delete(_ns_del("id1", yes=True)) == 0
+    assert _FakeClient.deleted == ["id1"]
+
+
+def test_corpus_delete_not_found(monkeypatch, capsys):
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")])
+    assert corpus._cmd_corpus_delete(_ns_del("nope", yes=True)) == 1
+    assert "no corpus matching" in capsys.readouterr().err
+    assert _FakeClient.deleted == []
+
+
+# --- corpus search ----------------------------------------------------------
+
+import castform.rag.corpus.postgres.search as search_mod  # noqa: E402
+
+
+class _FakeSearch:
+    hits: list = []
+
+    def __init__(self, corpus, base_url=None):
+        self.corpus = corpus
+
+    def search(self, query, top_k=5):
+        _FakeSearch.last = (query, top_k)
+        return list(_FakeSearch.hits)
+
+
+def _ns_search(corpus_, query, **kw):
+    base = dict(corpus=corpus_, query=query, top_k=5, json=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_corpus_search_prints_hits(monkeypatch, capsys):
+    _FakeSearch.hits = [{"score": 2.6, "source": "a.md", "content": "hello\nworld"}]
+    monkeypatch.setattr(search_mod, "PostgresSearch", _FakeSearch)
+    assert corpus._cmd_corpus_search(_ns_search("karpathy", "q")) == 0
+    out = capsys.readouterr().out
+    assert "1 hit(s)" in out and "a.md" in out and "2.60" in out
+    assert _FakeSearch.last == ("q", 5)
+
+
+def test_corpus_search_empty(monkeypatch, capsys):
+    _FakeSearch.hits = []
+    monkeypatch.setattr(search_mod, "PostgresSearch", _FakeSearch)
+    assert corpus._cmd_corpus_search(_ns_search("karpathy", "q")) == 0
+    assert "No results" in capsys.readouterr().out
+
+
+# --- corpus browse ----------------------------------------------------------
+
+import castform.platform.browser as browser_mod  # noqa: E402
+from castform.rag.corpus.postgres.models import CorpusChunk  # noqa: E402
+
+
+def _chunks(n):
+    return [
+        CorpusChunk(id=f"c{i}", content=f"chunk body {i}", metadata={"i": i}, score=1.0 - i / 100)
+        for i in range(n)
+    ]
+
+
+def _ns_browse(corpus_, **kw):
+    base = dict(corpus=corpus_, limit=200, view="auto", out=None, no_open=False, json=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _capture_open(monkeypatch):
+    opened: dict = {}
+    monkeypatch.setattr(browser_mod, "maybe_open_browser", lambda u: opened.setdefault("url", u))
+    return opened
+
+
+def test_corpus_browse_renders_and_opens(monkeypatch, tmp_path, capsys):
+    opened = _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(5))
+    out = tmp_path / "chunks.html"
+    rc = corpus._cmd_corpus_browse(_ns_browse("alpha", out=str(out)))
+    assert rc == 0 and out.exists() and out.stat().st_size > 0
+    printed = capsys.readouterr().out
+    assert "5 chunks" in printed and str(out) in printed
+    # The viewer embeds the chunks as the `chunks` kind.
+    html = out.read_text()
+    start = html.index('id="data">') + len('id="data">')
+    model = json.loads(html[start : html.index("</script>", start)])
+    assert model["kind"] == "chunks" and len(model["rows"]) == 5
+    assert opened["url"] == out.resolve().as_uri()
+
+
+def test_corpus_browse_limit_reports_more(monkeypatch, tmp_path, capsys):
+    _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(5))
+    rc = corpus._cmd_corpus_browse(_ns_browse("alpha", limit=1, out=str(tmp_path / "c.html")))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "1 chunk" in out and "corpus has more" in out
+
+
+def test_corpus_browse_limit_zero_fetches_all(monkeypatch, tmp_path, capsys):
+    _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(5))
+    rc = corpus._cmd_corpus_browse(_ns_browse("alpha", limit=0, out=str(tmp_path / "c.html")))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "5 chunks" in out and "corpus has more" not in out
+
+
+def test_corpus_browse_json_emits_chunks(monkeypatch, capsys):
+    _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(2))
+    rc = corpus._cmd_corpus_browse(_ns_browse("alpha", json=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert '"content": "chunk body 0"' in out and '"id": "c0"' in out
+
+
+def test_corpus_browse_no_open_skips_browser(monkeypatch, tmp_path, capsys):
+    opened = _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(2))
+    rc = corpus._cmd_corpus_browse(_ns_browse("alpha", out=str(tmp_path / "c.html"), no_open=True))
+    assert rc == 0 and "url" not in opened
+
+
+def test_corpus_browse_not_found(monkeypatch, capsys):
+    _capture_open(monkeypatch)
+    _install_client(monkeypatch, rows=[_Row("id1", "alpha")], chunks=_chunks(2))
+    rc = corpus._cmd_corpus_browse(_ns_browse("nope"))
+    assert rc == 1 and "no corpus matching" in capsys.readouterr().err
+
+
+def test_corpus_browse_registered_with_flags():
+    args = build_parser().parse_args(
+        ["corpus", "browse", "alpha", "--limit", "10", "--view", "raw", "--no-open"]
+    )
+    assert args.func is corpus._cmd_corpus_browse
+    assert args.corpus == "alpha" and args.limit == 10 and args.view == "raw"
+    assert args.no_open is True

@@ -1,64 +1,17 @@
-[project]
-name = "benchmax"
-version = "0.1.2.dev36"
-description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
-readme = "README.md"
-authors = [{ name = "castie@castform.com" }]
-requires-python = "==3.12.*"
-dependencies = [
-    "cloudpickle>=3.0.0",
-    "httpx[http2]>=0.27.0",
-    "json-repair>=0.59.10",
-    "openai>=2.15.0",
-]
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
+[tool.uv.workspace]
+members = [
+    "packages/benchmax",
+    "packages/castform",
+    "examples/*",
 ]
 
-[project.scripts]
-castform = "benchmax.cli:main"
-
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-# Ship the `castform setup` scaffold templates in the wheel (read at runtime via
-# importlib.resources): docs (*.md), the starter main.py + seed datasets (*.py/*.jsonl),
-# and the per-skill SKILL.md. Skill dirs are hyphenated (data, not Python packages).
-"benchmax.cli.scaffold" = ["*.md", "*.py", "*.jsonl", "skills/*/SKILL.md"]
-# Ship the `castform data view` HTML viewer (read at runtime via importlib.resources).
-"benchmax.cli" = ["templates/*.html"]
-
-[project.optional-dependencies]
-harbor = ["harbor>=0.18.0,<0.19"]
-geo3k = ["datasets>=4.0.0"]
-telestich = ["english_words", "pronouncing", "wordfreq"]
-rag = [
-    "keybert>=0.8",
-    "langchain-text-splitters>=0.3.0",
-    "nest-asyncio>=1.5.0",
-    "pydantic>=2.0.0",
-    "ruamel-yaml>=0.19.1",
-    "scikit-learn>=1.8.0",
-    "sentence-transformers>=5.2.3",
-    "tqdm>=4.66.0",
-]
-traces = ["tqdm>=4.66.0"]
-# chromadb's BM25 embedding function needs snowballstemmer but doesn't declare it.
-chroma = ["chromadb>=1.0.0", "snowballstemmer>=2.2.0"]
-pinecone = ["pinecone>=5.0.0"]
-turbopuffer = ["turbopuffer>=1.16.2"]
+[tool.uv.sources]
+benchmax = { workspace = true }
+castform = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "harbor>=0.18.0,<0.19",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
-    "python-dotenv>=1.2.1",
     "ruff>=0.14.2",
 ]

@@ -1,0 +1,21 @@
+usage: castform [-h] <command> ...
+
+Castform CLI
+
+positional arguments:
+  <command>
+    login     Sign in via your browser
+    logout    Clear the cached session
+    whoami    Show the current login
+    runs      Inspect training runs
+    stop      Stop (cancel) a run you own
+    launch    Upload and launch a training run
+    data      Dataset utilities
+    corpus    Corpus utilities for RAG envs
+    setup     Sign in + scaffold this project for a coding agent
+    doctor    Check interpreter, sign-in, and env deps are ready
+    guide     Walk through your first run
+    help      List the available commands
+
+options:
+  -h, --help  show this help message and exit

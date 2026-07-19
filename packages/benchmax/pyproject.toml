@@ -1,0 +1,35 @@
+[project]
+name = "benchmax"
+version = "0.1.2.dev36"
+description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
+readme = "README.md"
+authors = [{ name = "BenchMax Authors" }]
+requires-python = "==3.12.*"
+dependencies = [
+    "cloudpickle>=3.0.0",
+    "json-repair>=0.59.10",
+    "openai>=2.15.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.optional-dependencies]
+harbor = ["harbor>=0.18.0,<0.19"]
+
+[dependency-groups]
+dev = [
+    "harbor>=0.18.0,<0.19",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "python-dotenv>=1.2.1",
+    "ruff>=0.14.2",
+]

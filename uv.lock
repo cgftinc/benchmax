@@ -7,6 +7,27 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "benchmax",
+    "benchmax-example-aime",
+    "benchmax-example-geo3k",
+    "benchmax-example-harvey",
+    "benchmax-example-math",
+    "benchmax-example-postgres-search",
+    "benchmax-example-qwen3-ocr",
+    "benchmax-example-sft-demonstration",
+    "benchmax-example-telestich",
+    "castform",
+]
+
+[manifest.dependency-groups]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -146,48 +167,16 @@ wheels = [
 [[package]]
 name = "benchmax"
 version = "0.1.2.dev36"
-source = { editable = "." }
+source = { editable = "packages/benchmax" }
 dependencies = [
     { name = "cloudpickle" },
-    { name = "httpx", extra = ["http2"] },
     { name = "json-repair" },
     { name = "openai" },
 ]
 
 [package.optional-dependencies]
-chroma = [
-    { name = "chromadb" },
-    { name = "snowballstemmer" },
-]
-geo3k = [
-    { name = "datasets" },
-]
 harbor = [
     { name = "harbor" },
-]
-pinecone = [
-    { name = "pinecone" },
-]
-rag = [
-    { name = "keybert" },
-    { name = "langchain-text-splitters" },
-    { name = "nest-asyncio" },
-    { name = "pydantic" },
-    { name = "ruamel-yaml" },
-    { name = "scikit-learn" },
-    { name = "sentence-transformers" },
-    { name = "tqdm" },
-]
-telestich = [
-    { name = "english-words" },
-    { name = "pronouncing" },
-    { name = "wordfreq" },
-]
-traces = [
-    { name = "tqdm" },
-]
-turbopuffer = [
-    { name = "turbopuffer" },
 ]
 
 [package.dev-dependencies]
@@ -201,30 +190,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "chromadb", marker = "extra == 'chroma'", specifier = ">=1.0.0" },
     { name = "cloudpickle", specifier = ">=3.0.0" },
-    { name = "datasets", marker = "extra == 'geo3k'", specifier = ">=4.0.0" },
-    { name = "english-words", marker = "extra == 'telestich'" },
     { name = "harbor", marker = "extra == 'harbor'", specifier = ">=0.18.0,<0.19" },
-    { name = "httpx", extras = ["http2"], specifier = ">=0.27.0" },
     { name = "json-repair", specifier = ">=0.59.10" },
-    { name = "keybert", marker = "extra == 'rag'", specifier = ">=0.8" },
-    { name = "langchain-text-splitters", marker = "extra == 'rag'", specifier = ">=0.3.0" },
-    { name = "nest-asyncio", marker = "extra == 'rag'", specifier = ">=1.5.0" },
     { name = "openai", specifier = ">=2.15.0" },
-    { name = "pinecone", marker = "extra == 'pinecone'", specifier = ">=5.0.0" },
-    { name = "pronouncing", marker = "extra == 'telestich'" },
-    { name = "pydantic", marker = "extra == 'rag'", specifier = ">=2.0.0" },
-    { name = "ruamel-yaml", marker = "extra == 'rag'", specifier = ">=0.19.1" },
-    { name = "scikit-learn", marker = "extra == 'rag'", specifier = ">=1.8.0" },
-    { name = "sentence-transformers", marker = "extra == 'rag'", specifier = ">=5.2.3" },
-    { name = "snowballstemmer", marker = "extra == 'chroma'", specifier = ">=2.2.0" },
-    { name = "tqdm", marker = "extra == 'rag'", specifier = ">=4.66.0" },
-    { name = "tqdm", marker = "extra == 'traces'", specifier = ">=4.66.0" },
-    { name = "turbopuffer", marker = "extra == 'turbopuffer'", specifier = ">=1.16.2" },
-    { name = "wordfreq", marker = "extra == 'telestich'" },
 ]
-provides-extras = ["harbor", "geo3k", "telestich", "rag", "traces", "chroma", "pinecone", "turbopuffer"]
+provides-extras = ["harbor"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -232,6 +203,232 @@ dev = [
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "pytest-asyncio", specifier = ">=1.2.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
+[[package]]
+name = "benchmax-example-aime"
+version = "0.1.0"
+source = { editable = "examples/aime" }
+dependencies = [
+    { name = "benchmax", extra = ["harbor"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "benchmax", extras = ["harbor"], editable = "packages/benchmax" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
+[[package]]
+name = "benchmax-example-geo3k"
+version = "0.1.0"
+source = { editable = "examples/geo3k" }
+dependencies = [
+    { name = "benchmax" },
+    { name = "datasets" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "benchmax", editable = "packages/benchmax" },
+    { name = "datasets", specifier = ">=4.0.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
+[[package]]
+name = "benchmax-example-harvey"
+version = "0.1.0"
+source = { editable = "examples/harvey" }
+dependencies = [
+    { name = "benchmax", extra = ["harbor"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "benchmax", extras = ["harbor"], editable = "packages/benchmax" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
+[[package]]
+name = "benchmax-example-math"
+version = "0.1.0"
+source = { editable = "examples/math" }
+dependencies = [
+    { name = "benchmax" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "benchmax", editable = "packages/benchmax" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
+[[package]]
+name = "benchmax-example-postgres-search"
+version = "0.1.0"
+source = { editable = "examples/postgres-search" }
+dependencies = [
+    { name = "benchmax" },
+    { name = "castform", extra = ["rag"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "benchmax", editable = "packages/benchmax" },
+    { name = "castform", extras = ["rag"], editable = "packages/castform" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
+[[package]]
+name = "benchmax-example-qwen3-ocr"
+version = "0.1.0"
+source = { editable = "examples/qwen3-ocr" }
+dependencies = [
+    { name = "benchmax" },
+    { name = "datasets" },
+    { name = "scipy" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "benchmax", editable = "packages/benchmax" },
+    { name = "datasets", specifier = ">=4.0.0" },
+    { name = "scipy", specifier = ">=1.16.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
+[[package]]
+name = "benchmax-example-sft-demonstration"
+version = "0.1.0"
+source = { editable = "examples/sft-demonstration" }
+dependencies = [
+    { name = "benchmax" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "benchmax", editable = "packages/benchmax" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
+[[package]]
+name = "benchmax-example-telestich"
+version = "0.1.0"
+source = { editable = "examples/telestich" }
+dependencies = [
+    { name = "benchmax" },
+    { name = "castform" },
+    { name = "english-words" },
+    { name = "openai" },
+    { name = "pronouncing" },
+    { name = "wordfreq" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "benchmax", editable = "packages/benchmax" },
+    { name = "castform", editable = "packages/castform" },
+    { name = "english-words" },
+    { name = "openai" },
+    { name = "pronouncing" },
+    { name = "wordfreq" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
     { name = "ruff", specifier = ">=0.14.2" },
 ]
 
@@ -247,6 +444,78 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/78/e0/df5e171f685f82f37b12e1f208064e24244911079d7b767447d1af7e0d70/build-1.5.0.tar.gz", hash = "sha256:302c22c3ba2a0fd5f3911918651341ebb3896176cbdec15bd421f80b1afc7647", size = 89796, upload-time = "2026-04-30T03:18:25.17Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0d/fe/6bea5c9162869c5beba5d9c8abbed835ec85bf1ec1fba05a3822325c45f3/build-1.5.0-py3-none-any.whl", hash = "sha256:13f3eecb844759ab66efec90ca17639bbf14dc06cb2fdf37a9010322d9c50a6f", size = 26018, upload-time = "2026-04-30T03:18:23.644Z" },
+]
+
+[[package]]
+name = "castform"
+version = "0.1.2.dev36"
+source = { editable = "packages/castform" }
+dependencies = [
+    { name = "benchmax" },
+    { name = "httpx", extra = ["http2"] },
+]
+
+[package.optional-dependencies]
+chroma = [
+    { name = "chromadb" },
+    { name = "snowballstemmer" },
+]
+pinecone = [
+    { name = "pinecone" },
+]
+rag = [
+    { name = "keybert" },
+    { name = "langchain-text-splitters" },
+    { name = "nest-asyncio" },
+    { name = "openai" },
+    { name = "pydantic" },
+    { name = "ruamel-yaml" },
+    { name = "scikit-learn" },
+    { name = "sentence-transformers" },
+    { name = "tqdm" },
+]
+traces = [
+    { name = "tqdm" },
+]
+turbopuffer = [
+    { name = "turbopuffer" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "python-dotenv" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "benchmax", editable = "packages/benchmax" },
+    { name = "chromadb", marker = "extra == 'chroma'", specifier = ">=1.0.0" },
+    { name = "httpx", extras = ["http2"], specifier = ">=0.27.0" },
+    { name = "keybert", marker = "extra == 'rag'", specifier = ">=0.8" },
+    { name = "langchain-text-splitters", marker = "extra == 'rag'", specifier = ">=0.3.0" },
+    { name = "nest-asyncio", marker = "extra == 'rag'", specifier = ">=1.5.0" },
+    { name = "openai", marker = "extra == 'rag'", specifier = ">=2.15.0" },
+    { name = "pinecone", marker = "extra == 'pinecone'", specifier = ">=5.0.0" },
+    { name = "pydantic", marker = "extra == 'rag'", specifier = ">=2.0.0" },
+    { name = "ruamel-yaml", marker = "extra == 'rag'", specifier = ">=0.19.1" },
+    { name = "scikit-learn", marker = "extra == 'rag'", specifier = ">=1.8.0" },
+    { name = "sentence-transformers", marker = "extra == 'rag'", specifier = ">=5.2.3" },
+    { name = "snowballstemmer", marker = "extra == 'chroma'", specifier = ">=2.2.0" },
+    { name = "tqdm", marker = "extra == 'rag'", specifier = ">=4.66.0" },
+    { name = "tqdm", marker = "extra == 'traces'", specifier = ">=4.66.0" },
+    { name = "turbopuffer", marker = "extra == 'turbopuffer'", specifier = ">=1.16.2" },
+]
+provides-extras = ["rag", "traces", "chroma", "pinecone", "turbopuffer"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "ruff", specifier = ">=0.14.2" },
 ]
 
 [[package]]

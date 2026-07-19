@@ -1,0 +1,19 @@
+[project]
+name = "benchmax-example-aime"
+version = "0.1.0"
+description = "AIME Harbor environment with an offline-installed Mini-SWE agent"
+requires-python = "==3.12.*"
+dependencies = ["benchmax[harbor]"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["aime_agent", "aime_env"]
+
+[tool.uv.sources]
+benchmax = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=8.4.2", "pytest-asyncio>=1.2.0", "ruff>=0.14.2"]

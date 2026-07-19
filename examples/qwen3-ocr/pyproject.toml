@@ -1,0 +1,19 @@
+[project]
+name = "benchmax-example-qwen3-ocr"
+version = "0.1.0"
+description = "Qwen3 OCR environment for Benchmax"
+requires-python = "==3.12.*"
+dependencies = ["benchmax", "datasets>=4.0.0", "scipy>=1.16.0"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["qwen3_ocr_env", "qwen3_ocr_reward"]
+
+[tool.uv.sources]
+benchmax = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=8.4.2", "pytest-asyncio>=1.2.0", "ruff>=0.14.2"]
