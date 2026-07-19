@@ -1,24 +1,27 @@
-"""Tests for diversity reward wired into an actual env.
+"""Tests for diversity reward wired into an actual environment.
 
-Verifies pickle round-trip and compute_group_reward with realistic
-messages/tasks. Uses ngram clustering to avoid LLM calls.
+Verifies pickle round-trip and ``compute_group_rewards`` with realistic
+rollouts. Uses ngram clustering to avoid LLM calls.
 """
 
 from __future__ import annotations
 
 import pickle
 from pathlib import Path
-from typing import Any, Dict, List
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import cloudpickle
 import pytest
 
 from benchmax.envs import (
     BaseEnv,
+    BaseRollout,
     Example,
     JsonRow,
     JsonlDataset,
     Messages,
+    RewardMap,
     Tool,
     canonical_example_id,
 )
@@ -26,7 +29,7 @@ from benchmax.rewards.diversity import DiversityConfig, scale_by_diversity
 
 
 # ---------------------------------------------------------------------------
-# Toy env that uses diversity in compute_group_reward
+# Toy env that uses diversity in compute_group_rewards
 # ---------------------------------------------------------------------------
 
 _DIVERSITY_CFG = DiversityConfig(method="ngram", ngram_n=3, similarity_threshold=0.5)
@@ -69,38 +72,27 @@ class _DiversityEnv(BaseEnv):
 
     async def compute_reward(
         self,
-        rollout_id: str,
-        messages: Messages,
-        example_args: Dict[str, Any],
-        *,
-        termination_reason: str,
-    ) -> Dict[str, float]:
+        rollout: BaseRollout,
+    ) -> RewardMap:
         return {"quality": 1.0}
 
-    async def compute_group_reward(
+    async def compute_group_rewards(
         self,
-        rollout_ids: List[str],
-        messages_list: List[Messages],
-        example_args_list: List[Dict[str, Any]],
-        termination_reasons: List[str],
-    ) -> List[Dict[str, float]]:
-        raw_rewards = []
-        for rid, msgs, example_args, reason in zip(
-            rollout_ids, messages_list, example_args_list, termination_reasons
-        ):
-            r = await self.compute_reward(
-                rid,
-                msgs,
-                example_args,
-                termination_reason=reason,
-            )
-            raw_rewards.append(r)
-        texts = [msgs[-1]["content"] if msgs else "" for msgs in messages_list]
-        context = example_args_list[0].get("behavior", "") if example_args_list else ""
+        rollouts: Sequence[BaseRollout],
+    ) -> Mapping[str, RewardMap]:
+        raw_rewards = [await self.compute_reward(rollout) for rollout in rollouts]
+        texts = [
+            rollout.messages[-1]["content"] if rollout.messages else ""
+            for rollout in rollouts
+        ]
+        context = rollouts[0].example_args.get("behavior", "") if rollouts else ""
         scaled, _ = await scale_by_diversity(
             raw_rewards, texts, _DIVERSITY_CFG, context=context
         )
-        return scaled
+        return {
+            rollout.rollout_id: reward
+            for rollout, reward in zip(rollouts, scaled, strict=True)
+        }
 
 
 def _make_messages(assistant_content: str) -> Messages:
@@ -111,8 +103,29 @@ def _make_messages(assistant_content: str) -> Messages:
     ]
 
 
-def _make_task(behavior: str = "test behavior") -> Dict[str, Any]:
+def _make_task(behavior: str = "test behavior") -> dict[str, Any]:
     return {"behavior": behavior, "ground_truth": "expected answer"}
+
+
+def _make_rollouts(
+    rollout_ids: Sequence[str],
+    messages_list: Sequence[Messages],
+    example_args_list: Sequence[Mapping[str, Any]],
+) -> list[BaseRollout]:
+    return [
+        BaseRollout(
+            rollout_id=rollout_id,
+            termination_reason="finished",
+            messages=messages,
+            example_args=example_args,
+        )
+        for rollout_id, messages, example_args in zip(
+            rollout_ids,
+            messages_list,
+            example_args_list,
+            strict=True,
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +134,7 @@ def _make_task(behavior: str = "test behavior") -> Dict[str, Any]:
 
 
 class TestEnvIntegrated:
-    """compute_group_reward with realistic messages_list and tasks."""
+    """``compute_group_rewards`` with realistic sibling rollouts."""
 
     @pytest.mark.asyncio
     async def test_duplicate_strategies_scaled_down(self):
@@ -134,18 +147,18 @@ class TestEnvIntegrated:
         ]
         tasks = [_make_task(), _make_task(), _make_task()]
 
-        rewards = await env.compute_group_reward(
-            rollout_ids, messages_list, tasks, ["finished"] * len(rollout_ids)
+        rewards = await env.compute_group_rewards(
+            _make_rollouts(rollout_ids, messages_list, tasks)
         )
 
         assert len(rewards) == 3
         # All are dicts with "quality"
-        for r in rewards:
-            assert "quality" in r
+        for reward in rewards.values():
+            assert "quality" in reward
         # First two duplicate → halved; third unique → full
-        assert rewards[0]["quality"] == pytest.approx(0.5)
-        assert rewards[1]["quality"] == pytest.approx(0.5)
-        assert rewards[2]["quality"] == pytest.approx(1.0)
+        assert rewards["r1"]["quality"] == pytest.approx(0.5)
+        assert rewards["r2"]["quality"] == pytest.approx(0.5)
+        assert rewards["r3"]["quality"] == pytest.approx(1.0)
 
     @pytest.mark.asyncio
     async def test_all_unique_strategies_full_reward(self):
@@ -158,25 +171,26 @@ class TestEnvIntegrated:
         ]
         tasks = [_make_task(), _make_task(), _make_task()]
 
-        rewards = await env.compute_group_reward(
-            rollout_ids, messages_list, tasks, ["finished"] * len(rollout_ids)
+        rewards = await env.compute_group_rewards(
+            _make_rollouts(rollout_ids, messages_list, tasks)
         )
 
         # All unique → all get full reward
-        for r in rewards:
-            assert r["quality"] == pytest.approx(1.0)
+        for reward in rewards.values():
+            assert reward["quality"] == pytest.approx(1.0)
 
     @pytest.mark.asyncio
     async def test_single_rollout_no_scaling(self):
         env = _DiversityEnv()
-        rewards = await env.compute_group_reward(
-            ["r1"],
-            [_make_messages("solo strategy")],
-            [_make_task()],
-            ["finished"],
+        rewards = await env.compute_group_rewards(
+            _make_rollouts(
+                ["r1"],
+                [_make_messages("solo strategy")],
+                [_make_task()],
+            )
         )
         assert len(rewards) == 1
-        assert rewards[0]["quality"] == pytest.approx(1.0)
+        assert rewards["r1"]["quality"] == pytest.approx(1.0)
 
 
 class TestPickleRoundTripEnv:
@@ -188,7 +202,7 @@ class TestPickleRoundTripEnv:
         assert env.system_prompt == "You are a helpful assistant."
 
     @pytest.mark.asyncio
-    async def test_pickled_env_compute_group_reward_works(self):
+    async def test_pickled_env_compute_group_rewards_works(self):
         restored_cls = pickle.loads(cloudpickle.dumps(_DiversityEnv))
         env = restored_cls()
         rollout_ids = ["r1", "r2"]
@@ -198,14 +212,14 @@ class TestPickleRoundTripEnv:
         ]
         tasks = [_make_task(), _make_task()]
 
-        rewards = await env.compute_group_reward(
-            rollout_ids, messages_list, tasks, ["finished"] * len(rollout_ids)
+        rewards = await env.compute_group_rewards(
+            _make_rollouts(rollout_ids, messages_list, tasks)
         )
 
         assert len(rewards) == 2
         # Duplicates → halved
-        assert rewards[0]["quality"] == pytest.approx(0.5)
-        assert rewards[1]["quality"] == pytest.approx(0.5)
+        assert rewards["r1"]["quality"] == pytest.approx(0.5)
+        assert rewards["r2"]["quality"] == pytest.approx(0.5)
 
     def test_diversity_config_pickles_with_all_fields(self):
         config = DiversityConfig(

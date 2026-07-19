@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from benchmax.envs import BaseRollout
 from qwen3_ocr_env import Qwen3OCREnv
 from qwen3_ocr_env import OCR_PROMPT_TEMPLATE
 from qwen3_ocr_reward import infinity_doc_reward, segments
@@ -100,10 +101,12 @@ def test_env_compute_reward_and_lifecycle() -> None:
 
     async def _run() -> None:
         reward = await env.compute_reward(
-            "rid",
-            [{"role": "assistant", "content": "Hello"}],
-            {"answer": "Hello"},
-            termination_reason="finished",
+            BaseRollout(
+                rollout_id="rid",
+                termination_reason="finished",
+                messages=[{"role": "assistant", "content": "Hello"}],
+                example_args={"answer": "Hello"},
+            )
         )
         assert "answer_correct" in reward
         assert reward["answer_correct"] >= 1.0

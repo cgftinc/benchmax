@@ -23,12 +23,13 @@ import asyncio
 import logging
 import math
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from benchmax.envs import (
     BaseEnv,
+    BaseRollout,
     DatasetSplit,
     Example,
     InjectedAuth,
@@ -535,11 +536,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
 
     async def compute_reward(
         self,
-        rollout_id: str,
-        messages: Messages,
-        example_args: Mapping[str, Any],
-        *,
-        termination_reason: str,
+        rollout: BaseRollout,
     ) -> dict[str, float]:
         """The audited 4-component reward.
 
@@ -549,11 +546,11 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         a gold source is rewarded even when the answer is wrong.
         """
         # No committed answer is a valid terminal attempt with zero reward.
-        answer = _extract_answer_block(extract_completion_text(messages))
+        answer = _extract_answer_block(extract_completion_text(rollout.messages))
         if not answer.strip():
             return dict(self._ZERO_REWARDS)
 
-        t = example_args
+        t = rollout.example_args
         prompt = str(t.get("question") or t.get("prompt") or "")
         gt_str = str(t.get("ground_truth") or "")
         reference_chunks = t.get("reference_chunks", [])

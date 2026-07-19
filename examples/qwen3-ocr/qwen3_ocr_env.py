@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from benchmax.envs import (
     BaseEnv,
+    BaseRollout,
     DatasetSplit,
     Example,
     JsonRow,
     JsonlDataset,
-    Messages,
     Tool,
     canonical_example_id,
 )
@@ -247,11 +247,11 @@ class Qwen3OCREnv(BaseEnv):
 
     async def compute_reward(
         self,
-        rollout_id: str,
-        messages: Messages,
-        example_args: Mapping[str, Any],
-        *,
-        termination_reason: str,
+        rollout: BaseRollout,
     ) -> dict[str, float]:
-        del rollout_id, termination_reason
-        return {"answer_correct": infinity_doc_reward(messages, example_args)}
+        return {
+            "answer_correct": infinity_doc_reward(
+                rollout.messages,
+                rollout.example_args,
+            )
+        }

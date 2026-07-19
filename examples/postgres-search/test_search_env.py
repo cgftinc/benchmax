@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import cloudpickle
 import pytest
 
-from benchmax.envs import StaticBearerAuth
+from benchmax.envs import BaseRollout, StaticBearerAuth
 from castform.rag.corpus.search_client import SearchClient
 from postgres_search_env import SearchEnv, _extract_answer_block
 
@@ -235,12 +235,15 @@ def _msgs(content):
     return [{"role": "assistant", "content": content}]
 
 
-async def _compute_reward(env, *args, **kwargs):
+async def _compute_reward(env, rollout_id, messages, example_args):
     return await type(env).compute_reward(
         env,
-        *args,
-        termination_reason="finished",
-        **kwargs,
+        BaseRollout(
+            rollout_id=rollout_id,
+            termination_reason="finished",
+            messages=messages,
+            example_args=example_args,
+        ),
     )
 
 

@@ -1,6 +1,4 @@
-"""
-Shared fixtures
-"""
+"""Shared Castform test fixtures."""
 
 import importlib.util
 import os
@@ -25,10 +23,6 @@ _HAS_RAG_EXTRA = all(
     )
 )
 _HAS_CHROMA_EXTRA = _has_module("chromadb")
-_HAS_TELESTICH_EXTRA = all(
-    _has_module(name) for name in ("english_words", "pronouncing", "wordfreq")
-)
-
 _RAG_EXTRA_TESTS = {
     Path("tests/unit/rag/qa_generation"),
     Path("tests/unit/rag/test_auto_tune.py"),
@@ -50,9 +44,6 @@ _RAG_EXTRA_TESTS = {
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
     rel = Path(collection_path).relative_to(Path(__file__).parent.parent)
-    if not _HAS_TELESTICH_EXTRA and rel.parts[:3] == ("tests", "unit", "envs"):
-        if len(rel.parts) > 3 and rel.parts[3] == "telestich":
-            return True
     if not _HAS_RAG_EXTRA:
         for path in _RAG_EXTRA_TESTS:
             if rel == path or path in rel.parents:

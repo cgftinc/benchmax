@@ -1,3 +1,7 @@
+<picture>
+  <img alt="BenchMax" src="./static/benchmax.png" width="100%">
+</picture>
+
 # BenchMax
 
 BenchMax is the platform-independent runtime for defining and executing grouped

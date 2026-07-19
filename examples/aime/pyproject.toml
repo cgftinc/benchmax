@@ -3,14 +3,27 @@ name = "benchmax-example-aime"
 version = "0.1.0"
 description = "AIME Harbor environment with an offline-installed Mini-SWE agent"
 requires-python = "==3.12.*"
-dependencies = ["benchmax[harbor]"]
+dependencies = [
+    "benchmax",
+    "harbor>=0.18.0,<0.19",
+    "mini-swe-agent==2.4.5",
+    "numpy",
+    "pydantic",
+    "pyyaml",
+]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["aime_agent", "aime_env"]
+py-modules = [
+    "aime_agent",
+    "aime_env",
+    "castform_model",
+    "mini_swe_probe",
+    "run_mini_castform",
+]
 
 [tool.uv.sources]
 benchmax = { workspace = true }

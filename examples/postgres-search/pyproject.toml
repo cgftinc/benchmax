@@ -17,4 +17,9 @@ benchmax = { workspace = true }
 castform = { workspace = true }
 
 [dependency-groups]
-dev = ["pytest>=8.4.2", "pytest-asyncio>=1.2.0", "ruff>=0.14.2"]
+dev = [
+    "cloudpickle>=3.0.0",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "ruff>=0.14.2",
+]

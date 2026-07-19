@@ -14,17 +14,19 @@ Usage::
 
     from benchmax.rewards.diversity import DiversityConfig, scale_by_diversity
 
-    async def compute_group_reward(self, rollout_ids, messages_list, tasks, **kwargs):
-        raw_rewards = [self.compute_reward(rid, m, t) for rid, m, t in
-                       zip(rollout_ids, messages_list, tasks)]
-        texts = [m[-1]["content"] for m in messages_list]  # or extract strategy
+    async def compute_group_rewards(self, rollouts):
+        raw_rewards = [await self.compute_reward(rollout) for rollout in rollouts]
+        texts = [rollout.messages[-1]["content"] for rollout in rollouts]
         scaled, cluster_info = await scale_by_diversity(
             rewards=raw_rewards,
             texts=texts,
             config=DiversityConfig(method="llm", model="...", base_url="..."),
-            context=tasks[0].get("behavior", "") if tasks[0] else "",
+            context=rollouts[0].example_args.get("behavior", ""),
         )
-        return scaled
+        return {
+            rollout.rollout_id: reward
+            for rollout, reward in zip(rollouts, scaled, strict=True)
+        }
 """
 
 from __future__ import annotations
