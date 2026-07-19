@@ -29,7 +29,6 @@ from .protocols import (
     LLMSupportedGenerator,
     QuestionGenerator,
 )
-from .search_agent_linker import SearchAgentLinker
 
 __all__ = [
     "BatchResponse",
@@ -52,7 +51,6 @@ __all__ = [
     "LLMBasedFilter",
     "Formatter",
     "DirectLLMGenerator",
-    "SearchAgentLinker",
     "DeterministicGuardsFilter",
     "RetrievalLLMFilter",
     "GroundingLLMFilter",

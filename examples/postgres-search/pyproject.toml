@@ -10,7 +10,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["postgres_linker_env", "postgres_search_env"]
+py-modules = ["postgres_search_env"]
 
 [tool.uv.sources]
 benchmax = { workspace = true }

@@ -77,7 +77,7 @@ from castform.rag.qa_generation.scoring import (
 from castform.rag.qa_generation.transformers import BaseQuestionTransformer
 from castform.rag.qa_generation.transformers.dedup import IncrementalDeduplicator
 from castform.platform.client import RolloutClient
-from castform.platform.credentials import resolve_judge_key, resolve_token_provider
+from castform.platform.credentials import resolve_judge_key
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +218,7 @@ def _build_linker(
     profile: CorpusProfile | None = None,
     wiki_index: Any = None,
 ) -> ChunkLinker:
-    if cfg.linker.type not in ("metadata", "search_agent", "wiki"):
+    if cfg.linker.type not in ("metadata", "wiki"):
         logger.warning(
             "Unknown linker type '%s'; falling back to 'metadata'.",
             cfg.linker.type,
@@ -250,33 +250,6 @@ def _build_linker(
                 min_chunk_chars=mcfg.min_chunk_chars,
                 max_primary_similarity=mcfg.max_primary_similarity,
             ),
-        )
-
-    if cfg.linker.type == "search_agent":
-        from castform.rag.corpus.postgres.search import PostgresSearch
-        from castform.rag.qa_generation.search_agent_linker import SearchAgentLinker
-
-        metadata_linker = _build_metadata_linker(
-            cfg, source, profile, wiki_index=wiki_index
-        )
-        search_client = PostgresSearch(
-            corpus_name=cfg.corpus.corpus_name,
-            base_url=cfg.platform.base_url,
-            corpus_id=cfg.corpus.corpus_id or None,
-            # Explicit key wins; empty → the credential seam (cached session).
-            token_provider=resolve_token_provider(cfg.platform.api_key),
-        )
-        llm_cfg = cfg.generation.llm_direct
-        return SearchAgentLinker(
-            metadata_linker=metadata_linker,
-            source=source,
-            cfg=cfg.linker.search_agent,
-            search_agent_pct=cfg.linker.search_agent_pct,
-            rollout_client=_build_rollout_client(cfg),
-            search_client=search_client,
-            llm_model=llm_cfg.model,
-            llm_base_url=llm_cfg.base_url,
-            llm_api_key=llm_cfg.api_key,
         )
 
     return _build_metadata_linker(cfg, source, profile, wiki_index=wiki_index)

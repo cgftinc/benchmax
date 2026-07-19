@@ -279,25 +279,11 @@ class MetadataLinkerCfg:
 
 
 @dataclass
-class SearchAgentLinkerCfg:
-    """Config for ``SearchAgentLinker`` (rollout-based)."""
-
-    max_turns: int = 4
-    max_tool_calls: int = 4
-    max_completion_tokens: int = 3072
-    fallback_to_metadata: bool = True
-    auto_scale_turns: bool = True
-    env_bundle: EnvBundleConfig = field(default_factory=EnvBundleConfig)
-
-
-@dataclass
 class LinkerConfig:
     """Chunk-linking mode selection."""
 
     type: str = "metadata"
     metadata: MetadataLinkerCfg = field(default_factory=MetadataLinkerCfg)
-    search_agent: SearchAgentLinkerCfg = field(default_factory=SearchAgentLinkerCfg)
-    search_agent_pct: float = 0.0
 
 
 @dataclass
