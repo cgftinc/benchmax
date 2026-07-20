@@ -167,7 +167,9 @@ def _read_training_mode(module: ModuleType) -> Literal["rl", "sft"]:
     value = getattr(module, "TRAINING_MODE", _MISSING)
     if value is _MISSING:
         return "rl"
-    if isinstance(value, str) and value in TRAINING_MODES:
+    # exact str, not a subclass -- a str subclass could be unhashable and crash
+    # the frozenset membership check below instead of hitting ProjectError
+    if type(value) is str and value in TRAINING_MODES:
         return value
     raise ProjectError(
         f"invalid TRAINING_MODE {value!r} in main.py; must be one of "

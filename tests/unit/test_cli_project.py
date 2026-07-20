@@ -163,6 +163,27 @@ def test_training_mode_unhashable_dict_raises_project_error_not_type_error(tmp_p
     assert "invalid TRAINING_MODE" in str(exc_info.value)
 
 
+def test_training_mode_unhashable_str_subclass_raises_project_error_not_type_error(
+    tmp_path,
+):
+    """A str SUBCLASS instance (even one spelling "sft") must still raise
+    ProjectError, not TypeError, when it's unhashable -- an exact-str check is
+    required, not isinstance, since the frozenset `in` check below would
+    otherwise try to hash it."""
+    from benchmax.cli._project import ProjectError, load_project
+
+    main_body = (
+        "class BadMode(str):\n"
+        "    __hash__ = None\n\n"
+        'TRAINING_MODE = BadMode("sft")\n\n' + _NO_ENV_MAIN
+    )
+    (tmp_path / "main.py").write_text(main_body)
+    (tmp_path / "train_dataset.jsonl").write_text('{"prompt": "q"}\n')
+    with pytest.raises(ProjectError) as exc_info:
+        load_project(directory=str(tmp_path))
+    assert "invalid TRAINING_MODE" in str(exc_info.value)
+
+
 def test_sft_marker_skips_env_discovery(tmp_path):
     from benchmax.cli._project import load_project
 
