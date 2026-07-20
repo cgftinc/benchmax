@@ -22,11 +22,7 @@ _SEEDS = {
     "rag": _SCAFFOLD_DIR / "rag_main.py",
     "sft": _SCAFFOLD_DIR / "sft_main.py",
 }
-# RL seeds share the env-class runner surface (discover_env_class, validate_env,
-# upload_training_run, TrainerClient.launch_training_run); sft is env-less and uses
-# a different SDK surface (load_sft_dataset/validate_sft_dataset, upload_sft_run,
-# TrainerClient.launch_sft_run) — mode discrimination follows the same
-# `TRAINING_MODE` marker slice 5 wired into `cli._project`, not a parallel list.
+# sft is env-less with a different SDK surface than generic/rag — see mod/rl_mod/sft_mod below.
 _RL_SEEDS = ("generic", "rag")
 
 

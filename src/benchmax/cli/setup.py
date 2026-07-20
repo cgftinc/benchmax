@@ -345,7 +345,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--template",
         choices=["generic", "rag", "sft"],
         default="generic",
-        help="Env seed: 'generic' = a minimal single-turn env, 'rag' = a SearchEnv, "
+        help="env seed: 'generic' = a minimal single-turn env, 'rag' = a SearchEnv, "
         "'sft' = an env-less supervised fine-tuning dataset (all three ship a "
         "runnable main.py + tiny datasets; default: generic)",
     )

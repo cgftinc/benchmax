@@ -40,8 +40,7 @@ from benchmax.platform.login import ensure_session
 from benchmax.platform.training_run import upload_sft_run
 from benchmax.sft import SftValidationReport, load_sft_dataset, validate_sft_dataset
 
-# The explicit mode marker (see the module docstring) — read on its own by
-# `cli._project.load_project`, before any BaseEnv discovery is attempted.
+# Explicit mode marker; read before BaseEnv discovery (see cli._project.load_project).
 TRAINING_MODE = "sft"
 
 
@@ -59,26 +58,11 @@ LAUNCH_CONFIG = {
     # "type": "simple",  # GPU pool (gpu4 for 4B / gpu8 for 35B); "simple-cpu" = smoke
 }
 
-# LAUNCH_CONFIG keys resolved locally, never forwarded as a launcher arg: `name` is
-# the run name (see `_run_name`); `type` is not a wire arg; `allow_experimental_weights`
-# is the client-side weight gate override and must never reach the server as an
-# unknown launch arg.
+# Resolved locally; never forwarded to the server as a launch arg.
 _LAUNCH_CONFIG_RESERVED = frozenset({"type", "name", "allow_experimental_weights"})
 
 
-# ── Runnable entrypoint ──────────────────────────────────────────────────────
-# `python main.py [data|validate|launch|all]` drives the whole loop SDK-directly —
-# no CLI needed, and this file stays the reproducible record of the run. Stages are
-# isolable and skip work whose output already exists (`--force` to redo):
-#
-#   python main.py data       generate/refresh the datasets (skip if present)
-#   python main.py validate   validate the dataset locally (no GPU, no rollouts)
-#   python main.py launch     validate-gate, then train on GPUs (spends credits)
-#   python main.py  (or all)  data → validate, then STOP (never auto-launches)
-#
-# Import-safe: this block runs ONLY under `python main.py`. When the castform CLI
-# imports this file it execs under the "main" stem, not "__main__", so nothing here
-# fires — `castform validate` / `launch` reuse the SAME SDK calls, no drift.
+# ── Runnable entrypoint (see the module docstring + main()'s argparse help) ──
 
 TRAIN_FILE = "train_dataset.jsonl"
 EVAL_FILE = "eval_dataset.jsonl"
@@ -90,9 +74,7 @@ _TINY_PNG_DATA_URI = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP4z8AAAAMBAQD3A0FDAAAAAElFTkSuQmCC"
 )
 
-# The tiny seed dataset — synthetic, reproducible, text-only. `castform setup` also
-# commits these as train_dataset.jsonl / eval_dataset.jsonl so validate runs on day
-# one; regenerate them any time with `python main.py data --force`.
+# Tiny synthetic seed, text-only; regenerate with `python main.py data --force`.
 _SEED_TRAIN = [
     {
         "messages": [
@@ -128,11 +110,11 @@ _SEED_EVAL = [
     },
 ]
 
-# Opt-in multimodal demonstration — NOT written by `generate_data()` by default (see
-# below). Enable it only when training against a VISION base model: append it to
-# `_SEED_TRAIN` (e.g. `_SEED_TRAIN + [_SEED_MULTIMODAL]`) before calling
-# `generate_data(force=True)`. Enabling it for a text-only base model is undefined
-# trainer behavior.
+# Opt-in multimodal demonstration — NOT written by `generate_data()` by default.
+# Enable it only against a VISION base model (undefined trainer behavior otherwise)
+# by changing `generate_data()`'s `_write_jsonl(TRAIN_FILE, _SEED_TRAIN)` call below
+# to `_write_jsonl(TRAIN_FILE, _SEED_TRAIN + [_SEED_MULTIMODAL])`, then re-run with
+# `python main.py data --force`.
 _SEED_MULTIMODAL = {
     "messages": [
         {
@@ -198,7 +180,7 @@ def _print_scorecard(report: SftValidationReport) -> None:
         )
         symbol = "✗" if issue.severity == "error" else "⚠"
         print(f"  {symbol} {loc}  {issue.message}")
-    print(f"validate: {'PASS' if report.ok else 'FAIL'}")
+    print(f"validate: {'pass' if report.ok else 'fail'}")
 
 
 def validate() -> SftValidationReport:
@@ -221,33 +203,30 @@ def launch(assume_yes: bool = False) -> str | None:
     report = validate()  # cheap pre-flight — never spend GPU on a broken dataset
     if report is None or not report.ok:
         print(
-            "launch: validate gate FAILED — fix the dataset before launching.",
+            "launch: validate gate failed — fix the dataset before launching.",
             file=sys.stderr,
         )
         return None
 
-    # Weight gate: a dataset using per-message `weight` (masking) is launch-blocking
-    # until trainer support is confirmed — a separate capability from
-    # SFT_LAUNCH_SUPPORTED below; the validate notice alone does not clear it.
+    # Weight gate: a separate capability from SFT_LAUNCH_SUPPORTED below — the
+    # validate notice alone does not clear it.
     if report.masking_summary.rows_with_weight and not LAUNCH_CONFIG.get(
         "allow_experimental_weights", False
     ):
         print(
             "launch: dataset uses per-message 'weight' (masking) — trainer support "
-            "is unconfirmed. Set allow_experimental_weights=True in LAUNCH_CONFIG to "
+            "is unconfirmed. set allow_experimental_weights=True in LAUNCH_CONFIG to "
             "launch anyway.",
             file=sys.stderr,
         )
         return None
 
-    # LAUNCH_CONFIG feeds the launcher, minus the reserved/local-only keys. The
-    # server rejects any unknown key.
+    # Minus the reserved/local-only keys — the server rejects any unknown key.
     launcher_args = {
         k: v for k, v in LAUNCH_CONFIG.items() if k not in _LAUNCH_CONFIG_RESERVED
     }
 
-    # Guard before upload: no orphaned storage artifacts behind an API that cannot
-    # succeed yet (see SFT_LAUNCH_SUPPORTED's docstring).
+    # Guard before upload — avoids orphaned storage behind an API that can't succeed yet.
     if not SFT_LAUNCH_SUPPORTED:
         print(
             "launch: the platform does not accept env-less sft runs yet "
@@ -259,7 +238,7 @@ def launch(assume_yes: bool = False) -> str | None:
     if not assume_yes:
         reply = (
             input(
-                f"Launch '{_run_name()}' on GPUs — this spends credits. Continue? [y/N] "
+                f"launch '{_run_name()}' on GPUs — this spends credits. continue? [y/N] "
             )
             .strip()
             .lower()
@@ -286,23 +265,23 @@ def launch(assume_yes: bool = False) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="Run the castform loop for this sft dataset: data → validate → launch.",
+        description="run the castform loop for this sft dataset: data → validate → launch.",
     )
     parser.add_argument(
         "stage",
         nargs="?",
         default="all",
         choices=["data", "validate", "launch", "all"],
-        help="Stage to run (default: all = data → validate, then STOP).",
+        help="stage to run (default: all = data → validate, then STOP).",
     )
     parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
+        "--force", action="store_true", help="regenerate datasets even if present."
     )
     parser.add_argument(
         "-y",
         "--yes",
         action="store_true",
-        help="Skip the launch confirmation (it spends GPU credits).",
+        help="skip the launch confirmation (it spends GPU credits).",
     )
     args = parser.parse_args(argv)
 
@@ -316,8 +295,6 @@ def main(argv: list[str] | None = None) -> int:
         ok = report is not None and report.ok  # non-zero exit on a failed validate
     if args.stage == "launch":
         ok = launch(assume_yes=args.yes) is not None  # None = gated / aborted / failed
-    # `all` / bare `python main.py` STOPS after validate — launch is never automatic
-    # (it spends GPU credits); run `python main.py launch` to train.
     return 0 if ok else 1
 
 
