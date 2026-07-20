@@ -9,6 +9,21 @@ Use `BaseEnv` for the standard OpenAI-compatible conversation loop. Implement
 the structural `Environment` protocol directly only when another harness owns
 execution.
 
+## RL env, or no env at all?
+
+Build a `BaseEnv` only when the task needs reward-scored rollouts: the model
+acts (optionally with tools), something scores each attempt, and training
+improves the policy from that reward. If the task is closer to "train the model
+to reproduce these input → output conversations" — supervised fine-tuning (SFT)
+on existing demonstrations, no reward function involved — skip the env
+entirely. Set `TRAINING_MODE = "sft"` at the top of `main.py` instead of
+defining a `BaseEnv` subclass; `castform` reads that marker before it goes
+looking for an env class, and a project can't mix the two (a `TRAINING_MODE =
+"sft"` file with a `BaseEnv` subclass in it is a loud error, not a fallback).
+Scaffold the SFT layout directly with `castform setup --template sft`, then
+follow **generate-data**, **verify-environment**, and **launch-run** for the
+SFT-specific parts of each stage.
+
 ## Required shape
 
 ```python
@@ -126,6 +141,24 @@ async def run_tool(self, rollout_id, tool_name, **tool_args):
 
 Tool results may be strings or JSON-serializable values. A raised exception is
 an infrastructure failure and aborts the attempt.
+
+## Multimodal content (SFT datasets)
+
+A message's `content` does not have to be a plain string. A user message with
+`content: [{"type": "image_url", "image_url": {"url": "data:..."}}, {"type":
+"text", "text": "..."}]` is already legal — this is the **SFT dataset pathway**
+(env-less `TRAINING_MODE = "sft"` rows, see generate-data), where such rows are
+validated as-is and preserved through canonicalization. Read and render that
+content with `benchmax.envs.base.content`: `message_text` for the joined text,
+`content_preview` for a truncated single-line preview, `iter_image_refs` to walk
+image URLs in order, and `image_to_data_uri` to turn a local path or raw bytes
+into a `data:` URI for a row.
+
+This skill and the SFT dataset pathway do not cover RL-side multimodal — a
+`BaseEnv` transporting image content through a rollout, or a `compute_reward`
+reading list-shaped content. That is owned natively by harbor-proper's own
+multimodal environments (e.g. its Geo3K env); do not build a custom multimodal
+`BaseEnv` here — see harbor-proper's own docs for that path.
 
 ## Before launch
 
