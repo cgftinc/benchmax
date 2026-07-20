@@ -193,6 +193,21 @@ class TestWeightErrors:
         row = {"messages": [{"role": "assistant", "content": [{"type": "text", "text": "hi"}]}]}
         assert validate_row(row) == []
 
+    def test_empty_text_part_with_non_canonical_content_key_not_trained(self):
+        # a `content` key on a text part isn't part of the canonical
+        # ChatCompletionContentPartTextParam shape (text-only) — must not be
+        # used as a fallback to smuggle a trained turn past an empty `text`.
+        row = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "", "content": "fallback"}],
+                }
+            ]
+        }
+        errors = validate_row(row)
+        assert any("no trained assistant turn" in e for e in errors)
+
     def test_assistant_with_only_image_part_is_trained(self):
         row = {
             "messages": [

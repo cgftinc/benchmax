@@ -145,7 +145,10 @@ def _part_has_meaningful_content(part: Any) -> bool:
         image_url = part.get("image_url")
         url = image_url.get("url") if isinstance(image_url, dict) else None
         return isinstance(url, str) and (url.startswith("data:") or url.startswith("https:"))
-    text = part.get("text") or part.get("content")
+    # Canonical text parts (openai.types.chat.ChatCompletionContentPartTextParam)
+    # carry only `text` — no `content` fallback here, unlike the deliberately
+    # forgiving benchmax.envs.base.content.message_text display helper.
+    text = part.get("text")
     return isinstance(text, str) and text != ""
 
 

@@ -313,6 +313,22 @@ class TestEmptyTextContentPartFullPipeline:
         report = validate_sft_dataset(train)
         assert report.ok is True
 
+    def test_non_canonical_content_key_fallback_does_not_count_as_trained(self, tmp_path):
+        # a stray `content` key alongside an empty `text` must not smuggle a
+        # trained turn past the empty-text-part rule.
+        text = (
+            '{"messages": [{"role": "assistant", '
+            '"content": [{"type": "text", "text": "", "content": "fallback"}]}]}\n'
+        )
+        path = _write(tmp_path, "train.jsonl", text)
+        train = load_sft_dataset(path)
+        report = validate_sft_dataset(train)
+        assert report.ok is False
+        assert any(
+            i.severity == "error" and "no trained assistant turn" in i.message
+            for i in report.issues
+        )
+
 
 class TestToolCallArgumentsNonFiniteFullPipeline:
     def test_nan_in_tool_call_arguments_produces_error_not_exception(self, tmp_path):
