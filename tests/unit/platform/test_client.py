@@ -1215,3 +1215,87 @@ def test_launch_sft_run_propagates_401_as_authentication_error():
         trainer.launch_sft_run("r", train_dataset_path="a")
 
     assert exc_info.value.status_code == 401
+
+
+def test_launch_sft_run_unsupported_message_is_lowercase_display_copy():
+    """Regression: user-facing display copy stays lowercase (house rule) —
+    sentence starts must not be capitalized. Proper nouns / machine codes
+    ("training_mode", the module path) are exempt."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"error": 'Unrecognized launch argument: "training_mode"'}
+        )
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(SftLaunchNotSupportedError) as exc_info:
+        trainer.launch_sft_run("r", train_dataset_path="a")
+
+    message = str(exc_info.value)
+    sentences = [s.strip() for s in message.split(". ") if s.strip()]
+    for sentence in sentences:
+        first_word = sentence.split()[0]
+        assert first_word[:1].islower(), f"capitalized sentence start: {sentence!r}"
+
+
+def test_launch_sft_run_eval_none_wins_over_conflicting_launcher_arg():
+    """Regression: eval_dataset_path=None must omit the field even when
+    launcher_args tries to smuggle one in under the same reserved key."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"runId": "sft-run-4"})
+
+    trainer = _make_trainer_with_transport(handler)
+    trainer.launch_sft_run(
+        "r",
+        train_dataset_path="a",
+        eval_dataset_path=None,
+        launcher_args={"eval_dataset_path": "sneaky/eval.jsonl"},
+    )
+
+    assert "eval_dataset_path" not in captured["body"]["args"]
+
+
+def test_launch_sft_run_unknown_arg_error_for_a_different_arg_is_not_translated():
+    """Regression: an unrecognized-launch-arg rejection about a DIFFERENT
+    (user-supplied) arg — no training_mode mention — must propagate as a
+    plain JobLaunchError, not the SFT-unsupported translation."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"error": 'Unrecognized launch argument: "num_epochs"'}
+        )
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(JobLaunchError) as exc_info:
+        trainer.launch_sft_run(
+            "r", train_dataset_path="a", launcher_args={"num_epochs": 3}
+        )
+
+    assert type(exc_info.value) is JobLaunchError
+    assert exc_info.value.status_code == 400
+
+
+def test_launch_sft_run_argument_worded_bad_dataset_path_is_not_translated():
+    """Regression: a bad-dataset-path error that happens to use unknown-arg
+    wording, but never mentions training_mode, must propagate unchanged."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": "Unknown argument value for train_dataset_path: "
+                "path does not exist in storage"
+            },
+        )
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(JobLaunchError) as exc_info:
+        trainer.launch_sft_run("r", train_dataset_path="a")
+
+    assert type(exc_info.value) is JobLaunchError
+    assert exc_info.value.status_code == 400

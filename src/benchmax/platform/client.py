@@ -55,21 +55,30 @@ _UNKNOWN_LAUNCH_ARG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Required alongside _UNKNOWN_LAUNCH_ARG_RE: an unknown-arg rejection about a
+# DIFFERENT arg name (a bad user-supplied launcher arg, an argument-worded
+# dataset-path error) must not be misclassified as "SFT unsupported" — only a
+# response that also names training_mode qualifies.
+_TRAINING_MODE_RE = re.compile(r"training[_\s-]?mode", re.IGNORECASE)
+
 
 def _looks_like_unknown_launch_arg_rejection(
     status_code: int | None, message: str
 ) -> bool:
     """Narrow, loose heuristic for the platform's unknown-launch-arg 4xx.
 
-    Deliberately conservative: requires both a 4xx status AND wording that
-    plausibly names an unrecognized/unknown argument, so ordinary 4xx
-    failures (bad dataset path, validation errors unrelated to arg names)
-    don't get misclassified. See the module-level TODO above — not a
-    stable contract.
+    Deliberately conservative: requires a 4xx status, wording that plausibly
+    names an unrecognized/unknown argument, AND a mention of training_mode
+    specifically — so an unrelated unknown-arg rejection (a bad user-supplied
+    launcher arg, an argument-worded bad-dataset-path error) doesn't get
+    misclassified as "the platform doesn't support SFT". See the
+    module-level TODO above — not a stable contract.
     """
     if status_code is None or not (400 <= status_code < 500):
         return False
-    return bool(_UNKNOWN_LAUNCH_ARG_RE.search(message))
+    return bool(_UNKNOWN_LAUNCH_ARG_RE.search(message)) and bool(
+        _TRAINING_MODE_RE.search(message)
+    )
 
 
 @dataclass(frozen=True)
@@ -560,7 +569,12 @@ class TrainerClient:
             "training_mode": "sft",
             "train_dataset_path": train_dataset_path,
         }
-        if eval_dataset_path is not None:
+        # Reconcile the reserved key against the explicit parameter last —
+        # launcher_args must never be able to smuggle an eval path back in
+        # (or clobber one) once eval_dataset_path has decided the outcome.
+        if eval_dataset_path is None:
+            args.pop("eval_dataset_path", None)
+        else:
             args["eval_dataset_path"] = eval_dataset_path
         body: dict[str, Any] = {
             "name": name,
@@ -575,9 +589,9 @@ class TrainerClient:
         except JobLaunchError as exc:
             if _looks_like_unknown_launch_arg_rejection(exc.status_code, exc.message):
                 raise SftLaunchNotSupportedError(
-                    "The platform does not accept env-less SFT runs yet "
+                    "the platform does not accept env-less SFT runs yet "
                     '("training_mode" is not a recognized launch arg). '
-                    "Wait for platform support to land, or track "
+                    "wait for platform support to land, or track "
                     "benchmax.platform.client.SFT_LAUNCH_SUPPORTED.",
                     exc.status_code,
                 ) from exc
