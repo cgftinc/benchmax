@@ -23,6 +23,7 @@ _MIME_SIGNATURES: tuple[tuple[bytes, str], ...] = (
 )
 
 _IMAGE_PLACEHOLDER = "[image]"
+_ELLIPSIS = "…"
 
 
 def message_text(message: Mapping[str, Any]) -> str:
@@ -41,13 +42,27 @@ def message_text(message: Mapping[str, Any]) -> str:
 
     parts: list[str] = []
     for item in content:
-        if isinstance(item, dict):
-            text = item.get("text") or item.get("content")
-            if text:
-                parts.append(str(text))
-        elif item:
-            parts.append(str(item))
+        if not isinstance(item, dict):
+            continue
+        text = _text_bearing_value(item)
+        if text is not None:
+            parts.append(text)
     return "\n".join(parts)
+
+
+def _text_bearing_value(item: dict) -> str | None:
+    """Return the ``text``/``content`` string value of a part, or ``None``.
+
+    Only string values count — a non-string ``text``/``content`` (or neither
+    key present) means the part isn't text-bearing.
+    """
+    text = item.get("text")
+    if isinstance(text, str):
+        return text
+    content_value = item.get("content")
+    if isinstance(content_value, str):
+        return content_value
+    return None
 
 
 def _is_image_part(part: Any) -> bool:
@@ -67,14 +82,12 @@ def content_preview(content: Any, limit: int) -> str:
     try:
         preview = _render_preview(content)
     except Exception:
-        preview = repr(content)
+        preview = _safe_repr(content)
 
     preview = " ".join(preview.splitlines())
     if len(preview) <= limit:
         return preview
-    if limit <= 3:
-        return preview[:limit]
-    return preview[: limit - 3] + "..."
+    return preview[: limit - 1] + _ELLIPSIS
 
 
 def _render_preview(content: Any) -> str:
@@ -89,11 +102,18 @@ def _render_preview(content: Any) -> str:
                 values.append(_IMAGE_PLACEHOLDER)
             elif isinstance(item, dict):
                 text = item.get("text") or item.get("content")
-                values.append(str(text) if text else repr(item))
+                values.append(str(text) if text else _safe_repr(item))
             elif item:
                 values.append(str(item))
         return " ".join(values)
-    return repr(content)
+    return _safe_repr(content)
+
+
+def _safe_repr(value: Any) -> str:
+    try:
+        return repr(value)
+    except Exception:
+        return "<unrepresentable>"
 
 
 def iter_image_refs(messages: Messages) -> Iterator[str]:

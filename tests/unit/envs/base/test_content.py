@@ -61,11 +61,23 @@ class TestMessageText:
         }
         assert message_text(message) == "look at this\nwhat is it"
 
+    def test_non_dict_part_skipped(self):
+        message = {"role": "user", "content": [42, {"text": "kept"}]}
+        assert message_text(message) == "kept"
+
+    def test_non_string_text_value_skipped(self):
+        message = {"role": "assistant", "content": [{"text": 42}, {"text": "kept"}]}
+        assert message_text(message) == "kept"
+
+    def test_empty_string_text_value_preserved(self):
+        message = {"role": "assistant", "content": [{"text": ""}, {"text": "kept"}]}
+        assert message_text(message) == "\nkept"
+
 
 class TestContentPreview:
     def test_normal_truncation(self):
         result = content_preview("a" * 50, 10)
-        assert result == "a" * 7 + "..."
+        assert result == "a" * 9 + "…"
         assert len(result) == 10
 
     def test_no_truncation_needed(self):
@@ -74,6 +86,19 @@ class TestContentPreview:
     def test_limit_of_one_accepted(self):
         result = content_preview("hello", 1)
         assert len(result) <= 1
+
+    def test_truncation_marker_present_for_limit_one(self):
+        assert content_preview("hello", 1) == "…"
+
+    def test_truncation_marker_present_for_limit_two(self):
+        result = content_preview("hello", 2)
+        assert result == "h…"
+        assert len(result) == 2
+
+    def test_truncation_marker_present_for_limit_three(self):
+        result = content_preview("hello", 3)
+        assert result == "he…"
+        assert len(result) == 3
 
     def test_limit_zero_raises(self):
         with pytest.raises(ValueError):
@@ -108,6 +133,15 @@ class TestContentPreview:
 
     def test_malformed_list_item_never_raises(self):
         result = content_preview([object(), {"unexpected": "shape"}], 50)
+        assert isinstance(result, str)
+        assert len(result) <= 50
+
+    def test_raising_repr_never_raises(self):
+        class Unrepresentable:
+            def __repr__(self):
+                raise RuntimeError("boom")
+
+        result = content_preview(Unrepresentable(), 50)
         assert isinstance(result, str)
         assert len(result) <= 50
 
