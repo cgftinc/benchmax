@@ -129,6 +129,40 @@ def test_unknown_training_mode_marker_raises(tmp_path):
         load_project(directory=str(tmp_path))
 
 
+def test_training_mode_none_raises_not_treated_as_absent(tmp_path):
+    """A present TRAINING_MODE = None must NOT be treated the same as an absent
+    marker (which defaults to rl) -- None is present-but-invalid."""
+    from benchmax.cli._project import ProjectError, load_project
+
+    (tmp_path / "main.py").write_text("TRAINING_MODE = None\n\n" + _NO_ENV_MAIN)
+    (tmp_path / "train_dataset.jsonl").write_text('{"prompt": "q"}\n')
+    with pytest.raises(ProjectError) as exc_info:
+        load_project(directory=str(tmp_path))
+    assert "invalid TRAINING_MODE" in str(exc_info.value)
+
+
+def test_training_mode_unhashable_list_raises_project_error_not_type_error(tmp_path):
+    """An unhashable TRAINING_MODE value must raise ProjectError, not a raw
+    TypeError from a hash/equality check against the allowed set."""
+    from benchmax.cli._project import ProjectError, load_project
+
+    (tmp_path / "main.py").write_text("TRAINING_MODE = []\n\n" + _NO_ENV_MAIN)
+    (tmp_path / "train_dataset.jsonl").write_text('{"prompt": "q"}\n')
+    with pytest.raises(ProjectError) as exc_info:
+        load_project(directory=str(tmp_path))
+    assert "invalid TRAINING_MODE" in str(exc_info.value)
+
+
+def test_training_mode_unhashable_dict_raises_project_error_not_type_error(tmp_path):
+    from benchmax.cli._project import ProjectError, load_project
+
+    (tmp_path / "main.py").write_text("TRAINING_MODE = {}\n\n" + _NO_ENV_MAIN)
+    (tmp_path / "train_dataset.jsonl").write_text('{"prompt": "q"}\n')
+    with pytest.raises(ProjectError) as exc_info:
+        load_project(directory=str(tmp_path))
+    assert "invalid TRAINING_MODE" in str(exc_info.value)
+
+
 def test_sft_marker_skips_env_discovery(tmp_path):
     from benchmax.cli._project import load_project
 
@@ -146,6 +180,21 @@ def test_sft_marker_and_env_class_is_ambiguous(tmp_path):
     from benchmax.cli._project import ProjectError, load_project
 
     _write_sft_project(tmp_path, main_body=_ENV_MAIN)
+    with pytest.raises(ProjectError, match="ambiguous project"):
+        load_project(directory=str(tmp_path))
+
+
+def test_sft_marker_and_imported_env_class_is_ambiguous(tmp_path):
+    """An env class merely IMPORTED into main.py's namespace (not locally
+    defined) still counts as "present" for the sft-ambiguity guard -- only RL
+    auto-discovery restricts itself to classes defined in the file itself."""
+    from benchmax.cli._project import ProjectError, load_project
+
+    _write_sft_project(
+        tmp_path,
+        main_body="from benchmax.envs.sft_demonstration_env import SftDemonstrationEnv\n",
+        train='{"messages": []}\n',
+    )
     with pytest.raises(ProjectError, match="ambiguous project"):
         load_project(directory=str(tmp_path))
 

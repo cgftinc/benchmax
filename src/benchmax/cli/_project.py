@@ -42,9 +42,7 @@ class LoadedProject:
     # reproducible from the file (validate/launch read these; CLI flags override).
     launch_config: dict[str, Any]
     validate_config: dict[str, Any]
-    # sft mode only: the on-disk dataset paths. load_project never parses SFT
-    # data itself — sft.dataset.load_sft_dataset is the only SFT parser, so a
-    # malformed row becomes a report issue instead of a load-time ProjectError.
+    # sft mode only; paths are never parsed here (see sft.dataset.load_sft_dataset)
     sft_train_path: Path | None = None
     sft_eval_path: Path | None = None
 
@@ -120,6 +118,18 @@ def _env_classes_defined_in(module: ModuleType) -> list[type]:
     ]
 
 
+def _has_env_class_anywhere(module: ModuleType) -> bool:
+    """True if any BaseEnv subclass is reachable in module's namespace, defined
+    here or imported. Used only for the sft-mode ambiguity guard — unlike RL
+    auto-discovery, an imported env class still counts as "an env is present"."""
+    from benchmax.envs.base_env import BaseEnv
+
+    return any(
+        inspect.isclass(obj) and issubclass(obj, BaseEnv) and obj is not BaseEnv
+        for obj in vars(module).values()
+    )
+
+
 def discover_env_class(module: ModuleType, explicit: str | None = None) -> type:
     """Find the env class in ``module``. With no ``explicit`` name, require exactly
     one BaseEnv subclass *defined in* the module (imported ones are ignored)."""
@@ -145,20 +155,24 @@ def discover_env_class(module: ModuleType, explicit: str | None = None) -> type:
     return defined_here[0]
 
 
+_MISSING = object()  # distinguishes "no TRAINING_MODE attribute" from "set to None"
+
+
 def _read_training_mode(module: ModuleType) -> Literal["rl", "sft"]:
     """The explicit ``TRAINING_MODE`` marker — a scalar module attribute, read on
     its own (not via ``_read_config``'s dict reads). Absent -> "rl" (today's only
     mode, env required). Any value outside {"rl", "sft"} fails loudly rather than
-    being silently coerced."""
-    value = getattr(module, "TRAINING_MODE", None)
-    if value is None:
+    being silently coerced — including ``None`` and unhashable values, which must
+    raise ``ProjectError`` rather than resolving to "rl" or crashing on ``in``."""
+    value = getattr(module, "TRAINING_MODE", _MISSING)
+    if value is _MISSING:
         return "rl"
-    if value not in TRAINING_MODES:
-        raise ProjectError(
-            f"invalid TRAINING_MODE {value!r} in main.py; must be one of "
-            f"{sorted(TRAINING_MODES)}"
-        )
-    return value
+    if isinstance(value, str) and value in TRAINING_MODES:
+        return value
+    raise ProjectError(
+        f"invalid TRAINING_MODE {value!r} in main.py; must be one of "
+        f"{sorted(TRAINING_MODES)}"
+    )
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -215,10 +229,10 @@ def load_project(
                 "--env-class can't be combined with an sft-mode project "
                 "(TRAINING_MODE = 'sft' has no env to select)."
             )
-        if _env_classes_defined_in(module):
+        if _has_env_class_anywhere(module):
             raise ProjectError(
                 "ambiguous project: TRAINING_MODE = 'sft' but a BaseEnv subclass "
-                "is also defined in main.py — remove one of the two signals."
+                "is also present in main.py — remove one of the two signals."
             )
         train_path = base / train_file
         if not train_path.exists():

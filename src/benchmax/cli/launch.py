@@ -255,7 +255,7 @@ def _cmd_launch_sft(
         else None
     )
 
-    print("Validating sft dataset…")
+    print("validating sft dataset…")
     report = validate_sft_dataset(train, eval_dataset)
     if not report.ok:
         print(
@@ -266,13 +266,11 @@ def _cmd_launch_sft(
         return 1
     print("✓ dataset validation passed.")
 
-    # Weight gate: checked BEFORE launcher-arg assembly so a blocked launch never
-    # reaches _build_launcher_args (masking support is unconfirmed and separate
-    # from SFT_LAUNCH_SUPPORTED — the validate notice alone doesn't clear it).
+    # reject weights before assembling server-bound launcher args
     if report.masking_summary.rows_with_weight and not args.allow_experimental_weights:
         print(
             "✗ dataset uses per-message 'weight' (masking) — trainer support for "
-            "this is unconfirmed. Re-run with --allow-experimental-weights to "
+            "this is unconfirmed. re-run with --allow-experimental-weights to "
             "launch anyway.",
             file=sys.stderr,
         )
@@ -285,8 +283,7 @@ def _cmd_launch_sft(
     }
     run_name = args.name or lc.get("name") or "sft-run"
 
-    # Guard before upload: no orphaned storage artifacts behind an API that
-    # cannot succeed yet.
+    # keep the capability check before creating upload artifacts
     if not SFT_LAUNCH_SUPPORTED:
         print(
             "✗ the platform does not accept env-less sft runs yet "
@@ -298,20 +295,20 @@ def _cmd_launch_sft(
     if not args.yes:
         if not sys.stdin.isatty():
             print(
-                "Refusing to launch (real GPU spend) without confirmation. "
-                "Re-run with --yes.",
+                "refusing to launch (real GPU spend) without confirmation. "
+                "re-run with --yes.",
                 file=sys.stderr,
             )
             return 1
-        reply = input(f"Launch '{run_name}' — incurs GPU cost. Continue? [y/N] ")
+        reply = input(f"launch '{run_name}' — incurs GPU cost. continue? [y/N] ")
         if reply.strip().lower() not in ("y", "yes"):
-            print("Aborted.")
+            print("aborted.")
             return 1
 
-    print("Uploading datasets…")
+    print("uploading datasets…")
     uploaded = upload_sft_run(train=train, eval=eval_dataset, run_name=run_name)
 
-    print("Launching…")
+    print("launching…")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         run_id = client.launch_sft_run(
@@ -327,9 +324,9 @@ def _cmd_launch_sft(
     if args.json:
         print_json({"run_id": run_id, "name": run_name, "url": url})
     else:
-        print(f"\n✓ Launched run {run_id}")
+        print(f"\n✓ launched run {run_id}")
         print(f"  {url}")
-        print(f"  Track:  castform runs status {run_id}")
+        print(f"  track:  castform runs status {run_id}")
     return 0
 
 
