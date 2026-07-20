@@ -59,6 +59,11 @@ _TEMPLATE_SEEDS = {
         "train": "rag_train_dataset.jsonl",
         "eval": "rag_eval_dataset.jsonl",
     },
+    "sft": {
+        "main": "sft_main.py",
+        "train": "sft_train_dataset.jsonl",
+        "eval": "sft_eval_dataset.jsonl",
+    },
 }
 
 
@@ -338,10 +343,11 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--template",
-        choices=["generic", "rag"],
+        choices=["generic", "rag", "sft"],
         default="generic",
-        help="Env seed: 'generic' = a minimal single-turn env, 'rag' = a SearchEnv "
-        "(both ship a runnable main.py + tiny datasets; default: generic)",
+        help="Env seed: 'generic' = a minimal single-turn env, 'rag' = a SearchEnv, "
+        "'sft' = an env-less supervised fine-tuning dataset (all three ship a "
+        "runnable main.py + tiny datasets; default: generic)",
     )
     p.add_argument(
         "--no-template",
