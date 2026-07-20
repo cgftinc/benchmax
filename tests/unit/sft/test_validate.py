@@ -219,3 +219,70 @@ class TestErrorClassesWithPhysicalLines:
 
         assert 1 not in by_line
         assert report.ok is False
+
+
+class TestSchemaCrashSafetyThroughFullPipeline:
+    """Malformed-but-JSON-shaped rows (list role, dict weight, etc.) must
+    survive load_sft_dataset -> validate_sft_dataset as ordinary error
+    issues, never as an uncaught exception."""
+
+    def test_list_role_produces_report_not_exception(self, tmp_path):
+        path = _write(tmp_path, "train.jsonl", '{"messages": [{"role": [], "content": "hi"}]}\n')
+        train = load_sft_dataset(path)
+        report = validate_sft_dataset(train)  # must not raise
+        assert any(i.severity == "error" for i in report.issues)
+        assert report.ok is False
+
+    def test_dict_weight_produces_report_not_exception(self, tmp_path):
+        path = _write(
+            tmp_path,
+            "train.jsonl",
+            '{"messages": [{"role": "assistant", "content": "hi", "weight": {}}]}\n',
+        )
+        train = load_sft_dataset(path)
+        report = validate_sft_dataset(train)  # must not raise
+        assert any(i.severity == "error" for i in report.issues)
+
+    def test_list_content_part_type_produces_report_not_exception(self, tmp_path):
+        path = _write(
+            tmp_path,
+            "train.jsonl",
+            '{"messages": [{"role": "user", "content": [{"type": []}]}, '
+            '{"role": "assistant", "content": "hi"}]}\n',
+        )
+        train = load_sft_dataset(path)
+        report = validate_sft_dataset(train)  # must not raise
+        assert any(i.severity == "error" for i in report.issues)
+
+
+class TestSerializationGuard:
+    def test_unserializable_row_reports_error_without_crashing_row_size_check(self):
+        # A row built directly (bypassing the loader's NaN/type guards) with
+        # a non-serializable value must not crash validate_sft_dataset's
+        # row-size measurement — it should surface as an issue instead.
+        row_with_set = {**_TRAINED_ROW, "tools": [{"bad": {1, 2, 3}}]}
+        train = _dataset("train.jsonl", [row_with_set])
+        report = validate_sft_dataset(train)  # must not raise
+        assert any("not JSON-serializable" in i.message for i in report.issues)
+        assert not any("max_row_bytes" in i.message for i in report.issues)
+
+    def test_structural_error_and_serialization_error_both_surface(self):
+        row = {
+            "messages": [{"role": "not-a-real-role", "content": "hi"}],
+            "extra_metadata": {1, 2, 3},  # a set is not JSON-serializable
+        }
+        train = _dataset("train.jsonl", [row])
+        report = validate_sft_dataset(train)  # must not raise
+        errors = [i.message for i in report.issues if i.severity == "error"]
+        assert any("role must be one of" in m for m in errors)
+        assert any("not JSON-serializable" in m for m in errors)
+
+    def test_nan_rejected_at_load_never_reaches_validate(self, tmp_path):
+        path = _write(
+            tmp_path, "train.jsonl", '{"messages": [{"role": "assistant", "content": NaN}]}\n'
+        )
+        train = load_sft_dataset(path)  # NaN rejected at load — not a valid row
+        assert train.rows == []
+        assert any(i.severity == "error" for i in train.load_issues)
+        report = validate_sft_dataset(train)  # must not raise
+        assert report.ok is False

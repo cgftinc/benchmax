@@ -12,6 +12,7 @@ exists where un-normalized rows reach storage.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -19,6 +20,12 @@ from typing import Any, Literal
 from benchmax.sft.normalize import normalize_row
 
 Severity = Literal["error", "notice"]
+
+# str.splitlines() also breaks on U+2028/U+2029 (and other unicode line
+# separators), which are legal unescaped inside a JSON string value and can
+# round-trip straight through canonical_jsonl's ensure_ascii=False. Split
+# strictly on the actual on-disk line terminators instead.
+_LINE_BOUNDARY = re.compile(r"\r\n|\n")
 
 
 @dataclass(frozen=True)
@@ -54,12 +61,20 @@ class SftDataset:
     load_issues: list[SftIssue]
 
 
+def _reject_non_finite(constant: str) -> Any:
+    # json.loads accepts the non-standard NaN/Infinity/-Infinity tokens by
+    # default (not valid JSON per RFC 8259); treat them as a decode failure
+    # instead of silently admitting a value canonical_jsonl can't round-trip.
+    raise ValueError(f"non-finite JSON constant {constant!r} is not allowed")
+
+
 def load_sft_dataset(path: str | Path) -> SftDataset:
     """Read raw JSONL at ``path``, normalize every row, and retain provenance.
 
     Blank lines are skipped but still counted toward ``physical_line``. A
-    line that isn't valid JSON, or whose top-level value isn't a JSON
-    object, becomes an error :class:`SftIssue` instead of raising —
+    line that isn't valid JSON, whose top-level value isn't a JSON object,
+    or that contains a ``NaN``/``Infinity``/``-Infinity`` constant becomes
+    an error :class:`SftIssue` instead of raising —
     :func:`benchmax.sft.validate.validate_sft_dataset` is where a malformed
     dataset surfaces to the caller.
     """
@@ -69,13 +84,13 @@ def load_sft_dataset(path: str | Path) -> SftDataset:
     load_issues: list[SftIssue] = []
 
     text = file_path.read_text(encoding="utf-8")
-    for physical_line, raw_line in enumerate(text.splitlines(), start=1):
+    for physical_line, raw_line in enumerate(_LINE_BOUNDARY.split(text), start=1):
         line = raw_line.strip()
         if not line:
             continue
         try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError as exc:
+            parsed = json.loads(line, parse_constant=_reject_non_finite)
+        except ValueError as exc:
             load_issues.append(SftIssue(source_path, physical_line, "error", f"invalid JSON: {exc}"))
             continue
         if not isinstance(parsed, dict):
@@ -94,7 +109,12 @@ def load_sft_dataset(path: str | Path) -> SftDataset:
 
 
 def canonical_jsonl(dataset: SftDataset) -> bytes:
-    """Render ``dataset``'s rows as canonical JSONL bytes — the only shape the upload path accepts."""
+    """Render ``dataset``'s rows as canonical JSONL bytes — the only shape the upload path accepts.
+
+    ``allow_nan=False`` so a non-finite value that somehow reaches this
+    point (load-time already rejects it) raises loudly instead of emitting
+    a ``NaN``/``Infinity`` token that isn't valid JSON.
+    """
     return "".join(
-        json.dumps(row.data, ensure_ascii=False) + "\n" for row in dataset.rows
+        json.dumps(row.data, ensure_ascii=False, allow_nan=False) + "\n" for row in dataset.rows
     ).encode("utf-8")

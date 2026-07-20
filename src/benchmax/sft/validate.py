@@ -93,8 +93,8 @@ def validate_sft_dataset(
             for message in validate_row(row.data):
                 issues.append(SftIssue(row.source_path, row.physical_line, "error", message))
 
-            serialized_len = len(json.dumps(row.data, ensure_ascii=False).encode("utf-8"))
-            if serialized_len >= max_row_bytes:
+            serialized_len = _safe_serialized_len(row.data)
+            if serialized_len is not None and serialized_len >= max_row_bytes:
                 issues.append(
                     SftIssue(
                         row.source_path,
@@ -151,6 +151,19 @@ def validate_sft_dataset(
             masked_assistant_messages=masked_assistant_messages,
         ),
     )
+
+
+def _safe_serialized_len(row_data: dict) -> int | None:
+    """Byte length of ``row_data`` as canonical JSON, or ``None`` if it can't serialize.
+
+    A non-serializable row already gets a "not JSON-serializable" error
+    from :func:`benchmax.sft.schema.validate_row` above — this guard just
+    keeps a bad row from crashing the rest of the report.
+    """
+    try:
+        return len(json.dumps(row_data, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return None
 
 
 def _estimate_tokens(row_data: dict) -> int:

@@ -121,6 +121,73 @@ class TestWeightErrors:
         errors = validate_row(row)
         assert any("weight must be 0 or 1" in e for e in errors)
 
+    def test_boolean_weight_rejected(self):
+        # isinstance(True, int) is True and True == 1, so a naive
+        # membership/equality check would silently accept a bool.
+        row = {"messages": [{"role": "assistant", "content": "x", "weight": True}]}
+        errors = validate_row(row)
+        assert any("weight must be 0 or 1" in e for e in errors)
+
+    def test_float_weight_rejected(self):
+        # 1.0 == 1, so this must be rejected by an exact int type check.
+        row = {"messages": [{"role": "assistant", "content": "x", "weight": 1.0}]}
+        errors = validate_row(row)
+        assert any("weight must be 0 or 1" in e for e in errors)
+
+    def test_weight_on_user_message_is_error(self):
+        row = {
+            "messages": [
+                {"role": "user", "content": "hi", "weight": 1},
+                {"role": "assistant", "content": "yo"},
+            ]
+        }
+        errors = validate_row(row)
+        assert any("weight is only valid on assistant messages" in e for e in errors)
+
+    def test_weight_on_system_message_is_error(self):
+        row = {
+            "messages": [
+                {"role": "system", "content": "sys", "weight": 0},
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "yo"},
+            ]
+        }
+        errors = validate_row(row)
+        assert any("weight is only valid on assistant messages" in e for e in errors)
+
+    def test_assistant_with_no_content_and_no_tool_calls_not_trained(self):
+        row = {"messages": [{"role": "assistant"}]}
+        errors = validate_row(row)
+        assert any("no trained assistant turn" in e for e in errors)
+
+    def test_assistant_with_empty_string_content_not_trained(self):
+        row = {"messages": [{"role": "assistant", "content": ""}]}
+        errors = validate_row(row)
+        assert any("no trained assistant turn" in e for e in errors)
+
+    def test_assistant_with_empty_content_list_not_trained(self):
+        row = {"messages": [{"role": "assistant", "content": []}]}
+        errors = validate_row(row)
+        assert any("no trained assistant turn" in e for e in errors)
+
+    def test_assistant_with_valid_tool_calls_and_no_content_is_trained(self):
+        row = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": "{}"},
+                        }
+                    ],
+                }
+            ]
+        }
+        assert validate_row(row) == []
+
     def test_all_assistant_turns_masked_is_error(self):
         row = {
             "messages": [
@@ -227,6 +294,45 @@ class TestToolCallErrors:
         errors = validate_row(row)
         assert any("tool_calls must be a list" in e for e in errors)
 
+    def test_tool_call_missing_id(self):
+        row = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": "{}"}}],
+                }
+            ]
+        }
+        errors = validate_row(row)
+        assert any("tool_calls[0].id" in e for e in errors)
+
+    def test_tool_call_empty_id(self):
+        row = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                    ],
+                }
+            ]
+        }
+        errors = validate_row(row)
+        assert any("tool_calls[0].id" in e for e in errors)
+
+    def test_tool_response_empty_tool_call_id_is_error(self):
+        row = {
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "tool", "tool_call_id": "", "content": "result"},
+            ]
+        }
+        errors = validate_row(row)
+        assert any("tool_call_id" in e for e in errors)
+
 
 class TestContentPartErrors:
     def test_content_not_str_or_list(self):
@@ -272,3 +378,56 @@ class TestJsonSerializability:
         row = {**_VALID_ROW, "tools": [{"unserializable": {1, 2, 3}}]}
         errors = validate_row(row)
         assert any("not JSON-serializable" in e for e in errors)
+
+    def test_serialization_check_runs_even_with_structural_errors(self):
+        # Previously the JSON-serializability check was skipped once any
+        # other structural error was found; both must surface now.
+        row = {
+            "messages": [{"role": "not-a-real-role", "content": "hi"}],
+            "extra_metadata": {1, 2, 3},  # a set is not JSON-serializable
+        }
+        errors = validate_row(row)
+        assert any("role must be one of" in e for e in errors)
+        assert any("not JSON-serializable" in e for e in errors)
+
+
+class TestUnexpectedTopLevelFields:
+    def test_unexpected_field_is_a_clear_issue(self):
+        row = {**_VALID_ROW, "extra_metadata": {"foo": "bar"}}
+        errors = validate_row(row)
+        assert any("unexpected field" in e and "extra_metadata" in e for e in errors)
+        # the rest of the row is otherwise valid — no unrelated errors
+        assert len(errors) == 1
+
+
+class TestCrashSafety:
+    """Malformed JSON-shaped values (lists/dicts where a string/int is
+    expected) must produce a clean issue, never raise — set-membership and
+    equality checks against user-supplied values can otherwise TypeError on
+    unhashable types."""
+
+    def test_list_role_does_not_raise(self):
+        errors = validate_row({"messages": [{"role": [], "content": "hi"}]})
+        assert any("role must be one of" in e for e in errors)
+
+    def test_dict_role_does_not_raise(self):
+        errors = validate_row({"messages": [{"role": {}, "content": "hi"}]})
+        assert any("role must be one of" in e for e in errors)
+
+    def test_dict_weight_does_not_raise(self):
+        errors = validate_row({"messages": [{"role": "assistant", "content": "hi", "weight": {}}]})
+        assert any("weight must be 0 or 1" in e for e in errors)
+
+    def test_list_weight_does_not_raise(self):
+        errors = validate_row({"messages": [{"role": "assistant", "content": "hi", "weight": []}]})
+        assert any("weight must be 0 or 1" in e for e in errors)
+
+    def test_list_content_part_type_does_not_raise(self):
+        row = {"messages": [{"role": "user", "content": [{"type": []}]}]}
+        errors = validate_row(row)
+        assert any("type must be one of" in e for e in errors)
+
+    def test_dict_content_part_type_does_not_raise(self):
+        row = {"messages": [{"role": "user", "content": [{"type": {}}]}]}
+        errors = validate_row(row)
+        assert any("type must be one of" in e for e in errors)

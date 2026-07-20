@@ -90,6 +90,76 @@ class TestPhysicalLineNumbers:
         assert "JSON object" in dataset.load_issues[0].message
 
 
+class TestNonFiniteConstants:
+    def test_nan_becomes_load_issue_not_exception(self, tmp_path):
+        path = _write(
+            tmp_path,
+            "train.jsonl",
+            '{"messages": [{"role": "assistant", "content": "a"}]}\n'
+            '{"messages": [{"role": "assistant", "content": NaN}]}\n',
+        )
+        dataset = load_sft_dataset(path)  # must not raise
+        assert [r.physical_line for r in dataset.rows] == [1]
+        assert len(dataset.load_issues) == 1
+        assert dataset.load_issues[0].physical_line == 2
+        assert dataset.load_issues[0].severity == "error"
+
+    def test_infinity_becomes_load_issue_not_exception(self, tmp_path):
+        path = _write(tmp_path, "train.jsonl", '{"messages": [{"role": "a", "weight": Infinity}]}\n')
+        dataset = load_sft_dataset(path)  # must not raise
+        assert dataset.rows == []
+        assert len(dataset.load_issues) == 1
+        assert dataset.load_issues[0].severity == "error"
+
+    def test_negative_infinity_becomes_load_issue_not_exception(self, tmp_path):
+        path = _write(
+            tmp_path, "train.jsonl", '{"messages": [{"role": "a", "weight": -Infinity}]}\n'
+        )
+        dataset = load_sft_dataset(path)  # must not raise
+        assert dataset.rows == []
+        assert len(dataset.load_issues) == 1
+        assert dataset.load_issues[0].severity == "error"
+
+
+class TestUnicodeLineSeparators:
+    def test_u2028_inside_content_does_not_split_physical_lines(self, tmp_path):
+        separator_text = "before after"
+        row1 = {
+            "messages": [
+                {"role": "user", "content": separator_text},
+                {"role": "assistant", "content": "ok"},
+            ]
+        }
+        row2 = {"messages": [{"role": "assistant", "content": "b"}]}
+        text = json.dumps(row1, ensure_ascii=False) + "\n" + json.dumps(row2) + "\n"
+        path = _write(tmp_path, "u2028.jsonl", text)
+
+        dataset = load_sft_dataset(path)
+        assert dataset.load_issues == []
+        assert [r.physical_line for r in dataset.rows] == [1, 2]
+        assert dataset.rows[0].data["messages"][0]["content"] == separator_text
+
+    def test_u2028_round_trips_through_canonical_jsonl(self, tmp_path):
+        separator_text = "before after"
+        row1 = {
+            "messages": [
+                {"role": "user", "content": separator_text},
+                {"role": "assistant", "content": "ok"},
+            ]
+        }
+        row2 = {"messages": [{"role": "assistant", "content": "b"}]}
+        text = json.dumps(row1, ensure_ascii=False) + "\n" + json.dumps(row2) + "\n"
+        path = _write(tmp_path, "u2028.jsonl", text)
+
+        dataset = load_sft_dataset(path)
+        canon_path = _write(tmp_path, "u2028_canon.jsonl", _canonical_jsonl(dataset).decode("utf-8"))
+        reloaded = load_sft_dataset(canon_path)
+
+        assert reloaded.load_issues == []
+        assert [r.physical_line for r in reloaded.rows] == [1, 2]
+        assert reloaded.rows[0].data["messages"][0]["content"] == separator_text
+
+
 class TestMissingFile:
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
