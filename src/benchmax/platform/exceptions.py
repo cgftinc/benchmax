@@ -22,6 +22,20 @@ class JobLaunchError(TrainerError):
     pass
 
 
+class SftLaunchNotSupportedError(JobLaunchError):
+    """The platform rejected an SFT launch as an unrecognized launch arg.
+
+    Raised only by ``TrainerClient.launch_sft_run`` when the response looks
+    like the platform's generic unknown-launch-arg rejection — a narrow,
+    best-effort heuristic (see that method's docstring for the exact match
+    and its verification caveat). Subclasses ``JobLaunchError`` so existing
+    ``except JobLaunchError`` call sites keep working; the original response
+    error is preserved as ``__cause__``.
+    """
+
+    pass
+
+
 class RolloutError(TrainerError):
     """Base for rollout-server errors. Carries HTTP status when available."""
 

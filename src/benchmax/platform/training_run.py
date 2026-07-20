@@ -23,6 +23,7 @@ from typing import Any
 
 from benchmax import config
 from benchmax.bundle import dump_bundle
+from benchmax.sft.dataset import SftDataset, canonical_jsonl
 
 from .client import StorageClient
 
@@ -44,6 +45,18 @@ class UploadedTrainingRun:
     env_metadata_path: str
     train_dataset_path: str
     eval_dataset_path: str
+
+
+@dataclass(frozen=True)
+class UploadedSftRun:
+    """Blob paths for an SFT run's uploaded datasets.
+
+    ``eval_dataset_path`` is ``None`` when no eval dataset was supplied to
+    :func:`upload_sft_run` — nothing is uploaded for eval in that case.
+    """
+
+    train_dataset_path: str
+    eval_dataset_path: str | None = None
 
 
 # Mirrors the platform's blob-path guard (isSafeBlobPath): the upload endpoint
@@ -127,35 +140,32 @@ def upload_training_run(
         local_modules=local_modules,
     )
 
-    train_jsonl = "\n".join(json.dumps(r) for r in train_dataset) + "\n"
-    eval_jsonl = "\n".join(json.dumps(r) for r in eval_dataset) + "\n"
+    train_jsonl = ("\n".join(json.dumps(r) for r in train_dataset) + "\n").encode()
+    eval_jsonl = ("\n".join(json.dumps(r) for r in eval_dataset) + "\n").encode()
 
     if env_prefix is None:
         env_hash = hashlib.sha256(bundle.pickled).hexdigest()[:16]
         env_prefix = f"envs/{run_name}/{env_hash}"
 
-    if dataset_prefix is None:
-        dataset_hash = hashlib.sha256(
-            train_jsonl.encode() + eval_jsonl.encode()
-        ).hexdigest()[:8]
-        dataset_prefix = f"datasets/{run_name}/{dataset_hash}"
-
     # Reject unsafe keys before uploading — covers both the run_name-derived
-    # defaults and any caller-supplied env_prefix/dataset_prefix override.
+    # defaults and any caller-supplied env_prefix override.
     _validate_blob_path(env_prefix, source="env_prefix/run_name")
-    _validate_blob_path(dataset_prefix, source="dataset_prefix/run_name")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
         cls_local = tmpdir / "env-cls.pkl"
         meta_local = tmpdir / "env-metadata.json"
-        train_local = tmpdir / "train.jsonl"
-        eval_local = tmpdir / "eval.jsonl"
 
         cls_local.write_bytes(bundle.pickled)
         meta_local.write_bytes(bundle.metadata.to_json_bytes())
-        train_local.write_text(train_jsonl)
-        eval_local.write_text(eval_jsonl)
+
+        train_path, eval_path = _upload_dataset_pair(
+            storage_client=storage_client,
+            train_jsonl=train_jsonl,
+            eval_jsonl=eval_jsonl,
+            run_name=run_name,
+            dataset_prefix=dataset_prefix,
+        )
 
         return UploadedTrainingRun(
             env_cls_path=storage_client.upload_local_file(
@@ -164,10 +174,109 @@ def upload_training_run(
             env_metadata_path=storage_client.upload_local_file(
                 f"{env_prefix}/env-metadata.json", meta_local
             )["blobPath"],
-            train_dataset_path=storage_client.upload_local_file(
-                f"{dataset_prefix}/train.jsonl", train_local
-            )["blobPath"],
-            eval_dataset_path=storage_client.upload_local_file(
-                f"{dataset_prefix}/eval.jsonl", eval_local
-            )["blobPath"],
+            train_dataset_path=train_path,
+            # eval_jsonl is always provided here (never None), so eval_path is
+            # always a str — the SFT path is the only caller that sees None.
+            eval_dataset_path=eval_path,  # type: ignore[arg-type]
         )
+
+
+def _upload_dataset_pair(
+    *,
+    storage_client: StorageClient,
+    train_jsonl: bytes,
+    eval_jsonl: bytes | None,
+    run_name: str,
+    dataset_prefix: str | None,
+) -> tuple[str, str | None]:
+    """Upload a train (+ optional eval) JSONL pair to ``datasets/<run>/<hash>/``.
+
+    The reusable dataset-upload half shared by :func:`upload_training_run`
+    (eval always present) and :func:`upload_sft_run` (eval optional).
+    ``eval_jsonl=None`` uploads nothing for eval and returns ``None`` for its
+    path. The prefix hash covers whatever bytes are actually uploaded, so
+    train-only and train+eval runs land in different hash buckets.
+    """
+    if dataset_prefix is None:
+        hashed = train_jsonl + (eval_jsonl or b"")
+        dataset_hash = hashlib.sha256(hashed).hexdigest()[:8]
+        dataset_prefix = f"datasets/{run_name}/{dataset_hash}"
+
+    _validate_blob_path(dataset_prefix, source="dataset_prefix/run_name")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = Path(tmp)
+
+        train_local = tmpdir / "train.jsonl"
+        train_local.write_bytes(train_jsonl)
+        train_path = storage_client.upload_local_file(
+            f"{dataset_prefix}/train.jsonl", train_local
+        )["blobPath"]
+
+        eval_path: str | None = None
+        if eval_jsonl is not None:
+            eval_local = tmpdir / "eval.jsonl"
+            eval_local.write_bytes(eval_jsonl)
+            eval_path = storage_client.upload_local_file(
+                f"{dataset_prefix}/eval.jsonl", eval_local
+            )["blobPath"]
+
+    return train_path, eval_path
+
+
+def upload_sft_run(
+    *,
+    train: SftDataset,
+    eval: SftDataset | None = None,
+    run_name: str,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    dataset_prefix: str | None = None,
+    storage_client: StorageClient | None = None,
+) -> UploadedSftRun:
+    """Serialize an SFT train (+ optional eval) dataset and upload it.
+
+    Serializes rows via :func:`benchmax.sft.dataset.canonical_jsonl` only —
+    the canonicalization boundary's upload side; there is no raw-rows entry
+    point. ``eval=None`` uploads nothing for eval and ``eval_dataset_path``
+    on the result is ``None``.
+
+    Default layout: ``datasets/<run_name>/<dataset_hash>/{train.jsonl,
+    eval.jsonl}`` (hash is sha256 of the uploaded bytes, truncated to 8 hex
+    chars — omits eval bytes when there's no eval dataset).
+
+    Args:
+        train: Canonicalized training dataset (see ``sft.load_sft_dataset``).
+        eval: Canonicalized eval dataset, or ``None`` to skip eval entirely.
+        run_name: Training run identifier; used as the storage path segment.
+        api_key: Platform API key. Optional — when omitted (and no
+            ``storage_client`` is passed) the bearer resolves per request via
+            the credential seam (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``).
+        base_url: Platform base URL. Defaults to ``config.platform_url()``.
+        dataset_prefix: Override the default dataset directory. When set,
+            JSONL files land at ``<dataset_prefix>/{train.jsonl, eval.jsonl}``.
+        storage_client: BYOC. Pass an existing client to reuse its connection
+            pool, custom timeouts, or test fakes. Otherwise constructed from
+            ``api_key``/``base_url``.
+
+    Returns:
+        UploadedSftRun with the train path and the optional eval path.
+    """
+    if storage_client is None:
+        storage_client = StorageClient(
+            api_key=api_key,
+            base_url=base_url or config.platform_url(),
+        )
+
+    train_jsonl = canonical_jsonl(train)
+    eval_jsonl = canonical_jsonl(eval) if eval is not None else None
+
+    train_path, eval_path = _upload_dataset_pair(
+        storage_client=storage_client,
+        train_jsonl=train_jsonl,
+        eval_jsonl=eval_jsonl,
+        run_name=run_name,
+        dataset_prefix=dataset_prefix,
+    )
+
+    return UploadedSftRun(train_dataset_path=train_path, eval_dataset_path=eval_path)

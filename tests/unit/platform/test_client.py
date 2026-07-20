@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from benchmax.platform.client import (
+    SFT_LAUNCH_SUPPORTED,
     ExampleValidation,
     LaunchArgSpec,
     RolloutClient,
@@ -18,8 +19,10 @@ from benchmax.platform.client import (
 )
 from benchmax.platform.exceptions import (
     AuthenticationError,
+    JobLaunchError,
     RolloutNotFound,
     RolloutServerError,
+    SftLaunchNotSupportedError,
 )
 
 
@@ -1078,3 +1081,221 @@ def test_validation_result_group_reward_folds_into_ok():
         examples=passing, group_reward=ExampleValidation(-1, False, "boom")
     )
     assert bad.ok is False
+
+
+# ---------------------------------------------------------------------------
+# launch_sft_run — training_mode wire format, optional-eval payload, and the
+# narrow unknown-launch-arg error translation (slice 4)
+# ---------------------------------------------------------------------------
+
+
+def test_sft_launch_supported_flag_defaults_to_false():
+    """Capability flag: flips to True only once the platform lands
+    training_mode support. Nothing in this module consumes it yet."""
+    assert SFT_LAUNCH_SUPPORTED is False
+
+
+def test_launch_sft_run_posts_training_mode_and_omits_eval_when_none():
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"runId": "sft-run-1"})
+
+    trainer = _make_trainer_with_transport(handler)
+    run_id = trainer.launch_sft_run(
+        "my-sft-run",
+        train_dataset_path="datasets/x/train.jsonl",
+    )
+
+    assert run_id == "sft-run-1"
+    assert "/train/runs/launch" in captured["url"]
+    args = captured["body"]["args"]
+    assert args["training_mode"] == "sft"
+    assert args["train_dataset_path"] == "datasets/x/train.jsonl"
+    assert "eval_dataset_path" not in args
+
+
+def test_launch_sft_run_includes_eval_when_present():
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"runId": "sft-run-2"})
+
+    trainer = _make_trainer_with_transport(handler)
+    trainer.launch_sft_run(
+        "my-sft-run",
+        train_dataset_path="datasets/x/train.jsonl",
+        eval_dataset_path="datasets/x/eval.jsonl",
+    )
+
+    args = captured["body"]["args"]
+    assert args["eval_dataset_path"] == "datasets/x/eval.jsonl"
+
+
+def test_launch_sft_run_forwards_launcher_args():
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"runId": "sft-run-3"})
+
+    trainer = _make_trainer_with_transport(handler)
+    trainer.launch_sft_run(
+        "my-sft-run",
+        train_dataset_path="a",
+        launcher_args={"num_epochs": 3},
+    )
+
+    args = captured["body"]["args"]
+    assert args["num_epochs"] == 3
+    assert args["training_mode"] == "sft"  # launcher_args can't clobber the mode
+
+
+def test_launch_sft_run_translates_recognized_unknown_arg_rejection():
+    """The narrow, UNVERIFIED heuristic: a 4xx whose message plausibly names
+    an unrecognized/unknown launch arg becomes the clear env-less-SFT error,
+    with the original preserved as __cause__ and its status code intact."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"error": 'Unrecognized launch argument: "training_mode"'}
+        )
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(SftLaunchNotSupportedError) as exc_info:
+        trainer.launch_sft_run("r", train_dataset_path="a")
+
+    assert exc_info.value.status_code == 400
+    assert isinstance(exc_info.value.__cause__, JobLaunchError)
+    assert exc_info.value.__cause__.status_code == 400
+    assert "does not accept env-less SFT runs yet" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        (409, "A run with this name already exists"),
+        (429, "Too many requests — slow down"),
+        (500, "internal server error"),
+        (400, "train_dataset_path does not exist in storage"),
+    ],
+)
+def test_launch_sft_run_propagates_other_job_launch_errors_unchanged(status, message):
+    """Every other JobLaunchError (conflict, rate limit, 5xx, an unrelated
+    400 about a bad dataset path) MUST propagate completely unchanged — same
+    type, same message, same status code, never translated."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": message})
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(JobLaunchError) as exc_info:
+        trainer.launch_sft_run("r", train_dataset_path="a")
+
+    assert type(exc_info.value) is JobLaunchError
+    assert exc_info.value.status_code == status
+    assert exc_info.value.message == message
+
+
+def test_launch_sft_run_propagates_401_as_authentication_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "invalid api key"})
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(AuthenticationError) as exc_info:
+        trainer.launch_sft_run("r", train_dataset_path="a")
+
+    assert exc_info.value.status_code == 401
+
+
+def test_launch_sft_run_unsupported_message_is_lowercase_display_copy():
+    """Regression: user-facing display copy stays lowercase (house rule) —
+    sentence starts must not be capitalized. Proper nouns / machine codes
+    ("training_mode", the module path) are exempt."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"error": 'Unrecognized launch argument: "training_mode"'}
+        )
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(SftLaunchNotSupportedError) as exc_info:
+        trainer.launch_sft_run("r", train_dataset_path="a")
+
+    message = str(exc_info.value)
+    sentences = [s.strip() for s in message.split(". ") if s.strip()]
+    for sentence in sentences:
+        first_word = sentence.split()[0]
+        assert first_word[:1].islower(), f"capitalized sentence start: {sentence!r}"
+
+
+def test_launch_sft_run_eval_none_wins_over_conflicting_launcher_arg():
+    """Regression: eval_dataset_path=None must omit the field even when
+    launcher_args tries to smuggle one in under the same reserved key."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"runId": "sft-run-4"})
+
+    trainer = _make_trainer_with_transport(handler)
+    trainer.launch_sft_run(
+        "r",
+        train_dataset_path="a",
+        eval_dataset_path=None,
+        launcher_args={"eval_dataset_path": "sneaky/eval.jsonl"},
+    )
+
+    assert "eval_dataset_path" not in captured["body"]["args"]
+
+
+def test_launch_sft_run_unknown_arg_error_for_a_different_arg_is_not_translated():
+    """Regression: an unrecognized-launch-arg rejection about a DIFFERENT
+    (user-supplied) arg — no training_mode mention — must propagate as a
+    plain JobLaunchError, not the SFT-unsupported translation."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"error": 'Unrecognized launch argument: "num_epochs"'}
+        )
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(JobLaunchError) as exc_info:
+        trainer.launch_sft_run(
+            "r", train_dataset_path="a", launcher_args={"num_epochs": 3}
+        )
+
+    assert type(exc_info.value) is JobLaunchError
+    assert exc_info.value.status_code == 400
+
+
+def test_launch_sft_run_argument_worded_bad_dataset_path_is_not_translated():
+    """Regression: a bad-dataset-path error that happens to use unknown-arg
+    wording, but never mentions training_mode, must propagate unchanged."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": "Unknown argument value for train_dataset_path: "
+                "path does not exist in storage"
+            },
+        )
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(JobLaunchError) as exc_info:
+        trainer.launch_sft_run("r", train_dataset_path="a")
+
+    assert type(exc_info.value) is JobLaunchError
+    assert exc_info.value.status_code == 400
