@@ -25,6 +25,30 @@ Defaults are fine for a smoke run. For a serious run, set the rollout budget and
 epochs deliberately. If eval falls while train rises, the best checkpoint may be
 before the final step.
 
+## SFT launch (and why it doesn't work yet)
+
+For an env-less SFT project (`TRAINING_MODE = "sft"`, see design-environment),
+`castform launch` follows the same shape — validate gate, then upload, then
+launch — but posts `training_mode: "sft"` instead of bundling an env:
+
+```bash
+castform launch --name my-sft-run
+```
+
+Before that: **the live platform does not accept `training_mode` as a launch
+arg yet.** `benchmax.platform.client.SFT_LAUNCH_SUPPORTED` is `False` as of
+writing, and the CLI checks it *before* uploading anything, so `castform
+launch` on an SFT project fails immediately with a clear error instead of
+orphaning uploaded datasets behind a launch that can't succeed. Don't tell a
+user an SFT project is launch-ready today — the upload→launch path is fully
+implemented and tested, it just has nowhere to land until platform support
+ships. Track `SFT_LAUNCH_SUPPORTED` for when that flips.
+
+A weight-bearing dataset (see generate-data's `weight` field — still
+experimental, unconfirmed trainer support) is separately launch-blocked with
+its own error until you pass `--allow-experimental-weights`, independent of the
+`SFT_LAUNCH_SUPPORTED` gate above.
+
 ## Going deeper
 
 ### Discover the accepted args (don't guess)
