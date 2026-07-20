@@ -17,16 +17,21 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Literal
 
 
 class ProjectError(Exception):
     """A project couldn't be loaded (missing main.py/dataset, or no/ambiguous env)."""
 
 
+# Allowed values for the TRAINING_MODE module attribute (see _read_training_mode).
+TRAINING_MODES = frozenset({"rl", "sft"})
+
+
 @dataclass
 class LoadedProject:
-    env_class: type
+    training_mode: Literal["rl", "sft"]
+    env_class: type | None  # None iff training_mode == "sft"
     train_dataset: list[dict[str, Any]]
     eval_dataset: list[dict[str, Any]]
     module: ModuleType
@@ -37,6 +42,11 @@ class LoadedProject:
     # reproducible from the file (validate/launch read these; CLI flags override).
     launch_config: dict[str, Any]
     validate_config: dict[str, Any]
+    # sft mode only: the on-disk dataset paths. load_project never parses SFT
+    # data itself — sft.dataset.load_sft_dataset is the only SFT parser, so a
+    # malformed row becomes a report issue instead of a load-time ProjectError.
+    sft_train_path: Path | None = None
+    sft_eval_path: Path | None = None
 
 
 def row_question_and_gold(row: Any) -> tuple[object, object]:
@@ -96,6 +106,20 @@ def _load_module_from_file(path: Path) -> ModuleType:
     return module
 
 
+def _env_classes_defined_in(module: ModuleType) -> list[type]:
+    """BaseEnv subclasses *defined in* ``module`` (imported ones are ignored)."""
+    from benchmax.envs.base_env import BaseEnv
+
+    def _is_env(obj: Any) -> bool:
+        return inspect.isclass(obj) and issubclass(obj, BaseEnv) and obj is not BaseEnv
+
+    return [
+        obj
+        for obj in vars(module).values()
+        if _is_env(obj) and obj.__module__ == module.__name__
+    ]
+
+
 def discover_env_class(module: ModuleType, explicit: str | None = None) -> type:
     """Find the env class in ``module``. With no ``explicit`` name, require exactly
     one BaseEnv subclass *defined in* the module (imported ones are ignored)."""
@@ -110,11 +134,7 @@ def discover_env_class(module: ModuleType, explicit: str | None = None) -> type:
                 return obj
         raise ProjectError(f"No BaseEnv subclass named {explicit!r} in the module.")
 
-    defined_here = [
-        obj
-        for obj in vars(module).values()
-        if _is_env(obj) and obj.__module__ == module.__name__
-    ]
+    defined_here = _env_classes_defined_in(module)
     if not defined_here:
         raise ProjectError("No BaseEnv subclass defined in the module.")
     if len(defined_here) > 1:
@@ -123,6 +143,22 @@ def discover_env_class(module: ModuleType, explicit: str | None = None) -> type:
             f"Multiple env classes {names}; pass --env-class to pick one."
         )
     return defined_here[0]
+
+
+def _read_training_mode(module: ModuleType) -> Literal["rl", "sft"]:
+    """The explicit ``TRAINING_MODE`` marker — a scalar module attribute, read on
+    its own (not via ``_read_config``'s dict reads). Absent -> "rl" (today's only
+    mode, env required). Any value outside {"rl", "sft"} fails loudly rather than
+    being silently coerced."""
+    value = getattr(module, "TRAINING_MODE", None)
+    if value is None:
+        return "rl"
+    if value not in TRAINING_MODES:
+        raise ProjectError(
+            f"invalid TRAINING_MODE {value!r} in main.py; must be one of "
+            f"{sorted(TRAINING_MODES)}"
+        )
+    return value
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -170,14 +206,48 @@ def load_project(
             )
         module = _load_module_from_file(path)
 
-    env_class = discover_env_class(module, env_class_name)
+    training_mode = _read_training_mode(module)
     base = Path(directory)
+
+    if training_mode == "sft":
+        if env_class_name is not None:
+            raise ProjectError(
+                "--env-class can't be combined with an sft-mode project "
+                "(TRAINING_MODE = 'sft' has no env to select)."
+            )
+        if _env_classes_defined_in(module):
+            raise ProjectError(
+                "ambiguous project: TRAINING_MODE = 'sft' but a BaseEnv subclass "
+                "is also defined in main.py — remove one of the two signals."
+            )
+        train_path = base / train_file
+        if not train_path.exists():
+            raise ProjectError(f"dataset not found: {train_path}")
+        eval_path = base / eval_file
+        sft_eval_path = eval_path if eval_path.exists() else None
+        if require_eval and sft_eval_path is None:
+            raise ProjectError(f"eval dataset required but not found: {eval_path}")
+        return LoadedProject(
+            training_mode="sft",
+            env_class=None,
+            train_dataset=[],
+            eval_dataset=[],
+            module=module,
+            from_file=from_file,
+            launch_config=_read_config(module, "LAUNCH_CONFIG"),
+            validate_config=_read_config(module, "VALIDATE_CONFIG"),
+            sft_train_path=train_path,
+            sft_eval_path=sft_eval_path,
+        )
+
+    env_class = discover_env_class(module, env_class_name)
     train_dataset = _load_jsonl(base / train_file)
     eval_path = base / eval_file
     eval_dataset = _load_jsonl(eval_path) if eval_path.exists() else []
     if require_eval and not eval_dataset:
         raise ProjectError(f"Eval dataset required but not found: {eval_path}")
     return LoadedProject(
+        training_mode="rl",
         env_class=env_class,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,

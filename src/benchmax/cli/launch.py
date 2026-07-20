@@ -239,6 +239,100 @@ def _write_run_manifest(
         return None
 
 
+def _cmd_launch_sft(
+    args: argparse.Namespace, client: TrainerClient, specs: list[LaunchArgSpec], project
+) -> int:
+    """SFT branch: validate -> weight gate -> launcher-arg assembly -> the
+    pre-upload SFT_LAUNCH_SUPPORTED guard -> upload -> launch."""
+    from benchmax.platform.client import SFT_LAUNCH_SUPPORTED
+    from benchmax.platform.training_run import upload_sft_run
+    from benchmax.sft import load_sft_dataset, validate_sft_dataset
+
+    train = load_sft_dataset(project.sft_train_path)
+    eval_dataset = (
+        load_sft_dataset(project.sft_eval_path)
+        if project.sft_eval_path is not None
+        else None
+    )
+
+    print("Validating sft dataset…")
+    report = validate_sft_dataset(train, eval_dataset)
+    if not report.ok:
+        print(
+            "✗ dataset validation failed — fix the dataset first "
+            "(`castform validate` for detail).",
+            file=sys.stderr,
+        )
+        return 1
+    print("✓ dataset validation passed.")
+
+    # Weight gate: checked BEFORE launcher-arg assembly so a blocked launch never
+    # reaches _build_launcher_args (masking support is unconfirmed and separate
+    # from SFT_LAUNCH_SUPPORTED — the validate notice alone doesn't clear it).
+    if report.masking_summary.rows_with_weight and not args.allow_experimental_weights:
+        print(
+            "✗ dataset uses per-message 'weight' (masking) — trainer support for "
+            "this is unconfirmed. Re-run with --allow-experimental-weights to "
+            "launch anyway.",
+            file=sys.stderr,
+        )
+        return 1
+
+    lc = project.launch_config
+    launcher_args = {
+        **_launcher_args_from_config(specs, lc),
+        **_build_launcher_args(specs, args.set),
+    }
+    run_name = args.name or lc.get("name") or "sft-run"
+
+    # Guard before upload: no orphaned storage artifacts behind an API that
+    # cannot succeed yet.
+    if not SFT_LAUNCH_SUPPORTED:
+        print(
+            "✗ the platform does not accept env-less sft runs yet "
+            "(benchmax.platform.client.SFT_LAUNCH_SUPPORTED is False).",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print(
+                "Refusing to launch (real GPU spend) without confirmation. "
+                "Re-run with --yes.",
+                file=sys.stderr,
+            )
+            return 1
+        reply = input(f"Launch '{run_name}' — incurs GPU cost. Continue? [y/N] ")
+        if reply.strip().lower() not in ("y", "yes"):
+            print("Aborted.")
+            return 1
+
+    print("Uploading datasets…")
+    uploaded = upload_sft_run(train=train, eval=eval_dataset, run_name=run_name)
+
+    print("Launching…")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        run_id = client.launch_sft_run(
+            name=run_name,
+            train_dataset_path=uploaded.train_dataset_path,
+            eval_dataset_path=uploaded.eval_dataset_path,
+            launcher_args=launcher_args or None,
+        )
+    for w in caught:
+        print(f"⚠ {w.message}", file=sys.stderr)
+
+    url = f"{config.web_app_url()}/train/{run_id}"
+    if args.json:
+        print_json({"run_id": run_id, "name": run_name, "url": url})
+    else:
+        print(f"\n✓ Launched run {run_id}")
+        print(f"  {url}")
+        print(f"  Track:  castform runs status {run_id}")
+    return 0
+
+
 @handle_errors
 def _cmd_launch(args: argparse.Namespace) -> int:
     from benchmax.platform.training_run import upload_training_run
@@ -263,6 +357,9 @@ def _cmd_launch(args: argparse.Namespace) -> int:
         except ProjectError as exc:
             print_project_error(exc)
             return 1
+
+        if project.training_mode == "sft":
+            return _cmd_launch_sft(args, client, specs, project)
 
         env_args = _parse_env_args(args.env_arg)
         # Launcher args: main.py's LAUNCH_CONFIG provides defaults; --set overrides
@@ -440,6 +537,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--yes", action="store_true", help="Skip the GPU-cost confirmation prompt"
+    )
+    p.add_argument(
+        "--allow-experimental-weights",
+        action="store_true",
+        help="sft mode only: allow launching a dataset that carries per-message "
+        "'weight' (masking) — trainer support for this is unconfirmed",
     )
     p.add_argument("--json", action="store_true", help="Emit raw JSON")
     p.set_defaults(func=_cmd_launch)
