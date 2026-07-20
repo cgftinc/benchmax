@@ -277,10 +277,7 @@ def _cmd_launch_sft(
         return 1
     print("✓ dataset validation passed.")
 
-    # reject weights before assembling server-bound launcher args. The CLI flag and
-    # the project's LAUNCH_CONFIG key are equivalent overrides — either clears the gate.
-    # sft_config_bool is strict (type(x) is bool) -- a typo'd value must fail loudly,
-    # never silently clear the gate.
+    # CLI flag or LAUNCH_CONFIG clears the gate; sft_config_bool rejects typos strictly.
     lc = project.launch_config
     allow_weights = args.allow_experimental_weights or sft_config_bool(
         lc, "allow_experimental_weights"

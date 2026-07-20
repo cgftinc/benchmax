@@ -40,6 +40,7 @@ from benchmax.platform.client import SFT_LAUNCH_SUPPORTED, TrainerClient
 from benchmax.platform.login import ensure_session
 from benchmax.platform.training_run import upload_sft_run
 from benchmax.sft import (
+    SftConfigError,
     SftValidationReport,
     load_sft_dataset,
     sft_config_bool,
@@ -148,7 +149,7 @@ def _create_seed_jsonl(path: str, rows: list[dict[str, Any]]) -> bool:
     silently followed/clobbered. Returns True iff this call wrote the file."""
     payload = "".join(json.dumps(r) + "\n" for r in rows)
     try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
         return False
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -179,9 +180,7 @@ def generate_data(force: bool = False) -> bool:
         run — raises instead of guessing
     `--force` regenerates both unconditionally, regardless of prior state.
     """
-    # lexists (not exists) so a symlink occupying a target path — dangling or
-    # not — counts as "there", consistent with the exclusive-create below (which
-    # refuses any occupied path without following it).
+    # lexists, not exists — a symlink (even dangling) counts as "there".
     train_exists = os.path.lexists(TRAIN_FILE)
     eval_exists = os.path.lexists(EVAL_FILE)
 
@@ -189,7 +188,7 @@ def generate_data(force: bool = False) -> bool:
         raise SftScaffoldError(
             f"{EVAL_FILE} exists but {TRAIN_FILE} does not — refusing to guess "
             "what to do here (this looks like a corrupted project, not a first "
-            f"run). Fix {TRAIN_FILE} manually, or re-run with --force to "
+            f"run). fix {TRAIN_FILE} manually, or re-run with --force to "
             "regenerate both from the seed."
         )
 
@@ -359,14 +358,18 @@ def main(argv: list[str] | None = None) -> int:
 
     ensure_session()  # best-effort: no-op if a credential resolves
 
-    ok = True
-    if args.stage in ("data", "all"):
-        generate_data(force=args.force)
-    if args.stage in ("validate", "all"):
-        report = validate()
-        ok = report is not None and report.ok  # non-zero exit on a failed validate
-    if args.stage == "launch":
-        ok = launch(assume_yes=args.yes) is not None  # None = gated / aborted / failed
+    try:
+        ok = True
+        if args.stage in ("data", "all"):
+            generate_data(force=args.force)
+        if args.stage in ("validate", "all"):
+            report = validate()
+            ok = report is not None and report.ok  # non-zero exit on a failed validate
+        if args.stage == "launch":
+            ok = launch(assume_yes=args.yes) is not None  # None = gated/aborted/failed
+    except (SftScaffoldError, SftConfigError) as exc:
+        print(f"error: {exc}", file=sys.stderr)  # no raw traceback (local paths)
+        return 1
     return 0 if ok else 1
 
 

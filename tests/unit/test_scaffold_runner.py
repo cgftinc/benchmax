@@ -452,6 +452,21 @@ def test_sft_launch_rejects_non_bool_allow_experimental_weights_string(
     assert not calls  # rejected before upload, not silently treated as False
 
 
+def test_main_prints_clean_error_on_scaffold_exception(
+    sft_mod, tmp_path, monkeypatch, capsys
+):
+    """A scaffold-level failure (here: the eval-only-without-train refusal) must
+    surface as a clean one-line error through `main()` -- not an uncaught
+    traceback, which would print local filesystem paths to whoever's watching."""
+    monkeypatch.setattr(sft_mod, "ensure_session", lambda *a, **k: None)
+    (tmp_path / sft_mod.EVAL_FILE).write_text('{"messages": []}\n')
+
+    assert sft_mod.main(["data"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:")
+    assert "Traceback" not in err
+
+
 # ── generate_data: the 5-case existence state machine ──────────────────────────
 
 _SENTINEL_TRAIN = "SENTINEL_TRAIN_ROW\n"
