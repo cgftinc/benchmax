@@ -954,6 +954,21 @@ def test_validate_sft_uses_project_validate_config_max_seq_len(tmp_path, capsys)
     assert "exceed max_seq_len" in out
 
 
+def test_validate_sft_rejects_non_int_max_seq_len(tmp_path, capsys):
+    """A malformed VALIDATE_CONFIG value (a string, not an int) must produce a
+    clean configuration error -- not a raw TypeError raised deep inside
+    validation. `_cmd_validate` is `@handle_errors`-wrapped, so the
+    `SftConfigError` (a `RuntimeError`) surfaces as a clean stderr line."""
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nVALIDATE_CONFIG = {"max_seq_len": "100"}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_SFT_ROW)
+    assert validate._cmd_validate(_validate_ns(dir=str(tmp_path))) == 1
+    err = capsys.readouterr().err
+    assert "Error:" in err
+    assert "max_seq_len" in err
+
+
 def test_reward_audit_shows_inconsistent_shape(monkeypatch, capsys):
     report = _report(
         examples=[

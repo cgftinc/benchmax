@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,7 @@ from benchmax.platform.training_run import upload_sft_run
 from benchmax.sft import (
     SftValidationReport,
     load_sft_dataset,
+    sft_config_bool,
     sft_validate_kwargs,
     validate_sft_dataset,
 )
@@ -117,9 +119,9 @@ _SEED_EVAL = [
 
 # Opt-in multimodal demonstration — NOT written by `generate_data()` by default.
 # Enable it only against a VISION base model (undefined trainer behavior otherwise)
-# by changing `generate_data()`'s `_write_jsonl(TRAIN_FILE, _SEED_TRAIN)` call below
-# to `_write_jsonl(TRAIN_FILE, _SEED_TRAIN + [_SEED_MULTIMODAL])`, then re-run with
-# `python main.py data --force`.
+# by changing `generate_data()`'s `_create_seed_jsonl(TRAIN_FILE, _SEED_TRAIN)` call
+# below to `_create_seed_jsonl(TRAIN_FILE, _SEED_TRAIN + [_SEED_MULTIMODAL])`, then
+# re-run with `python main.py data --force`.
 _SEED_MULTIMODAL = {
     "messages": [
         {
@@ -134,8 +136,24 @@ _SEED_MULTIMODAL = {
 }
 
 
-def _write_jsonl(path: str, rows: list[dict[str, Any]]) -> None:
-    Path(path).write_text("".join(json.dumps(r) + "\n" for r in rows), "utf-8")
+class SftScaffoldError(Exception):
+    """`generate_data()` found a project state it refuses to touch automatically."""
+
+
+def _create_seed_jsonl(path: str, rows: list[dict[str, Any]]) -> bool:
+    """Atomically create `path` with `rows` iff nothing is there yet. An exclusive
+    ``O_CREAT | O_EXCL`` open (not exists()-then-write_text()) closes the
+    check/write race, and — since O_EXCL never follows a symlink at `path`, even
+    a dangling one — a stray symlink is refused the same as a real file, not
+    silently followed/clobbered. Returns True iff this call wrote the file."""
+    payload = "".join(json.dumps(r) + "\n" for r in rows)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(payload)
+    return True
 
 
 def _run_name() -> str:
@@ -148,25 +166,50 @@ def generate_data(force: bool = False) -> bool:
     Provenance: a tiny synthetic seed, generated inline above (reproducible,
     text-only). Replace it with your real task's data — hand-write the jsonl in
     the OpenAI fine-tuning chat format, or generate it and inline the gen code
-    here so the dataset stays reproducible from this file. Re-run with --force
-    to regenerate; skip-if-exists otherwise. See `_SEED_MULTIMODAL` above to
-    opt into a multimodal demonstration row (vision base models only).
+    here so the dataset stays reproducible from this file. See `_SEED_MULTIMODAL`
+    above to opt into a multimodal demonstration row (vision base models only).
 
-    Existence is checked per file, not as a combined pair — eval is optional in
-    SFT, so a project with real train data but no eval file must not have its
-    train data overwritten just because eval "doesn't exist yet".
+    State machine (no `--force`):
+      - neither file exists -> create both (the normal first-run case)
+      - both exist -> skip both, unchanged
+      - train exists, eval doesn't -> skip both; a train-only project is a valid,
+        intentional state (eval is optional in SFT) — eval is never fabricated
+      - eval exists, train doesn't -> refuse: there's no legitimate reason to have
+        eval without train, so this looks like a corrupted project, not a first
+        run — raises instead of guessing
+    `--force` regenerates both unconditionally, regardless of prior state.
     """
-    if Path(TRAIN_FILE).exists() and not force:
-        print(f"data: {TRAIN_FILE} present — skipping (--force to redo)")
-    else:
-        _write_jsonl(TRAIN_FILE, _SEED_TRAIN)
-        print(f"data: wrote {len(_SEED_TRAIN)} train rows to {TRAIN_FILE}")
+    # lexists (not exists) so a symlink occupying a target path — dangling or
+    # not — counts as "there", consistent with the exclusive-create below (which
+    # refuses any occupied path without following it).
+    train_exists = os.path.lexists(TRAIN_FILE)
+    eval_exists = os.path.lexists(EVAL_FILE)
 
-    if Path(EVAL_FILE).exists() and not force:
-        print(f"data: {EVAL_FILE} present — skipping (--force to redo)")
+    if not force and eval_exists and not train_exists:
+        raise SftScaffoldError(
+            f"{EVAL_FILE} exists but {TRAIN_FILE} does not — refusing to guess "
+            "what to do here (this looks like a corrupted project, not a first "
+            f"run). Fix {TRAIN_FILE} manually, or re-run with --force to "
+            "regenerate both from the seed."
+        )
+
+    if force:
+        Path(TRAIN_FILE).unlink(missing_ok=True)
+    if _create_seed_jsonl(TRAIN_FILE, _SEED_TRAIN):
+        print(f"data: wrote {len(_SEED_TRAIN)} train rows to {TRAIN_FILE}")
     else:
-        _write_jsonl(EVAL_FILE, _SEED_EVAL)
+        print(f"data: {TRAIN_FILE} present — skipping (--force to redo)")
+
+    if not force and train_exists and not eval_exists:
+        print(f"data: {EVAL_FILE} absent — leaving it that way (train-only project)")
+        return True
+
+    if force:
+        Path(EVAL_FILE).unlink(missing_ok=True)
+    if _create_seed_jsonl(EVAL_FILE, _SEED_EVAL):
         print(f"data: wrote {len(_SEED_EVAL)} eval rows to {EVAL_FILE}")
+    else:
+        print(f"data: {EVAL_FILE} present — skipping (--force to redo)")
     return True
 
 
@@ -239,9 +282,10 @@ def launch(assume_yes: bool = False) -> str | None:
         return None
 
     # Weight gate: a separate capability from SFT_LAUNCH_SUPPORTED below — the
-    # validate notice alone does not clear it.
-    if report.masking_summary.rows_with_weight and not LAUNCH_CONFIG.get(
-        "allow_experimental_weights", False
+    # validate notice alone does not clear it. Strict bool (not truthiness) --
+    # a typo'd string value must fail loudly, never silently clear the gate.
+    if report.masking_summary.rows_with_weight and not sft_config_bool(
+        LAUNCH_CONFIG, "allow_experimental_weights"
     ):
         print(
             "launch: dataset uses per-message 'weight' (masking) — trainer support "

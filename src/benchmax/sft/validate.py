@@ -20,10 +20,43 @@ DEFAULT_MAX_ROW_BYTES = 1024 * 1024  # 1 MiB
 VALIDATE_CONFIG_KEYS = ("max_seq_len", "max_row_bytes")
 
 
+class SftConfigError(RuntimeError):
+    """A project's SFT config dict (``VALIDATE_CONFIG``/``LAUNCH_CONFIG``) has a
+    malformed value. Raised instead of a raw ``TypeError`` deep inside
+    validation, and instead of silently truthy-coercing an unexpected type (e.g.
+    the string ``"false"``, which is truthy in Python). A ``RuntimeError``
+    subclass so the CLI's ``handle_errors`` prints it as a clean stderr line."""
+
+
 def sft_validate_kwargs(config: dict) -> dict:
-    """``config`` (e.g. a project's ``VALIDATE_CONFIG``) filtered down to the
-    kwargs :func:`validate_sft_dataset` accepts."""
-    return {k: v for k, v in config.items() if k in VALIDATE_CONFIG_KEYS}
+    """``config`` (e.g. a project's ``VALIDATE_CONFIG``) filtered + type-checked
+    down to the kwargs :func:`validate_sft_dataset` accepts. Each present key
+    must be an ``int`` — ``bool`` is explicitly excluded, since
+    ``isinstance(True, int)`` is ``True`` in Python — else :class:`SftConfigError`
+    (not a raw ``TypeError`` raised deep inside validation)."""
+    out = {}
+    for key in VALIDATE_CONFIG_KEYS:
+        if key not in config:
+            continue
+        value = config[key]
+        if type(value) is not int:
+            raise SftConfigError(f"{key!r} must be an int, got {value!r}")
+        out[key] = value
+    return out
+
+
+def sft_config_bool(config: dict, key: str, default: bool = False) -> bool:
+    """A strict bool config value (e.g.
+    ``LAUNCH_CONFIG['allow_experimental_weights']``). Requires
+    ``type(value) is bool`` — general truthiness would let a typo like the
+    string ``"false"`` (truthy in Python) silently clear a safety gate instead
+    of failing loudly."""
+    if key not in config:
+        return default
+    value = config[key]
+    if type(value) is not bool:
+        raise SftConfigError(f"{key!r} must be true or false, got {value!r}")
+    return value
 
 
 @dataclass(frozen=True)

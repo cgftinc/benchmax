@@ -714,6 +714,68 @@ def test_launch_sft_weight_bearing_proceeds_with_launch_config_override(
     assert _SftCapturingClient.captured_launch["launcher_args"] is None
 
 
+def test_launch_sft_uses_project_validate_config(monkeypatch, tmp_path):
+    """`castform launch` (sft mode) must resolve max_seq_len/max_row_bytes from
+    the project's VALIDATE_CONFIG, same as `castform validate` -- regression:
+    `_cmd_launch_sft` called `validate_sft_dataset` with no kwargs at all, so
+    launch never honored the project's declared budget."""
+    from benchmax.sft.validate import validate_sft_dataset as real_validate_sft_dataset
+
+    captured: dict = {}
+
+    def _spy(*a, **kw):
+        captured.update(kw)
+        return real_validate_sft_dataset(*a, **kw)
+
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nVALIDATE_CONFIG = {"max_seq_len": 5}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_SFT_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_SFT_ROW)
+    monkeypatch.setattr("benchmax.sft.validate_sft_dataset", _spy)
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
+
+    assert launch._cmd_launch(_sft_launch_ns(tmp_path)) == 0
+    assert captured["max_seq_len"] == 5
+
+
+def test_launch_sft_validate_config_max_seq_len_rejects_non_int(monkeypatch, tmp_path):
+    """A malformed VALIDATE_CONFIG value (a string instead of an int) must raise a
+    clean configuration error -- not a raw TypeError deep inside validation."""
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nVALIDATE_CONFIG = {"max_seq_len": "100"}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_SFT_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_SFT_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
+
+    assert launch._cmd_launch(_sft_launch_ns(tmp_path)) == 1
+
+
+def test_launch_sft_allow_experimental_weights_rejects_non_bool_string(
+    monkeypatch, tmp_path
+):
+    """`LAUNCH_CONFIG["allow_experimental_weights"] = "false"` must be rejected
+    outright -- the string "false" is truthy in Python, so resolving it by
+    truthiness would silently CLEAR the experimental-weight safety gate (the
+    opposite of what the user almost certainly meant)."""
+    upload_calls: list = []
+
+    def _fake_upload(**kw):
+        upload_calls.append(kw)
+        return _fake_uploaded_sft_run(**kw)
+
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nLAUNCH_CONFIG = {"allow_experimental_weights": "false"}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_WEIGHTED_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_WEIGHTED_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_upload, launch_supported=True)
+
+    assert launch._cmd_launch(_sft_launch_ns(tmp_path)) == 1
+    assert not upload_calls  # rejected before upload, not silently treated as False
+
+
 def test_launch_sft_launcher_args_flow_through(monkeypatch, tmp_path):
     _write_sft_project(tmp_path)
     _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)

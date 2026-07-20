@@ -248,7 +248,12 @@ def _cmd_launch_sft(
     pre-upload SFT_LAUNCH_SUPPORTED guard -> upload -> launch."""
     from benchmax.platform.client import SFT_LAUNCH_SUPPORTED
     from benchmax.platform.training_run import upload_sft_run
-    from benchmax.sft import load_sft_dataset, validate_sft_dataset
+    from benchmax.sft import (
+        load_sft_dataset,
+        sft_config_bool,
+        sft_validate_kwargs,
+        validate_sft_dataset,
+    )
 
     train = load_sft_dataset(project.sft_train_path)
     eval_dataset = (
@@ -258,7 +263,11 @@ def _cmd_launch_sft(
     )
 
     print("validating sft dataset…")
-    report = validate_sft_dataset(train, eval_dataset)
+    # Same resolution as `castform validate`: main.py's VALIDATE_CONFIG bakes in
+    # max_seq_len/max_row_bytes so launch reproduces the run the project intends.
+    report = validate_sft_dataset(
+        train, eval_dataset, **sft_validate_kwargs(project.validate_config)
+    )
     if not report.ok:
         print(
             "✗ dataset validation failed — fix the dataset first "
@@ -270,9 +279,11 @@ def _cmd_launch_sft(
 
     # reject weights before assembling server-bound launcher args. The CLI flag and
     # the project's LAUNCH_CONFIG key are equivalent overrides — either clears the gate.
+    # sft_config_bool is strict (type(x) is bool) -- a typo'd value must fail loudly,
+    # never silently clear the gate.
     lc = project.launch_config
-    allow_weights = args.allow_experimental_weights or lc.get(
-        "allow_experimental_weights", False
+    allow_weights = args.allow_experimental_weights or sft_config_bool(
+        lc, "allow_experimental_weights"
     )
     if report.masking_summary.rows_with_weight and not allow_weights:
         print(

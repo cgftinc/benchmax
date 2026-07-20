@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from benchmax.sft.dataset import SftDataset, load_sft_dataset
 from benchmax.sft.validate import (
+    SftConfigError,
     SftValidationReport,
+    sft_config_bool,
     sft_validate_kwargs,
     validate_sft_dataset,
 )
@@ -17,6 +19,8 @@ __all__ = [
     "load_sft_dataset",
     "validate_sft_dataset",
     "sft_validate_kwargs",
+    "sft_config_bool",
+    "SftConfigError",
     "SftDataset",
     "SftValidationReport",
 ]

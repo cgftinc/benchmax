@@ -408,42 +408,122 @@ def test_sft_launch_blocked_by_weight_gate(sft_mod, tmp_path, monkeypatch):
         sft_mod.LAUNCH_CONFIG.pop("allow_experimental_weights", None)
 
 
-# ── generate_data: per-file existence, never overwrite without --force ─────────
+# ── fail-closed config resolution: clean errors, no truthy-coercion ────────────
 
 
-@pytest.mark.parametrize("force", [False, True])
-@pytest.mark.parametrize("eval_exists", [False, True])
-@pytest.mark.parametrize("train_exists", [False, True])
-def test_generate_data_existence_matrix(
-    sft_mod, tmp_path, train_exists, eval_exists, force
+def test_sft_validate_rejects_non_int_max_seq_len(sft_mod, monkeypatch):
+    """A malformed VALIDATE_CONFIG value (a string, not an int) must raise a
+    clean config error, not a raw TypeError deep inside validate_sft_dataset."""
+    from benchmax.sft import SftConfigError
+
+    sft_mod.generate_data()
+    monkeypatch.setitem(sft_mod.VALIDATE_CONFIG, "max_seq_len", "100")
+    with pytest.raises(SftConfigError, match="max_seq_len"):
+        sft_mod.validate()
+
+
+def test_sft_launch_rejects_non_bool_allow_experimental_weights_string(
+    sft_mod, tmp_path, monkeypatch
 ):
-    """Existence is checked PER FILE, not as a combined pair: eval is optional in
-    SFT, so a real project with train data but no eval file must not have its
-    train data silently overwritten by a bare `python main.py` just because eval
-    "doesn't exist yet" (regression: the original check was
-    `train.exists() and eval.exists()`, which only skipped writing when BOTH were
-    present). Covers all four existence combinations, with and without --force."""
-    sentinel_train = "SENTINEL_TRAIN_ROW\n"
-    sentinel_eval = "SENTINEL_EVAL_ROW\n"
-    if train_exists:
-        (tmp_path / sft_mod.TRAIN_FILE).write_text(sentinel_train)
-    if eval_exists:
-        (tmp_path / sft_mod.EVAL_FILE).write_text(sentinel_eval)
+    """LAUNCH_CONFIG['allow_experimental_weights'] = "false" (a string, truthy in
+    Python) must be rejected outright -- resolving it by truthiness would
+    silently CLEAR the experimental-weight safety gate, the opposite of what a
+    user writing "false" almost certainly meant."""
+    from benchmax.sft import SftConfigError
 
-    sft_mod.generate_data(force=force)
+    weighted_row = {
+        "messages": [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "masked", "weight": 0},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "trained"},
+        ]
+    }
+    (tmp_path / sft_mod.TRAIN_FILE).write_text(json.dumps(weighted_row) + "\n")
+    monkeypatch.setitem(sft_mod.LAUNCH_CONFIG, "allow_experimental_weights", "false")
+    calls: list = []
+    monkeypatch.setattr(sft_mod, "upload_sft_run", lambda **k: calls.append(k))
+    monkeypatch.setattr(
+        "builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError)
+    )
 
-    train_text = (tmp_path / sft_mod.TRAIN_FILE).read_text()
-    eval_text = (tmp_path / sft_mod.EVAL_FILE).read_text()
+    with pytest.raises(SftConfigError):
+        sft_mod.launch(assume_yes=True)
+    assert not calls  # rejected before upload, not silently treated as False
 
-    if train_exists and not force:
-        assert train_text == sentinel_train  # never overwritten without --force
-    else:
-        assert train_text != sentinel_train  # (re)written from the seed
 
-    if eval_exists and not force:
-        assert eval_text == sentinel_eval  # never overwritten without --force
-    else:
-        assert eval_text != sentinel_eval  # (re)written from the seed
+# ── generate_data: the 5-case existence state machine ──────────────────────────
+
+_SENTINEL_TRAIN = "SENTINEL_TRAIN_ROW\n"
+_SENTINEL_EVAL = "SENTINEL_EVAL_ROW\n"
+
+
+def test_generate_data_neither_exists_creates_both(sft_mod, tmp_path):
+    sft_mod.generate_data()
+    assert (tmp_path / sft_mod.TRAIN_FILE).exists()
+    assert (tmp_path / sft_mod.EVAL_FILE).exists()
+
+
+def test_generate_data_both_exist_skips_both(sft_mod, tmp_path):
+    (tmp_path / sft_mod.TRAIN_FILE).write_text(_SENTINEL_TRAIN)
+    (tmp_path / sft_mod.EVAL_FILE).write_text(_SENTINEL_EVAL)
+
+    sft_mod.generate_data()
+
+    assert (tmp_path / sft_mod.TRAIN_FILE).read_text() == _SENTINEL_TRAIN
+    assert (tmp_path / sft_mod.EVAL_FILE).read_text() == _SENTINEL_EVAL
+
+
+def test_generate_data_train_only_skips_and_never_fabricates_eval(sft_mod, tmp_path):
+    """A train-only project is a valid, intentional state (eval is optional in
+    SFT) -- `generate_data()` must not inject an unrelated seed eval file into it
+    (regression: the per-file existence fix still unconditionally wrote the
+    missing counterpart)."""
+    (tmp_path / sft_mod.TRAIN_FILE).write_text(_SENTINEL_TRAIN)
+
+    sft_mod.generate_data()
+
+    assert (tmp_path / sft_mod.TRAIN_FILE).read_text() == _SENTINEL_TRAIN
+    assert not (tmp_path / sft_mod.EVAL_FILE).exists()
+
+
+def test_generate_data_eval_only_without_train_fails_loudly(sft_mod, tmp_path):
+    """eval without train has no legitimate explanation (a corrupted project, not
+    a first run) -- `generate_data()` must refuse outright rather than fabricate
+    train data to match, and must leave the directory untouched."""
+    (tmp_path / sft_mod.EVAL_FILE).write_text(_SENTINEL_EVAL)
+
+    with pytest.raises(sft_mod.SftScaffoldError):
+        sft_mod.generate_data()
+
+    assert not (tmp_path / sft_mod.TRAIN_FILE).exists()
+    assert (tmp_path / sft_mod.EVAL_FILE).read_text() == _SENTINEL_EVAL
+
+
+def test_generate_data_force_regenerates_both_regardless_of_state(sft_mod, tmp_path):
+    (tmp_path / sft_mod.TRAIN_FILE).write_text(_SENTINEL_TRAIN)
+    (tmp_path / sft_mod.EVAL_FILE).write_text(_SENTINEL_EVAL)
+
+    sft_mod.generate_data(force=True)
+
+    assert (tmp_path / sft_mod.TRAIN_FILE).read_text() != _SENTINEL_TRAIN
+    assert (tmp_path / sft_mod.EVAL_FILE).read_text() != _SENTINEL_EVAL
+
+
+def test_generate_data_dangling_symlink_is_refused_not_followed(sft_mod, tmp_path):
+    """A dangling symlink at a target path must be treated as "already there" --
+    refused (skip, no crash) rather than silently followed/clobbered. Exercises
+    the exclusive-create path's O_EXCL semantics, which never follow a symlink."""
+    (tmp_path / sft_mod.TRAIN_FILE).symlink_to(tmp_path / "does_not_exist_target")
+
+    sft_mod.generate_data()  # must not raise / crash
+
+    # the dangling symlink itself is untouched -- no target was ever created
+    assert (tmp_path / sft_mod.TRAIN_FILE).is_symlink()
+    assert not (tmp_path / sft_mod.TRAIN_FILE).exists()  # still dangling (unfollowed)
+    # train "exists" (as a path entry) from generate_data's point of view, so
+    # eval is treated as the train-only-preserved case -- never fabricated
+    assert not (tmp_path / sft_mod.EVAL_FILE).exists()
 
 
 # ── launch: validate-then-upload TOCTOU — load once, never reload from disk ────
