@@ -293,9 +293,13 @@ def test_sft_validate_reads_real_dataset(sft_mod, tmp_path):
     assert report.eval_row_count == len(sft_mod._SEED_EVAL)
 
 
-def test_sft_launch_blocked_by_failing_validate(sft_mod, monkeypatch):
+def test_sft_launch_blocked_by_failing_validate(sft_mod, tmp_path, monkeypatch):
+    """A real invalid dataset (empty train) must block launch through the real
+    validate_sft_dataset gate -- launch() no longer delegates to the module-level
+    `validate()` wrapper (see the TOCTOU fix: it loads once and validates those
+    same objects), so the gate is exercised directly rather than mocked."""
+    (tmp_path / sft_mod.TRAIN_FILE).write_text("")  # empty -> train_row_count == 0
     calls: list = []
-    monkeypatch.setattr(sft_mod, "validate", lambda: _fake_report(ok=False))
     monkeypatch.setattr(sft_mod, "upload_sft_run", lambda **k: calls.append(k))
     monkeypatch.setattr(
         "builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError)
@@ -329,9 +333,7 @@ def test_sft_launch_uploads_and_launches_when_supported(sft_mod, monkeypatch):
     spreads the uploaded paths into the launch call."""
     sft_mod.generate_data()
     monkeypatch.setattr(sft_mod, "SFT_LAUNCH_SUPPORTED", True)
-    monkeypatch.setattr(
-        sft_mod, "upload_sft_run", lambda **k: _fake_uploaded_sft_run()
-    )
+    monkeypatch.setattr(sft_mod, "upload_sft_run", lambda **k: _fake_uploaded_sft_run())
     launched: dict = {}
 
     class FakeClient:
@@ -404,3 +406,101 @@ def test_sft_launch_blocked_by_weight_gate(sft_mod, tmp_path, monkeypatch):
         assert sft_mod.launch(assume_yes=True) == "run-456"
     finally:
         sft_mod.LAUNCH_CONFIG.pop("allow_experimental_weights", None)
+
+
+# ── generate_data: per-file existence, never overwrite without --force ─────────
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("eval_exists", [False, True])
+@pytest.mark.parametrize("train_exists", [False, True])
+def test_generate_data_existence_matrix(
+    sft_mod, tmp_path, train_exists, eval_exists, force
+):
+    """Existence is checked PER FILE, not as a combined pair: eval is optional in
+    SFT, so a real project with train data but no eval file must not have its
+    train data silently overwritten by a bare `python main.py` just because eval
+    "doesn't exist yet" (regression: the original check was
+    `train.exists() and eval.exists()`, which only skipped writing when BOTH were
+    present). Covers all four existence combinations, with and without --force."""
+    sentinel_train = "SENTINEL_TRAIN_ROW\n"
+    sentinel_eval = "SENTINEL_EVAL_ROW\n"
+    if train_exists:
+        (tmp_path / sft_mod.TRAIN_FILE).write_text(sentinel_train)
+    if eval_exists:
+        (tmp_path / sft_mod.EVAL_FILE).write_text(sentinel_eval)
+
+    sft_mod.generate_data(force=force)
+
+    train_text = (tmp_path / sft_mod.TRAIN_FILE).read_text()
+    eval_text = (tmp_path / sft_mod.EVAL_FILE).read_text()
+
+    if train_exists and not force:
+        assert train_text == sentinel_train  # never overwritten without --force
+    else:
+        assert train_text != sentinel_train  # (re)written from the seed
+
+    if eval_exists and not force:
+        assert eval_text == sentinel_eval  # never overwritten without --force
+    else:
+        assert eval_text != sentinel_eval  # (re)written from the seed
+
+
+# ── launch: validate-then-upload TOCTOU — load once, never reload from disk ────
+
+
+def test_sft_launch_uses_loaded_dataset_not_reloaded_after_confirm(
+    sft_mod, tmp_path, monkeypatch
+):
+    """regression: launch() must validate and upload the SAME loaded objects. An
+    edit/swap of the on-disk file between the initial validate/load and the launch
+    confirmation must NOT reach `upload_sft_run` -- otherwise what gets uploaded was
+    never actually the thing that was validated (a TOCTOU gap: `launch()` used to
+    reload from disk right before `upload_sft_run`, after the user confirmed)."""
+    sft_mod.generate_data()
+    monkeypatch.setattr(sft_mod, "SFT_LAUNCH_SUPPORTED", True)
+    captured: dict = {}
+
+    def _fake_upload(train, eval, run_name):
+        captured["train_rows"] = [r.data for r in train.rows]
+        return _fake_uploaded_sft_run()
+
+    monkeypatch.setattr(sft_mod, "upload_sft_run", _fake_upload)
+
+    def _swap_then_confirm(*a):
+        # An attacker/race edits the on-disk file after the initial validate/load,
+        # right before the user types 'y' at the confirmation prompt.
+        (tmp_path / sft_mod.TRAIN_FILE).write_text(
+            json.dumps(
+                {
+                    "messages": [
+                        {"role": "user", "content": "SWAPPED"},
+                        {"role": "assistant", "content": "SWAPPED"},
+                    ]
+                }
+            )
+            + "\n"
+        )
+        return "y"
+
+    monkeypatch.setattr("builtins.input", _swap_then_confirm)
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def launch_sft_run(self, **kw):
+            return "run-789"
+
+    monkeypatch.setattr(sft_mod, "TrainerClient", lambda: FakeClient())
+
+    assert sft_mod.launch() == "run-789"
+    # the ORIGINAL, validated seed content reached upload -- not the swapped rows
+    assert captured["train_rows"] == sft_mod._SEED_TRAIN
+    assert not any("SWAPPED" in json.dumps(row) for row in captured["train_rows"])
+    # the swapped file really is on disk -- proving a reload (the bug) would have
+    # picked it up instead
+    assert "SWAPPED" in (tmp_path / sft_mod.TRAIN_FILE).read_text()

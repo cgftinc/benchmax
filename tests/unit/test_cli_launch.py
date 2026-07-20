@@ -558,7 +558,9 @@ def _sft_launch_ns(tmp_path, **over):
 def _fake_uploaded_sft_run(**kw):
     from benchmax.platform.training_run import UploadedSftRun
 
-    return UploadedSftRun(train_dataset_path="blob://train", eval_dataset_path="blob://eval")
+    return UploadedSftRun(
+        train_dataset_path="blob://train", eval_dataset_path="blob://eval"
+    )
 
 
 class _SftCapturingClient:
@@ -680,11 +682,41 @@ def test_launch_sft_invalid_dataset_blocks_before_upload(monkeypatch, tmp_path):
     assert upload_calls == []
 
 
+def test_launch_sft_weight_bearing_proceeds_with_launch_config_override(
+    monkeypatch, tmp_path
+):
+    """LAUNCH_CONFIG['allow_experimental_weights'] must clear the weight gate the
+    same way --allow-experimental-weights does -- the CLI flag and the config key
+    are equivalent overrides (mirrors sft_main.py's own launch(), which already
+    checks LAUNCH_CONFIG.get("allow_experimental_weights")). Regression:
+    `_cmd_launch_sft` used to check only `args.allow_experimental_weights`."""
+    upload_calls: list = []
+
+    def _fake_upload(**kw):
+        upload_calls.append(kw)
+        return _fake_uploaded_sft_run(**kw)
+
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nLAUNCH_CONFIG = {"allow_experimental_weights": True}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_WEIGHTED_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_WEIGHTED_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_upload, launch_supported=True)
+
+    # the CLI flag is left at its default False -- only the project config opts in
+    assert (
+        launch._cmd_launch(_sft_launch_ns(tmp_path, allow_experimental_weights=False))
+        == 0
+    )
+    assert len(upload_calls) == 1
+    # the key is consumed client-side by the weight gate; it must never reach the
+    # server as a launcher arg (regression: _LAUNCH_CONFIG_RESERVED omitted it)
+    assert _SftCapturingClient.captured_launch["launcher_args"] is None
+
+
 def test_launch_sft_launcher_args_flow_through(monkeypatch, tmp_path):
     _write_sft_project(tmp_path)
-    _patch_sft_launch(
-        monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True
-    )
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
 
     assert launch._cmd_launch(_sft_launch_ns(tmp_path, set=["max_turns=11"])) == 0
     assert _SftCapturingClient.captured_launch["launcher_args"]["max_turns"] == 11
@@ -695,9 +727,7 @@ def test_launch_sft_json_output(monkeypatch, tmp_path, capsys):
     # payload (same pre-existing convention as the rl launch path) — check the
     # payload landed rather than parsing the whole stream as one JSON document.
     _write_sft_project(tmp_path)
-    _patch_sft_launch(
-        monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True
-    )
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
 
     assert launch._cmd_launch(_sft_launch_ns(tmp_path, json=True)) == 0
     out = capsys.readouterr().out

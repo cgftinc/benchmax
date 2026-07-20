@@ -930,6 +930,30 @@ def test_validate_sft_empty_train_fails(tmp_path, capsys):
     assert "validate failed" in out
 
 
+def test_validate_sft_uses_project_validate_config_max_seq_len(tmp_path, capsys):
+    """`castform validate` (sft mode) must resolve max_seq_len from the project's
+    VALIDATE_CONFIG the same way `_cmd_validate` resolves it for RL envs -- not
+    silently validate with the library default (regression: `_cmd_validate_sft`
+    used to call `validate_sft_dataset` with no kwargs at all, so a project's
+    declared budget was never honored)."""
+    (tmp_path / "main.py").write_text('TRAINING_MODE = "sft"\n')
+    (tmp_path / "train_dataset.jsonl").write_text(_SFT_ROW)
+    assert validate._cmd_validate(_validate_ns(dir=str(tmp_path))) == 0
+    out = capsys.readouterr().out
+    assert "exceed max_seq_len" not in out  # default max_seq_len (8192) not tripped
+
+    # Same tiny row, but the project now declares a max_seq_len far below it --
+    # only honoring VALIDATE_CONFIG makes this row cross the budget.
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nVALIDATE_CONFIG = {"max_seq_len": 0}\n'
+    )
+    assert (
+        validate._cmd_validate(_validate_ns(dir=str(tmp_path))) == 0
+    )  # notice, not error
+    out = capsys.readouterr().out
+    assert "exceed max_seq_len" in out
+
+
 def test_reward_audit_shows_inconsistent_shape(monkeypatch, capsys):
     report = _report(
         examples=[

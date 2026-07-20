@@ -82,7 +82,9 @@ def _build_launcher_args(specs: list[LaunchArgSpec], pairs: list[str] | None) ->
 # LAUNCH_CONFIG keys resolved on their own (not launcher args passed to the server).
 # `model` is the TRAINING model and IS a real launcher arg — it must flow through to
 # the server, so it is NOT reserved. (`type` is a removed knob; filtered if present.)
-_LAUNCH_CONFIG_RESERVED = frozenset({"type", "name"})
+# `allow_experimental_weights` is consumed client-side by the sft weight gate below —
+# it must never reach `_launcher_args_from_config` as a candidate server-bound arg.
+_LAUNCH_CONFIG_RESERVED = frozenset({"type", "name", "allow_experimental_weights"})
 
 
 def _launcher_args_from_config(specs: list[LaunchArgSpec], config: dict) -> dict:
@@ -266,8 +268,13 @@ def _cmd_launch_sft(
         return 1
     print("✓ dataset validation passed.")
 
-    # reject weights before assembling server-bound launcher args
-    if report.masking_summary.rows_with_weight and not args.allow_experimental_weights:
+    # reject weights before assembling server-bound launcher args. The CLI flag and
+    # the project's LAUNCH_CONFIG key are equivalent overrides — either clears the gate.
+    lc = project.launch_config
+    allow_weights = args.allow_experimental_weights or lc.get(
+        "allow_experimental_weights", False
+    )
+    if report.masking_summary.rows_with_weight and not allow_weights:
         print(
             "✗ dataset uses per-message 'weight' (masking) — trainer support for "
             "this is unconfirmed. re-run with --allow-experimental-weights to "
@@ -276,7 +283,6 @@ def _cmd_launch_sft(
         )
         return 1
 
-    lc = project.launch_config
     launcher_args = {
         **_launcher_args_from_config(specs, lc),
         **_build_launcher_args(specs, args.set),

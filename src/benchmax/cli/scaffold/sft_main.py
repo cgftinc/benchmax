@@ -38,7 +38,12 @@ from typing import Any
 from benchmax.platform.client import SFT_LAUNCH_SUPPORTED, TrainerClient
 from benchmax.platform.login import ensure_session
 from benchmax.platform.training_run import upload_sft_run
-from benchmax.sft import SftValidationReport, load_sft_dataset, validate_sft_dataset
+from benchmax.sft import (
+    SftValidationReport,
+    load_sft_dataset,
+    sft_validate_kwargs,
+    validate_sft_dataset,
+)
 
 # Explicit mode marker; read before BaseEnv discovery (see cli._project.load_project).
 TRAINING_MODE = "sft"
@@ -146,14 +151,22 @@ def generate_data(force: bool = False) -> bool:
     here so the dataset stays reproducible from this file. Re-run with --force
     to regenerate; skip-if-exists otherwise. See `_SEED_MULTIMODAL` above to
     opt into a multimodal demonstration row (vision base models only).
+
+    Existence is checked per file, not as a combined pair — eval is optional in
+    SFT, so a project with real train data but no eval file must not have its
+    train data overwritten just because eval "doesn't exist yet".
     """
-    have = Path(TRAIN_FILE).exists() and Path(EVAL_FILE).exists()
-    if have and not force:
-        print(f"data: {TRAIN_FILE} / {EVAL_FILE} present — skipping (--force to redo)")
-        return True
-    _write_jsonl(TRAIN_FILE, _SEED_TRAIN)
-    _write_jsonl(EVAL_FILE, _SEED_EVAL)
-    print(f"data: wrote {len(_SEED_TRAIN)} train / {len(_SEED_EVAL)} eval rows")
+    if Path(TRAIN_FILE).exists() and not force:
+        print(f"data: {TRAIN_FILE} present — skipping (--force to redo)")
+    else:
+        _write_jsonl(TRAIN_FILE, _SEED_TRAIN)
+        print(f"data: wrote {len(_SEED_TRAIN)} train rows to {TRAIN_FILE}")
+
+    if Path(EVAL_FILE).exists() and not force:
+        print(f"data: {EVAL_FILE} present — skipping (--force to redo)")
+    else:
+        _write_jsonl(EVAL_FILE, _SEED_EVAL)
+        print(f"data: wrote {len(_SEED_EVAL)} eval rows to {EVAL_FILE}")
     return True
 
 
@@ -183,24 +196,41 @@ def _print_scorecard(report: SftValidationReport) -> None:
     print(f"validate: {'pass' if report.ok else 'fail'}")
 
 
-def validate() -> SftValidationReport:
-    """Validate the sft dataset pair locally (no GPU, no rollouts). Returns the
-    report."""
+def _load_datasets():
+    """Load the train/eval `SftDataset` pair once from disk."""
     train = load_sft_dataset(TRAIN_FILE)
     eval_dataset = load_sft_dataset(EVAL_FILE) if Path(EVAL_FILE).exists() else None
+    return train, eval_dataset
+
+
+def _validate_loaded(train, eval_dataset) -> SftValidationReport:
+    """Validate an already-loaded train/eval pair (no disk I/O) and print the
+    scorecard."""
     report = validate_sft_dataset(
-        train,
-        eval_dataset,
-        **{k: v for k, v in VALIDATE_CONFIG.items() if k in ("max_seq_len", "max_row_bytes")},
+        train, eval_dataset, **sft_validate_kwargs(VALIDATE_CONFIG)
     )
     _print_scorecard(report)
     return report
 
 
+def validate() -> SftValidationReport:
+    """Validate the sft dataset pair locally (no GPU, no rollouts). Returns the
+    report."""
+    train, eval_dataset = _load_datasets()
+    return _validate_loaded(train, eval_dataset)
+
+
 def launch(assume_yes: bool = False) -> str | None:
     """Validate-gate, weight-gate, confirm, then upload + launch an SFT training
-    run (spends credits). Returns the run id, or None if gated/aborted."""
-    report = validate()  # cheap pre-flight — never spend GPU on a broken dataset
+    run (spends credits). Returns the run id, or None if gated/aborted.
+
+    The train/eval pair is loaded ONCE, up front — the same objects that get
+    validated are the ones passed to `upload_sft_run`, so a file edit/swap
+    between validate and confirm can't bypass the schema/weight gates."""
+    train, eval_dataset = _load_datasets()
+    report = _validate_loaded(
+        train, eval_dataset
+    )  # never spend GPU on a broken dataset
     if report is None or not report.ok:
         print(
             "launch: validate gate failed — fix the dataset before launching.",
@@ -247,8 +277,6 @@ def launch(assume_yes: bool = False) -> str | None:
             print("launch: aborted.")
             return None
 
-    train = load_sft_dataset(TRAIN_FILE)
-    eval_dataset = load_sft_dataset(EVAL_FILE) if Path(EVAL_FILE).exists() else None
     uploaded = upload_sft_run(train=train, eval=eval_dataset, run_name=_run_name())
 
     with TrainerClient() as client:

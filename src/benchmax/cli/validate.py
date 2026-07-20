@@ -605,7 +605,7 @@ def _print_sft_scorecard(report, *, train_label: str, eval_label: str | None) ->
 
 
 def _cmd_validate_sft(args: argparse.Namespace, project) -> int:
-    from benchmax.sft import load_sft_dataset, validate_sft_dataset
+    from benchmax.sft import load_sft_dataset, sft_validate_kwargs, validate_sft_dataset
 
     train = load_sft_dataset(project.sft_train_path)
     eval_dataset = (
@@ -613,7 +613,12 @@ def _cmd_validate_sft(args: argparse.Namespace, project) -> int:
         if project.sft_eval_path is not None
         else None
     )
-    report = validate_sft_dataset(train, eval_dataset)
+    # Same resolution as the scaffold's own validate(): main.py's VALIDATE_CONFIG
+    # bakes in max_seq_len/max_row_bytes so `castform validate` reproduces the
+    # run the project intends without extra flags.
+    report = validate_sft_dataset(
+        train, eval_dataset, **sft_validate_kwargs(project.validate_config)
+    )
 
     if args.json:
         print_json(_sft_report_to_dict(report))

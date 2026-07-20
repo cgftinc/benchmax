@@ -14,6 +14,17 @@ from benchmax.sft.schema import validate_row
 DEFAULT_MAX_SEQ_LEN = 8192
 DEFAULT_MAX_ROW_BYTES = 1024 * 1024  # 1 MiB
 
+# The VALIDATE_CONFIG / --config keys validate_sft_dataset actually accepts as
+# kwargs — shared so a project's config dict is filtered identically everywhere
+# it's read (the scaffold's own validate()/launch(), and `castform validate`).
+VALIDATE_CONFIG_KEYS = ("max_seq_len", "max_row_bytes")
+
+
+def sft_validate_kwargs(config: dict) -> dict:
+    """``config`` (e.g. a project's ``VALIDATE_CONFIG``) filtered down to the
+    kwargs :func:`validate_sft_dataset` accepts."""
+    return {k: v for k, v in config.items() if k in VALIDATE_CONFIG_KEYS}
+
 
 @dataclass(frozen=True)
 class TokenLengthStats:
@@ -50,7 +61,9 @@ class SftValidationReport:
     token_length_stats: TokenLengthStats = field(
         default_factory=lambda: TokenLengthStats(0, 0, 0.0, 0)
     )
-    masking_summary: MaskingSummary = field(default_factory=lambda: MaskingSummary(0, 0, 0))
+    masking_summary: MaskingSummary = field(
+        default_factory=lambda: MaskingSummary(0, 0, 0)
+    )
 
     @property
     def ok(self) -> bool:
@@ -90,7 +103,9 @@ def validate_sft_dataset(
     for dataset in (train, eval) if eval is not None else (train,):
         for row in dataset.rows:
             for message in validate_row(row.data):
-                issues.append(SftIssue(row.source_path, row.physical_line, "error", message))
+                issues.append(
+                    SftIssue(row.source_path, row.physical_line, "error", message)
+                )
 
             serialized_len = _safe_serialized_len(row.data)
             if serialized_len is not None and serialized_len >= max_row_bytes:
@@ -196,9 +211,13 @@ def _weight_counts(row_data: dict) -> tuple[bool, int, int]:
     return row_has_weight, trained, masked
 
 
-def _token_stats(token_counts: list[int], rows_over_max_seq_len: int) -> TokenLengthStats:
+def _token_stats(
+    token_counts: list[int], rows_over_max_seq_len: int
+) -> TokenLengthStats:
     if not token_counts:
-        return TokenLengthStats(min_tokens=0, max_tokens=0, mean_tokens=0.0, rows_over_max_seq_len=0)
+        return TokenLengthStats(
+            min_tokens=0, max_tokens=0, mean_tokens=0.0, rows_over_max_seq_len=0
+        )
     return TokenLengthStats(
         min_tokens=min(token_counts),
         max_tokens=max(token_counts),
