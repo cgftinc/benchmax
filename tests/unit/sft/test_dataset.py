@@ -185,6 +185,26 @@ class TestCanonicalJsonl:
         assert len(lines) == 2
         assert [json.loads(line) for line in lines] == [row.data for row in dataset.rows]
 
+    def test_ordinary_non_ascii_round_trips(self, tmp_path):
+        path = _write(
+            tmp_path,
+            "train.jsonl",
+            '{"messages": [{"role": "assistant", "content": "héllo \\u2014 日本語"}]}\n',
+        )
+        dataset = load_sft_dataset(path)
+        rendered = _canonical_jsonl(dataset).decode("utf-8")
+        assert json.loads(rendered)["messages"][0]["content"] == "héllo — 日本語"
+
+    def test_lone_surrogate_raises_instead_of_producing_broken_bytes(self, tmp_path):
+        # A row with a lone surrogate should never reach canonical_jsonl in
+        # practice — schema.validate_row rejects it first — but this documents
+        # canonical_jsonl's own contract: it fails loudly rather than silently
+        # emitting undecodable bytes if ever called on unvalidated data.
+        path = _write(tmp_path, "train.jsonl", '{"messages": [{"role": "assistant", "content": "\\ud800"}]}\n')
+        dataset = load_sft_dataset(path)
+        with pytest.raises(UnicodeEncodeError):
+            _canonical_jsonl(dataset)
+
     def test_legacy_split_file_canonicalization_preserves_everything(self, tmp_path):
         legacy_row = {
             "prompt_messages": [

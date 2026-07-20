@@ -5,11 +5,10 @@ validated is not a pass" rule for the SFT pathway.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 
 from benchmax.envs.base.content import message_text
-from benchmax.sft.dataset import SftDataset, SftIssue
+from benchmax.sft.dataset import SftDataset, SftIssue, canonical_row_bytes
 from benchmax.sft.schema import validate_row
 
 DEFAULT_MAX_SEQ_LEN = 8192
@@ -154,14 +153,15 @@ def validate_sft_dataset(
 
 
 def _safe_serialized_len(row_data: dict) -> int | None:
-    """Byte length of ``row_data`` as canonical JSON, or ``None`` if it can't serialize.
+    """Byte length of ``row_data`` via the same encoding ``canonical_jsonl`` uses,
+    or ``None`` if it can't serialize.
 
     A non-serializable row already gets a "not JSON-serializable" error
     from :func:`benchmax.sft.schema.validate_row` above — this guard just
     keeps a bad row from crashing the rest of the report.
     """
     try:
-        return len(json.dumps(row_data, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+        return len(canonical_row_bytes(row_data))
     except (TypeError, ValueError):
         return None
 

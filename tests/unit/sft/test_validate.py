@@ -286,3 +286,55 @@ class TestSerializationGuard:
         assert any(i.severity == "error" for i in train.load_issues)
         report = validate_sft_dataset(train)  # must not raise
         assert report.ok is False
+
+
+class TestEmptyTextContentPartFullPipeline:
+    def test_only_empty_text_part_does_not_count_as_trained(self, tmp_path):
+        text = (
+            '{"messages": [{"role": "user", "content": "hi"}, '
+            '{"role": "assistant", "content": [{"type": "text", "text": ""}]}]}\n'
+        )
+        path = _write(tmp_path, "train.jsonl", text)
+        train = load_sft_dataset(path)
+        report = validate_sft_dataset(train)
+        assert report.ok is False
+        assert any(
+            i.severity == "error" and "no trained assistant turn" in i.message
+            for i in report.issues
+        )
+
+    def test_non_empty_text_part_counts_as_trained(self, tmp_path):
+        text = (
+            '{"messages": [{"role": "user", "content": "hi"}, '
+            '{"role": "assistant", "content": [{"type": "text", "text": "hi there"}]}]}\n'
+        )
+        path = _write(tmp_path, "train.jsonl", text)
+        train = load_sft_dataset(path)
+        report = validate_sft_dataset(train)
+        assert report.ok is True
+
+
+class TestToolCallArgumentsNonFiniteFullPipeline:
+    def test_nan_in_tool_call_arguments_produces_error_not_exception(self, tmp_path):
+        text = (
+            '{"messages": [{"role": "assistant", "content": null, "tool_calls": '
+            '[{"id": "1", "type": "function", "function": {"name": "f", '
+            '"arguments": "{\\"score\\": NaN}"}}]}]}\n'
+        )
+        path = _write(tmp_path, "train.jsonl", text)
+        train = load_sft_dataset(path)
+        report = validate_sft_dataset(train)  # must not raise
+        assert report.ok is False
+        assert any("must be valid JSON" in i.message for i in report.issues)
+
+
+class TestLoneSurrogateFullPipeline:
+    def test_lone_surrogate_content_produces_error_not_exception(self, tmp_path):
+        path = _write(
+            tmp_path, "train.jsonl", '{"messages": [{"role": "assistant", "content": "\\ud800"}]}\n'
+        )
+        train = load_sft_dataset(path)  # valid JSON syntax — loads fine
+        assert len(train.rows) == 1
+        report = validate_sft_dataset(train)  # must not raise
+        assert report.ok is False
+        assert any("not JSON-serializable" in i.message for i in report.issues)

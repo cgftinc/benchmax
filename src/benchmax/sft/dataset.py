@@ -108,13 +108,21 @@ def load_sft_dataset(path: str | Path) -> SftDataset:
     return SftDataset(path=source_path, rows=rows, load_issues=load_issues)
 
 
-def canonical_jsonl(dataset: SftDataset) -> bytes:
-    """Render ``dataset``'s rows as canonical JSONL bytes — the only shape the upload path accepts.
+def canonical_row_bytes(row_data: dict[str, Any]) -> bytes:
+    """The exact bytes ``canonical_jsonl`` produces for one row.
 
-    ``allow_nan=False`` so a non-finite value that somehow reaches this
-    point (load-time already rejects it) raises loudly instead of emitting
-    a ``NaN``/``Infinity`` token that isn't valid JSON.
+    Shared with :func:`benchmax.sft.schema.validate_row` and
+    :func:`benchmax.sft.validate.validate_sft_dataset` so "is this row
+    serializable" is answered by the same code path that actually
+    canonicalizes it — ``ensure_ascii=True`` (json.dumps' default) never
+    attempts the UTF-8 encode step, so a schema check that only called
+    ``json.dumps`` could pass a row containing a lone surrogate that then
+    raises ``UnicodeEncodeError`` here. ``allow_nan=False`` rejects
+    ``NaN``/``Infinity`` tokens that aren't valid JSON.
     """
-    return "".join(
-        json.dumps(row.data, ensure_ascii=False, allow_nan=False) + "\n" for row in dataset.rows
-    ).encode("utf-8")
+    return json.dumps(row_data, ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+
+def canonical_jsonl(dataset: SftDataset) -> bytes:
+    """Render ``dataset``'s rows as canonical JSONL bytes — the only shape the upload path accepts."""
+    return b"".join(canonical_row_bytes(row.data) + b"\n" for row in dataset.rows)

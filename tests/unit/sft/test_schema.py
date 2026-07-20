@@ -170,6 +170,56 @@ class TestWeightErrors:
         errors = validate_row(row)
         assert any("no trained assistant turn" in e for e in errors)
 
+    def test_assistant_with_empty_text_part_not_trained(self):
+        # a content-part list whose only part carries "" is semantically the
+        # same as bare content: "" — must not count as a trained turn either.
+        row = {"messages": [{"role": "assistant", "content": [{"type": "text", "text": ""}]}]}
+        errors = validate_row(row)
+        assert any("no trained assistant turn" in e for e in errors)
+
+    def test_assistant_with_multiple_empty_text_parts_not_trained(self):
+        row = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": ""}, {"type": "text", "text": ""}],
+                }
+            ]
+        }
+        errors = validate_row(row)
+        assert any("no trained assistant turn" in e for e in errors)
+
+    def test_assistant_with_non_empty_text_part_is_trained(self):
+        row = {"messages": [{"role": "assistant", "content": [{"type": "text", "text": "hi"}]}]}
+        assert validate_row(row) == []
+
+    def test_assistant_with_only_image_part_is_trained(self):
+        row = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+                    ],
+                }
+            ]
+        }
+        assert validate_row(row) == []
+
+    def test_assistant_with_empty_text_plus_valid_image_is_trained(self):
+        row = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": ""},
+                        {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
+                    ],
+                }
+            ]
+        }
+        assert validate_row(row) == []
+
     def test_assistant_with_valid_tool_calls_and_no_content_is_trained(self):
         row = {
             "messages": [
@@ -333,6 +383,47 @@ class TestToolCallErrors:
         errors = validate_row(row)
         assert any("tool_call_id" in e for e in errors)
 
+    def test_tool_call_arguments_with_nan_is_rejected(self):
+        # json.loads accepts the non-standard NaN/Infinity/-Infinity tokens
+        # by default; a tool-call's arguments string must reject them too,
+        # not just the top-level row parse.
+        row = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": '{"score": NaN}'},
+                        }
+                    ],
+                }
+            ]
+        }
+        errors = validate_row(row)
+        assert any("must be valid JSON" in e for e in errors)
+
+    def test_tool_call_arguments_with_infinity_is_rejected(self):
+        row = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": '{"score": Infinity}'},
+                        }
+                    ],
+                }
+            ]
+        }
+        errors = validate_row(row)
+        assert any("must be valid JSON" in e for e in errors)
+
 
 class TestContentPartErrors:
     def test_content_not_str_or_list(self):
@@ -389,6 +480,19 @@ class TestJsonSerializability:
         errors = validate_row(row)
         assert any("role must be one of" in e for e in errors)
         assert any("not JSON-serializable" in e for e in errors)
+
+    def test_lone_surrogate_content_is_rejected(self):
+        # ensure_ascii=True (json.dumps' default) never attempts the UTF-8
+        # encode step, so a naive check would pass this row right up until
+        # canonical_jsonl's ensure_ascii=False encode blew up on it.
+        row = {"messages": [{"role": "assistant", "content": "before\ud800after"}]}
+        errors = validate_row(row)
+        assert any("not JSON-serializable" in e for e in errors)
+
+    def test_ordinary_non_ascii_content_is_fine(self):
+        # the fix must not start rejecting legitimate non-ASCII text.
+        row = {"messages": [{"role": "assistant", "content": "héllo — 日本語"}]}
+        assert validate_row(row) == []
 
 
 class TestUnexpectedTopLevelFields:

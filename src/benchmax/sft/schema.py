@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from benchmax.sft.dataset import canonical_row_bytes
+
 ALLOWED_TOP_LEVEL_KEYS = frozenset({"messages", "tools"})
 VALID_ROLES = frozenset({"system", "user", "assistant", "tool"})
 VALID_CONTENT_PART_TYPES = frozenset({"text", "image_url"})
@@ -58,8 +60,11 @@ def validate_row(row: Any) -> list[str]:
         errors.append("'tools' must be a list")
 
     try:
-        json.dumps(row, allow_nan=False)
+        canonical_row_bytes(row)
     except (TypeError, ValueError) as exc:
+        # UnicodeEncodeError (e.g. a lone surrogate) is a ValueError subclass,
+        # so this also catches a row that would only fail once canonical_jsonl
+        # actually UTF-8-encodes it.
         errors.append(f"row is not JSON-serializable: {exc}")
 
     return errors
@@ -129,8 +134,19 @@ def _has_meaningful_content(content: Any) -> bool:
     if isinstance(content, str):
         return content != ""
     if isinstance(content, list):
-        return len(content) > 0
+        return any(_part_has_meaningful_content(part) for part in content)
     return False
+
+
+def _part_has_meaningful_content(part: Any) -> bool:
+    if not isinstance(part, dict):
+        return False
+    if part.get("type") == "image_url":
+        image_url = part.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, dict) else None
+        return isinstance(url, str) and (url.startswith("data:") or url.startswith("https:"))
+    text = part.get("text") or part.get("content")
+    return isinstance(text, str) and text != ""
 
 
 def _validate_content(content: Any, index: int) -> list[str]:
@@ -198,9 +214,16 @@ def _validate_tool_calls(tool_calls: Any, index: int) -> list[str]:
             )
         else:
             try:
-                json.loads(arguments)
-            except json.JSONDecodeError:
+                json.loads(arguments, parse_constant=_reject_non_finite_constant)
+            except ValueError:
                 errors.append(
                     f"messages[{index}].tool_calls[{j}].function.arguments must be valid JSON"
                 )
     return errors
+
+
+def _reject_non_finite_constant(constant: str) -> Any:
+    # json.loads accepts NaN/Infinity/-Infinity by default (not valid JSON
+    # per RFC 8259); mirrors dataset.py's top-level row parse so a tool
+    # call's arguments string can't sneak one through as "valid JSON".
+    raise ValueError(f"non-finite JSON constant {constant!r} is not allowed")
