@@ -88,6 +88,7 @@ def test_load_project_bad_module_is_project_error():
 
 
 class _FakeProject:
+    training_mode = "rl"
     env_class = type("E", (), {})
     train_dataset = [{"prompt": "x"}]
     eval_dataset = []
@@ -230,6 +231,7 @@ def test_validate_probe_renders_at_command_layer(monkeypatch, capsys):
             return {"ok": True, "summary": "gold-hit@10 = 0.60", "value": 0.6}
 
     class _P:
+        training_mode = "rl"
         env_class = _ProbeEnv
         train_dataset = [{"prompt": "x"}]
         eval_dataset = [{"question": "q", "answer": "a"}]
@@ -566,6 +568,7 @@ def test_constant_total_helper():
 class _RagProject:
     """A project whose dataset carries gold, indexable by rollout index."""
 
+    training_mode = "rl"
     env_class = type("E", (), {})
     train_dataset = [
         {"prompt": "where do I add the exception?", "ground_truth": "edit /etc/docker"},
@@ -711,6 +714,7 @@ def test_reward_audit_json_uses_env_declared_primary(monkeypatch, capsys):
         PRIMARY_REWARD_KEY = "quality"
 
     class _P:
+        training_mode = "rl"
         env_class = _JudgeEnv
         train_dataset = [{"prompt": "x"}, {"prompt": "y"}]
         eval_dataset: list = []
@@ -846,6 +850,84 @@ def test_validate_json_includes_inconsistent_shape_warning(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert '"inconsistent_reward_shape"' in out and '"component": "cite"' in out
     assert '"present": 1' in out
+
+
+# --- sft mode (slice 5) --------------------------------------------------
+
+_SFT_ROW = (
+    '{"messages": [{"role": "user", "content": "hi"}, '
+    '{"role": "assistant", "content": "yo"}]}\n'
+)
+
+
+def _write_sft_project(tmp_path, *, train, eval=None):
+    (tmp_path / "main.py").write_text('TRAINING_MODE = "sft"\n')
+    (tmp_path / "train_dataset.jsonl").write_text(train)
+    if eval is not None:
+        (tmp_path / "eval_dataset.jsonl").write_text(eval)
+    return tmp_path
+
+
+def test_validate_sft_valid_dataset_exits_0(tmp_path, capsys):
+    _write_sft_project(tmp_path, train=_SFT_ROW)
+    assert validate._cmd_validate(_validate_ns(dir=str(tmp_path))) == 0
+    out = capsys.readouterr().out
+    assert "sft" in out
+    assert "train 1" in out
+    assert "validate passed" in out
+
+
+def test_validate_sft_malformed_json_shows_physical_line_numbers(tmp_path, capsys):
+    # blank at physical line 1, malformed JSON at physical line 2, a valid row at
+    # physical line 3 -- proves _load_jsonl (which drops blanks + reindexes) is
+    # bypassed: load_sft_dataset's own physical-line count must survive intact.
+    _write_sft_project(tmp_path, train="\nnot valid json\n" + _SFT_ROW)
+    assert validate._cmd_validate(_validate_ns(dir=str(tmp_path))) == 1
+    out = capsys.readouterr().out
+    assert "train_dataset.jsonl:2" in out
+    assert "invalid JSON" in out
+    assert "validate failed" in out
+
+
+def test_validate_sft_json_output(tmp_path, capsys):
+    import json as _json
+
+    _write_sft_project(tmp_path, train=_SFT_ROW)
+    assert validate._cmd_validate(_validate_ns(dir=str(tmp_path), json=True)) == 0
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["train_row_count"] == 1
+    # only the expected "no eval dataset provided" notice, no error issues
+    assert [i["severity"] for i in payload["issues"]] == ["notice"]
+
+
+def test_validate_sft_json_malformed_line_reports_physical_line(tmp_path, capsys):
+    import json as _json
+
+    _write_sft_project(tmp_path, train="\nnot valid json\n" + _SFT_ROW)
+    assert validate._cmd_validate(_validate_ns(dir=str(tmp_path), json=True)) == 1
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    issue = next(i for i in payload["issues"] if i["severity"] == "error")
+    assert issue["physical_line"] == 2
+
+
+def test_validate_sft_weight_notice_does_not_fail(tmp_path, capsys):
+    weighted_row = (
+        '{"messages": [{"role": "user", "content": "hi"}, '
+        '{"role": "assistant", "content": "yo", "weight": 1}]}\n'
+    )
+    _write_sft_project(tmp_path, train=weighted_row)
+    assert validate._cmd_validate(_validate_ns(dir=str(tmp_path))) == 0
+    out = capsys.readouterr().out
+    assert "rows with weight         1" in out
+
+
+def test_validate_sft_empty_train_fails(tmp_path, capsys):
+    _write_sft_project(tmp_path, train="\n")
+    assert validate._cmd_validate(_validate_ns(dir=str(tmp_path))) == 1
+    out = capsys.readouterr().out
+    assert "validate failed" in out
 
 
 def test_reward_audit_shows_inconsistent_shape(monkeypatch, capsys):
