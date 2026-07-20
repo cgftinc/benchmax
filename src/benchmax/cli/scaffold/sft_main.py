@@ -272,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         nargs="?",
         default="all",
         choices=["data", "validate", "launch", "all"],
-        help="stage to run (default: all = data → validate, then STOP).",
+        help="stage to run (default: all = data → validate, then stop).",
     )
     parser.add_argument(
         "--force", action="store_true", help="regenerate datasets even if present."
