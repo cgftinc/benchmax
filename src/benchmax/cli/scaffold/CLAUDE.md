@@ -1,8 +1,9 @@
 # Castform training project
 
-You are driving a reinforcement-learning run with the `castform` CLI. Keep the
-loop simple: tailor the seed env, make data, validate a cheap baseline on real
-rollouts, then decide whether to iterate or spend GPU on launch.
+You are driving a training run with the `castform` CLI — either a
+reinforcement-learning env or an env-less SFT dataset, see the mode check
+below. Keep the loop simple: tailor the seed, make data, validate a cheap
+baseline, then decide whether to iterate or spend GPU on launch.
 
 ## RL project, or SFT project?
 
@@ -11,13 +12,14 @@ Before following the workflow below, check `main.py`'s top for the mode marker
 
 - **`TRAINING_MODE = "sft"`** at module level, no `BaseEnv` subclass →
   an env-less supervised fine-tuning project (`castform setup --template sft`).
-  Skip env design entirely: there is no reward function, no tools, and no
-  rollout budget to tune. Data is `{"messages": [...]}` rows (see
-  generate-data's SFT section), `castform validate` is a local, no-rollout
-  dataset check (see verify-environment's SFT section), and `castform launch`
-  currently fails before upload —
-  `benchmax.platform.client.SFT_LAUNCH_SUPPORTED` is `False` (see launch-run's
-  SFT section).
+  Skip env design entirely: there is no reward function, no rollout-time tool
+  execution, and no rollout budget to tune (dataset rows may still carry a
+  `tools` list and tool-call demonstrations as static training examples — see
+  generate-data's SFT section). Data is `{"messages": [...]}` rows,
+  `castform validate` is a local, no-rollout dataset check (see
+  verify-environment's SFT section), and `castform launch` currently fails
+  before upload — `benchmax.platform.client.SFT_LAUNCH_SUPPORTED` is `False`
+  (see launch-run's SFT section).
 - **No `TRAINING_MODE` marker, a `BaseEnv` subclass present** → a
   reinforcement-learning project. The rest of this file, and the workflow
   below, describes that path.

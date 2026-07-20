@@ -1,12 +1,4 @@
-"""Slice 7 gate: the SFT/multimodal symbols and CLI flags named in the edited
-scaffold skill docs (design-environment, generate-data, verify-environment,
-launch-run, scaffold CLAUDE.md) actually exist, and every scaffold template
-still renders cleanly.
-
-Pre-existing harbor-proper env API references in those docs (`BaseEnv`,
-`JsonlDataset`, ...) are accepted skew per the plan's Risks section and are not
-gated here — only symbols/flags newly named by this slice.
-"""
+"""Keep scaffold documentation references valid."""
 
 from __future__ import annotations
 
@@ -69,10 +61,31 @@ def test_launch_allow_experimental_weights_flag_named_in_docs_is_registered():
     assert "--allow-experimental-weights" in launch_parser._option_string_actions
 
 
+def test_launch_name_flag_named_in_docs_is_registered():
+    launch_parser = _subparser("launch")
+    assert "--name" in launch_parser._option_string_actions
+
+
+def test_validate_json_flag_named_in_docs_is_registered():
+    validate_parser = _subparser("validate")
+    assert "--json" in validate_parser._option_string_actions
+
+
 def test_setup_template_sft_choice_named_in_docs_is_registered():
     setup_parser = _subparser("setup")
     action = setup_parser._option_string_actions["--template"]
     assert "sft" in action.choices
+
+
+def test_data_traces_dry_run_flag_named_in_docs_is_registered():
+    data_parser = _subparser("data")
+    data_command = next(
+        action
+        for action in data_parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    traces_parser = data_command.choices["traces"]
+    assert "--dry-run" in traces_parser._option_string_actions
 
 
 def _ns(tmp, **kw):

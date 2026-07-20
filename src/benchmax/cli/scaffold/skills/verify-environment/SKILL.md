@@ -78,8 +78,8 @@ wrong source identifier — audit the citation matcher before you trust it.
 
 For an env-less SFT project (`TRAINING_MODE = "sft"`, see design-environment),
 `castform validate` takes a different path entirely: it loads and validates the
-dataset **locally** — no remote rollouts, no LLM calls, no GPU — so it runs in
-well under a second even on a large file. There is no reward table and no
+dataset **locally** — no remote rollouts, no LLM calls, no GPU — so it's
+typically fast even on a large file. There is no reward table and no
 `rewards vary` check; row and schema correctness is the whole gate.
 
 ```bash
