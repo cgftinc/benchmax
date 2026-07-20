@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import textwrap
 import warnings
 from collections.abc import Iterator
@@ -25,6 +26,7 @@ from .exceptions import (
     RolloutNotFound,
     RolloutServerError,
     RolloutStreamError,
+    SftLaunchNotSupportedError,
     TrainerError,
 )
 
@@ -34,6 +36,40 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from benchmax.envs.base_env import BaseEnv
+
+
+# Flip to True once platform-service accepts `training_mode` as a recognized
+# POST /v1/train/runs/launch arg (see TrainerClient.launch_sft_run). Not
+# consumed anywhere in this module — the CLI/scaffold launch path gates its
+# pre-upload guard on this flag.
+SFT_LAUNCH_SUPPORTED = False
+
+# Best-effort, UNVERIFIED match for platform-service's "unrecognized launch
+# argument" rejection — the plan that motivated launch_sft_run points at
+# platform-service's src/lib/trainer-args.ts:425 for the real message, but
+# that repo isn't checked out here, so this hasn't been confirmed against a
+# live response. TODO: verify the actual message once platform-service is
+# reachable, and tighten/loosen this pattern accordingly.
+_UNKNOWN_LAUNCH_ARG_RE = re.compile(
+    r"\b(?:unrecogni[sz]ed|unknown)\b[^.]{0,40}\barg(?:ument)?s?\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_unknown_launch_arg_rejection(
+    status_code: int | None, message: str
+) -> bool:
+    """Narrow, loose heuristic for the platform's unknown-launch-arg 4xx.
+
+    Deliberately conservative: requires both a 4xx status AND wording that
+    plausibly names an unrecognized/unknown argument, so ordinary 4xx
+    failures (bad dataset path, validation errors unrelated to arg names)
+    don't get misclassified. See the module-level TODO above — not a
+    stable contract.
+    """
+    if status_code is None or not (400 <= status_code < 500):
+        return False
+    return bool(_UNKNOWN_LAUNCH_ARG_RE.search(message))
 
 
 @dataclass(frozen=True)
@@ -478,6 +514,78 @@ class TrainerClient:
         for warning in body.get("warnings", []) or []:
             warnings.warn(f"launch warning: {warning}", stacklevel=2)
         return body["runId"]
+
+    def launch_sft_run(
+        self,
+        name: str,
+        train_dataset_path: str,
+        eval_dataset_path: str | None = None,
+        launcher_args: dict[str, Any] | None = None,
+    ) -> str:
+        """Launch a new SFT (env-less) training run.
+
+        Posts ``training_mode: "sft"`` alongside the dataset paths. As of
+        writing, ``SFT_LAUNCH_SUPPORTED`` is ``False``: the live platform
+        does not yet recognize ``training_mode`` as a launch arg, so this
+        call is expected to fail against it — callers should gate on that
+        flag before calling this method at all (see the module docstring).
+
+        Args:
+            name: Name for the training run.
+            train_dataset_path: Path to the uploaded training dataset (see
+                ``upload_sft_run``).
+            eval_dataset_path: Path to the uploaded eval dataset, or ``None``
+                to omit eval entirely. ``None`` OMITS the eval field from the
+                request payload — no empty string, no null field — mirroring
+                ``upload_sft_run``'s optional-eval behavior.
+            launcher_args: Extra launcher args forwarded to the server.
+
+        Returns:
+            The training run ID.
+
+        Raises:
+            AuthenticationError: If API key is invalid.
+            SftLaunchNotSupportedError: If the platform's response looks like
+                its unknown-launch-arg rejection (see
+                ``_looks_like_unknown_launch_arg_rejection`` — a narrow,
+                UNVERIFIED heuristic, not a stable contract). The original
+                error is preserved as ``__cause__`` with its status code
+                intact.
+            JobLaunchError: Any other training-run launch failure — auth,
+                conflict, rate limit, server error, bad dataset path —
+                propagates unchanged.
+        """
+        args: dict[str, Any] = {
+            **(launcher_args or {}),
+            "training_mode": "sft",
+            "train_dataset_path": train_dataset_path,
+        }
+        if eval_dataset_path is not None:
+            args["eval_dataset_path"] = eval_dataset_path
+        body: dict[str, Any] = {
+            "name": name,
+            "args": args,
+        }
+        try:
+            response = self._http_client.post(
+                "/v1/train/runs/launch",
+                json=body,
+            )
+            self._handle_response_errors(response)
+        except JobLaunchError as exc:
+            if _looks_like_unknown_launch_arg_rejection(exc.status_code, exc.message):
+                raise SftLaunchNotSupportedError(
+                    "The platform does not accept env-less SFT runs yet "
+                    '("training_mode" is not a recognized launch arg). '
+                    "Wait for platform support to land, or track "
+                    "benchmax.platform.client.SFT_LAUNCH_SUPPORTED.",
+                    exc.status_code,
+                ) from exc
+            raise
+        response_body = response.json()
+        for warning in response_body.get("warnings", []) or []:
+            warnings.warn(f"launch warning: {warning}", stacklevel=2)
+        return response_body["runId"]
 
     def list_launch_args(self) -> list[LaunchArgSpec]:
         """Fetch the schema of launch args this platform accepts.
