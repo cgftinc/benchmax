@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from benchmax.envs.harbor.bundled_agent import BundledHarborAgent
+from benchmax.envs.harbor.runtime_verifier import RuntimeOnlyHarborVerifier
+
 if TYPE_CHECKING:
     from harbor.models.task.config import ArtifactConfig
     from harbor.models.trial.config import (
@@ -24,9 +27,9 @@ class HarborTrialTemplate:
     those per rollout and passes every field below through to ``TrialConfig``.
     """
 
-    agent: AgentConfig
+    agent: AgentConfig | BundledHarborAgent
     environment: EnvironmentConfig
-    verifier: VerifierConfig
+    verifier: VerifierConfig | RuntimeOnlyHarborVerifier
     trials_dir: Path = Path("trials")
     timeout_multiplier: float = 1.0
     agent_timeout_multiplier: float | None = None

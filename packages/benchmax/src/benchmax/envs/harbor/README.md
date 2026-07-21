@@ -83,6 +83,23 @@ is absent, the request model becomes an OpenAI-qualified Harbor model name.
 does not expose that schema itself, so BenchMax requires it explicitly instead
 of guessing from another rollout.
 
+Some Harbor verifiers accept credentials only as static environment variables.
+For local execution, keep such a config out of serialized bundles explicitly:
+
+```python
+from benchmax.envs.harbor import RuntimeOnlyHarborVerifier
+
+verifier = RuntimeOnlyHarborVerifier(
+    TrialVerifierConfig(env={"JUDGE_API_KEY": runtime_judge_key})
+)
+```
+
+`RuntimeOnlyHarborVerifier` deep-copies the config, redacts its representation,
+and refuses serialization. `HarborEnv` retains the wrapper and creates an
+ordinary verifier config only when constructing each concrete local trial. It
+does not provide credential injection or rotation; use a runtime-owned proxy or
+session credential before enabling remote bundles for these verifiers.
+
 Agent timeouts, context/output limits, nonzero harness exits, and sandbox,
 verifier, transport, or provider failures are logged and returned with the
 declared reward keys all zero. One failed trial does not cancel or distort its
@@ -102,3 +119,43 @@ BenchMax owns rollout-group concurrency. A caller or trainer may add retry polic
 around that contract; BenchMax itself does not retry a group. Harbor's job-queue-
 only `agent.n_concurrent` and `agent.concurrency_group` settings are rejected
 rather than silently ignored.
+
+## Bundled custom agents
+
+Harbor resolves custom agents from a string import path after an environment has
+been deserialized. Capture custom agent code and its adjacent resources eagerly
+when defining the environment so that import does not depend on the authoring
+checkout:
+
+```python
+from pathlib import Path
+
+from harbor import TrialAgentConfig
+
+from benchmax.envs.harbor import BundledAgentSource, BundledHarborAgent
+
+agent_source = BundledAgentSource.from_directory(
+    Path(__file__).parent,
+    files=("my_agent.py", "helpers.py", "prompts/system.txt"),
+)
+agent = BundledHarborAgent(
+    config=TrialAgentConfig(import_path="my_agent:MyAgent"),
+    source=agent_source,
+)
+```
+
+The declared bytes, canonical relative paths, and a deterministic content ID
+travel with the environment. At runtime BenchMax materializes the tree once per
+process and imports it through a private content-addressed package namespace. It
+does not modify `sys.path`, and different source revisions cannot claim the same
+module name. The materialized tree remains available for the lifetime of the
+process because agent methods may read adjacent resources after construction.
+Individual Harbor trial configs contain only the resolved content-addressed
+import path; they do not duplicate the captured source tree.
+
+Modules inside a captured package must use package-relative imports, such as
+`from .helpers import parse`. Top-level absolute imports such as `import helpers`
+would require changing the process-wide import path and are intentionally not
+supported. Adjacent resources may be located from the agent module's `__file__`.
+Only explicitly listed files are captured; directories, symlinks, caches, and
+undeclared checkout files are never included implicitly.

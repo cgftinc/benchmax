@@ -21,11 +21,13 @@ from harbor.models.trial.config import (
 from harbor.trial.trial import Trial
 
 from benchmax.auth import StaticBearerAuth
+from benchmax.bundle import BundlingError, dump_bundle
 from benchmax.envs import Example, RolloutRequest
 from benchmax.envs.harbor import (
     HarborEnv,
     HarborTrialTemplate,
     ModalCredentials,
+    RuntimeOnlyHarborVerifier,
 )
 from benchmax.envs.harbor.credentials import sandbox_credentials_scope
 
@@ -59,6 +61,13 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     credentials = ModalCredentials("modal-id", "modal-secret")
+    verifier = VerifierConfig(
+        env={
+            "OPENAI_BASE_URL": "https://judge.example/v1",
+            "OPENAI_API_KEY": "judge-key",
+        }
+    )
+    runtime_verifier = RuntimeOnlyHarborVerifier(verifier)
     template = HarborTrialTemplate(
         agent=AgentConfig(
             name="mini-swe-agent",
@@ -69,12 +78,7 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
             type=EnvironmentType.MODAL,
             kwargs={"app_name": "benchmax-test"},
         ),
-        verifier=VerifierConfig(
-            env={
-                "OPENAI_BASE_URL": "https://judge.example/v1",
-                "OPENAI_API_KEY": "judge-key",
-            }
-        ),
+        verifier=runtime_verifier,
         trials_dir=tmp_path / "trials",
     )
     env = HarborEnv(
@@ -83,7 +87,9 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
         trial=template,
         sandbox_credentials=credentials,
     )
+    verifier.env["OPENAI_API_KEY"] = "mutated-after-wrapping"
     assert env.requires_public_model_endpoint is True
+    assert repr(runtime_verifier) == "RuntimeOnlyHarborVerifier(<redacted>)"
 
     barrier = asyncio.Barrier(2)
     configs: dict[str, Any] = {}
@@ -345,6 +351,39 @@ def test_sandbox_credential_repr_hides_secret_values() -> None:
     assert "modal-secret" not in repr(credentials)
 
 
+def test_runtime_only_verifier_requires_a_harbor_config() -> None:
+    with pytest.raises(TypeError, match="must wrap Harbor VerifierConfig"):
+        RuntimeOnlyHarborVerifier(object())  # type: ignore[arg-type]
+
+
+def test_runtime_only_verifier_refuses_bundle_without_revealing_secret(
+    tmp_path: Path,
+) -> None:
+    secret = "runtime-only-verifier-secret"
+    constructor_args = {
+        "dataset": DatasetConfig(path=tmp_path),
+        "reward_keys": ("reward",),
+        "trial": HarborTrialTemplate(
+            agent=AgentConfig(name="mini-swe-agent"),
+            environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
+            verifier=RuntimeOnlyHarborVerifier(
+                VerifierConfig(env={"JUDGE_API_KEY": secret})
+            ),
+        ),
+    }
+
+    with pytest.raises(
+        BundlingError,
+        match="runtime-only Harbor verifier",
+    ) as exc_info:
+        dump_bundle(
+            HarborEnv,
+            constructor_args=constructor_args,
+            pip_dependencies=("harbor>=0.18,<0.19",),
+        )
+    assert secret not in str(exc_info.value)
+
+
 @pytest.mark.asyncio
 async def test_modal_credentials_scope_sets_bounded_throttle_retry(
     monkeypatch: pytest.MonkeyPatch,
@@ -526,6 +565,54 @@ async def test_harbor_rollout_exception_does_not_cancel_siblings(
     assert completed == {"rollout-2"}
     assert "harbor.rollout.failed rollout_id=rollout-1" in caplog.text
     assert "sandbox crashed" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("phase", "exception_type", "termination_reason"),
+    [
+        ("create", "SandboxBuildFailedError", "sandbox_error"),
+        ("run", "VerifierTimeoutError", "verifier_timeout"),
+        ("run", "RuntimeError", "harness_error"),
+    ],
+)
+async def test_raised_harbor_failures_use_the_terminal_reason_vocabulary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    exception_type: str,
+    termination_reason: str,
+) -> None:
+    env = HarborEnv(
+        dataset=DatasetConfig(path=tmp_path),
+        reward_keys=_REWARD_KEYS,
+        trial=HarborTrialTemplate(
+            agent=AgentConfig(name="mini-swe-agent"),
+            environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
+            verifier=VerifierConfig(),
+            trials_dir=tmp_path / "trials",
+        ),
+    )
+    error_class = type(exception_type, (RuntimeError,), {})
+
+    class FakeTrial:
+        async def run(self) -> Any:
+            raise error_class("provider failed")
+
+    async def create_trial(config: Any) -> FakeTrial:
+        if phase == "create":
+            raise error_class("provider failed")
+        return FakeTrial()
+
+    monkeypatch.setattr(Trial, "create", staticmethod(create_trial))
+
+    outcomes = await env.run_group([_request(tmp_path, rollout_id="rollout-1")])
+
+    assert outcomes["rollout-1"].rewards == {
+        "reward": 0.0,
+        "partial_credit": 0.0,
+    }
+    assert outcomes["rollout-1"].termination_reason == termination_reason
 
 
 @pytest.mark.asyncio

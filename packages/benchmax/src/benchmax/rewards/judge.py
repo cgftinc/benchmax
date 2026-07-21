@@ -6,9 +6,11 @@ import asyncio
 import json
 import math
 import re
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from openai import (
     AsyncOpenAI,
     AuthenticationError,
@@ -27,6 +29,23 @@ class JudgeError(RolloutFailure):
 
     def __init__(self, message: str) -> None:
         super().__init__("judge_error", message)
+
+
+class _RequestModelAuth(httpx.Auth):
+    """Resolve BenchMax model auth for each physical HTTP request."""
+
+    def __init__(self, auth: ModelAuth, context: ModelRequestContext) -> None:
+        self._auth = auth
+        self._context = context
+
+    async def async_auth_flow(
+        self,
+        request: httpx.Request,
+    ) -> AsyncGenerator[httpx.Request, None]:
+        headers = await self._auth.headers_for_request(self._context)
+        for name, value in headers.items():
+            request.headers[name] = value
+        yield request
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,17 +117,18 @@ class Judge:
 
         last_auth_error: Exception | None = None
         for attempt in range(self.auth_attempts):
-            headers = await self.auth.headers_for_request(
-                ModelRequestContext(
-                    base_url=self.base_url,
-                    model=self.model,
-                    rollout_id=request_id,
-                )
+            context = ModelRequestContext(
+                base_url=self.base_url,
+                model=self.model,
+                rollout_id=request_id,
+            )
+            http_client = httpx.AsyncClient(
+                auth=_RequestModelAuth(self.auth, context),
             )
             client = AsyncOpenAI(
                 base_url=self.base_url,
                 api_key="benchmax-explicit-auth",
-                default_headers=dict(headers),
+                http_client=http_client,
                 max_retries=self.max_retries,
             )
             request: dict[str, Any] = {
@@ -133,11 +153,15 @@ class Judge:
                 last_auth_error = error
                 if attempt + 1 < self.auth_attempts:
                     await asyncio.sleep(0.5 * (attempt + 1))
+            except Exception as error:
+                raise JudgeError(f"judge request failed: {error}") from error
             finally:
                 await client.close()
 
         assert last_auth_error is not None
-        raise last_auth_error
+        raise JudgeError(f"judge authentication failed: {last_auth_error}") from (
+            last_auth_error
+        )
 
 
 def _parse_json_object(raw: str) -> dict[str, Any]:

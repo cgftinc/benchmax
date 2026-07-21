@@ -14,7 +14,9 @@ The integration has three explicit pieces:
   It maps Harvey's sandbox interface onto the sandbox Harbor already owns and
   connects model calls to the rollout's OpenAI-compatible endpoint.
 
-The environment constructor requires `ModalCredentials` and a judge API key:
+The environment constructor requires `ModalCredentials` and a judge API key.
+Both are fixed credentials that ride in bundles; use a dedicated, revocable
+key rather than a personal one:
 
 ```python
 from benchmax.envs.harbor import ModalCredentials
@@ -30,15 +32,21 @@ env_args = {
 env = HarveyLabHarborEnv(**env_args)
 ```
 
-The agent defaults to 30 Harvey turns, 16,384 model tokens, and a one-hour
-harness timeout. Override them with `HARBOR_HARVEY_*` agent environment values
-when constructing a custom `TrialAgentConfig`.
+The agent defaults to 30 Harvey turns and a one-hour harness timeout. Override
+them with `HARBOR_HARVEY_*` agent environment values when constructing a custom
+`TrialAgentConfig`.
 
-A portable BenchMax bundle carries the agent and runtime source. The agent
-prepares a pinned Harvey source checkout on the trainer host before uploading
-it to each sandbox. Set `HARBOR_HARVEY_ROOT` explicitly to use an existing
-checkout instead. The runtime requires `OPENAI_API_KEY` and `OPENAI_BASE_URL`;
-it does not discover credentials or load local env files.
+`BundledHarborAgent` carries the agent and runtime source without depending on
+this checkout. Harbor gives its verifier only a static sandbox environment
+variable, so the judge key is a fixed per-bundle credential, exactly like the
+Modal pair. Per-request rotation would require Harbor-side support for a
+runtime verifier credential.
+
+For a local trial, the agent prepares a pinned Harvey source checkout on the
+trainer host before uploading it to each sandbox. Set `HARBOR_HARVEY_ROOT`
+explicitly to use an existing checkout instead. The runtime requires
+`OPENAI_API_KEY` and `OPENAI_BASE_URL`; it does not discover credentials or load
+local env files.
 
 The automatic checkout is pinned to the Harvey revision verified by this
 example. Set `HARBOR_HARVEY_GIT_REF` deliberately when testing a newer Harvey

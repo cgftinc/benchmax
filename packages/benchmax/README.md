@@ -127,12 +127,21 @@ order-independent collection in bundle metadata. Declare each distribution once,
 combining its constraints and extras in that declaration; repeated targets are
 rejected instead of relying on resolver-specific conflict behavior.
 
+Keep project-local imports at module scope so source capture can see them.
+BenchMax refuses method-local imports of local source, including literal
+`importlib.import_module(...)` calls, because reconstructed by-value modules do
+not satisfy a later Python import. Runtime-computed dynamic import names cannot
+be inferred; install those modules remotely and declare their distributions in
+`pip_dependencies`.
+
 BenchMax only prepares the bundle. Uploading it and launching a hosted run belong
 to the platform integration chosen by the caller. `bundle_digest` is the
 artifact identity for storage and caching; it covers both the exact pickle and
 canonical metadata. Execution runtimes can call `validate_bundle_compatibility`
 on metadata before installing dependencies or unpickling. Python and BenchMax
-versions must both match exactly.
+versions must both match exactly, and a source digest distinguishes runtime
+revisions that share a development version. Metadata also checksums the pickle,
+so mixing the two files from different bundles fails before unpickling.
 
 ## Breaking-version policy
 

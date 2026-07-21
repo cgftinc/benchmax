@@ -8,17 +8,19 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from benchmax.auth import ModelRequestContext
 from benchmax.envs.dataset import Dataset
 from benchmax.envs.environment import Environment
 from benchmax.envs.harbor._optional import require_harbor
+from benchmax.envs.harbor.bundled_agent import BundledHarborAgent
 from benchmax.envs.harbor.credentials import (
     SandboxCredentials,
     sandbox_credentials_scope,
 )
 from benchmax.envs.harbor.dataset import HarborDataset
+from benchmax.envs.harbor.runtime_verifier import RuntimeOnlyHarborVerifier
 from benchmax.envs.harbor.types import HarborTrialTemplate
 from benchmax.envs.shared_types import (
     DatasetSplit,
@@ -29,7 +31,7 @@ from benchmax.envs.shared_types import (
 
 if TYPE_CHECKING:
     from harbor.models.job.config import DatasetConfig
-    from harbor.models.trial.config import TaskConfig
+    from harbor.models.trial.config import AgentConfig, TaskConfig, VerifierConfig
     from harbor.models.trial.result import TrialResult
 
 logger = logging.getLogger(__name__)
@@ -149,7 +151,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                 cached = await HarborDataset.create(
                     config,
                     base_dir=cache_key,
-                    disable_verification=self._trial.verifier.disable,
+                    disable_verification=_verifier_disabled(self._trial.verifier),
                 )
                 self._dataset_cache[cache_key] = cached
             return cached
@@ -196,7 +198,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                     "'_', and '-', and must start with a letter or number"
                 )
 
-            agent = self._trial.agent.model_copy(deep=True)
+            agent = _prepare_agent_config(self._trial.agent).model_copy(deep=True)
             agent_env = dict(agent.env)
             auth_headers = await request.model_auth.headers_for_request(
                 ModelRequestContext(
@@ -236,7 +238,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                 ),
                 agent=agent,
                 environment=self._trial.environment.model_copy(deep=True),
-                verifier=self._trial.verifier.model_copy(deep=True),
+                verifier=_prepare_verifier_config(self._trial.verifier),
                 artifacts=list(self._trial.artifacts),
                 extra_instruction_paths=list(self._trial.extra_instruction_paths),
             )
@@ -253,7 +255,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
             try:
                 trial = await Trial.create(trial_config)
                 result = await trial.run()
-            except Exception:
+            except Exception as error:
                 logger.exception(
                     "harbor.rollout.failed rollout_id=%s task=%s",
                     request.rollout_id,
@@ -262,7 +264,9 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                 rollout = _zero_reward_rollout(
                     request.rollout_id,
                     reward_keys=self._reward_keys,
-                    termination_reason="harness_error",
+                    termination_reason=_exception_termination_reason(
+                        type(error).__name__
+                    ),
                 )
             else:
                 rollout = _rollout_attempt(
@@ -366,10 +370,13 @@ def _result_termination_reason(result: TrialResult) -> str:
 
     if result.exception_info is None:
         return "finished"
-    return _TERMINATION_REASON_BY_EXCEPTION.get(
-        result.exception_info.exception_type,
-        "harness_error",
-    )
+    return _exception_termination_reason(result.exception_info.exception_type)
+
+
+def _exception_termination_reason(exception_type: str) -> str:
+    """Classify raised and returned Harbor failures through one vocabulary."""
+
+    return _TERMINATION_REASON_BY_EXCEPTION.get(exception_type, "harness_error")
 
 
 def _normalize_reward_keys(reward_keys: Sequence[str]) -> tuple[str, ...]:
@@ -506,13 +513,15 @@ def _validate_configuration(
         raise TypeError(
             f"trial must be HarborTrialTemplate, got {type(trial).__name__}"
         )
-    if not isinstance(trial.agent, AgentConfig):
-        raise TypeError("trial.agent must be Harbor AgentConfig")
+    if not isinstance(trial.agent, (AgentConfig, BundledHarborAgent)):
+        raise TypeError("trial.agent must be Harbor AgentConfig or BundledHarborAgent")
     if not isinstance(trial.environment, EnvironmentConfig):
         raise TypeError("trial.environment must be Harbor EnvironmentConfig")
-    if not isinstance(trial.verifier, VerifierConfig):
-        raise TypeError("trial.verifier must be Harbor VerifierConfig")
-    if trial.verifier.disable:
+    if not isinstance(trial.verifier, (VerifierConfig, RuntimeOnlyHarborVerifier)):
+        raise TypeError(
+            "trial.verifier must be Harbor VerifierConfig or RuntimeOnlyHarborVerifier"
+        )
+    if _verifier_disabled(trial.verifier):
         raise ValueError("HarborEnv requires an enabled verifier to produce rewards")
     if (
         isinstance(eval_ratio, bool)
@@ -566,11 +575,41 @@ def _validate_sandbox_credentials(
 def _validate_trial_orchestration(trial: HarborTrialTemplate) -> None:
     """Reject Harbor job-queue settings that Benchmax cannot honor."""
 
-    if (
-        trial.agent.n_concurrent is not None
-        or trial.agent.concurrency_group is not None
-    ):
+    agent = _agent_template_config(trial.agent)
+    if agent.n_concurrent is not None or agent.concurrency_group is not None:
         raise ValueError(
             "agent.n_concurrent and agent.concurrency_group belong to Harbor's job "
             "queue; Benchmax owns rollout-group concurrency, so leave them unset"
         )
+
+
+def _agent_template_config(agent: object) -> AgentConfig:
+    """Read the underlying Harbor config without preparing bundled source."""
+
+    if isinstance(agent, BundledHarborAgent):
+        return agent.config
+    return cast("AgentConfig", agent)
+
+
+def _prepare_agent_config(agent: object) -> AgentConfig:
+    """Resolve bundled source when constructing a concrete Harbor trial."""
+
+    if isinstance(agent, BundledHarborAgent):
+        return agent._harbor_config()
+    return cast("AgentConfig", agent)
+
+
+def _verifier_disabled(verifier: object) -> bool:
+    """Inspect verifier enablement without exposing runtime-only configuration."""
+
+    if isinstance(verifier, RuntimeOnlyHarborVerifier):
+        return verifier.disabled
+    return bool(cast("VerifierConfig", verifier).disable)
+
+
+def _prepare_verifier_config(verifier: object) -> VerifierConfig:
+    """Resolve runtime-only state when constructing a concrete Harbor trial."""
+
+    if isinstance(verifier, RuntimeOnlyHarborVerifier):
+        return verifier._harbor_config()
+    return cast("VerifierConfig", verifier).model_copy(deep=True)

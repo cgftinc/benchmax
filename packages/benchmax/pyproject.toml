@@ -1,6 +1,6 @@
 [project]
 name = "benchmax"
-version = "0.1.2.dev36"
+version = "0.1.2.dev39"
 description = "Platform-independent runtime for grouped LLM environments"
 readme = "README.md"
 authors = [{ name = "BenchMax Authors" }]

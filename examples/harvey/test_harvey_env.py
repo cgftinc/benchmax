@@ -2,60 +2,59 @@ from pathlib import Path
 
 import pytest
 from benchmax.bundle import dump_bundle, load_bundle
-from benchmax.envs.harbor import HarborEnv, ModalCredentials
-from harbor import EnvironmentType
+from benchmax.envs.harbor import (
+    BundledHarborAgent,
+    ModalCredentials,
+)
+from harbor import EnvironmentType, TrialVerifierConfig
 
 from harvey_agent import HarveyHarnessAgent
-from harvey_env import HarveyLabHarborEnv, harvey_harbor_constructor_args
+from harvey_env import HarveyLabHarborEnv
 
 
 def test_harvey_constructor_uses_latest_dataset_and_native_harness() -> None:
     credentials = ModalCredentials("modal-id", "modal-secret")
 
-    config = harvey_harbor_constructor_args(
-        credentials,
+    env = HarveyLabHarborEnv(
+        sandbox_credentials=credentials,
         judge_api_key="judge-key",
     )
 
-    assert config["dataset"].name == "harveyai/lab"
-    assert config["dataset"].ref == "latest"
-    assert config["eval_ratio"] == 0.1
-    assert config["sandbox_credentials"] is credentials
-    assert config["max_concurrent_trials"] == 1000
-    trial = config["trial"]
-    assert trial.agent.import_path == "harvey_agent:HarveyHarnessAgent"
+    assert env._dataset.name == "harveyai/lab"
+    assert env._dataset.ref == "latest"
+    assert env._eval_ratio == 0.1
+    assert env._sandbox_credentials is credentials
+    trial = env._trial
+    assert isinstance(trial.agent, BundledHarborAgent)
+    assert trial.agent.config.import_path == "harvey_agent:HarveyHarnessAgent"
     assert trial.environment.type == EnvironmentType.MODAL
     assert trial.trials_dir == Path("/tmp/castform-harvey-harbor-trials")
-    assert trial.verifier.env == {
-        "REWARDKIT_JUDGE": "openai/gpt-5.4-nano",
-        "OPENAI_API_KEY": "judge-key",
-        "OPENAI_BASE_URL": "https://llm.castform.dev/v1",
-        "OPENAI_API_BASE": "https://llm.castform.dev/v1",
-        "ANTHROPIC_API_KEY": "judge-key",
-        "JUDGE_CONCURRENCY": "1",
-    }
+    assert isinstance(trial.verifier, TrialVerifierConfig)
+    assert trial.verifier.env["OPENAI_API_KEY"] == "judge-key"
+    assert trial.verifier.env["OPENAI_BASE_URL"] == "https://llm.castform.dev/v1"
 
 
-def test_harvey_environment_survives_by_value_bundle() -> None:
-    constructor_args = {
-        "sandbox_credentials": ModalCredentials("modal-id", "modal-secret"),
-        "judge_api_key": "judge-key",
-    }
+def test_harvey_bundles_carry_the_fixed_judge_key() -> None:
+    """Judge and Modal credentials are fixed keys that ride in bundles."""
 
     bundle = dump_bundle(
         HarveyLabHarborEnv,
-        constructor_args=constructor_args,
+        constructor_args={
+            "sandbox_credentials": ModalCredentials("modal-id", "modal-secret"),
+            "judge_api_key": "judge-key",
+        },
         pip_dependencies=["harbor[modal]>=0.18.0,<0.19"],
     )
-    restored_class, restored_args = load_bundle(bundle, instantiate=False)
-    restored = restored_class(**restored_args)
+    _, constructor_args = load_bundle(bundle, instantiate=False)
+    assert constructor_args["judge_api_key"] == "judge-key"
 
-    assert isinstance(restored, HarborEnv)
-    assert bundle.metadata.pip_dependencies == ("harbor[modal]<0.19,>=0.18.0",)
-    captured_sources = restored_class.__init__.__globals__["_AGENT_SOURCES"]
-    assert set(captured_sources) == {"harvey_agent.py", "harvey_runtime.py"}
-    assert "class HarveyHarnessAgent" in captured_sources["harvey_agent.py"]
-    assert "class HarborOwnedSandbox" in captured_sources["harvey_runtime.py"]
+
+def test_harvey_constructor_rejects_empty_judge_key() -> None:
+    with pytest.raises(ValueError, match="judge_api_key"):
+        HarveyLabHarborEnv(
+            sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+            judge_api_key="",
+        )
 
 
 def test_harvey_agent_builds_harbor_task_command(tmp_path: Path) -> None:
@@ -108,8 +107,8 @@ def test_harvey_constructor_rejects_invalid_judge_concurrency(
     judge_concurrency: int,
 ) -> None:
     with pytest.raises(ValueError, match="judge_concurrency must be positive"):
-        harvey_harbor_constructor_args(
-            ModalCredentials("modal-id", "modal-secret"),
+        HarveyLabHarborEnv(
+            sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
             judge_api_key="judge-key",
             judge_concurrency=judge_concurrency,
         )

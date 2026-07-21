@@ -306,6 +306,75 @@ def test_explicitly_captures_sibling_project_for_clean_load(
     assert completed.returncode == 0, completed.stderr
 
 
+def test_rejects_method_local_project_import_that_cannot_be_captured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A delayed import must not survive bundling only to fail remotely."""
+
+    module_name = "late_import_env"
+    source_root = _write_late_import_project(tmp_path, module_name)
+    monkeypatch.syspath_prepend(str(source_root))
+    env_module = __import__(f"{module_name}.env", fromlist=["LateImportEnv"])
+
+    with pytest.raises(BundlingError, match=rf"delayed import.*{module_name}\.helper"):
+        dump_bundle(env_module.LateImportEnv)
+
+
+def test_local_modules_does_not_pretend_to_capture_a_method_local_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Registering a module by value cannot satisfy a later import statement."""
+
+    module_name = "explicit_late_import_env"
+    source_root = _write_late_import_project(tmp_path, module_name)
+    monkeypatch.syspath_prepend(str(source_root))
+    env_module = __import__(f"{module_name}.env", fromlist=["LateImportEnv"])
+    helper_module = __import__(f"{module_name}.helper", fromlist=["VALUE"])
+
+    with pytest.raises(BundlingError, match=rf"delayed import.*{module_name}\.helper"):
+        dump_bundle(
+            env_module.LateImportEnv,
+            local_modules=[helper_module],
+        )
+
+
+def test_rejects_literal_dynamic_import_of_local_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "dynamic_late_import_env"
+    source_root = _write_late_import_project(
+        tmp_path,
+        module_name,
+        dynamic=True,
+    )
+    monkeypatch.syspath_prepend(str(source_root))
+    env_module = __import__(f"{module_name}.env", fromlist=["LateImportEnv"])
+
+    with pytest.raises(BundlingError, match=rf"delayed import.*{module_name}\.helper"):
+        dump_bundle(env_module.LateImportEnv)
+
+
+def test_unused_module_function_does_not_create_a_false_delayed_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "unused_late_import_env"
+    source_root = _write_late_import_project(
+        tmp_path,
+        module_name,
+        unused_only=True,
+    )
+    monkeypatch.syspath_prepend(str(source_root))
+    env_module = __import__(f"{module_name}.env", fromlist=["LateImportEnv"])
+
+    bundle = dump_bundle(env_module.LateImportEnv)
+
+    assert bundle.pickled
+
+
 def test_framework_stdlib_and_site_packages_are_not_project_local() -> None:
     """Only the environment project's own source is captured by value."""
 
@@ -415,6 +484,60 @@ def _write_editable_single_file_project(tmp_path: Path, module_name: str) -> Pat
     )
     (dist_info / "top_level.txt").write_text(f"{module_name}\n")
     return project_root
+
+
+def _write_late_import_project(
+    tmp_path: Path,
+    module_name: str,
+    *,
+    dynamic: bool = False,
+    unused_only: bool = False,
+) -> Path:
+    """Write an env whose method imports local source only when it is called."""
+
+    project_root = tmp_path / module_name
+    source_root = project_root / "src"
+    package_dir = source_root / module_name
+    package_dir.mkdir(parents=True)
+    (project_root / "pyproject.toml").write_text(
+        textwrap.dedent(
+            f"""
+            [project]
+            name = "{module_name.replace("_", "-")}"
+            version = "1.0.0"
+            """
+        )
+    )
+    (package_dir / "__init__.py").write_text("")
+    (package_dir / "helper.py").write_text('VALUE = "late-local-import"\n')
+    if dynamic:
+        marker_body = (
+            "import importlib\n"
+            f'return importlib.import_module("{module_name}.helper").VALUE'
+        )
+    elif unused_only:
+        marker_body = 'return "no-import"'
+    else:
+        marker_body = f"import {module_name}.helper as helper\nreturn helper.VALUE"
+    unused_function = (
+        f"def unused():\n    import {module_name}.helper as helper\n"
+        "    return helper.VALUE\n\n"
+        if unused_only
+        else ""
+    )
+    (package_dir / "env.py").write_text(
+        "from benchmax.envs import BaseEnv\n\n"
+        f"{unused_function}"
+        "class LateImportEnv(BaseEnv):\n"
+        '    reward_keys = ("score",)\n\n'
+        "    async def create_dataset(self, split, base_dir):\n"
+        "        raise NotImplementedError\n\n"
+        "    async def compute_reward(self, *args, **kwargs):\n"
+        '        return {"score": 0.0}\n\n'
+        "    def marker(self):\n"
+        f"{textwrap.indent(marker_body, '        ')}\n"
+    )
+    return source_root
 
 
 def _write_sibling_projects(tmp_path: Path) -> tuple[Path, Path]:
