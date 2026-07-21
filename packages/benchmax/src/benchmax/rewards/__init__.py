@@ -1,10 +1,11 @@
 """Reward primitives for BenchMax environments."""
 
 from .adaptive import (
+    AdaptiveRubrics,
+    RubricCache,
     generate_adaptive_rubrics,
     generate_and_cache_adaptive_rubrics,
 )
-from .cache import AdaptiveRubrics, RubricCache
 from .diversity import (
     ClusterResult,
     DiversityConfig,
