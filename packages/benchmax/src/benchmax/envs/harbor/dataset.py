@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from benchmax.envs.dataset import Dataset
-from benchmax.envs.harbor._optional import require_harbor
+from benchmax.envs.harbor.dep_check import require_harbor
 from benchmax.envs.shared_types import Example
 
 if TYPE_CHECKING:

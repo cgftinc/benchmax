@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, cast
 from benchmax.auth import ModelRequestContext
 from benchmax.envs.dataset import Dataset
 from benchmax.envs.environment import Environment
-from benchmax.envs.harbor._optional import require_harbor
+from benchmax.envs.harbor.dep_check import require_harbor
 from benchmax.envs.harbor.bundled_agent import BundledHarborAgent
 from benchmax.envs.harbor.credentials import (
     SandboxCredentials,
