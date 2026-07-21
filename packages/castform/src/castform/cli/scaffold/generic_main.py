@@ -23,21 +23,22 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from benchmax.bundle import dump_bundle
 from benchmax.envs import (
     BaseEnv,
     BaseRollout,
     DatasetSplit,
     Example,
-    JsonRow,
     JsonlDataset,
+    JsonRow,
     canonical_example_id,
 )
-from benchmax.bundle import dump_bundle
 from benchmax.rewards import extract_completion_text
+
+from castform import validate_environment
 from castform.platform.client import TrainerClient
 from castform.platform.login import ensure_session
 from castform.platform.training_run import upload_training_run
-from castform import validate_environment
 
 
 class CustomEnv(BaseEnv):
@@ -123,7 +124,7 @@ LAUNCH_CONFIG = {
 # isolable and skip work whose output already exists (`--force` to redo):
 #
 #   python main.py data       generate/refresh the datasets (skip if present)
-#   python main.py validate   baseline on a real-rollout subset (no GPU)
+#   python main.py validate   baseline on a real-rollout subset (no launch)
 #   python main.py launch     validate-gate, then train on GPUs (spends credits)
 #   python main.py  (or all)  data → validate, then STOP (never auto-launches)
 #

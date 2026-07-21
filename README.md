@@ -23,7 +23,7 @@ castform setup
 
 This signs you in and scaffolds a project whose `main.py` owns the whole
 workflow: bare `python main.py` prepares data and validates the environment
-locally (no GPU), and `python main.py launch` bundles, uploads and starts a
+locally (no launch), and `python main.py launch` bundles, uploads and starts a
 training run after an explicit confirmation.
 
 Working examples live under [`examples/`](examples/), from a single-turn math
