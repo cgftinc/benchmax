@@ -124,7 +124,6 @@ def _cmd_with_auth(args: argparse.Namespace) -> int:
     environment["CASTFORM_PROFILE"] = selected
     environment["CASTFORM_AUTH_TOKEN"] = token
     environment["CASTFORM_PLATFORM_URL"] = platform_url
-    environment["CASTFORM_BOOTSTRAP_PLATFORM_URL"] = platform_url
     try:
         completed = subprocess.run(child_command, env=environment, check=False)
     except FileNotFoundError:
