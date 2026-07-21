@@ -197,6 +197,10 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                     "'_', and '-', and must start with a letter or number"
                 )
 
+            # Harbor calls the in-sandbox harness an "agent"; this block adapts
+            # a private copy of the shared harness template to this attempt:
+            # inject the per-rollout model endpoint and credentials, then
+            # default the model route when the author left model_name unset.
             agent = _prepare_agent_config(self._trial.agent).model_copy(deep=True)
             agent_env = dict(agent.env)
             auth_headers = await request.model_auth.headers_for_request(
@@ -213,6 +217,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                 {
                     "OPENAI_API_KEY": authorization.removeprefix("Bearer "),
                     "OPENAI_BASE_URL": request.base_url,
+                    # Older OpenAI SDKs and some harnesses read this variant.
                     "OPENAI_API_BASE": request.base_url,
                 }
             )
@@ -244,7 +249,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
 
             logger.info(
                 "harbor.rollout.start rollout_id=%s task=%s sandbox=%s "
-                "agent=%s model=%s",
+                "harness=%s model=%s",
                 request.rollout_id,
                 request.example.id,
                 _sandbox_name(self._trial),
@@ -440,7 +445,15 @@ def _rewardkit_partial_credit(trial_dir: Path) -> float | None:
 
 
 def _openai_model_name(model: str) -> str:
-    """Give Harbor agents a provider-qualified default for the TITO endpoint."""
+    """Qualify a bare model id for Harbor's LiteLLM-style routing.
+
+    Built-in Harbor harnesses resolve ``model_name`` through LiteLLM, which
+    reads the ``provider/`` prefix to pick an API adapter; a bare HF id such
+    as ``Qwen/Qwen3.5-4B`` parses as an unknown provider and fails. Every
+    trial talks to the OpenAI-compatible endpoint this env injects as
+    ``OPENAI_BASE_URL``, so ``openai/`` is always the correct route. An
+    explicit ``agent.model_name`` bypasses this default entirely.
+    """
 
     return model if model.startswith("openai/") else f"openai/{model}"
 
