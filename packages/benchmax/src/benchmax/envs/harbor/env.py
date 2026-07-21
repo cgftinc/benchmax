@@ -20,7 +20,6 @@ from benchmax.envs.harbor.credentials import (
     sandbox_credentials_scope,
 )
 from benchmax.envs.harbor.dataset import HarborDataset
-from benchmax.envs.harbor.runtime_verifier import RuntimeOnlyHarborVerifier
 from benchmax.envs.harbor.types import HarborTrialTemplate
 from benchmax.envs.shared_types import (
     DatasetSplit,
@@ -517,10 +516,8 @@ def _validate_configuration(
         raise TypeError("trial.agent must be Harbor AgentConfig or BundledHarborAgent")
     if not isinstance(trial.environment, EnvironmentConfig):
         raise TypeError("trial.environment must be Harbor EnvironmentConfig")
-    if not isinstance(trial.verifier, (VerifierConfig, RuntimeOnlyHarborVerifier)):
-        raise TypeError(
-            "trial.verifier must be Harbor VerifierConfig or RuntimeOnlyHarborVerifier"
-        )
+    if not isinstance(trial.verifier, VerifierConfig):
+        raise TypeError("trial.verifier must be Harbor VerifierConfig")
     if _verifier_disabled(trial.verifier):
         raise ValueError("HarborEnv requires an enabled verifier to produce rewards")
     if (
@@ -600,16 +597,10 @@ def _prepare_agent_config(agent: object) -> AgentConfig:
 
 
 def _verifier_disabled(verifier: object) -> bool:
-    """Inspect verifier enablement without exposing runtime-only configuration."""
-
-    if isinstance(verifier, RuntimeOnlyHarborVerifier):
-        return verifier.disabled
     return bool(cast("VerifierConfig", verifier).disable)
 
 
 def _prepare_verifier_config(verifier: object) -> VerifierConfig:
-    """Resolve runtime-only state when constructing a concrete Harbor trial."""
+    """Copy the template verifier when constructing a concrete Harbor trial."""
 
-    if isinstance(verifier, RuntimeOnlyHarborVerifier):
-        return verifier._harbor_config()
     return cast("VerifierConfig", verifier).model_copy(deep=True)

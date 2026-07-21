@@ -10,7 +10,6 @@ from benchmax.envs.harbor.credentials import (
 )
 from benchmax.envs.harbor.dataset import HarborDataset
 from benchmax.envs.harbor.env import HarborEnv
-from benchmax.envs.harbor.runtime_verifier import RuntimeOnlyHarborVerifier
 from benchmax.envs.harbor.types import HarborTrialTemplate
 
 __all__ = [
@@ -22,6 +21,5 @@ __all__ = [
     "HarborEnv",
     "HarborTrialTemplate",
     "ModalCredentials",
-    "RuntimeOnlyHarborVerifier",
     "SandboxCredentials",
 ]

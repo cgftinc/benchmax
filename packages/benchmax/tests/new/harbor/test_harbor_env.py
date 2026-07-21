@@ -21,13 +21,11 @@ from harbor.models.trial.config import (
 from harbor.trial.trial import Trial
 
 from benchmax.auth import StaticBearerAuth
-from benchmax.bundle import BundlingError, dump_bundle
 from benchmax.envs import Example, RolloutRequest
 from benchmax.envs.harbor import (
     HarborEnv,
     HarborTrialTemplate,
     ModalCredentials,
-    RuntimeOnlyHarborVerifier,
 )
 from benchmax.envs.harbor.credentials import sandbox_credentials_scope
 
@@ -67,7 +65,6 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
             "OPENAI_API_KEY": "judge-key",
         }
     )
-    runtime_verifier = RuntimeOnlyHarborVerifier(verifier)
     template = HarborTrialTemplate(
         agent=AgentConfig(
             name="mini-swe-agent",
@@ -78,7 +75,7 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
             type=EnvironmentType.MODAL,
             kwargs={"app_name": "benchmax-test"},
         ),
-        verifier=runtime_verifier,
+        verifier=verifier,
         trials_dir=tmp_path / "trials",
     )
     env = HarborEnv(
@@ -87,9 +84,7 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
         trial=template,
         sandbox_credentials=credentials,
     )
-    verifier.env["OPENAI_API_KEY"] = "mutated-after-wrapping"
     assert env.requires_public_model_endpoint is True
-    assert repr(runtime_verifier) == "RuntimeOnlyHarborVerifier(<redacted>)"
 
     barrier = asyncio.Barrier(2)
     configs: dict[str, Any] = {}
@@ -349,39 +344,6 @@ def test_sandbox_credential_repr_hides_secret_values() -> None:
 
     assert "modal-id" not in repr(credentials)
     assert "modal-secret" not in repr(credentials)
-
-
-def test_runtime_only_verifier_requires_a_harbor_config() -> None:
-    with pytest.raises(TypeError, match="must wrap Harbor VerifierConfig"):
-        RuntimeOnlyHarborVerifier(object())  # type: ignore[arg-type]
-
-
-def test_runtime_only_verifier_refuses_bundle_without_revealing_secret(
-    tmp_path: Path,
-) -> None:
-    secret = "runtime-only-verifier-secret"
-    constructor_args = {
-        "dataset": DatasetConfig(path=tmp_path),
-        "reward_keys": ("reward",),
-        "trial": HarborTrialTemplate(
-            agent=AgentConfig(name="mini-swe-agent"),
-            environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
-            verifier=RuntimeOnlyHarborVerifier(
-                VerifierConfig(env={"JUDGE_API_KEY": secret})
-            ),
-        ),
-    }
-
-    with pytest.raises(
-        BundlingError,
-        match="runtime-only Harbor verifier",
-    ) as exc_info:
-        dump_bundle(
-            HarborEnv,
-            constructor_args=constructor_args,
-            pip_dependencies=("harbor>=0.18,<0.19",),
-        )
-    assert secret not in str(exc_info.value)
 
 
 @pytest.mark.asyncio

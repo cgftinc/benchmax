@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from benchmax.envs.harbor.bundled_agent import BundledHarborAgent
-from benchmax.envs.harbor.runtime_verifier import RuntimeOnlyHarborVerifier
 
 if TYPE_CHECKING:
     from harbor.models.task.config import ArtifactConfig
@@ -29,7 +28,7 @@ class HarborTrialTemplate:
 
     agent: AgentConfig | BundledHarborAgent
     environment: EnvironmentConfig
-    verifier: VerifierConfig | RuntimeOnlyHarborVerifier
+    verifier: VerifierConfig
     trials_dir: Path = Path("trials")
     timeout_multiplier: float = 1.0
     agent_timeout_multiplier: float | None = None
