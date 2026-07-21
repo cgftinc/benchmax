@@ -35,7 +35,7 @@ from .rubric import (
     evaluate_rubric_ranking,
     evaluate_single_rubric,
 )
-from .rubric_rewards import (
+from .scoring import (
     rank_group_rubrics,
     rubric_reward_key,
     score_group_rubrics,

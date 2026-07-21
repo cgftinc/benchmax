@@ -4,6 +4,7 @@ import pytest
 
 from benchmax.rewards import (
     JudgeError,
+    Rubric,
     RubricCache,
     generate_adaptive_rubrics,
     generate_and_cache_adaptive_rubrics,
@@ -30,12 +31,15 @@ async def test_generate_adaptive_rubrics_returns_typed_polarities(judge_factory)
         question="q",
         ground_truth="truth",
         responses=["one", "two"],
-        existing_rubrics="Existing",
+        existing_rubrics=[Rubric("Existing", "already covered")],
         judge=stub.judge,
     )
     assert result.positive[0].polarity == "positive"
     assert result.negative[0].polarity == "negative"
-    assert "Existing Rubrics:\nExisting" in stub.calls[0]["messages"][0]["content"]
+    assert (
+        "Existing Rubrics:\nPositive rubrics:\n- Existing: already covered"
+        in stub.calls[0]["messages"][0]["content"]
+    )
 
 
 @pytest.mark.asyncio

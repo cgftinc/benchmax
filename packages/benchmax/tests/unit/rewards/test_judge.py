@@ -34,6 +34,8 @@ def test_judge_validates_configuration():
         Judge(model="m", base_url="", auth=auth)
     with pytest.raises(ValueError, match="auth_attempts"):
         Judge(model="m", base_url="https://judge.test", auth=auth, auth_attempts=0)
+    with pytest.raises(TypeError, match="ModelAuth"):
+        Judge(model="m", base_url="https://judge.test", auth=object())
 
 
 def test_judge_with_injected_auth_is_pickleable():

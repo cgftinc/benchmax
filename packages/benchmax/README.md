@@ -45,6 +45,52 @@ the sibling group settles.
 See the [BaseEnv guide](src/benchmax/envs/base/README.md) and
 [Harbor adapter guide](src/benchmax/envs/harbor/README.md).
 
+## Define judge-backed rewards
+
+Judge configuration is one serializable value shared by rubric, adaptive-rubric,
+and semantic-diversity rewards. Authentication is resolved immediately before
+each model call; bundles carry an `InjectedAuth` reference, never its token.
+
+```python
+from benchmax.auth import InjectedAuth
+from benchmax.rewards import Judge, Rubric, score_rubrics
+
+judge = Judge(
+    model="judge-model",
+    base_url="https://models.example/v1",
+    auth=InjectedAuth("judge"),
+)
+rubrics = [
+    Rubric("Correctness", "The answer is factually correct."),
+    Rubric(
+        "Fabrication",
+        "The answer invents unsupported facts.",
+        polarity="negative",
+    ),
+]
+
+rewards = await score_rubrics(
+    rollout_id,
+    completion,
+    ground_truth=reference,
+    rubrics=rubrics,
+    question=question,
+    judge=judge,
+)
+```
+
+`evaluate_single_rubric` and `evaluate_rubric_ranking` return typed results.
+`score_rubrics`, `score_group_rubrics`, and `rank_group_rubrics` turn those
+results into reward maps. Empty completions keep the declared rubric reward
+shape and receive zeros without calling the judge. Invalid or out-of-set judge
+output raises `JudgeError` so the environment runtime can record an operational
+failure instead of trusting a fabricated score.
+
+Adaptive rubric state is explicit and caller-owned through `RubricCache`.
+Diversity backends are explicit as well: use `NgramDiversityConfig` for local
+single-linkage clustering or `LLMDiversityConfig(judge=judge)` for semantic
+clustering.
+
 ## Bundle an environment
 
 Declare remote runtime dependencies at the script boundary:

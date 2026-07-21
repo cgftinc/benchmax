@@ -63,6 +63,10 @@ async def test_score_group_validates_alignment_and_key_collisions(judge_factory)
             judge=stub.judge,
             rubrics=[Rubric("A-B", "d"), Rubric("A B", "d")],
         )
+    with pytest.raises(ValueError, match="at least one rubric"):
+        await score_group_rubrics(
+            ["r1"], ["a"], ground_truth="", question="q", judge=stub.judge
+        )
 
 
 @pytest.mark.asyncio

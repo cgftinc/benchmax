@@ -1,18 +1,23 @@
-"""Composable reward functions backed by rubrics."""
+"""Composable rubric scoring functions that return reward maps."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from typing import Any
 
 from .adaptive import generate_and_cache_adaptive_rubrics
 from .cache import RubricCache
 from .helpers import Completion, extract_completion_text
 from .judge import Judge
-from .rubric import Rubric, evaluate_rubric_ranking, evaluate_single_rubric
+from .rubric import (
+    Rubric,
+    RubricEvaluation,
+    evaluate_rubric_ranking,
+    evaluate_single_rubric,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +42,9 @@ async def score_rubrics(
 ) -> dict[str, float]:
     """Score one completion independently against every rubric."""
 
-    _validate_rubric_keys(rubrics)
+    _validate_rubric_keys(rubrics, allow_empty=False)
+    if not isinstance(rollout_id, str) or not rollout_id.strip():
+        raise ValueError("rollout_id must be non-empty")
     text = extract_completion_text(completion)
     if not text:
         rewards = {rubric_reward_key(rubric): 0.0 for rubric in rubrics}
@@ -74,16 +81,16 @@ async def score_group_rubrics(
     judge: Judge,
     rubrics: Sequence[Rubric] = (),
     use_adaptive: bool = False,
-    existing_rubrics: str | None = None,
+    existing_rubrics: Sequence[Rubric] = (),
     cache: RubricCache | None = None,
 ) -> list[dict[str, float]]:
     """Score a sibling group independently against static and adaptive rubrics."""
 
     _validate_group(rollout_ids, completions)
-    _validate_rubric_keys(rubrics)
+    _validate_rubric_keys(rubrics, allow_empty=use_adaptive)
     texts = [extract_completion_text(completion) for completion in completions]
 
-    static_tasks: list[tuple[int, Rubric, object]] = []
+    static_tasks: list[tuple[int, Rubric, Awaitable[RubricEvaluation]]] = []
     for index, text in enumerate(texts):
         if not text:
             continue
@@ -118,13 +125,15 @@ async def score_group_rubrics(
         active_cache = cache or RubricCache()
         adaptive = await generate_and_cache_adaptive_rubrics(
             question=question,
-            ground_truth=str(ground_truth or ""),
+            ground_truth=str(ground_truth) if ground_truth is not None else "",
             responses=texts,
             judge=judge,
             cache=active_cache,
             existing_rubrics=existing_rubrics,
         )
-        adaptive_evaluations: list[tuple[int, Rubric, object]] = []
+        adaptive_evaluations: list[
+            tuple[int, Rubric, Awaitable[RubricEvaluation]]
+        ] = []
         for index, text in enumerate(texts):
             if not text:
                 continue
@@ -137,7 +146,9 @@ async def score_group_rubrics(
                             rubric,
                             question=question,
                             response=text,
-                            ground_truth=str(ground_truth or ""),
+                            ground_truth=(
+                                str(ground_truth) if ground_truth is not None else ""
+                            ),
                             judge=judge,
                             log_result=False,
                         ),
@@ -177,9 +188,13 @@ async def rank_group_rubrics(
     """Rank a sibling group once per rubric and return per-rollout rewards."""
 
     _validate_group(rollout_ids, completions)
-    _validate_rubric_keys(rubrics)
+    _validate_rubric_keys(rubrics, allow_empty=False)
     texts = [extract_completion_text(completion) for completion in completions]
-    reference = str(ground_truth or "").strip() if include_ground_truth else ""
+    reference = (
+        str(ground_truth).strip()
+        if include_ground_truth and ground_truth is not None
+        else ""
+    )
     results = await asyncio.gather(
         *(
             evaluate_rubric_ranking(
@@ -209,11 +224,22 @@ def _validate_group(
 ) -> None:
     if len(rollout_ids) != len(completions):
         raise ValueError("rollout_ids and completions must have the same length")
+    if not rollout_ids:
+        raise ValueError("rollout group must be non-empty")
+    if any(
+        not isinstance(rollout_id, str) or not rollout_id.strip()
+        for rollout_id in rollout_ids
+    ):
+        raise ValueError("rollout_ids must be non-empty strings")
     if len(set(rollout_ids)) != len(rollout_ids):
         raise ValueError("rollout_ids must be unique")
 
 
-def _validate_rubric_keys(rubrics: Sequence[Rubric]) -> None:
+def _validate_rubric_keys(
+    rubrics: Sequence[Rubric], *, allow_empty: bool
+) -> None:
+    if not rubrics and not allow_empty:
+        raise ValueError("at least one rubric is required")
     keys = [rubric_reward_key(rubric) for rubric in rubrics]
     if len(set(keys)) != len(keys):
         raise ValueError("rubric titles must produce unique reward keys")

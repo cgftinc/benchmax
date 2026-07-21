@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -45,15 +46,29 @@ class Judge:
     auth_attempts: int = 3
 
     def __post_init__(self) -> None:
-        if not self.model.strip():
+        if not isinstance(self.model, str) or not self.model.strip():
             raise ValueError("judge model must be non-empty")
-        if not self.base_url.strip():
+        if not isinstance(self.base_url, str) or not self.base_url.strip():
             raise ValueError("judge base_url must be non-empty")
-        if self.timeout is not None and self.timeout <= 0:
+        if not isinstance(self.auth, ModelAuth):
+            raise TypeError("judge auth must implement ModelAuth")
+        if self.timeout is not None and (
+            isinstance(self.timeout, bool)
+            or not isinstance(self.timeout, (int, float))
+            or self.timeout <= 0
+        ):
             raise ValueError("judge timeout must be positive or None")
-        if self.max_retries < 0:
+        if (
+            isinstance(self.max_retries, bool)
+            or not isinstance(self.max_retries, int)
+            or self.max_retries < 0
+        ):
             raise ValueError("judge max_retries must be non-negative")
-        if self.auth_attempts < 1:
+        if (
+            isinstance(self.auth_attempts, bool)
+            or not isinstance(self.auth_attempts, int)
+            or self.auth_attempts < 1
+        ):
             raise ValueError("judge auth_attempts must be positive")
 
     async def request_json(
@@ -66,8 +81,20 @@ class Judge:
     ) -> tuple[dict[str, Any], str]:
         """Call the judge and return ``(parsed_object, raw_response)``."""
 
-        if not prompt.strip():
+        if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("judge prompt must be non-empty")
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise ValueError("judge request_id must be non-empty")
+        if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+            raise TypeError("judge temperature must be numeric")
+        if not math.isfinite(float(temperature)):
+            raise ValueError("judge temperature must be finite")
+        if max_tokens is not None and (
+            isinstance(max_tokens, bool)
+            or not isinstance(max_tokens, int)
+            or max_tokens < 1
+        ):
+            raise ValueError("judge max_tokens must be positive or None")
 
         last_auth_error: Exception | None = None
         for attempt in range(self.auth_attempts):

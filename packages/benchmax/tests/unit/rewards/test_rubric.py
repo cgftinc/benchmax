@@ -13,14 +13,17 @@ from benchmax.rewards import (
 
 
 def test_rubric_normalizes_positive_and_negative_ranges():
-    positive = Rubric("quality", "description", score_map={-1: "bad", 3: "good"})
+    score_map = {-1: "bad", 1: "okay", 3: "good"}
+    positive = Rubric("quality", "description", score_map=score_map)
     negative = Rubric(
-        "flaw", "description", polarity="negative", score_map={-1: "absent", 3: "bad"}
+        "flaw", "description", polarity="negative", score_map=score_map
     )
     assert positive.reward_for(1) == pytest.approx(0.5)
     assert negative.reward_for(1) == pytest.approx(0.5)
     assert positive.reward_for(-1) == 0.0
     assert negative.reward_for(-1) == 1.0
+    with pytest.raises(ValueError, match="one of"):
+        positive.reward_for(0)
 
 
 @pytest.mark.parametrize(
@@ -90,6 +93,48 @@ async def test_ranking_without_reference_maps_best_to_one(judge_factory):
         judge=stub.judge,
     )
     assert result.scores == (0.0, 1.0)
+
+
+@pytest.mark.asyncio
+async def test_ranking_ground_truth_anchors_the_absolute_scale(judge_factory):
+    stub = judge_factory(['{"ranking": [[1], [2], [0]]}'])
+    result = await evaluate_rubric_ranking(
+        Rubric("quality", "is good"),
+        question="q",
+        responses=["below", "above"],
+        ground_truth="reference",
+        judge=stub.judge,
+    )
+    assert result.scores == (0.0, 1.0)
+
+
+@pytest.mark.asyncio
+async def test_ranking_multiple_anchors_interpolates_quality_bands(judge_factory):
+    # Judged order: great anchor, stronger response, acceptable anchor, weaker response.
+    stub = judge_factory(['{"ranking": [[3], [1], [2], [0]]}'])
+    result = await evaluate_rubric_ranking(
+        Rubric("quality", "is good"),
+        question="q",
+        responses=["weak", "strong"],
+        anchors=["acceptable", "great"],
+        band_edges=[0.4, 0.7],
+        anchor_labels=["acceptable", "great"],
+        judge=stub.judge,
+    )
+    assert result.scores == pytest.approx((0.0, 0.55))
+
+
+@pytest.mark.asyncio
+async def test_single_nonempty_ranking_uses_judge_local_indices(judge_factory):
+    stub = judge_factory([])
+    result = await evaluate_rubric_ranking(
+        Rubric("quality", "is good"),
+        question="q",
+        responses=["", "answer"],
+        judge=stub.judge,
+    )
+    assert result.scores == (0.0, 1.0)
+    assert result.ranking == ((0,),)
 
 
 @pytest.mark.asyncio

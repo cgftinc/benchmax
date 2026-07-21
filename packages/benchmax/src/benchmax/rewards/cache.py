@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import statistics
 from dataclasses import dataclass
 
@@ -52,7 +53,11 @@ class RubricCache:
     """
 
     def __init__(self, *, max_per_polarity: int = 3) -> None:
-        if max_per_polarity < 1:
+        if (
+            isinstance(max_per_polarity, bool)
+            or not isinstance(max_per_polarity, int)
+            or max_per_polarity < 1
+        ):
             raise ValueError("max_per_polarity must be positive")
         self.max_per_polarity = max_per_polarity
         self._entries: dict[
@@ -88,9 +93,12 @@ class RubricCache:
         Rubric titles identify candidates within each polarity.
         """
 
-        if len(scores) < 2 or len(set(scores)) < 2:
+        numeric_scores = tuple(float(score) for score in scores)
+        if any(not math.isfinite(score) for score in numeric_scores):
+            raise ValueError("adaptive rubric scores must be finite")
+        if len(numeric_scores) < 2 or len(set(numeric_scores)) < 2:
             return False
-        deviation = float(statistics.pstdev(scores))
+        deviation = float(statistics.pstdev(numeric_scores))
         key = self.key_for_prompt(prompt)
         entry = self._entries.setdefault(
             key, {"positive": {}, "negative": {}}

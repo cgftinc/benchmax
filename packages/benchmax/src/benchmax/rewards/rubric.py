@@ -34,9 +34,9 @@ class Rubric:
     score_map: Mapping[float, str] | None = None
 
     def __post_init__(self) -> None:
-        if not self.title.strip():
+        if not isinstance(self.title, str) or not self.title.strip():
             raise ValueError("rubric title must be non-empty")
-        if not self.description.strip():
+        if not isinstance(self.description, str) or not self.description.strip():
             raise ValueError("rubric description must be non-empty")
         if self.polarity not in {"positive", "negative"}:
             raise ValueError("rubric polarity must be 'positive' or 'negative'")
@@ -59,8 +59,13 @@ class Rubric:
     def reward_for(self, raw_score: float) -> float:
         """Normalize an allowed raw score into a reward in ``[0, 1]``."""
 
+        if isinstance(raw_score, bool) or not isinstance(raw_score, (int, float)):
+            raise TypeError("raw_score must be numeric")
+        numeric = float(raw_score)
+        if not math.isfinite(numeric) or numeric not in self.allowed_scores:
+            raise ValueError(f"raw_score must be one of {list(self.allowed_scores)}")
         low, high = self.allowed_scores[0], self.allowed_scores[-1]
-        normalized = (float(raw_score) - low) / (high - low)
+        normalized = (numeric - low) / (high - low)
         return normalized if self.polarity == "positive" else 1.0 - normalized
 
 
@@ -156,7 +161,7 @@ async def evaluate_rubric_ranking(
         output_scores[nonempty[0][0]] = 1.0
         return RubricRanking(
             scores=tuple(output_scores),
-            ranking=((nonempty[0][0],),),
+            ranking=((0,),),
             reasoning="Only one non-empty response",
             raw_response="",
         )
@@ -230,11 +235,13 @@ async def evaluate_rubric_ranking(
     )
     if log_result:
         logger.info(
-            "rubric.ranked title=%r polarity=%s ranking=%s scores=%s reasoning=%s",
+            "rubric.ranked title=%r polarity=%s ranking=%s scores=%s "
+            "anchors=%s reasoning=%s",
             rubric.title,
             rubric.polarity,
             result.ranking,
             result.scores,
+            tuple(zip(clean_labels, clean_edges, strict=True)),
             result.reasoning,
         )
     return result

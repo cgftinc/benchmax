@@ -1,3 +1,5 @@
+import pytest
+
 from benchmax.rewards import Rubric, RubricCache
 
 
@@ -17,6 +19,8 @@ def test_cache_rejects_non_discriminative_rubrics():
     cache = RubricCache()
     assert not cache.consider("q", _rubric("flat"), [1, 1, 1])
     assert cache.get("q").all == ()
+    with pytest.raises(ValueError, match="finite"):
+        cache.consider("q", _rubric("invalid"), [0, float("nan")])
 
 
 def test_cache_keeps_highest_variance_per_polarity():
