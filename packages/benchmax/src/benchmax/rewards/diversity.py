@@ -1,49 +1,17 @@
-"""Diversity-based reward scaling for group reward functions.
-
-Clusters texts (e.g. attack strategies, response approaches) by similarity,
-then returns divisors so that each rollout's reward can be scaled by its
-cluster size. Rollouts with unique strategies keep full reward; duplicates
-share it.
-
-Supports three clustering methods:
-- ``llm``: Send texts to an LLM that groups them by semantic tactic.
-- ``ngram``: Fast, offline n-gram Jaccard similarity clustering.
-- ``embedding``: (future) Cosine-similarity clustering via embeddings.
-
-Usage::
-
-    from benchmax.rewards.diversity import DiversityConfig, scale_by_diversity
-
-    async def compute_group_rewards(self, rollouts):
-        raw_rewards = [await self.compute_reward(rollout) for rollout in rollouts]
-        texts = [rollout.messages[-1]["content"] for rollout in rollouts]
-        scaled, cluster_info = await scale_by_diversity(
-            rewards=raw_rewards,
-            texts=texts,
-            config=DiversityConfig(method="llm", model="...", base_url="..."),
-            context=rollouts[0].example_args.get("behavior", ""),
-        )
-        return {
-            rollout.rollout_id: reward
-            for rollout, reward in zip(rollouts, scaled, strict=True)
-        }
-"""
+"""Diversity-aware scaling for sibling rewards."""
 
 from __future__ import annotations
 
 import logging
+import math
 from collections import Counter
-from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import TypeAlias
 
-from benchmax.auth import ModelAuth, ModelRequestContext
-from benchmax.rubrics._utils import _extract_json, _resolve_judge_auth
+from .judge import Judge, JudgeError
 
 logger = logging.getLogger(__name__)
-
-# AsyncOpenAI imported lazily inside _cluster_by_llm to avoid pulling in
-# unpicklable context vars at module level (breaks cloudpickle bundling).
-
 
 DEFAULT_CLUSTER_PROMPT = """\
 You are clustering text entries for a diversity reward.
@@ -51,269 +19,216 @@ You are clustering text entries for a diversity reward.
 Context:
 {context}
 
-Below are {n} text entries from independent rollouts. Each entry is a strategy
-or approach trace.
-
-Cluster by the **underlying tactic or approach**, not exact wording.
-- Paraphrases and synonyms of the same tactic = same cluster.
-- "academic framing" and "research framing" = same cluster.
-- Empty entries, refusals, and "NO_TOOL_CALL" should share one "null" cluster.
-- Every index from 0 to {max_idx} must appear exactly once.
+Cluster the {count} entries below by underlying tactic or approach, rather
+than exact wording. Empty entries and refusals belong to one null cluster.
+Every index from 0 to {last_index} must appear exactly once.
 
 {items}
 
-Return only valid JSON in this exact shape:
-{{"assignments": [{{"index": 0, "cluster_id": "tactic_name", "label": "short description"}}]}}"""
+Return only valid JSON in this shape:
+{{"assignments": [{{"index": 0, "cluster_id": "tactic", "label": "description"}}]}}
+"""
 
 
-@dataclass
-class DiversityConfig:
-    """Configuration for diversity clustering.
+@dataclass(frozen=True, slots=True)
+class NgramDiversityConfig:
+    """Offline character n-gram clustering configuration."""
 
-    Set ``method`` to choose the clustering backend:
-    - ``"llm"`` — requires ``model``, ``base_url``, and optionally ``api_key``.
-    - ``"ngram"`` — fast offline clustering, no API calls.
-    """
+    n: int = 3
+    similarity_threshold: float = 0.5
 
-    method: Literal["llm", "ngram"] = "llm"
+    def __post_init__(self) -> None:
+        if self.n < 1:
+            raise ValueError("n must be positive")
+        if not 0 <= self.similarity_threshold <= 1:
+            raise ValueError("similarity_threshold must be within [0, 1]")
 
-    # LLM clustering options
-    model: str = ""
-    base_url: str = ""
-    api_key: str = ""
-    auth: ModelAuth | None = None
+
+@dataclass(frozen=True, slots=True)
+class LLMDiversityConfig:
+    """Judge-backed semantic clustering configuration."""
+
+    judge: Judge
     prompt_template: str = DEFAULT_CLUSTER_PROMPT
     max_tokens: int = 512
     temperature: float = 0.0
-    timeout: float = 60.0
 
-    # N-gram clustering options
-    ngram_n: int = 3
-    similarity_threshold: float = 0.5
-
-    # LLM retry count (matches rubric.py default of 3)
-    max_retries: int = 3
-
-    # On clustering error, "unique" means every rollout is its own cluster
-    # (no penalty). "uniform" means all rollouts share one cluster.
-    fallback_on_error: Literal["unique", "uniform"] = "unique"
+    def __post_init__(self) -> None:
+        if not self.prompt_template.strip():
+            raise ValueError("prompt_template must be non-empty")
+        if self.max_tokens < 1:
+            raise ValueError("max_tokens must be positive")
 
 
-@dataclass
+DiversityConfig: TypeAlias = NgramDiversityConfig | LLMDiversityConfig
+
+
+@dataclass(frozen=True, slots=True)
 class ClusterResult:
-    """Result of clustering a list of texts."""
+    """Cluster assignments and their derived reward divisors."""
 
-    cluster_ids: List[str]
-    divisors: List[float]
-    labels: List[str] = field(default_factory=list)
-    raw_response: Optional[str] = None
+    cluster_ids: tuple[str, ...]
+    divisors: tuple[float, ...]
+    labels: tuple[str, ...] = ()
+    raw_response: str | None = None
 
     @property
     def n_clusters(self) -> int:
         return len(set(self.cluster_ids))
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _ngram_set(text: str, n: int) -> set[str]:
-    """Return the set of character n-grams for a text."""
-    text = text.lower().strip()
-    if len(text) < n:
-        return {text} if text else set()
-    return {text[i : i + n] for i in range(len(text) - n + 1)}
-
-
-def _jaccard(a: set, b: set) -> float:
-    if not a and not b:
-        return 1.0
-    if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
-
-
-def _cluster_by_ngram(texts: List[str], n: int, threshold: float) -> ClusterResult:
-    """Greedy single-linkage clustering using n-gram Jaccard similarity.
-
-    Note: single-linkage can chain clusters — if A~B and B~C but not A~C,
-    all three end up in the same cluster. This is fast but aggressive.
-    """
-    ngrams = [_ngram_set(t, n) for t in texts]
-    cluster_ids: list[int] = [-1] * len(texts)
-    next_cluster = 0
-
-    for i in range(len(texts)):
-        if cluster_ids[i] != -1:
-            continue
-        cluster_ids[i] = next_cluster
-        for j in range(i + 1, len(texts)):
-            if cluster_ids[j] != -1:
-                continue
-            if _jaccard(ngrams[i], ngrams[j]) >= threshold:
-                cluster_ids[j] = next_cluster
-        next_cluster += 1
-
-    str_ids = [str(c) for c in cluster_ids]
-    counts = Counter(str_ids)
-    divisors = [float(counts[cid]) for cid in str_ids]
-    return ClusterResult(cluster_ids=str_ids, divisors=divisors)
-
-
-async def _cluster_by_llm(
-    texts: List[str],
-    config: DiversityConfig,
-    context: str,
-) -> ClusterResult:
-    """Cluster texts by sending them to an LLM."""
-    from openai import AsyncOpenAI
-
-    items = "\n\n".join(f"[{i}]\n{t}" for i, t in enumerate(texts))
-    prompt = config.prompt_template.format(
-        context=context or "(none)",
-        n=len(texts),
-        max_idx=len(texts) - 1,
-        items=items,
-    )
-
-    resolved_auth = _resolve_judge_auth(config.auth, config.api_key, None)
-    headers = await resolved_auth.headers_for_request(
-        ModelRequestContext(
-            base_url=config.base_url,
-            model=config.model,
-            rollout_id="diversity-judge",
-        )
-    )
-    client = AsyncOpenAI(
-        base_url=config.base_url,
-        api_key="benchmax-runtime-auth",
-        default_headers=dict(headers),
-        max_retries=config.max_retries,
-    )
-    try:
-        resp = await client.chat.completions.create(
-            model=config.model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=config.max_tokens,
-            temperature=config.temperature,
-            timeout=config.timeout,
-        )
-    finally:
-        await client.close()
-
-    raw = (resp.choices[0].message.content or "").strip()
-    parsed = _extract_json(raw)
-    assignments = parsed.get("assignments", [])
-
-    # Build cluster_ids, ensuring every index is covered
-    cluster_map: dict[int, str] = {}
-    label_map: dict[int, str] = {}
-    for a in assignments:
-        idx = int(a["index"])
-        cluster_map[idx] = str(a.get("cluster_id", f"unknown_{idx}"))
-        label_map[idx] = str(a.get("label", ""))
-
-    cluster_ids = []
-    labels = []
-    for i in range(len(texts)):
-        cluster_ids.append(cluster_map.get(i, f"unmapped_{i}"))
-        labels.append(label_map.get(i, ""))
-
-    counts = Counter(cluster_ids)
-    divisors = [float(counts[cid]) for cid in cluster_ids]
-    return ClusterResult(cluster_ids=cluster_ids, divisors=divisors, labels=labels, raw_response=raw)
-
-
-def _fallback_result(n: int, mode: Literal["unique", "uniform"]) -> ClusterResult:
-    """Generate a fallback ClusterResult on error."""
-    if mode == "unique":
-        ids = [f"fallback_{i}" for i in range(n)]
-        return ClusterResult(cluster_ids=ids, divisors=[1.0] * n)
-    else:
-        return ClusterResult(cluster_ids=["all"] * n, divisors=[float(n)] * n)
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 async def cluster_texts(
-    texts: List[str],
+    texts: Sequence[str],
     config: DiversityConfig,
     *,
     context: str = "",
 ) -> ClusterResult:
-    """Cluster a list of texts by similarity.
+    """Cluster texts using the selected explicit backend."""
 
-    Args:
-        texts: The strings to cluster (e.g. strategy traces, response summaries).
-        config: Clustering configuration (method, model, thresholds, etc.).
-        context: Optional context for the clustering prompt (e.g. the goal/behavior).
-
-    Returns:
-        A ``ClusterResult`` with cluster assignments and per-item divisors.
-    """
-    if not texts:
-        return ClusterResult(cluster_ids=[], divisors=[])
-    if len(texts) == 1:
-        return ClusterResult(cluster_ids=["0"], divisors=[1.0])
-
-    # Validate config up front — these are caller bugs, not transient failures.
-    if config.method == "llm":
-        if not config.model or not config.base_url:
-            raise ValueError("LLM clustering requires 'model' and 'base_url' in DiversityConfig")
-    elif config.method != "ngram":
-        raise ValueError(f"Unknown clustering method: {config.method!r}")
-
-    try:
-        if config.method == "ngram":
-            return _cluster_by_ngram(texts, config.ngram_n, config.similarity_threshold)
-        return await _cluster_by_llm(texts, config, context)
-    except RuntimeError:
-        # Missing explicit auth is not transient —
-        # propagate so the caller (and training) fails loudly rather than
-        # silently producing un-scaled rewards for an entire run.
-        raise
-    except Exception as e:
-        logger.warning(
-            "Clustering failed (%s: %s), using fallback=%s",
-            type(e).__name__, e, config.fallback_on_error,
-        )
-        return _fallback_result(len(texts), config.fallback_on_error)
+    clean_texts = tuple(str(text) for text in texts)
+    if not clean_texts:
+        return ClusterResult(cluster_ids=(), divisors=())
+    if len(clean_texts) == 1:
+        return ClusterResult(cluster_ids=("0",), divisors=(1.0,))
+    if isinstance(config, NgramDiversityConfig):
+        return _cluster_by_ngram(clean_texts, config)
+    return await _cluster_by_llm(clean_texts, config, context)
 
 
 async def scale_by_diversity(
-    rewards: List[Dict[str, float]],
-    texts: List[str],
+    rewards: Sequence[Mapping[str, float]],
+    texts: Sequence[str],
     config: DiversityConfig,
     *,
     context: str = "",
-) -> tuple[List[Dict[str, float]], ClusterResult]:
-    """Cluster texts and divide each rollout's rewards by its cluster size.
+) -> tuple[list[dict[str, float]], ClusterResult]:
+    """Divide every reward component by its text's cluster size."""
 
-    This is the primary entry point for diversity-scaled group rewards.
-
-    Args:
-        rewards: Per-rollout reward dicts (e.g. from ``compute_reward`` or ``_score_one``).
-        texts: Per-rollout texts to cluster (e.g. strategy traces).
-        config: Clustering configuration.
-        context: Optional context for clustering (e.g. the behavior/goal).
-
-    Returns:
-        A tuple of ``(scaled_rewards, cluster_result)`` where ``scaled_rewards``
-        is a list of reward dicts with every value divided by the cluster divisor,
-        and ``cluster_result`` contains the cluster assignments for observability.
-    """
     if len(rewards) != len(texts):
-        raise ValueError(f"rewards ({len(rewards)}) and texts ({len(texts)}) must have same length")
-
+        raise ValueError("rewards and texts must have the same length")
     result = await cluster_texts(texts, config, context=context)
+    scaled = [
+        {key: value / divisor for key, value in reward.items()}
+        for reward, divisor in zip(rewards, result.divisors, strict=True)
+    ]
+    return scaled, result
 
-    scaled_rewards: List[Dict[str, float]] = []
-    for reward, divisor in zip(rewards, result.divisors):
-        d = max(divisor, 1.0)
-        scaled_rewards.append({k: v / d for k, v in reward.items()})
 
-    return scaled_rewards, result
+def _cluster_by_ngram(
+    texts: tuple[str, ...], config: NgramDiversityConfig
+) -> ClusterResult:
+    ngrams = tuple(_ngram_set(text, config.n) for text in texts)
+    parents = list(range(len(texts)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parents[max(left_root, right_root)] = min(left_root, right_root)
+
+    for left in range(len(texts)):
+        for right in range(left + 1, len(texts)):
+            if _jaccard(ngrams[left], ngrams[right]) >= config.similarity_threshold:
+                union(left, right)
+
+    roots = [find(index) for index in range(len(texts))]
+    root_ids = {root: str(index) for index, root in enumerate(dict.fromkeys(roots))}
+    cluster_ids = tuple(root_ids[root] for root in roots)
+    counts = Counter(cluster_ids)
+    return ClusterResult(
+        cluster_ids=cluster_ids,
+        divisors=tuple(float(counts[cluster_id]) for cluster_id in cluster_ids),
+    )
+
+
+async def _cluster_by_llm(
+    texts: tuple[str, ...], config: LLMDiversityConfig, context: str
+) -> ClusterResult:
+    items = "\n\n".join(f"[{index}]\n{text}" for index, text in enumerate(texts))
+    try:
+        prompt = config.prompt_template.format(
+            context=context or "(none)",
+            count=len(texts),
+            last_index=len(texts) - 1,
+            items=items,
+        )
+    except (IndexError, KeyError, ValueError) as error:
+        raise ValueError(f"invalid diversity prompt template: {error}") from error
+
+    try:
+        payload, raw = await config.judge.request_json(
+            prompt,
+            request_id="diversity-clustering",
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+        )
+        cluster_ids, labels = _parse_assignments(payload, len(texts))
+    except JudgeError:
+        raise
+    except Exception as error:
+        logger.exception("LLM diversity clustering failed")
+        raise JudgeError(f"diversity clustering failed: {error}") from error
+
+    counts = Counter(cluster_ids)
+    return ClusterResult(
+        cluster_ids=cluster_ids,
+        divisors=tuple(float(counts[cluster_id]) for cluster_id in cluster_ids),
+        labels=labels,
+        raw_response=raw,
+    )
+
+
+def _parse_assignments(
+    payload: Mapping[str, object], item_count: int
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    raw_assignments = payload.get("assignments")
+    if not isinstance(raw_assignments, list):
+        raise ValueError("judge response field 'assignments' must be a list")
+    assignments: dict[int, tuple[str, str]] = {}
+    for assignment in raw_assignments:
+        if not isinstance(assignment, dict):
+            raise ValueError("judge diversity assignments must be objects")
+        index = assignment.get("index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise ValueError("judge diversity assignment indices must be integers")
+        if not 0 <= index < item_count:
+            raise ValueError(f"judge diversity index {index} is out of range")
+        if index in assignments:
+            raise ValueError(f"judge diversity assignment repeated index {index}")
+        cluster_id = assignment.get("cluster_id")
+        if not isinstance(cluster_id, str) or not cluster_id.strip():
+            raise ValueError(f"judge diversity assignment {index} needs a cluster_id")
+        label = assignment.get("label", "")
+        if not isinstance(label, str):
+            raise ValueError(f"judge diversity assignment {index} label must be a string")
+        assignments[index] = (cluster_id.strip(), label.strip())
+    missing = sorted(set(range(item_count)) - assignments.keys())
+    if missing:
+        raise ValueError(f"judge diversity assignments omitted indices: {missing}")
+    return (
+        tuple(assignments[index][0] for index in range(item_count)),
+        tuple(assignments[index][1] for index in range(item_count)),
+    )
+
+
+def _ngram_set(text: str, n: int) -> set[str]:
+    clean = text.lower().strip()
+    if len(clean) < n:
+        return {clean} if clean else set()
+    return {clean[index : index + n] for index in range(len(clean) - n + 1)}
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left and not right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    score = len(left & right) / len(left | right)
+    if not math.isfinite(score):
+        raise RuntimeError("computed a non-finite Jaccard similarity")
+    return score

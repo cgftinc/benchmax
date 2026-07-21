@@ -83,6 +83,7 @@ def aime_harbor_constructor_args(
 
     return {
         "dataset": DatasetConfig(name="aime/aime", ref="latest"),
+        "reward_keys": ("reward", "partial_credit"),
         "eval_ratio": 0.1,
         "trial": HarborTrialTemplate(
             agent=TrialAgentConfig(

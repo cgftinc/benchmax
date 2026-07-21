@@ -36,7 +36,9 @@ class ValidationReport:
 
     @property
     def ok(self) -> bool:
-        return bool(self.local) and (self.remote is None or bool(self.remote))
+        return _outcomes_finished(self.local) and (
+            self.remote is None or _outcomes_finished(self.remote)
+        )
 
     def __bool__(self) -> bool:
         return self.ok
@@ -59,8 +61,8 @@ async def validate_environment(
     explicit BenchMax ``ModelAuth`` implementation.
 
     ``include_remote`` is additive: local validation always runs first. It
-    currently raises after a successful local run because rollout-service has
-    not yet migrated to ``Environment.run_group``.
+    currently raises after the local run because rollout-service has not yet
+    migrated to ``Environment.run_group``.
     """
 
     resolved_base_url = base_url or config.llm_url()
@@ -82,14 +84,26 @@ async def validate_environment(
         local = dict(await env.run_group(requests))
     if set(local) != {"validate-0", "validate-1"}:
         raise ValueError(
-            "local validation returned unexpected rollout IDs: "
-            f"{sorted(local)}"
+            f"local validation returned unexpected rollout IDs: {sorted(local)}"
         )
 
     if include_remote:
         raise RemoteValidationUnavailable(
             "Remote validation is unavailable until rollout-service supports "
-            "the group-native BenchMax runtime. Local validation passed."
+            "the group-native BenchMax runtime. Local validation completed."
         )
 
     return ValidationReport(local=local)
+
+
+def _outcomes_finished(outcomes: dict[str, RolloutOutcome]) -> bool:
+    """Return whether validation produced only successful terminal outcomes.
+
+    Rewards are deliberately not part of this check: a correctly executed
+    rollout may earn zero. BenchMax records execution failures in the
+    termination reason while preserving the environment's reward shape.
+    """
+
+    return bool(outcomes) and all(
+        outcome.termination_reason == "finished" for outcome in outcomes.values()
+    )

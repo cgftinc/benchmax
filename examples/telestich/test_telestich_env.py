@@ -6,6 +6,7 @@ import pytest
 
 import benchmax.envs.base.env as base_env_module
 from benchmax.envs import RolloutRequest, StaticBearerAuth
+from benchmax.rewards import JudgeError
 from telestich_env import TelestichEnv, _bucket, _count_tool_calls
 
 
@@ -73,7 +74,9 @@ Blue windows wake into morning
     outcomes = await env.run_group(requests)
 
     assert set(outcomes) == set(poems)
-    assert all(outcome.termination_reason == "finished" for outcome in outcomes.values())
+    assert all(
+        outcome.termination_reason == "finished" for outcome in outcomes.values()
+    )
     assert outcomes["poem-1"].rewards["quality"] == pytest.approx(0.6)
     assert outcomes["poem-2"].rewards["quality"] == pytest.approx(0.5)
     assert all(
@@ -81,6 +84,81 @@ Blue windows wake into morning
         for outcome in outcomes.values()
     )
     assert all(sum(outcome.rewards.values()) > 0 for outcome in outcomes.values())
+
+
+async def test_group_judge_failure_zeroes_every_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    poems = {
+        "poem-1": """<answer>
+The rain lies shining on the road
+A final chord falls from the piano
+The dark begins to sing a song
+</answer>""",
+        "poem-2": """<answer>
+Night folds softly into wind
+An empty station keeps its echo
+Blue windows wake into morning
+</answer>""",
+    }
+
+    async def fake_completion(*, request, **kwargs):
+        del kwargs
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=poems[request.rollout_id],
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ]
+        )
+
+    async def fail_judge(*args, **kwargs):
+        del args, kwargs
+        raise JudgeError("ranking service unavailable")
+
+    env = TelestichEnv(judge_base_url="https://judge.example/v1")
+    monkeypatch.setattr(base_env_module, "_create_chat_completion", fake_completion)
+    monkeypatch.setattr(env, "_score_quality", fail_judge)
+    example = env._example_from_row(
+        {
+            "prompt": "Write a telestich whose last letters spell dog.",
+            "ground_truth": "dog",
+            "acceptable_refs": [],
+            "great_refs": [],
+        }
+    )
+    requests = [
+        RolloutRequest(
+            rollout_id=rollout_id,
+            example=example,
+            model="test-model",
+            base_url="https://model.example/v1",
+            model_auth=StaticBearerAuth("test-token"),
+        )
+        for rollout_id in poems
+    ]
+
+    outcomes = await env.run_group(requests)
+
+    assert all(
+        outcome.termination_reason == "judge_error" for outcome in outcomes.values()
+    )
+    assert all(
+        outcome.rewards
+        == {
+            "quality": 0.0,
+            "rhyme": 0.0,
+            "diversity": 0.0,
+            "conciseness": 0.0,
+        }
+        for outcome in outcomes.values()
+    )
+    assert "ranking service unavailable" in caplog.text
 
 
 def test_tool_call_count_reads_structured_base_rollout_messages() -> None:

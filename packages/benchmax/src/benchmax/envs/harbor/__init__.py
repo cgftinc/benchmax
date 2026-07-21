@@ -5,7 +5,7 @@ from benchmax.envs.harbor.credentials import (
     SandboxCredentials,
 )
 from benchmax.envs.harbor.dataset import HarborDataset
-from benchmax.envs.harbor.env import HarborEnv, HarborTrialError
+from benchmax.envs.harbor.env import HarborEnv
 from benchmax.envs.harbor.types import HarborTrialTemplate
 
 __all__ = [
@@ -13,7 +13,6 @@ __all__ = [
     "DaytonaCredentials",
     "HarborDataset",
     "HarborEnv",
-    "HarborTrialError",
     "HarborTrialTemplate",
     "ModalCredentials",
     "SandboxCredentials",

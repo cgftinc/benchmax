@@ -1,6 +1,6 @@
 """Public-API guards for the keyless device-auth surface.
 
-Two public behaviors the wizard codegen relies on (generated run.py scripts):
+Two public behaviors generated project scripts rely on:
   - ``platform_bearer`` is importable from ``castform.platform`` — generated
     scripts hand it to a raw OpenAI client (e.g. the traces pivot).
   - ``PlatformConfig()`` constructs with no key — an empty key resolves through

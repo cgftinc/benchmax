@@ -5,26 +5,26 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from openai import BadRequestError, InternalServerError
-
-from benchmax.auth import StaticBearerAuth
+from benchmax.auth import InjectedAuth, StaticBearerAuth
 from benchmax.envs import (
     BaseEnv,
     BaseRollout,
     Dataset,
     DatasetSplit,
     Example,
-    FrozenDataset,
     JsonRow,
     RewardMap,
     RolloutRequest,
     Tool,
 )
 from benchmax.envs.base.openai_types import Messages
+from benchmax.rewards import JudgeError
 from tests.new.fakes.model_server import LocalModelServer, completion_response
 
 
 class _MathEnv(BaseEnv):
+    reward_keys = ("correctness",)
+
     def __init__(
         self,
         *,
@@ -39,7 +39,7 @@ class _MathEnv(BaseEnv):
         split: DatasetSplit,
         base_dir: Path,
     ) -> Dataset[JsonRow]:
-        return FrozenDataset([])
+        return Dataset([])
 
     async def compute_reward(
         self,
@@ -151,7 +151,7 @@ async def test_base_env_group_runs_end_to_end_through_distinct_http_endpoints() 
     assert all(call[2] == {"answer": "42"} for call in env.reward_calls)
 
 
-async def test_output_exceeded_is_still_scored() -> None:
+async def test_output_exceeded_is_zeroed_without_scoring() -> None:
     example = Example(
         id="math-context",
         payload={
@@ -171,10 +171,10 @@ async def test_output_exceeded_is_still_scored() -> None:
 
     assert outcomes["rollout-1"].termination_reason == "output_exceeded"
     assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
-    assert env.reward_calls[0][3] == "output_exceeded"
+    assert env.reward_calls == []
 
 
-async def test_gateway_context_exhaustion_ends_and_scores_the_partial_rollout() -> None:
+async def test_gateway_context_exhaustion_ends_with_zero_rewards() -> None:
     example = Example(
         id="math-context",
         payload={
@@ -220,9 +220,12 @@ async def test_gateway_context_exhaustion_ends_and_scores_the_partial_rollout() 
     assert outcome.rewards == {"correctness": 0.0}
     assert len(server.requests) == 2
     assert env.tool_calls == [("rollout-1", "multiply", {"left": 6, "right": 7})]
+    assert env.reward_calls == []
 
 
-async def test_unrelated_bad_request_still_fails_loudly() -> None:
+async def test_unrelated_bad_request_is_a_logged_model_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     example = Example(
         id="math-bad-request",
         payload={
@@ -244,13 +247,17 @@ async def test_unrelated_bad_request_still_fails_loudly() -> None:
             },
         )
     ) as server:
-        with pytest.raises(BadRequestError):
-            await env.run_group(_requests(server, example, ["rollout-1"]))
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
 
+    assert outcomes["rollout-1"].termination_reason == "model_error"
+    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
     assert env.reward_calls == []
+    assert "malformed messages" in caplog.text
 
 
-async def test_model_infrastructure_failure_is_not_scored_or_retried() -> None:
+async def test_model_infrastructure_failure_is_zeroed_logged_and_not_retried(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     example = Example(
         id="math-infra",
         payload={
@@ -272,11 +279,166 @@ async def test_model_infrastructure_failure_is_not_scored_or_retried() -> None:
             },
         )
     ) as server:
-        with pytest.raises(InternalServerError):
-            await env.run_group(_requests(server, example, ["rollout-1"]))
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
 
     assert len(server.requests) == 1
+    assert outcomes["rollout-1"].termination_reason == "model_error"
+    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
     assert env.reward_calls == []
+    assert "model unavailable" in caplog.text
+
+
+async def test_empty_model_response_is_zeroed_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    example = Example(
+        id="math-empty-response",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "hello"}],
+            "answer": "hello",
+        },
+    )
+    env = _MathEnv()
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (
+            200,
+            {
+                "id": "completion-empty",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "test-model",
+                "choices": [],
+            },
+        )
+    ) as server:
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
+
+    assert outcomes["rollout-1"].termination_reason == "model_error"
+    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
+    assert env.reward_calls == []
+    assert "response contained no choices" in caplog.text
+
+
+async def test_unbound_runtime_auth_is_a_model_failure_without_cancelling_sibling(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    example = Example(
+        id="math-auth",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "answer"}],
+            "answer": "42",
+        },
+    )
+    env = _MathEnv()
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (200, completion_response(content="42"))
+    ) as server:
+        requests = [
+            RolloutRequest(
+                rollout_id="rollout-1",
+                example=example,
+                model="test-model",
+                base_url=server.base_url("rollout-1"),
+                model_auth=InjectedAuth("missing"),
+            ),
+            RolloutRequest(
+                rollout_id="rollout-2",
+                example=example,
+                model="test-model",
+                base_url=server.base_url("rollout-2"),
+                model_auth=StaticBearerAuth("session-key-rollout-2"),
+            ),
+        ]
+        outcomes = await env.run_group(requests)
+
+    assert outcomes["rollout-1"].termination_reason == "model_error"
+    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
+    assert outcomes["rollout-2"].termination_reason == "finished"
+    assert outcomes["rollout-2"].rewards == {"correctness": 1.0}
+    assert [request.session_id for request in server.requests] == ["rollout-2"]
+    assert "No runtime model-auth provider" in caplog.text
+
+
+async def test_failed_sibling_is_zeroed_and_excluded_from_group_scoring(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class RelativeMathEnv(_MathEnv):
+        reward_keys = ("correctness", "relative")
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.group_ids: list[str] = []
+
+        async def compute_group_rewards(self, rollouts):
+            self.group_ids = [rollout.rollout_id for rollout in rollouts]
+            return {rollout.rollout_id: {"relative": 1.0} for rollout in rollouts}
+
+    example = Example(
+        id="math-siblings",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "answer"}],
+            "answer": "42",
+        },
+    )
+    env = RelativeMathEnv()
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (
+            (500, {"error": {"message": "worker crashed", "type": "server_error"}})
+            if session_id == "rollout-1"
+            else (200, completion_response(content="42"))
+        ),
+        concurrent_calls=2,
+    ) as server:
+        outcomes = await env.run_group(
+            _requests(server, example, ["rollout-1", "rollout-2"])
+        )
+
+    assert outcomes["rollout-1"].termination_reason == "model_error"
+    assert outcomes["rollout-1"].rewards == {
+        "correctness": 0.0,
+        "relative": 0.0,
+    }
+    assert outcomes["rollout-2"].termination_reason == "finished"
+    assert outcomes["rollout-2"].rewards == {
+        "correctness": 1.0,
+        "relative": 1.0,
+    }
+    assert env.group_ids == ["rollout-2"]
+    assert "worker crashed" in caplog.text
+
+
+async def test_judge_failure_zeroes_only_that_sibling_and_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class JudgedMathEnv(_MathEnv):
+        async def compute_reward(self, rollout: BaseRollout) -> RewardMap:
+            if rollout.rollout_id == "rollout-1":
+                raise JudgeError("judge unavailable")
+            return await super().compute_reward(rollout)
+
+    example = Example(
+        id="math-judge",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "answer"}],
+            "answer": "42",
+        },
+    )
+    env = JudgedMathEnv()
+    with LocalModelServer(
+        lambda session_id, call_index, body: (200, completion_response(content="42")),
+        concurrent_calls=2,
+    ) as server:
+        outcomes = await env.run_group(
+            _requests(server, example, ["rollout-1", "rollout-2"])
+        )
+
+    assert outcomes["rollout-1"].termination_reason == "judge_error"
+    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
+    assert outcomes["rollout-2"].rewards == {"correctness": 1.0}
+    assert "judge unavailable" in caplog.text
 
 
 async def test_base_env_dispatches_an_advertised_tool_and_continues() -> None:
@@ -391,6 +553,59 @@ async def test_model_authored_tool_errors_are_returned_to_the_model() -> None:
     assert env.tool_calls == []
 
 
+async def test_unexpected_tool_failure_is_zeroed_logged_and_does_not_cancel_sibling(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class FailingToolEnv(_ToolMathEnv):
+        async def run_tool(
+            self,
+            rollout_id: str,
+            tool_name: str,
+            **tool_args: Any,
+        ) -> Any:
+            if rollout_id == "rollout-1":
+                raise RuntimeError("tool backend crashed")
+            return await super().run_tool(rollout_id, tool_name, **tool_args)
+
+    def respond(session_id, call_index, body):
+        if call_index == 0:
+            return 200, completion_response(
+                content=None,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    {
+                        "id": f"call-{session_id}",
+                        "type": "function",
+                        "function": {
+                            "name": "multiply",
+                            "arguments": '{"left":6,"right":7}',
+                        },
+                    }
+                ],
+            )
+        return 200, completion_response(content="42")
+
+    example = Example(
+        id="math-tool-failure",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "What is 6 × 7?"}],
+            "answer": "42",
+        },
+    )
+    env = FailingToolEnv(max_tool_calls=1)
+
+    with LocalModelServer(respond) as server:
+        outcomes = await env.run_group(
+            _requests(server, example, ["rollout-1", "rollout-2"])
+        )
+
+    assert outcomes["rollout-1"].termination_reason == "tool_error"
+    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
+    assert outcomes["rollout-2"].termination_reason == "finished"
+    assert outcomes["rollout-2"].rewards == {"correctness": 1.0}
+    assert "tool backend crashed" in caplog.text
+
+
 async def test_tool_budget_termination_is_scored_without_executing_tools() -> None:
     example = Example(
         id="math-tool-budget",
@@ -431,12 +646,14 @@ async def test_tool_budget_termination_is_scored_without_executing_tools() -> No
 
 async def test_base_env_group_only_reward_receives_complete_rollouts() -> None:
     class RelativeMathEnv(BaseEnv):
+        reward_keys = ("relative",)
+
         def __init__(self) -> None:
             super().__init__(max_turns=1)
             self.group_rollouts: list[BaseRollout] = []
 
         async def create_dataset(self, split, base_dir):
-            return FrozenDataset([])
+            return Dataset([])
 
         async def compute_group_rewards(
             self,
@@ -485,6 +702,8 @@ async def test_base_env_group_only_reward_receives_complete_rollouts() -> None:
 
 async def test_base_env_merges_individual_and_group_reward_dimensions() -> None:
     class CombinedMathEnv(_MathEnv):
+        reward_keys = ("correctness", "group_rank")
+
         async def compute_group_rewards(
             self,
             rollouts: Sequence[BaseRollout],
@@ -550,3 +769,105 @@ async def test_base_env_rejects_duplicate_individual_and_group_reward_keys() -> 
     ) as server:
         with pytest.raises(ValueError, match="duplicate keys.*correctness"):
             await env.run_group(_requests(server, example, ["rollout-1"]))
+
+
+async def test_request_split_reaches_reward_hooks_and_must_be_uniform() -> None:
+    """Envs may branch eval execution on ``rollout.split``; groups stay one-split."""
+
+    class _SplitAwareEnv(_MathEnv):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen_splits: list[str] = []
+
+        async def compute_reward(self, rollout: BaseRollout) -> RewardMap:
+            self.seen_splits.append(rollout.split)
+            return await super().compute_reward(rollout)
+
+    env = _SplitAwareEnv()
+    example = Example(id="split-example", payload={"prompt_messages": [{"role": "user", "content": "2*2?"}], "answer": "4"})
+
+    def respond(session_id: str, call_index: int, body: dict[str, Any]):
+        return 200, completion_response(content="4")
+
+    with LocalModelServer(respond, concurrent_calls=2) as server:
+        outcomes = await env.run_group(
+            [
+                RolloutRequest(
+                    rollout_id=rollout_id,
+                    example=example,
+                    model="test-model",
+                    base_url=server.base_url(rollout_id),
+                    model_auth=StaticBearerAuth("k"),
+                    split="eval",
+                )
+                for rollout_id in ("a", "b")
+            ]
+        )
+    assert env.seen_splits == ["eval", "eval"]
+    assert all(o.termination_reason == "finished" for o in outcomes.values())
+
+    with LocalModelServer(respond, concurrent_calls=2) as server:
+        mixed = [
+            RolloutRequest(
+                rollout_id="a",
+                example=example,
+                model="test-model",
+                base_url=server.base_url("a"),
+                model_auth=StaticBearerAuth("k"),
+                split="train",
+            ),
+            RolloutRequest(
+                rollout_id="b",
+                example=example,
+                model="test-model",
+                base_url=server.base_url("b"),
+                model_auth=StaticBearerAuth("k"),
+                split="eval",
+            ),
+        ]
+        with pytest.raises(ValueError, match="one split"):
+            await env.run_group(mixed)
+
+
+async def test_tool_content_parts_pass_through_to_the_transcript() -> None:
+    """Rich tool results (image + text parts) must not be stringified."""
+
+    parts = [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1n"}},
+        {"type": "text", "text": "zoomed"},
+    ]
+
+    class _RichToolEnv(_ToolMathEnv):
+        async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> Any:
+            return parts
+
+    env = _RichToolEnv(max_tool_calls=1)
+    example = Example(
+        id="rich-tool",
+        payload={"prompt_messages": [{"role": "user", "content": "6*7?"}], "answer": "42"},
+    )
+
+    def respond(session_id: str, call_index: int, body: dict[str, Any]):
+        if call_index == 0:
+            return 200, completion_response(
+                content=None,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "multiply", "arguments": '{"left":6,"right":7}'},
+                    }
+                ],
+            )
+        # The tool message the model sees next turn must carry the parts.
+        tool_turn = body["messages"][-1]
+        assert tool_turn["role"] == "tool"
+        assert tool_turn["content"] == parts
+        return 200, completion_response(content="42")
+
+    with LocalModelServer(respond, concurrent_calls=1) as server:
+        outcomes = await env.run_group(_requests(server, example, ["solo"]))
+
+    assert outcomes["solo"].termination_reason == "finished"
+    assert outcomes["solo"].rewards == {"correctness": 1.0}

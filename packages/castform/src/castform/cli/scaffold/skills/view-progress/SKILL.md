@@ -1,173 +1,70 @@
 ---
 name: view-progress
-description: Monitor a castform training run — status, reward scalars, and logs via the castform runs commands. Use after launching to watch a run or debug a stalled/failed one.
+description: Monitor a Castform run with status, scalar, rollout, and log commands, then diagnose failures or reward drift.
 ---
 
 # View progress
 
-Use this after launch to monitor the GPU run and debug stalled, failed, or
-surprising reward curves.
-
-## Fast path
-
-Track a run with the `castform runs` commands (all take `--json`):
+Start with the run ID printed by `main.py launch`:
 
 ```bash
-castform runs status <run-id>      # status + step progress + latest activity
-castform runs scalars <run-id> --mode eval --json   # full eval trajectories
+castform runs status <run-id>
+castform runs scalars <run-id> --mode eval --json
+castform runs logs <run-id>
 ```
 
-Status flows `pending` → `active` (running) → `complete`. Eval `scalars` are the
-signal — **reward should trend up and stay up.** Every run is also viewable at
-`app.castform.dev/train/<run-id>` (printed at launch).
+Use eval, not only train reward, to judge generalization. A rising train curve with
+a flat or falling eval curve is overfitting, not success.
 
-## Going deeper
+## Inspect actual rollouts
 
-### Did training beat the baseline?
-
-This is the real question — and there's **no `compare` verb**, so do it manually.
-Your **baseline** is the eval reward you saw at `python main.py validate` (and step-0 of
-the run) — for a held-out baseline, select an eval example in `main.py` and rerun validation
-rolls out the eval split (there is no `--eval` rollout flag). Compare the **eval**
-curve, not train — train reward can climb while eval flatlines (overfitting):
+Scalar totals are not enough to validate a reward. Read transcripts and per-
+component scores in the terminal or as JSON:
 
 ```bash
-castform runs scalars <run-id> --mode eval --json         # this run's eval reward
-castform runs scalars <other-run-id> --mode eval --json   # a second run to compare against
+castform runs rollouts <run-id> --mode eval
+castform runs rollout <run-id> <rollout-id>
+castform runs rollout <run-id> <rollout-id> --json
 ```
 
-`--mode` is dynamic per run (`train`, `eval`, …); `scalars` defaults to `train`
-when present, else the first available mode — so pass `--mode eval` explicitly for
-generalisation. The human table is a latest-value summary; use `--json` for the
-trajectory shape, peaks, and post-peak decline. To compare two runs (e.g. two
-hyperparameter settings), read each one's eval scalars and diff them yourself.
+`runs rollout` can join ground truth from local JSONL. Pass `--dataset <path>`
+when the project does not use the default eval/train filenames. Use the text or
+JSON output and the run page printed at launch.
 
-Train reward can climb while eval falls. If eval peaks early, record the best step
-and verify which checkpoint the platform can serve; the final checkpoint may be the
-overfit one. A freshly-trained checkpoint can briefly lag in serving
-(`model_unavailable` / a 502) — retry the read rather than assuming it failed.
+When reviewing stored outcomes, distinguish a valid zero score from execution
+failure using available logs and stored error fields. BenchMax produces a non-
+`finished` termination reason locally, but carrying that field faithfully through
+the trainer and hosted rollout views is pending downstream integration; do not
+claim a stored run exposes it until the platform does.
 
-### Compare with external evals
+## Diagnosis
 
-External evals run an external/base model on the same eval examples. Compare them
-to the trained model's **eval** mode, never to train reward.
+- `pending` for too long: inspect status and launch/platform logs.
+- `failed` early: inspect environment imports, bundle dependencies and the first
+  rollout error; fix the project and re-run validation before another launch.
+- `stalled`: inspect recent activity and logs; do not infer model quality from an
+  incomplete run.
+- flat rewards: read correct and incorrect transcripts, then test the reward
+  locally for discrimination and accidental bonus paths.
+- eval peaks then declines: record the best step and verify which checkpoint is
+  available before treating the final checkpoint as best.
+- judge errors: fix auth/provider/runtime reliability; never reinterpret the
+  zeroed failure reward as the judge's verdict.
 
-Use the web UI when possible. From an agent, use the platform endpoints:
-
-```python
-import httpx
-from castform import config
-from castform.platform.credentials import platform_bearer
-
-run_id = "..."
-c = httpx.Client(
-    base_url=config.platform_url(),
-    headers={"Authorization": f"Bearer {platform_bearer()}"},
-    timeout=60,
-)
-
-evals = c.get(f"/v1/train/runs/{run_id}/external-eval").json().get("evals", [])
-eval_id = evals[0]["id"]  # choose by model/status/createdAt
-trained_avg = c.get(
-    f"/v1/train/runs/{run_id}/rollouts/mode-average",
-    params={"mode": "eval"},
-).json()
-external_avg = c.get(
-    f"/v1/train/runs/{run_id}/rollouts/mode-average",
-    params={"mode": "external-eval", "externalEvalId": eval_id},
-).json()
-comparison = c.get(
-    f"/v1/train/runs/{run_id}/rollouts/comparison",
-    params={"externalEvalId": eval_id, "page": 1, "limit": 20},
-).json()
-```
-
-Use `mode-average` for the headline (`trained_avg["avg"]` vs
-`external_avg["avg"]`) and `/rollouts/comparison` for matched examples
-(`modelGroups` trained history, `compGroups` external eval). For one external
-transcript, reuse the stored-rollout chain with `mode="external-eval"` and
-`externalEvalId=eval_id`.
-
-External evals usually have one batch/step, not a full trajectory. If the trained
-model peaked before the final step, confirm which checkpoint can be served before
-declaring whether it beat the external model.
-
-### Full run list + logs
-
-```bash
-castform runs list                 # your runs + status
-castform runs logs <run-id>        # environment / error logs (--rollout-id for one rollout)
-```
-
-Terminal states beyond `complete`: `failed`, `stalled`, `cancelled`,
-`out_of_credits`, `billing_error`.
-
-`runs logs` is not a stored-rollout transcript browser; it usually contains env
-diagnostic/error logs. If reward looks odd, inspect stored rollouts instead.
-
-### Investigate stored rollouts
-
-To read actual answers and per-component rewards from a completed run, use the
-built-in rollout commands (no raw HTTP needed):
-
-```bash
-castform runs rollouts <run-id> --mode eval            # example groups + latest mean reward
-castform runs rollouts <run-id> --example <EXAMPLE ID> # one example's rollouts across steps
-castform runs rollout  <run-id> <ROLLOUT ID>           # transcript + per-component rewards + gold
-castform runs rollout  <run-id> <ROLLOUT ID> --view    # same, opened in the HTML viewer
-```
-
-`runs rollout` joins the **gold/ground truth** back from your local
-`eval_dataset.jsonl` (then `train_dataset.jsonl`) by prompt text — pass `--dataset`
-to point at a specific file. Add `--json` to any of them for the raw payload.
-
-These wrap the platform read endpoints (`/rollouts/summary`, `/rollouts/heatmap`,
-`/rollouts/<id>/details`). For external-eval comparison (below) and per-step
-component averages, drop to raw GETs with the SDK bearer:
-
-```python
-import httpx
-from castform import config
-from castform.platform.credentials import platform_bearer
-
-run_id = "..."
-c = httpx.Client(
-    base_url=config.platform_url(),
-    headers={"Authorization": f"Bearer {platform_bearer()}"},
-    timeout=60,
-)
-```
-
-If `component-averages` only shows latest-step data, use scalar histories such as
-`reward_stats/<component>/reward/mean` or average `details.rewards[]` yourself.
-
-### Debug answer quality
-
-When eval moves, read real answers rather than only scalar names:
-
-- Bucket examples by correctness: fully correct, soft partial, wrong/empty.
 <!-- rag:start -->
-- For RAG, decompose low citation recall: gold cited, gold retrieved but not cited,
-  and gold never retrieved. If correct answers cite retrieved valid sources, do not
-  reward-shape citations just because the aggregate recall is low.
-- Separate lookup from multi-hop questions; multi-hop failures often need data/model
-  capability or retrieval changes, not a citation reward tweak.
+For RAG, separate retrieval from answer quality: gold never retrieved, gold
+retrieved but not cited, and correct cited answers are different failure modes.
+Check source-ID canonicalization before changing reward weights.
 <!-- rag:end -->
-- Check judge leniency: partial credit for vague, hedged, or question-restating
-  answers inflates pass@1 and weakens the training signal.
 
-Background terminal monitors or polling loops do not survive a coding-agent/session
-restart. After resuming a long run, re-run `status`/`scalars` rather than trusting an
-old monitor.
+Every `runs` read supports `--json`. Use it for programmatic comparison, but do not
+build an unbounded polling loop. Re-run status and scalar reads after returning to
+a long-running job.
 
-### Controlling / debugging a run
+To cancel a run owned by the current account:
 
 ```bash
-castform stop <run-id>             # cancel a run you own
+castform stop <run-id>
 ```
 
-- `failed` early → `castform runs logs` for an env/import/reward error; fix
-  `main.py`, re-`validate`, re-`launch`.
-- `stalled` → the worker stopped reporting; check `runs logs` and the run URL.
-- Flat/odd reward → inspect stored rollouts, then go back to **verify-environment**
-  and audit the reward on transcripts before changing data or launching again.
+Preserve the run ID, terminal state and decisive log/reward evidence in the handoff.

@@ -10,12 +10,33 @@ __all__ = [
     "Example",
     "RewardMap",
     "RolloutAttempt",
+    "RolloutFailure",
     "RolloutOutcome",
     "RolloutRequest",
 ]
 
 DatasetSplit = Literal["train", "eval"]
 type RewardMap = Mapping[str, float]
+
+
+class RolloutFailure(RuntimeError):
+    """Operational rollout failure that should become a terminal outcome.
+
+    Environment implementations may raise this when they cannot construct a
+    normal :class:`RolloutAttempt` themselves. ``Environment.run_group`` waits
+    for every sibling, logs the original exception, and uses the environment's
+    declared reward keys to create the zero-valued outcome.
+
+    Programming and contract errors should use their normal exception types;
+    they remain loud after the other siblings have settled.
+    """
+
+    def __init__(self, termination_reason: str, message: str) -> None:
+        _validate_termination_reason(termination_reason)
+        if termination_reason == "finished":
+            raise ValueError("a rollout failure cannot terminate as 'finished'")
+        super().__init__(message)
+        self.termination_reason = termination_reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,13 +57,20 @@ class Example[Payload]:
 
 @dataclass(frozen=True, slots=True)
 class RolloutRequest[Payload]:
-    """One physical rollout invocation against one model endpoint."""
+    """One physical rollout invocation against one model endpoint.
+
+    ``split`` identifies which run context requested the rollout. Most
+    environments behave identically for both values; it exists so an
+    environment MAY choose different execution logic for evaluation (e.g.
+    deterministic seeds, a stricter verifier, a separate resource pool).
+    """
 
     rollout_id: str
     example: Example[Payload]
     model: str
     base_url: str
     model_auth: ModelAuth = field(repr=False)
+    split: DatasetSplit = "train"
 
     def __post_init__(self) -> None:
         if not isinstance(self.rollout_id, str) or not self.rollout_id.strip():
@@ -53,6 +81,8 @@ class RolloutRequest[Payload]:
             raise ValueError("base_url must be a non-empty string")
         if not isinstance(self.model_auth, ModelAuth):
             raise TypeError("model_auth must implement ModelAuth")
+        if self.split not in ("train", "eval"):
+            raise ValueError("split must be 'train' or 'eval'")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -76,12 +106,15 @@ class RolloutOutcome:
     """Result of a valid terminal rollout attempt.
 
     Rewards are always named and non-empty, e.g. ``{"correctness": 1.0}``.
-    Infrastructure failures raise instead.
+    Operational failures use the environment's normal reward keys with every
+    value set to zero. Programming and contract errors still raise.
 
     ``termination_reason`` is extensible tracking metadata. Built-in reasons
     include ``finished``, ``context_exceeded``, ``output_exceeded``,
     ``max_turns_exceeded``, ``tool_budget_exceeded``, ``harness_timeout``,
-    ``harness_error``, and ``unknown``.
+    ``harness_error``, ``sandbox_error``, ``verifier_timeout``,
+    ``verifier_error``, ``model_error``, ``tool_error``, ``judge_error``, and
+    ``unknown``.
     """
 
     rewards: RewardMap

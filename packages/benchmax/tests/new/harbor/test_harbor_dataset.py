@@ -148,6 +148,7 @@ def _make_env(
 ) -> HarborEnv:
     return HarborEnv(
         dataset=dataset,
+        reward_keys=("reward",),
         eval_dataset=eval_dataset,
         eval_ratio=eval_ratio,
         trial=HarborTrialTemplate(

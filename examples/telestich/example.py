@@ -31,9 +31,8 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-import telestich_env as telestich_env_mod
+from benchmax.bundle import Bundle, dump_bundle
 from telestich_env import TelestichEnv
-from benchmax.rubrics import rubric as rubric_mod
 
 # ══════════════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -68,6 +67,10 @@ MODEL = os.environ.get("TELESTICH_MODEL", "Qwen/Qwen3.5-4B")
 VALIDATE_MODEL = os.environ.get("TELESTICH_VALIDATE_MODEL", "gpt-5.4-mini")
 # Run name — defaults to a unique telestich-full-<uuid>. Override via TELESTICH_RUN_NAME.
 RUN_NAME = os.environ.get("TELESTICH_RUN_NAME", "")
+
+# Remote-rollout imports, declared explicitly at the script boundary. Local
+# ``telestich_env`` source is captured automatically by BenchMax.
+RUNTIME_DEPENDENCIES = ["english_words", "openai", "pronouncing", "wordfreq"]
 
 # (model, weight). Weights reflect observed reliability on our checks:
 # - Both grok models leak banned example words and rubber-stamp the CoT self-check.
@@ -553,6 +556,25 @@ def get_dataset():
     return existing
 
 
+def confirm_gpu_launch(run_name: str) -> bool:
+    """Require an explicit acknowledgement before uploading and spending credits."""
+
+    reply = (
+        input(f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] ")
+        .strip()
+        .lower()
+    )
+    return reply in ("y", "yes")
+
+
+def build_training_bundle(constructor_args: dict[str, str]) -> Bundle:
+    return dump_bundle(
+        TelestichEnv,
+        constructor_args=constructor_args,
+        pip_dependencies=RUNTIME_DEPENDENCIES,
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════
 # DEMO: BUNDLE + VIEW
 # ══════════════════════════════════════════════════════════════════════
@@ -568,8 +590,7 @@ if __name__ == "__main__":
     from castform.platform.training_run import upload_training_run
 
     # Device-auth session bootstrap: browser login if no credential resolves.
-    # After this the platform bearer comes from ~/.castform — no API key needed,
-    # so we pass api_key="" to the platform calls below (resolves via the seam).
+    # After this the platform bearer comes from ~/.castform and resolves per request.
     ensure_session()
 
     print(f"Platform URL: {BASE_URL}")
@@ -587,17 +608,20 @@ if __name__ == "__main__":
     train_data = [e for i, e in enumerate(examples) if i not in eval_idx]
     print(f"{len(train_data)} train (curriculum order) / {len(eval_data)} eval.\n")
 
-    # 2. Bundle the env class and upload everything to platform storage.
-    # Bundle config, defined once so the pre-flight validation below exercises
-    # the EXACT same env_args / by-value modules / deps as the launch.
-    #  - local_modules: ship env + rubric by value (the platform's installed
-    #    benchmax may not contain this version of these modules).
-    #  - judge bearer resolves at runtime via the device-auth / platform seam.
-    constructor_args = {"judge_base_url": LLM_BASE_URL}
-    local_modules = [telestich_env_mod, rubric_mod]
-    # All three are still required (is_valid_word → correctness; pronouncing →
-    # rhyme). Removing word_bank did NOT free any of them.
-    pip_dependencies = ["english_words", "openai", "pronouncing", "wordfreq"]
+    # Bundle inputs are explicit and script-owned. The local Telestich module is
+    # captured automatically; BenchMax remains an installed runtime dependency
+    # and is never registered for by-value pickling.
+    #
+    # Dataset locations must be known before the bundle is built (constructor
+    # args travel inside the pickle), so pin the upload prefix instead of using
+    # the default content-hashed one.
+    run_name = RUN_NAME or f"telestich-full-{uuid.uuid4().hex[:8]}"
+    dataset_prefix = f"datasets/{run_name}"
+    constructor_args = {
+        "judge_base_url": LLM_BASE_URL,
+        "train_dataset_path": f"{dataset_prefix}/train.jsonl",
+        "eval_dataset_path": f"{dataset_prefix}/eval.jsonl",
+    }
 
     # 2. Pre-flight: exercise the real group-native environment contract with two
     #    local sibling rollouts. Hosted validation remains disabled until the
@@ -619,24 +643,27 @@ if __name__ == "__main__":
             f"  {rollout_id}: total={sum(outcome.rewards.values()):.3f} "
             f"{dict(outcome.rewards)}"
         )
-    if not validation_report:
+    if not validation_report.ok:
         raise SystemExit(
             "Env validation failed — aborting before launch (see output above)."
         )
 
-    # 3. Bundle the env class and upload everything to platform storage.
-    run_name = RUN_NAME or f"telestich-full-{uuid.uuid4().hex[:8]}"
+    # 3. Confirm before uploading or launching. The launch never happens as an
+    #    implicit consequence of data preparation or validation.
+    if not confirm_gpu_launch(run_name):
+        raise SystemExit("Launch aborted.")
+
+    # 4. Build the artifact explicitly in BenchMax, then ask Castform to upload
+    #    that exact bundle alongside this example's datasets.
+    bundle = build_training_bundle(constructor_args)
     print(f"\nUploading bundle + datasets as {run_name!r} ...")
     uploaded = upload_training_run(
-        env_class=TelestichEnv,
+        bundle=bundle,
         train_dataset=train_data,
         eval_dataset=eval_data,
         run_name=run_name,
-        api_key="",  # session bearer via ensure_session()
         base_url=BASE_URL,
-        local_modules=local_modules,
-        constructor_args=constructor_args,
-        pip_dependencies=pip_dependencies,
+        dataset_prefix=dataset_prefix,
     )
     for label, path in (
         ("env_cls", uploaded.env_cls_path),
@@ -646,10 +673,10 @@ if __name__ == "__main__":
     ):
         print(f"  {label:<14}: {path}")
 
-    # 4. Launch the training run. The model arg selects the trainer YAML/pool
+    # 5. Launch the training run. The model arg selects the trainer YAML/pool
     #    server-side (Qwen3.5-4B→gpu4, Qwen3.5-35B-A3B→gpu8).
     print(f"\nLaunching training run (model={MODEL}) ...")
-    with TrainerClient(api_key="", base_url=BASE_URL) as trainer:
+    with TrainerClient(base_url=BASE_URL) as trainer:
         run_id = trainer.launch_training_run(
             env_cls_path=uploaded.env_cls_path,
             env_metadata_path=uploaded.env_metadata_path,

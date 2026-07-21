@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
 
 from castform.cli import setup
+
+from ._scaffold import discover_env_class, load_module
 
 _SKILLS = (
     "design-environment",
@@ -15,7 +22,16 @@ _SKILLS = (
 )
 
 # Every template now ships these — a runnable seed + tiny day-one datasets.
-_SEED_FILES = ("main.py", "train_dataset.jsonl", "eval_dataset.jsonl")
+_SEED_FILES = (
+    "pyproject.toml",
+    "main.py",
+    "train_dataset.jsonl",
+    "eval_dataset.jsonl",
+)
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def _ns(tmp, **kw):
@@ -48,6 +64,8 @@ def test_setup_writes_both_agents(tmp_path, capsys):
     assert "ask your agent" in out  # the prompt box
     assert "helpful commands" in out  # the commands divider
     assert "python main.py validate" in out
+    assert "python main.py launch" in out
+    assert "castform launch" not in out
     assert "castform guide" in out  # the guide is surfaced in the commands
 
 
@@ -66,13 +84,15 @@ def test_setup_codex_writes_agents_skills(tmp_path):
     # codex gets the same skills under .agents/skills, and AGENTS.md points there
     for name in _SKILLS:
         assert (tmp_path / ".agents" / "skills" / name / "SKILL.md").exists()
-    assert ".agents/skills" in (tmp_path / "AGENTS.md").read_text()
-    assert ".claude/skills" not in (tmp_path / "AGENTS.md").read_text()
-    assert "Gate secondary bonuses" in (tmp_path / "AGENTS.md").read_text()
+    guide = (tmp_path / "AGENTS.md").read_text()
+    assert ".agents/skills" in guide
+    assert ".claude/skills" not in guide
+    assert "Keep correctness dominant" in guide
     view_progress = (
         tmp_path / ".agents" / "skills" / "view-progress" / "SKILL.md"
     ).read_text()
-    assert "external-eval" in view_progress
+    assert "castform runs rollout" in view_progress
+    assert "--view" not in view_progress
 
 
 def test_setup_default_shows_grouped_summary(tmp_path, capsys):
@@ -117,23 +137,30 @@ def test_setup_force_overwrites(tmp_path):
 def test_setup_content_cites_real_verbs(tmp_path):
     setup._cmd_setup(_ns(tmp_path, agent="claude"))
     guide = (tmp_path / "CLAUDE.md").read_text()
-    assert "python main.py validate" in guide and "castform launch" in guide
-    assert "max_rollout_len" in guide  # the real launch knob is documented
+    launch_skill = (
+        tmp_path / ".claude" / "skills" / "launch-run" / "SKILL.md"
+    ).read_text()
+    assert "python main.py validate" in guide
+    assert "python main.py launch" in guide
+    assert "castform launch" not in guide + launch_skill
+    assert "max_rollout_len" in launch_skill
+    assert "upload_training_run(bundle=bundle" in launch_skill
 
 
 def test_setup_generic_ships_seed_env_and_data(tmp_path):
     """The generic flow ships a runnable seed main.py (a minimal single-turn env)
     plus tiny day-one datasets, so `python main.py validate` runs with zero edits."""
-    from castform.cli._project import load_project
-
     assert setup._cmd_setup(_ns(tmp_path)) == 0
     assert (tmp_path / "CLAUDE.md").exists()  # docs written
     for name in _SEED_FILES:
         assert (tmp_path / name).exists(), name
     # the seed loads: a no-tool CustomEnv + non-empty datasets
-    project = load_project(directory=str(tmp_path))
-    assert project.env_class.__name__ == "CustomEnv"
-    assert project.train_dataset and project.eval_dataset
+    module = load_module(tmp_path / "main.py")
+    assert discover_env_class(module).__name__ == "CustomEnv"
+    assert _read_jsonl(tmp_path / "train_dataset.jsonl")
+    assert _read_jsonl(tmp_path / "eval_dataset.jsonl")
+    project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
+    assert project["project"]["dependencies"] == ["benchmax", "castform"]
 
 
 def test_setup_no_template_ships_docs_and_skills_only(tmp_path):
@@ -154,46 +181,64 @@ def test_setup_refuses_existing_main_py(tmp_path, capsys):
 
 
 def test_setup_template_rag_writes_searchenv(tmp_path):
-    """--template rag writes a main.py the loader discovers as CustomSearchEnv (a
-    SearchEnv subclass), and it constructs with no args, offline."""
-    from castform.cli._project import _load_module_from_file, discover_env_class
-    from postgres_search_env import SearchEnv
+    """The RAG seed is a standalone BaseEnv, not a workspace-example import."""
+    from benchmax.envs import BaseEnv
 
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
     main_py = (tmp_path / "main.py").read_text()
-    assert "class CustomSearchEnv(SearchEnv)" in main_py
+    assert "class CustomSearchEnv(BaseEnv)" in main_py
+    assert "postgres_search_env" not in main_py
     assert "MAX_SEARCH_CALLS = 6" in main_py
-    # Self-contained: the reward arithmetic + weights are visible/editable in the
-    # file, and the run's budgets are baked in so it reproduces without CLI flags.
+    # Self-contained: reward arithmetic and budgets are visible/editable here.
     assert "async def compute_reward" in main_py
-    assert "W_CORRECTNESS" in main_py
+    assert "citation_recall" in main_py
     assert "VALIDATE_CONFIG = {" in main_py
     assert "LAUNCH_CONFIG = {" in main_py
-    mod = _load_module_from_file(tmp_path / "main.py")
+    mod = load_module(tmp_path / "main.py")
     env_cls = discover_env_class(mod)  # imported SearchEnv is ignored (other module)
     assert env_cls.__name__ == "CustomSearchEnv"
-    assert issubclass(env_cls, SearchEnv)
-    assert isinstance(env_cls(), SearchEnv)  # no-arg construct, no network
-    # The config blocks are what validate/launch read (LoadedProject surfaces them).
-    from castform.cli._project import _read_config
-
-    assert _read_config(mod, "VALIDATE_CONFIG")["max_turns"] == 7
-    assert _read_config(mod, "LAUNCH_CONFIG")["max_rollout_len"] == 16384
+    assert issubclass(env_cls, BaseEnv)
+    assert isinstance(env_cls(), BaseEnv)  # no-arg construct, no network
+    assert env_cls().max_turns == 7
+    assert mod.LAUNCH_CONFIG["max_rollout_len"] == 16384
 
 
 def test_setup_template_rag_writes_seed_and_datasets(tmp_path):
     """--template rag ships the SearchEnv main.py + tiny seed datasets (question/
-    answer/reference_chunks shape). Real data replaces them via `castform data
-    qa-gen`; the datasets skip-if-exists, so real data is never clobbered."""
-    from castform.cli._project import load_project
-
+    answer/reference_chunks shape). Real data replaces them via public Castform
+    RAG library calls; the datasets skip-if-exists, so real data is not clobbered."""
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
     assert (tmp_path / "main.py").exists()
     assert (tmp_path / "train_dataset.jsonl").exists()
     assert (tmp_path / "eval_dataset.jsonl").exists()
-    project = load_project(directory=str(tmp_path))
-    assert project.env_class.__name__ == "CustomSearchEnv"
-    assert set(project.train_dataset[0]) >= {"question", "answer", "reference_chunks"}
+    module = load_module(tmp_path / "main.py")
+    assert discover_env_class(module).__name__ == "CustomSearchEnv"
+    assert set(_read_jsonl(tmp_path / "train_dataset.jsonl")[0]) >= {
+        "question",
+        "answer",
+        "reference_chunks",
+    }
+    project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
+    assert project["project"]["dependencies"] == ["benchmax", "castform[rag]"]
+
+
+def test_generated_rag_project_imports_without_workspace_examples(tmp_path):
+    """Model the installed-wheel shape where showcase modules are unavailable."""
+
+    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
+    code = """
+import importlib.util
+import sys
+
+sys.path[:] = [entry for entry in sys.path if '/examples/' not in entry]
+sys.modules['postgres_search_env'] = None
+spec = importlib.util.spec_from_file_location('generated_rag_main', 'main.py')
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+assert module.CustomSearchEnv().reward_keys == ('answer_correctness', 'citation_recall')
+"""
+    subprocess.run([sys.executable, "-c", code], cwd=tmp_path, check=True)
 
 
 def test_setup_template_rag_refuses_existing_main_py(tmp_path, capsys):
@@ -214,31 +259,29 @@ def test_setup_template_rag_force_overwrites(tmp_path):
 
 def test_setup_force_replaces_main_py_but_keeps_datasets(tmp_path):
     """--force clears the main.py overwrite guard but must NOT clobber datasets —
-    real `castform data qa-gen` output is never overwritten by the placeholder seed."""
+    real project-generated output is never overwritten by the placeholder seed."""
     (tmp_path / "main.py").write_text("MINE")
     (tmp_path / "train_dataset.jsonl").write_text("REAL TRAIN DATA")
     (tmp_path / "eval_dataset.jsonl").write_text("REAL EVAL DATA")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'mine'\n")
     assert setup._cmd_setup(_ns(tmp_path, template="rag", force=True)) == 0
     assert (tmp_path / "main.py").read_text() != "MINE"  # guard cleared, seed written
     assert (tmp_path / "train_dataset.jsonl").read_text() == "REAL TRAIN DATA"  # kept
     assert (tmp_path / "eval_dataset.jsonl").read_text() == "REAL EVAL DATA"  # kept
+    assert "name = 'mine'" in (tmp_path / "pyproject.toml").read_text()
 
 
-def test_getting_started_uses_one_prompt_model(tmp_path):
-    """GETTING_STARTED mirrors the UI's one-prompt model (3 AGENT_PROMPTS variants
-    + baseline handoff), not the old rigid 1-4 checklist."""
+def test_getting_started_teaches_script_workflow(tmp_path):
+    """GETTING_STARTED teaches the script workflow and baseline handoff."""
     assert setup._cmd_setup(_ns(tmp_path, agent="claude")) == 0
     gs = (tmp_path / "GETTING_STARTED.md").read_text()
-    # the 3 paste-able variants (generic / rag / traces) matching the UI backbone
-    assert "improve a model on <your task>" in gs
-    assert "retrieval-augmented" in gs
-    assert "production traces" in gs
-    # explicit baseline -> iterate-or-launch handoff
-    assert "green baseline" in gs and "iterate or launch" in gs.lower()
-    # the rigid checklist + reward-Q&A-first framing are gone
-    assert "work through them in order" not in gs.lower()
-    assert "how to reward it" not in gs
-    assert "Quick commands" in gs
+    assert "Build a Castform environment for <task>" in gs
+    assert "uv run python main.py validate" in gs
+    assert "uv run python main.py launch" in gs
+    assert "green baseline" in gs and "iterate" in gs.lower()
+    assert "castform launch" not in gs
+    assert "castform data" not in gs
+    assert "Useful CLI commands" in gs
 
 
 def test_setup_env_conditional_surfacing(tmp_path):
@@ -262,14 +305,11 @@ def test_setup_env_conditional_surfacing(tmp_path):
     for blob in (generic, rag):
         assert "rag:start" not in blob and "rag:end" not in blob
 
-    # RAG-only sentinels: present in the rag scaffold, absent in the generic one
+    # RAG-only guidance is present in the RAG scaffold and absent from generic.
     for sentinel in (
-        "gold-hit",
-        "retrieval_hit",
-        "MAX_TOOL_OUTPUT_CHARS",
-        "MAX_SEARCH_CALLS",
         "reference_chunks",
-        "SearchEnv",
+        "source-ID canonicalization",
+        "castform.rag",
     ):
         assert sentinel in rag, f"rag scaffold missing {sentinel!r}"
         assert sentinel not in generic, f"generic scaffold leaked {sentinel!r}"
@@ -286,18 +326,20 @@ def test_rag_scaffold_reward_threads_canonicalize_and_timeout(tmp_path, monkeypa
     which a naive inline reward silently drops (review findings #0, #6)."""
     import asyncio
 
-    from benchmax.envs import StaticBearerAuth
-    from castform.cli._project import _load_module_from_file, discover_env_class
+    from benchmax.envs import BaseRollout, StaticBearerAuth
+    from benchmax.rewards import Judge, RubricEvaluation
 
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
-    mod = _load_module_from_file(tmp_path / "main.py")
+    mod = load_module(tmp_path / "main.py")
     env_cls = discover_env_class(mod)
 
     env = env_cls.__new__(env_cls)  # skip network __init__
-    env._judge_model = "m"
-    env._judge_base_url = "u"
-    env._judge_timeout = 99.0
-    env._judge_auth = StaticBearerAuth("k")
+    env._judge = Judge(
+        model="m",
+        base_url="u",
+        auth=StaticBearerAuth("k"),
+        timeout=99.0,
+    )
     # A corpus-specific matcher (case-insensitive) — proves _canonicalize_id is threaded.
     env._canonicalize_id = lambda s: str(s or "").strip().lower()
 
@@ -305,7 +347,7 @@ def test_rag_scaffold_reward_threads_canonicalize_and_timeout(tmp_path, monkeypa
 
     async def _fake_judge(**kw):
         captured.update(kw)
-        return {"score": 1.0}
+        return RubricEvaluation(1.0, "", "")
 
     monkeypatch.setattr(mod, "evaluate_single_rubric", _fake_judge)
 
@@ -316,10 +358,17 @@ def test_rag_scaffold_reward_threads_canonicalize_and_timeout(tmp_path, monkeypa
         "reference_chunks": [{"metadata": {"file": "doca"}}],
     }
     reward = asyncio.run(
-        env.compute_reward("r", msgs, task, termination_reason="finished")
+        env.compute_reward(
+            BaseRollout(
+                rollout_id="r",
+                termination_reason="finished",
+                messages=msgs,
+                example_args=task,
+            )
+        )
     )
 
-    assert captured["timeout"] == 99.0  # #6: env judge_timeout threaded
+    assert captured["judge"].timeout == 99.0  # #6: env judge_timeout threaded
     # #0: "DOCA" cite matched gold "doca" via the injected lowercasing canonicalizer
-    # (retrieval_hit is the ungated recall component)
-    assert reward["retrieval_hit"] > 0
+    # (citation_recall is the deterministic source-match component)
+    assert reward["citation_recall"] > 0

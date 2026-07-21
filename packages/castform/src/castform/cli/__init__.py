@@ -10,16 +10,14 @@ small.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from castform.cli import (
     _auth,
     control,
-    corpus,
-    data,
     doctor,
     help,
-    launch,
     runs,
     setup,
 )
@@ -33,13 +31,14 @@ __all__ = ["build_parser", "main", "_cmd_login", "_cmd_logout", "_cmd_whoami"]
 def build_parser() -> argparse.ArgumentParser:
     """Build the full castform parser. Tests snapshot its ``format_help()``."""
     parser = argparse.ArgumentParser(prog="castform", description="Castform CLI")
+    parser.add_argument(
+        "--profile",
+        help="Use a named Castform profile for this command",
+    )
     sub = parser.add_subparsers(dest="command", required=True, metavar="<command>")
     _auth.register(sub)
     runs.register(sub)
     control.register(sub)
-    launch.register(sub)
-    data.register(sub)
-    corpus.register(sub)
     setup.register(sub)
     doctor.register(sub)
 
@@ -63,6 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if profile := getattr(args, "profile", None):
+        os.environ["CASTFORM_PROFILE"] = profile
     return args.func(args)
 
 

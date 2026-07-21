@@ -1,135 +1,85 @@
 ---
 name: design-environment
-description: Design a custom Castform BaseEnv, its dataset examples, optional tools, and rewards.
+description: Design a BenchMax environment, its ordered dataset, tools, and explicit reward shape for a Castform project.
 ---
 
 # Design an environment
 
-Use `BaseEnv` for the standard OpenAI-compatible conversation loop. Implement
-the structural `Environment` protocol directly only when another harness owns
-execution.
+Use `BaseEnv` for the standard OpenAI-compatible chat and tool loop. Use
+`HarborEnv` when Harbor owns the complete agent/sandbox/verifier harness. Extend
+`Environment` directly only for another genuinely different rollout loop.
 
-## Required shape
+## Required BaseEnv shape
 
 ```python
-from benchmax.envs import BaseEnv
+from pathlib import Path
+
+from benchmax.envs import BaseEnv, BaseRollout, DatasetSplit, JsonlDataset
+from benchmax.rewards import extract_completion_text
 
 
 class MyEnv(BaseEnv):
+    reward_keys = ("correct",)
     max_turns = 1
 
-    async def create_dataset(self, split, base_dir):
-        ...
+    async def create_dataset(
+        self, split: DatasetSplit, base_dir: Path
+    ) -> JsonlDataset:
+        return JsonlDataset(base_dir / f"{split}.jsonl", row_to_example=...)
 
-    async def compute_reward(
-        self,
-        rollout_id,
-        messages,
-        example_args,
-        *,
-        termination_reason,
-    ):
-        return {"correctness": ...}
+    async def compute_reward(self, rollout: BaseRollout) -> dict[str, float]:
+        answer = extract_completion_text(rollout.messages)
+        return {"correct": float(answer == rollout.example_args["answer"])}
 ```
 
-Every example payload is a JSON object with one reserved field:
+Build each `Example` with a stable ID, normally
+`canonical_example_id(payload)`. `prompt_messages` is the reserved BaseEnv payload
+field; all other fields become `rollout.example_args`. Put system messages in
+`prompt_messages` rather than ambient module state.
 
-```json
-{
-  "prompt_messages": [{"role": "user", "content": "..."}],
-  "ground_truth": "..."
-}
-```
+`Dataset` is an ordered base class, not a cleaning pipeline. The environment owns
+the runtime representation and can store lightweight references in payloads.
+Preparation, cleaning and QA generation belong in the project data script.
 
-`BaseEnv` removes `prompt_messages` and passes every other field together as
-`example_args`. Put system messages directly in `prompt_messages`; BaseEnv has
-no separate system-prompt configuration.
+## Reward contract
 
-## JSONL datasets
+- Declare the complete final shape in `reward_keys`.
+- Successful individual and group reward hooks must combine to exactly that shape.
+- Return finite numbers and make correctness the dominant signal.
+- Let judge, model, tool and sandbox operational failures propagate through the
+  typed runtime path. BenchMax logs them and returns the declared keys all zero
+  with a non-`finished` termination reason.
+- Do not catch a judge failure and report it as a legitimate score.
+- Programming, malformed-result and configuration errors should remain loud.
 
-Use `JsonlDataset` for ordinary JSONL sources. The callback returns the complete
-`Example`, including stable identity:
-
-```python
-from benchmax.envs import Example, JsonlDataset, canonical_example_id
-
-
-def make_example(row):
-    payload = {
-        "prompt_messages": [
-            {"role": "user", "content": row["question"]},
-        ],
-        "ground_truth": row["answer"],
-    }
-    return Example(id=canonical_example_id(payload), payload=payload)
-
-
-async def create_dataset(self, split, base_dir):
-    return JsonlDataset(
-        base_dir / f"{split}.jsonl",
-        row_to_example=make_example,
-    )
-```
-
-Do not introduce a generic row parser on BaseEnv. Each environment owns its row
-semantics and decides which values define canonical identity.
-
-## Rewards
-
-- Score the complete transcript in `messages`.
-- Use `example_args` for ground truth and other example-owned scoring data.
-- `termination_reason` is tracking context; every completed attempt is scored.
-- Let judge, verifier, model-client, and tool infrastructure failures raise.
-- Return a non-empty `dict[str, float]` with finite values.
-- Make the reward discriminating across plausible model outputs.
-- Keep correctness dominant and gate secondary bonuses when appropriate.
-
-Group-relative environments may additionally implement:
-
-```python
-async def compute_group_reward(
-    self,
-    rollout_ids,
-    messages_list,
-    example_args_list,
-    termination_reasons,
-):
-    ...  # one reward mapping per rollout, in the same order
-```
+Override `compute_group_rewards` only when scoring genuinely depends on successful
+siblings. Failed siblings are excluded from group-relative scoring, and a failed
+group judge zeroes otherwise-successful siblings without cancelling the group.
 
 ## Optional tools
 
-Environments without tools inherit `list_tools() -> []` and do not implement
-`run_tool`.
-
-Tool-using environments return OpenAI-compatible tool dictionaries directly:
+`BaseEnv` supplies no tools by default. A tool-using environment returns standard
+OpenAI tool schemas from `list_tools` and dispatches them in `run_tool`:
 
 ```python
-async def list_tools(self):
-    return [{
-        "type": "function",
-        "function": {
-            "name": "lookup",
-            "description": "Look up a term.",
-            "parameters": {
-                "type": "object",
-                "properties": {"term": {"type": "string"}},
-                "required": ["term"],
-            },
-        },
-    }]
-
-
-async def run_tool(self, rollout_id, tool_name, **tool_args):
-    ...
+async def run_tool(self, rollout_id: str, tool_name: str, **tool_args):
+    if tool_name != "lookup":
+        raise ValueError(f"unknown tool: {tool_name}")
+    return await self.lookup(tool_args["query"])
 ```
 
-Tool results may be strings or JSON-serializable values. A raised exception is
-an infrastructure failure and aborts the attempt.
+Keep clients pickle-safe. Resolve rotating model/judge credentials per call with
+`InjectedAuth`; never read Castform credentials from BenchMax environment code.
 
-## Before launch
+## Review before handoff
 
-1. Use **generate-data** to create representative train and eval JSONL files.
-2. Use **verify-environment** to exercise real reward and tool edge cases.
-3. Run `python main.py validate` and inspect reward variation and failures.
-4. Launch only after the dataset identity and reward behavior are reviewed.
+1. Test dataset identity and split ordering.
+2. Unit-test empty, wrong, partial and correct completions against every reward key.
+3. Exercise tool errors and judge errors and confirm zero rewards plus an explicit
+   termination reason and log.
+4. Load **verify-environment** and run the real two-sibling validation.
+5. Record every remote runtime import in `RUNTIME_DEPENDENCIES` for **launch-run**.
+
+For Harbor, require explicit `reward_keys`, sandbox credentials and the matching
+provider extra in the bundle dependencies, for example
+`harbor[modal]>=0.18,<0.19`.

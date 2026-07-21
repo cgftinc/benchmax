@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from tqdm.auto import tqdm
 
 from castform.platform.credentials import TokenProvider, platform_bearer
 
@@ -65,9 +64,7 @@ class CorpusClient:
     _local: threading.local = field(
         init=False, repr=False, default_factory=threading.local
     )
-    _client_override: httpx.Client | None = field(
-        init=False, repr=False, default=None
-    )
+    _client_override: httpx.Client | None = field(init=False, repr=False, default=None)
     _client_registry: list[httpx.Client] = field(
         init=False, repr=False, default_factory=list
     )
@@ -563,6 +560,11 @@ class CorpusClient:
             inserted_count = data.get("insertedCount", 0)
             chunk_ids = data.get("chunkIds", [])
             return inserted_count, chunk_ids
+
+        # Progress rendering is preparation-only. Keep it out of the module import
+        # path so a rollout that only uses PostgresSearch needs base Castform, not
+        # the heavier ``castform[rag]`` preparation extra.
+        from tqdm.auto import tqdm
 
         pbar = tqdm(
             total=total_batches,

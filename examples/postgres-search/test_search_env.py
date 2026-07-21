@@ -10,6 +10,7 @@ import cloudpickle
 import pytest
 
 from benchmax.envs import BaseRollout, StaticBearerAuth
+from benchmax.rewards import Judge, RubricEvaluation
 from castform.rag.corpus.search_client import SearchClient
 from postgres_search_env import SearchEnv, _extract_answer_block
 
@@ -253,7 +254,7 @@ class TestComputeReward:
         new_callable=AsyncMock,
     )
     def test_all_components_returned(self, mock_eval):
-        mock_eval.return_value = {"score": 0.8}
+        mock_eval.return_value = RubricEvaluation(0.8, "", "")
         env = _make_env()
         result = asyncio.run(
             _compute_reward(
@@ -283,7 +284,7 @@ class TestComputeReward:
         new_callable=AsyncMock,
     )
     def test_correctness_score(self, mock_eval):
-        mock_eval.return_value = {"score": 0.5}
+        mock_eval.return_value = RubricEvaluation(0.5, "", "")
         env = _make_env(w_correctness=2.0)
         result = asyncio.run(
             _compute_reward(
@@ -301,7 +302,7 @@ class TestComputeReward:
     )
     def test_answer_length_gated_on_correctness(self, mock_eval):
         # Correctness=0 → the brevity term is 0 (short-but-wrong earns nothing).
-        mock_eval.return_value = {"score": 0.0}
+        mock_eval.return_value = RubricEvaluation(0.0, "", "")
         env = _make_env()
         result = asyncio.run(
             _compute_reward(
@@ -320,7 +321,7 @@ class TestComputeReward:
     def test_answer_length_is_deterministic_brevity(self, mock_eval):
         # Correct + short → w_length * (1 - len/ANSWER_LENGTH_CAP); correct +
         # over the cap → clamps to 0. No second judge call is ever made.
-        mock_eval.return_value = {"score": 1.0}
+        mock_eval.return_value = RubricEvaluation(1.0, "", "")
         env = _make_env(w_length=1.0)
         short = "42"
         result = asyncio.run(
@@ -368,7 +369,7 @@ class TestComputeReward:
         new_callable=AsyncMock,
     )
     def test_citation_exact_match(self, mock_eval):
-        mock_eval.return_value = {"score": 1.0}
+        mock_eval.return_value = RubricEvaluation(1.0, "", "")
         env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
         result = asyncio.run(
             _compute_reward(
@@ -397,7 +398,7 @@ class TestComputeReward:
     def test_citation_matches_title_path_variant_by_default(self, mock_eval):
         # The default canonicalizer is LOOSE (id-hash OR title-path): a cited
         # 'docs/Statute_A.md' matches a bare 'statute_a' gold file id.
-        mock_eval.return_value = {"score": 1.0}
+        mock_eval.return_value = RubricEvaluation(1.0, "", "")
         env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
         result = asyncio.run(
             _compute_reward(
@@ -421,7 +422,7 @@ class TestComputeReward:
         new_callable=AsyncMock,
     )
     def test_citation_partial_recall(self, mock_eval):
-        mock_eval.return_value = {"score": 1.0}
+        mock_eval.return_value = RubricEvaluation(1.0, "", "")
         env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
         result = asyncio.run(
             _compute_reward(
@@ -448,7 +449,7 @@ class TestComputeReward:
     def test_gated_rewards_scaled_by_partial_correctness(self, mock_eval):
         # correctness=0.5. The GATED components (precision, length) scale by
         # correctness; retrieval_hit does NOT (it's ungated by design).
-        mock_eval.return_value = {"score": 0.5}
+        mock_eval.return_value = RubricEvaluation(0.5, "", "")
         env = _make_env(
             w_correctness=1.0,
             w_retrieval_hit=1.0,
@@ -482,7 +483,7 @@ class TestComputeReward:
     def test_retrieval_hit_survives_wrong_answer(self, mock_eval):
         # The core audit fix: correctness=0 → the GATED precision is zeroed, but
         # the UNGATED retrieval_hit still credits citing the gold source.
-        mock_eval.return_value = {"score": 0.0}
+        mock_eval.return_value = RubricEvaluation(0.0, "", "")
         env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
         result = asyncio.run(
             _compute_reward(
@@ -693,7 +694,6 @@ class TestPickle:
 # --- free reward helpers (imported by a scaffold main.py) --------------------
 
 from postgres_search_env import (  # noqa: E402
-    ANSWER_LENGTH_CAP,
     canonicalize_source_id,
     canonicalize_source_id_loose,
     extract_answer_block,
@@ -789,15 +789,17 @@ class TestFreeRewardHelpers:
             "postgres_search_env.evaluate_single_rubric",
             new_callable=AsyncMock,
         ) as mock_eval:
-            mock_eval.return_value = {"score": 0.5}
+            mock_eval.return_value = RubricEvaluation(0.5, "", "")
             c, con = asyncio.run(
                 judge_answer_quality(
                     question="Q",
                     ground_truth="G",
                     response="A",
-                    model="m",
-                    base_url="u",
-                    api_key="k",
+                    judge=Judge(
+                        model="m",
+                        base_url="u",
+                        auth=StaticBearerAuth("k"),
+                    ),
                 )
             )
             assert c == pytest.approx(0.5) and con == pytest.approx(0.5)
@@ -808,50 +810,11 @@ class TestFreeRewardHelpers:
                 question="Q",
                 ground_truth="G",
                 response="   ",
-                model="m",
-                base_url="u",
-                api_key="k",
+                judge=Judge(
+                    model="m",
+                    base_url="u",
+                    auth=StaticBearerAuth("k"),
+                ),
             )
         )
         assert (c, con) == (0.0, 0.0)
-
-
-# --- seed <-> lib sync guard --------------------------------------------------
-
-
-class TestSeedLibSync:
-    """The RAG seed spells the reward out inline (pedagogy); its semantics must
-    stay IDENTICAL to the lib default it mirrors."""
-
-    @pytest.fixture
-    def rag_mod(self):
-        from pathlib import Path
-
-        import castform.cli.scaffold as scaffold_pkg
-        from castform.cli._project import _load_module_from_file
-
-        return _load_module_from_file(
-            Path(scaffold_pkg.__file__).parent / "rag_main.py"
-        )
-
-    def test_reward_keys_match_lib_default(self, rag_mod):
-        env = _make_env()
-        assert set(rag_mod.REWARD_KEYS) == set(env._ZERO_REWARDS)
-
-    def test_weights_and_length_cap_match_lib_defaults(self, rag_mod):
-        env = _make_env()
-        assert rag_mod.W_CORRECTNESS == env._w_correctness
-        assert rag_mod.W_RETRIEVAL_HIT == env._w_retrieval_hit
-        assert rag_mod.W_CITATION_PRECISION == env._w_citation_precision
-        assert rag_mod.W_LENGTH == env._w_length
-        # The seed imports the lib constant, so the caps can't drift.
-        assert rag_mod.ANSWER_LENGTH_CAP == ANSWER_LENGTH_CAP == 600
-
-    def test_seed_primary_reward_key_matches_lib(self, rag_mod):
-        from castform.cli._project import discover_env_class
-
-        assert (
-            discover_env_class(rag_mod).PRIMARY_REWARD_KEY
-            == SearchEnv.PRIMARY_REWARD_KEY
-            == "answer_correctness"
-        )

@@ -18,15 +18,11 @@ classifiers = [
 castform = "castform.cli:main"
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-"castform.cli.scaffold" = ["*.md", "*.py", "*.jsonl", "skills/*/SKILL.md"]
-"castform.cli" = ["templates/*.html"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/castform"]
 
 [project.optional-dependencies]
 rag = [

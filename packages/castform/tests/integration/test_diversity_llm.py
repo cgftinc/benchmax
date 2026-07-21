@@ -10,9 +10,11 @@ import os
 
 import pytest
 
-from benchmax.rewards.diversity import (
+from benchmax.auth import StaticBearerAuth
+from benchmax.rewards import (
     ClusterResult,
-    DiversityConfig,
+    Judge,
+    LLMDiversityConfig,
     cluster_texts,
     scale_by_diversity,
 )
@@ -20,14 +22,14 @@ from benchmax.rewards.diversity import (
 _base_url = os.environ.get("CASTFORM_LLM_URL", "https://llm.castform.dev/v1")
 _api_key = os.environ.get("PLATFORM_API_KEY", "")
 
-LLM_CONFIG = DiversityConfig(
-    method="llm",
-    base_url=_base_url,
-    model=os.environ.get("DIVERSITY_TEST_MODEL", "grok-4-1-fast-non-reasoning"),
-    api_key=_api_key,
+LLM_CONFIG = LLMDiversityConfig(
+    judge=Judge(
+        base_url=_base_url,
+        model=os.environ.get("DIVERSITY_TEST_MODEL", "grok-4-1-fast-non-reasoning"),
+        auth=StaticBearerAuth(_api_key or "missing-test-credential"),
+    ),
     max_tokens=768,
     temperature=0.0,
-    timeout=60.0,
 )
 
 CONTEXT = "Cluster these negotiation strategies by underlying approach."
@@ -35,7 +37,9 @@ CONTEXT = "Cluster these negotiation strategies by underlying approach."
 
 def _skip_if_no_creds() -> None:
     if not _api_key:
-        pytest.skip("PLATFORM_API_KEY required for live LLM diversity integration tests")
+        pytest.skip(
+            "PLATFORM_API_KEY required for live LLM diversity integration tests"
+        )
 
 
 @pytest.mark.integration
@@ -98,7 +102,9 @@ class TestLLMClustering:
 
         result = await cluster_texts(texts, LLM_CONFIG, context=CONTEXT)
 
-        assert result.n_clusters == 4, f"Expected 4 unique clusters, got {result.n_clusters}"
+        assert result.n_clusters == 4, (
+            f"Expected 4 unique clusters, got {result.n_clusters}"
+        )
         assert all(d == 1.0 for d in result.divisors), (
             f"All divisors should be 1.0 for unique strategies: {result.divisors}"
         )
@@ -143,5 +149,5 @@ class TestLLMClustering:
     async def test_single_text_no_api_call(self):
         """A single text should return divisor 1.0 without hitting the API."""
         result = await cluster_texts(["only one strategy"], LLM_CONFIG, context=CONTEXT)
-        assert result.divisors == [1.0]
+        assert result.divisors == (1.0,)
         assert result.raw_response is None  # No API call made

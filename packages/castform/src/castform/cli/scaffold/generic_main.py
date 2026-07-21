@@ -7,9 +7,8 @@ edit. This is a deliberately small SEED — grow it into your task: change the
 reward, swap the dataset, add tools (see the design-environment skill).
 
 The whole run is reproducible from this file: the reward is below, and the
-`VALIDATE_CONFIG` / `LAUNCH_CONFIG` blocks bake in the rollout budgets so
-`python main.py validate` / `castform launch` need no extra flags (a CLI flag still
-overrides). `python main.py` drives the loop: data → validate, then STOP
+`VALIDATE_CONFIG` / `LAUNCH_CONFIG` blocks bake in the rollout budgets.
+`python main.py` drives the loop: data → validate, then STOP
 (`launch` is an explicit, confirmed step — it spends GPU credits).
 """
 
@@ -21,20 +20,20 @@ import dataclasses
 import difflib
 import json
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from benchmax.envs import (
     BaseEnv,
+    BaseRollout,
     DatasetSplit,
     Example,
     JsonRow,
     JsonlDataset,
-    Messages,
     canonical_example_id,
 )
-from benchmax.envs.reward_helpers import extract_completion_text
+from benchmax.bundle import dump_bundle
+from benchmax.rewards import extract_completion_text
 from castform.platform.client import TrainerClient
 from castform.platform.login import ensure_session
 from castform.platform.training_run import upload_training_run
@@ -44,17 +43,14 @@ from castform import validate_environment
 class CustomEnv(BaseEnv):
     """A single-turn env: the model answers a prompt, scored against ground_truth.
 
-    No tools and no LLM judge — the reward is deterministic string overlap, so it
-    validates offline with no extra deps. Swap in your own reward / tools / judge.
+    No tools and no LLM judge — the reward itself is deterministic string overlap
+    and needs no separate judge call. Swap in your own reward / tools / judge.
     """
 
     # Advertised to the model each rollout (optional; default ""). Keep it short.
     system_prompt = "Answer the question concisely and directly."
     max_turns = 1
-
-    # Extra pip deps the rollout sandbox needs (it bundles only main.py + benchmax).
-    # Empty here; add your reward/tool SDKs if you introduce them.
-    PIP_DEPENDENCIES: list[str] = []
+    reward_keys = ("overlap", "contains_gold", "answered")
 
     async def create_dataset(
         self, split: DatasetSplit, base_dir: Path
@@ -79,19 +75,15 @@ class CustomEnv(BaseEnv):
 
     async def compute_reward(
         self,
-        rollout_id: str,
-        messages: Messages,
-        example_args: Mapping[str, Any],
-        *,
-        termination_reason: str,
+        rollout: BaseRollout,
     ) -> dict[str, float]:
         """Score the answer against `ground_truth`. Return positive scores only; all
         components are SUMMED into one scalar — this is your whole training signal,
         so edit it. (Deterministic overlap here; swap in an LLM judge for open-ended
         answers — see the design-environment skill.)
         """
-        t = example_args
-        answer = extract_completion_text(messages).strip()
+        t = rollout.example_args
+        answer = extract_completion_text(rollout.messages).strip()
         gold = str(t.get("ground_truth") or t.get("answer") or "").strip()
         if not answer:
             return {"overlap": 0.0, "contains_gold": 0.0, "answered": 0.0}
@@ -108,8 +100,8 @@ class CustomEnv(BaseEnv):
         }
 
 
-# ── Run config — validate/launch read these so the run reproduces from this file
-#    alone (a CLI flag still overrides). See `python main.py validate/launch --help`.
+# ── Run config — validate/launch read these so the run reproduces from this
+#    file alone. See `python main.py validate --help` / `launch --help`.
 VALIDATE_CONFIG = {
     "model": "gpt-5.4-mini",
     # Local always runs. Flip this only after hosted group validation is available.
@@ -135,13 +127,16 @@ LAUNCH_CONFIG = {
 #   python main.py launch     validate-gate, then train on GPUs (spends credits)
 #   python main.py  (or all)  data → validate, then STOP (never auto-launches)
 #
-# Import-safe: this block runs ONLY under `python main.py`. When the castform CLI
-# imports this file it execs under the "main" stem, not "__main__", so nothing here
-# fires — `python main.py validate` / `launch` reuse the SAME SDK calls, no drift.
+# Import-safe: stages run only from the ``if __name__ == "__main__"`` block below,
+# so importing this file for tests or environment inspection has no side effects.
 
 TRAIN_FILE = "train_dataset.jsonl"
 EVAL_FILE = "eval_dataset.jsonl"
 ENV_ARGS: dict[str, Any] = {}  # CustomEnv constructor kwargs (none by default)
+
+# Dependencies installed in the remote rollout runtime. Keep this declaration at
+# the script boundary: add only packages imported by your env/reward/tool code.
+RUNTIME_DEPENDENCIES: list[str] = []
 
 # The tiny seed dataset — synthetic, reproducible. `castform setup` also commits
 # these as train_dataset.jsonl / eval_dataset.jsonl so validate runs on day one;
@@ -242,13 +237,16 @@ def launch(assume_yes: bool = False) -> str | None:
             return None
     train = _load_jsonl(TRAIN_FILE)
     eval_ds = _load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else []
+    bundle = dump_bundle(
+        CustomEnv,
+        constructor_args=ENV_ARGS,
+        pip_dependencies=RUNTIME_DEPENDENCIES,
+    )
     uploaded = upload_training_run(
-        env_class=CustomEnv,
+        bundle=bundle,
         train_dataset=train,
         eval_dataset=eval_ds,
         run_name=_run_name(),
-        constructor_args=ENV_ARGS,
-        pip_dependencies=CustomEnv.PIP_DEPENDENCIES or None,
     )
     # LAUNCH_CONFIG feeds the launcher, minus the reserved keys: `name` is the run
     # name above; `type` is not a wire arg. The server rejects any unknown key.
@@ -288,15 +286,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    ensure_session()  # best-effort: no-op if a credential resolves
-
     ok = True
     if args.stage in ("data", "all"):
         generate_data(force=args.force)
     if args.stage in ("validate", "all"):
+        ensure_session()  # data preparation remains usable without platform login
         report = validate()
         ok = report is not None and report.ok  # non-zero exit on a failed baseline
     if args.stage == "launch":
+        ensure_session()
         ok = launch(assume_yes=args.yes) is not None  # None = gated / aborted / failed
     # `all` / bare `python main.py` STOPS after validate — launch is never automatic
     # (it spends GPU credits); run `python main.py launch` to train.

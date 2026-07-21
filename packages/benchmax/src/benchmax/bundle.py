@@ -6,14 +6,18 @@ import io
 import json
 import logging
 import pickle
+import site
 import sys
 import threading
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, distribution, packages_distributions
+from importlib import metadata as importlib_metadata
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import cloudpickle
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
 
 from benchmax.envs.environment import Environment
 from benchmax.envs.shared_types import RolloutAttempt
@@ -86,21 +90,23 @@ def dump_bundle(
         env_class: A concrete Environment implementation.
         constructor_args: kwargs for ``env_class(**...)`` on load.
         pip_dependencies: Recorded in metadata. NOT installed by this call.
-        local_modules: Modules to pickle by-value. Required when the env class
-            (or anything it references) lives in a local ``.py``.
+        local_modules: Additional modules to pickle by value. Use this for
+            local source outside the environment's own Python project. Such
+            source otherwise fails loudly unless its installed distribution is
+            named in ``pip_dependencies``.
         env_class_source: Override for the recorded source. Pass this when the
             caller already holds the source and ``inspect.getsource`` can't
             recover it — e.g. a class produced by ``exec()`` into an in-memory
             namespace, which has no source file on disk. When ``None``
             (default), source is introspected from ``env_class``.
-        auto_local_modules: When True (default), any local module the pickle
-            references but that wasn't passed in ``local_modules`` is imported
-            and pickled by value automatically (a warning names them). When
-            False, such a reference raises ``BundlingError`` instead.
+        auto_local_modules: When True (default), referenced modules whose
+            source belongs to the environment's nearest ``pyproject.toml`` are
+            imported and pickled by value automatically (a warning names
+            them). When False, such a reference raises ``BundlingError``.
 
     Raises:
-        BundlingError: bad env_class, cloudpickle failure, or pickle references
-            non-installed modules absent from ``local_modules``.
+        BundlingError: bad env_class, cloudpickle failure, or uncaptured
+            local source references.
     """
     _ensure_safe_python_version()
     _check_env_class(env_class)
@@ -108,6 +114,7 @@ def dump_bundle(
     constructor_args = constructor_args or {}
     pip_dependencies = pip_dependencies or []
     local_modules = local_modules or []
+    project_roots = _bundle_project_roots(env_class, local_modules)
 
     with _BUNDLE_LOCK:
         for mod in local_modules:
@@ -131,7 +138,7 @@ def dump_bundle(
                 except Exception:
                     pass
 
-    if auto_local_modules and _unregistered_local_refs(pickled):
+    if auto_local_modules and _unregistered_local_refs(pickled, project_roots):
         # Import each referenced local module and re-dump with it pickled by
         # value. Loop because a by-value module can surface further local refs;
         # registrations accumulate (and are torn down once at the end) so an
@@ -140,9 +147,16 @@ def dump_bundle(
         registered: list[ModuleType] = []
         with _BUNDLE_LOCK:
             try:
+                # Explicit modules must remain by-value across every recursive
+                # re-dump, not only the initial pickle above.
+                for mod in local_modules:
+                    cloudpickle.register_pickle_by_value(mod)
+                    registered.append(mod)
                 for _ in range(10):
                     pending = [
-                        m for m in _unregistered_local_refs(pickled) if m not in seen
+                        m
+                        for m in _unregistered_local_refs(pickled, project_roots)
+                        if m not in seen
                     ]
                     if not pending:
                         break
@@ -165,31 +179,39 @@ def dump_bundle(
                         registered.append(mod)
                     pickled = cloudpickle.dumps((env_class, constructor_args))
             finally:
-                for mod in registered:
+                for mod in reversed(registered):
                     try:
                         cloudpickle.unregister_pickle_by_value(mod)
                     except Exception:
                         pass
 
-    risky = _unregistered_local_refs(pickled)
+    risky = _unregistered_local_refs(pickled, project_roots)
     if risky:
-        msg = (
-            f"{env_class.__name__}: missing "
-            f"local_modules=[{', '.join(risky)}]"
-        )
+        msg = f"{env_class.__name__}: missing local_modules=[{', '.join(risky)}]"
         if local_modules:
             already = ", ".join(sorted(m.__name__ for m in local_modules))
             msg += f" (already registered: [{already}])"
         raise BundlingError(msg)
+
+    undeclared = _undeclared_external_source_refs(
+        pickled,
+        project_roots,
+        pip_dependencies,
+    )
+    if undeclared:
+        raise BundlingError(
+            f"{env_class.__name__}: referenced source outside the environment "
+            f"project: {', '.join(undeclared)}. Pass the module object in "
+            "local_modules to capture it, or declare its distribution in "
+            "pip_dependencies to keep it as a remote dependency."
+        )
 
     metadata = BundleMetadata(
         pip_dependencies=pip_dependencies,
         python_version=f"{sys.version_info.major}.{sys.version_info.minor}",
         benchmax_version=_benchmax_version(),
         env_class_source=(
-            env_class_source
-            if env_class_source is not None
-            else _get_source(env_class)
+            env_class_source if env_class_source is not None else _get_source(env_class)
         ),
     )
 
@@ -206,9 +228,10 @@ def load_bundle(
     bundle: Bundle,
     *,
     instantiate: bool = True,
-) -> Environment[Any, RolloutAttempt] | tuple[
-    type[Environment[Any, RolloutAttempt]], dict[str, Any]
-]:
+) -> (
+    Environment[Any, RolloutAttempt]
+    | tuple[type[Environment[Any, RolloutAttempt]], dict[str, Any]]
+):
     """Unpickle and (optionally) instantiate.
 
     Verifies ``python_version`` matches. Never installs pip deps — image must.
@@ -303,12 +326,108 @@ def _ensure_safe_python_version() -> None:
 
 
 def unregistered_local_refs(pickled: bytes) -> list[str]:
-    """Modules this pickle would import that aren't installed locally."""
-    return _unregistered_local_refs(pickled)
+    """Project-local modules referenced by ``pickled``.
+
+    This inspection-only helper infers candidate project roots from the
+    referenced modules themselves. ``dump_bundle`` has the stronger signal of
+    the environment class's project root and uses that directly.
+    """
+
+    refs = _referenced_modules(pickled)
+    project_roots = tuple(
+        root
+        for name in refs
+        if (root := _project_root_for_module_name(name)) is not None
+    )
+    return _unregistered_local_refs(pickled, project_roots)
 
 
-def _unregistered_local_refs(pickled: bytes) -> list[str]:
-    return sorted(m for m in _referenced_modules(pickled) if not _looks_like_installed(m))
+def _unregistered_local_refs(
+    pickled: bytes,
+    project_roots: tuple[Path, ...],
+) -> list[str]:
+    return sorted(
+        module_name
+        for module_name in _referenced_modules(pickled)
+        if _module_is_project_local(module_name, project_roots)
+    )
+
+
+def _undeclared_external_source_refs(
+    pickled: bytes,
+    project_roots: tuple[Path, ...],
+    pip_dependencies: list[str],
+) -> list[str]:
+    """Local source outside the env project must have an explicit owner.
+
+    A referenced module beneath an environment root is handled by automatic
+    source capture. A module installed in site-packages is already an ordinary
+    remote dependency. Source from any other project is ambiguous: it is safe
+    by reference only when its distribution appears in ``pip_dependencies``;
+    otherwise the caller must capture it explicitly with ``local_modules``.
+    """
+
+    declared_distributions = _declared_distribution_names(pip_dependencies)
+    return sorted(
+        module_name
+        for module_name in _referenced_modules(pickled)
+        if _module_is_external_source(module_name, project_roots)
+        and not _module_has_declared_distribution(
+            module_name,
+            declared_distributions,
+        )
+    )
+
+
+def _declared_distribution_names(pip_dependencies: list[str]) -> set[str]:
+    names: set[str] = set()
+    for dependency in pip_dependencies:
+        try:
+            names.add(canonicalize_name(Requirement(dependency).name))
+        except InvalidRequirement:
+            # Dependency installation remains the runtime's responsibility.
+            # An invalid declaration simply cannot authorize an ambiguous
+            # outside-project source reference here.
+            continue
+    return names
+
+
+def _module_has_declared_distribution(
+    module_name: str,
+    declared_distributions: set[str],
+) -> bool:
+    top_level = module_name.partition(".")[0]
+    distributions = importlib_metadata.packages_distributions().get(top_level, ())
+    return any(
+        canonicalize_name(distribution) in declared_distributions
+        for distribution in distributions
+    )
+
+
+def _module_is_external_source(
+    module_name: str,
+    project_roots: tuple[Path, ...],
+) -> bool:
+    top_level = module_name.partition(".")[0]
+    if top_level in sys.stdlib_module_names or top_level == "benchmax":
+        return False
+
+    module = sys.modules.get(module_name)
+    if module is None:
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except (AttributeError, ImportError, ModuleNotFoundError, ValueError):
+            return False
+        if spec is None:
+            return False
+        module = _module_from_spec(module_name, spec)
+
+    paths = _module_source_paths(module)
+    return bool(paths) and any(
+        not _is_site_package_path(path)
+        and not any(path.is_relative_to(root) for root in project_roots)
+        for path in paths
+    )
 
 
 def _referenced_modules(pickled: bytes) -> set[str]:
@@ -370,18 +489,123 @@ def _referenced_modules(pickled: bytes) -> set[str]:
     return refs
 
 
-def _looks_like_installed(mod_name: str) -> bool:
-    top = mod_name.split(".")[0]
-    if top in sys.stdlib_module_names:
-        return True
+def _bundle_project_roots(
+    env_class: type[Environment[Any, RolloutAttempt]],
+    local_modules: list[ModuleType],
+) -> tuple[Path, ...]:
+    """Return source-project roots that belong to this environment bundle."""
+
+    modules = [sys.modules.get(env_class.__module__), *local_modules]
+    roots = {
+        root
+        for module in modules
+        if module is not None
+        if (root := _project_root_for_module(module)) is not None
+    }
+    return tuple(sorted(roots))
+
+
+def _project_root_for_module(module: ModuleType) -> Path | None:
+    for path in _module_source_paths(module):
+        if _is_site_package_path(path):
+            continue
+        if root := _nearest_project_root(path):
+            return root
+    return None
+
+
+def _project_root_for_module_name(module_name: str) -> Path | None:
+    module = sys.modules.get(module_name)
+    if module is not None:
+        return _project_root_for_module(module)
+
     try:
-        distribution(top)
-        return True
-    except PackageNotFoundError:
-        pass
-    try:
-        if packages_distributions().get(top):
-            return True
-    except Exception:
-        pass
+        spec = importlib.util.find_spec(module_name)
+    except (AttributeError, ImportError, ModuleNotFoundError, ValueError):
+        return None
+    if spec is None:
+        return None
+    return _project_root_for_module(_module_from_spec(module_name, spec))
+
+
+def _module_is_project_local(
+    module_name: str,
+    project_roots: tuple[Path, ...],
+) -> bool:
+    """Whether a referenced module is source owned by the env's project."""
+
+    top_level = module_name.partition(".")[0]
+    if top_level in sys.stdlib_module_names or top_level == "benchmax":
+        return False
+    if not project_roots:
+        return False
+
+    module = sys.modules.get(module_name)
+    if module is None:
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except (AttributeError, ImportError, ModuleNotFoundError, ValueError):
+            return False
+        if spec is None:
+            return False
+        module = _module_from_spec(module_name, spec)
+
+    return any(
+        not _is_site_package_path(path)
+        and any(path.is_relative_to(root) for root in project_roots)
+        for path in _module_source_paths(module)
+    )
+
+
+def _module_from_spec(module_name: str, spec: Any) -> ModuleType:
+    """Build a path-only module view without executing its loader."""
+
+    module = ModuleType(module_name)
+    module.__spec__ = spec
+    module.__file__ = spec.origin
+    module.__path__ = spec.submodule_search_locations
+    return module
+
+
+def _module_source_paths(module: ModuleType) -> tuple[Path, ...]:
+    candidates: list[str] = []
+    module_file = getattr(module, "__file__", None)
+    if isinstance(module_file, str):
+        candidates.append(module_file)
+
+    spec = getattr(module, "__spec__", None)
+    origin = getattr(spec, "origin", None)
+    if isinstance(origin, str) and origin not in {"built-in", "frozen"}:
+        candidates.append(origin)
+
+    search_locations = getattr(spec, "submodule_search_locations", None)
+    if search_locations is not None:
+        candidates.extend(str(location) for location in search_locations)
+
+    paths: list[Path] = []
+    for candidate in candidates:
+        try:
+            path = Path(candidate).resolve()
+        except (OSError, RuntimeError):
+            continue
+        if path not in paths:
+            paths.append(path)
+    return tuple(paths)
+
+
+def _nearest_project_root(path: Path) -> Path | None:
+    directory = path if path.is_dir() else path.parent
+    for candidate in (directory, *directory.parents):
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    return None
+
+
+def _is_site_package_path(path: Path) -> bool:
+    for candidate in (*site.getsitepackages(), site.getusersitepackages()):
+        try:
+            if path.is_relative_to(Path(candidate).resolve()):
+                return True
+        except (OSError, RuntimeError):
+            continue
     return False

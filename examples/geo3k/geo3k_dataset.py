@@ -6,19 +6,26 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from benchmax.envs.base import JsonRow
-from benchmax.envs.dataset import FrozenDataset
+from benchmax.envs.dataset import Dataset
 from benchmax.envs.identity import canonical_example_id
 from benchmax.envs.shared_types import Example
 
 
-class Geo3KDataset(FrozenDataset[JsonRow]):
+class Geo3KDataset(Dataset[JsonRow]):
     """Normalize Geo3K rows into OpenAI multimodal prompt messages."""
 
-    def __init__(self, rows: Iterable[Mapping[str, Any]]) -> None:
-        super().__init__([_example(dict(row)) for row in rows])
+    def __init__(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        system_prompt: str | None = None,
+    ) -> None:
+        super().__init__(
+            [_example(dict(row), system_prompt=system_prompt) for row in rows]
+        )
 
 
-def _example(row: JsonRow) -> Example[JsonRow]:
+def _example(row: JsonRow, *, system_prompt: str | None = None) -> Example[JsonRow]:
     problem = row.get("problem")
     answer = row.get("answer")
     images = row.get("images")
@@ -45,8 +52,12 @@ def _example(row: JsonRow) -> Example[JsonRow]:
             "text": problem.replace("<image>", "").strip(),
         }
     )
+    prompt_messages: list[dict[str, Any]] = []
+    if system_prompt:
+        prompt_messages.append({"role": "system", "content": system_prompt})
+    prompt_messages.append({"role": "user", "content": content})
     payload: JsonRow = {
-        "prompt_messages": [{"role": "user", "content": content}],
+        "prompt_messages": prompt_messages,
         "answer": str(answer),
     }
     return Example(id=canonical_example_id(payload), payload=payload)

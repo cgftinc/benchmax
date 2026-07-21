@@ -20,13 +20,12 @@ from harbor.models.agent.context import AgentContext
 from harbor.models.trial.paths import EnvironmentPaths
 
 DEFAULT_CONTAINER_HARVEY_ROOT = "/workspace/archive/harvey-labs"
-DEFAULT_CONTAINER_PROBE_PATH = "/workspace/archive/harvey_castform_probe.py"
+DEFAULT_CONTAINER_RUNTIME_PATH = "/workspace/archive/harvey_runtime.py"
 DEFAULT_PREBAKED_VENV_PYTHON = "/opt/harvey-labs-venv/bin/python"
 DEFAULT_HARBOR_DOCUMENTS_DIR = "/workspace/documents"
 DEFAULT_HARBOR_OUTPUT_DIR = "/workspace/output"
-DEFAULT_BOOTSTRAP_PIP_PACKAGES = "anthropic google-genai mistralai openai"
 DEFAULT_HARVEY_REPOSITORY = "https://github.com/harveyai/harvey-labs.git"
-DEFAULT_HARVEY_GIT_REF = "main"
+DEFAULT_HARVEY_GIT_REF = "845a08840869b21a5c11958aae58bf5f00a7b775"
 HARVEY_SPARSE_PATHS = (
     "README.md",
     "LICENSE",
@@ -53,9 +52,9 @@ _source_lock = threading.Lock()
 class HarveyHarnessAgent(BaseAgent):
     """Run Harvey LAB's harness loop as a Harbor agent.
 
-    Harbor still owns the environment lifecycle. This adapter only installs or
-    locates the Harvey harness code, runs it inside the environment, and copies
-    Harvey's run artifacts into Harbor's mounted logs/artifacts directories.
+    Harbor owns the environment lifecycle. This adapter locates and uploads the
+    Harvey harness code, runs it inside the environment, and copies its run
+    artifacts into Harbor's mounted logs and artifacts directories.
     """
 
     def __init__(
@@ -63,13 +62,11 @@ class HarveyHarnessAgent(BaseAgent):
         *args: Any,
         extra_env: dict[str, str] | None = None,
         harvey_root: str | None = None,
-        probe_path: str | None = None,
+        runtime_path: str | None = None,
         container_harvey_root: str | None = None,
-        container_probe_path: str | None = None,
-        task: str | None = None,
+        container_runtime_path: str | None = None,
         max_turns: int | None = None,
         max_tokens: int | None = None,
-        max_tool_result_chars: int | None = None,
         shell_timeout: int | None = None,
         run_timeout_sec: int | None = None,
         upload: bool | None = None,
@@ -79,32 +76,19 @@ class HarveyHarnessAgent(BaseAgent):
         self.host_harvey_root = self._optional_path(
             harvey_root or self._env("HARBOR_HARVEY_ROOT")
         )
-        self.host_probe_path = self._optional_path(
-            probe_path or self._env("HARBOR_HARVEY_PROBE_PATH")
+        self.host_runtime_path = self._optional_path(
+            runtime_path or self._env("HARBOR_HARVEY_RUNTIME_PATH")
         )
         self.container_harvey_root = (
             container_harvey_root
             or self._env("HARBOR_HARVEY_CONTAINER_ROOT")
             or DEFAULT_CONTAINER_HARVEY_ROOT
         )
-        self.container_probe_path = (
-            container_probe_path
-            or self._env("HARBOR_HARVEY_CONTAINER_PROBE_PATH")
-            or DEFAULT_CONTAINER_PROBE_PATH
+        self.container_runtime_path = (
+            container_runtime_path
+            or self._env("HARBOR_HARVEY_CONTAINER_RUNTIME_PATH")
+            or DEFAULT_CONTAINER_RUNTIME_PATH
         )
-        self.harvey_task = task or self._env("HARBOR_HARVEY_TASK")
-        self.prompt_source = (
-            self._env("HARBOR_HARVEY_PROMPT_SOURCE")
-            or ("harvey" if self.harvey_task else "harbor")
-        ).lower()
-        if self.prompt_source not in {"harbor", "harvey"}:
-            raise ValueError(
-                f"HARBOR_HARVEY_PROMPT_SOURCE must be either 'harbor' or 'harvey', got {self.prompt_source!r}"
-            )
-        if self.prompt_source == "harvey" and not self.harvey_task:
-            raise ValueError(
-                "HARBOR_HARVEY_TASK is required when using Harvey prompt source"
-            )
         self.harbor_documents_dir = (
             self._env("HARBOR_HARVEY_DOCUMENTS_DIR") or DEFAULT_HARBOR_DOCUMENTS_DIR
         )
@@ -113,9 +97,6 @@ class HarveyHarnessAgent(BaseAgent):
         )
         self.max_turns = max_turns or self._env_int("HARBOR_HARVEY_MAX_TURNS", 30)
         self.max_tokens = max_tokens or self._env_int("HARBOR_HARVEY_MAX_TOKENS", 16384)
-        self.max_tool_result_chars = max_tool_result_chars or self._env_int(
-            "HARBOR_HARVEY_MAX_TOOL_RESULT_CHARS", 12000
-        )
         self.shell_timeout = shell_timeout or self._env_int(
             "HARBOR_HARVEY_SHELL_TIMEOUT", 60
         )
@@ -134,16 +115,19 @@ class HarveyHarnessAgent(BaseAgent):
         return "0.1.0"
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        await asyncio.to_thread(self._resolve_default_host_paths)
         await environment.ensure_dirs(
             [
                 str(Path(self.container_harvey_root).parent),
-                str(Path(self.container_probe_path).parent),
+                str(Path(self.container_runtime_path).parent),
                 EnvironmentPaths.agent_dir,
                 EnvironmentPaths.artifacts_dir / "harvey-output",
             ]
         )
-        if self.upload and self.host_harvey_root and self.host_harvey_root.exists():
+        if not self.upload:
+            return
+
+        await asyncio.to_thread(self._resolve_default_host_paths)
+        if self.host_harvey_root and self.host_harvey_root.exists():
             with tempfile.TemporaryDirectory(prefix="harvey-labs-upload-") as tmp:
                 bundle_root = Path(tmp) / "harvey-labs"
                 shutil.copytree(
@@ -153,9 +137,9 @@ class HarveyHarnessAgent(BaseAgent):
                 )
                 await environment.upload_dir(bundle_root, self.container_harvey_root)
 
-        if self.upload and self.host_probe_path and self.host_probe_path.exists():
+        if self.host_runtime_path and self.host_runtime_path.exists():
             await environment.upload_file(
-                self.host_probe_path, self.container_probe_path
+                self.host_runtime_path, self.container_runtime_path
             )
 
     async def run(
@@ -180,26 +164,17 @@ class HarveyHarnessAgent(BaseAgent):
 
     def _resolve_default_host_paths(self) -> None:
         if self.host_harvey_root is None:
-            for root in self._candidate_repo_roots():
-                candidate = root / "archive" / "harvey-labs"
-                if (candidate / "harness" / "run.py").is_file():
-                    self.host_harvey_root = candidate
-                    break
-        if self.host_harvey_root is None:
             self.host_harvey_root = self._prepare_harvey_source()
-        if self.host_probe_path is None:
-            for candidate in (
-                Path(__file__).with_name("harvey_castform_probe.py"),
-                *(
-                    root / "archive" / "harvey_castform_probe.py"
-                    for root in self._candidate_repo_roots()
-                ),
-            ):
-                if candidate.exists():
-                    self.host_probe_path = candidate
-                    break
-        if self.host_probe_path is None:
-            raise RuntimeError("harvey_castform_probe.py is missing from the bundle")
+        if not (self.host_harvey_root / "harness" / "run.py").is_file():
+            raise RuntimeError(
+                f"Harvey LAB source is incomplete at {self.host_harvey_root}"
+            )
+        if self.host_runtime_path is None:
+            candidate = Path(__file__).with_name("harvey_runtime.py")
+            if candidate.is_file():
+                self.host_runtime_path = candidate
+        if self.host_runtime_path is None or not self.host_runtime_path.is_file():
+            raise RuntimeError("harvey_runtime.py is missing from the bundle")
 
     def _prepare_harvey_source(self) -> Path:
         """Clone Harvey's sparse harness source once per trainer host."""
@@ -223,10 +198,9 @@ class HarveyHarnessAgent(BaseAgent):
                         "clone",
                         "--filter=blob:none",
                         "--sparse",
+                        "--no-checkout",
                         "--depth",
                         "1",
-                        "--branch",
-                        git_ref,
                         repository,
                         str(staging),
                     ],
@@ -237,6 +211,25 @@ class HarveyHarnessAgent(BaseAgent):
                     raise RuntimeError(
                         "failed to clone Harvey LAB harness "
                         f"from {repository}@{git_ref}: {clone.stderr.strip()}"
+                    )
+                fetch = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(staging),
+                        "fetch",
+                        "--depth",
+                        "1",
+                        "origin",
+                        git_ref,
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                if fetch.returncode != 0:
+                    raise RuntimeError(
+                        "failed to fetch Harvey LAB ref "
+                        f"{git_ref}: {fetch.stderr.strip()}"
                     )
                 sparse = subprocess.run(
                     [
@@ -256,6 +249,23 @@ class HarveyHarnessAgent(BaseAgent):
                         "failed to configure the Harvey LAB sparse checkout: "
                         f"{sparse.stderr.strip()}"
                     )
+                checkout = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(staging),
+                        "checkout",
+                        "--detach",
+                        "FETCH_HEAD",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                if checkout.returncode != 0:
+                    raise RuntimeError(
+                        "failed to check out Harvey LAB ref "
+                        f"{git_ref}: {checkout.stderr.strip()}"
+                    )
                 staging.rename(cache)
             finally:
                 if staging.exists():
@@ -263,84 +273,52 @@ class HarveyHarnessAgent(BaseAgent):
         return cache
 
     def _run_command(self, run_id: str, instruction: str) -> str:
-        if self.prompt_source == "harbor":
-            args = [
-                "run-harbor-task",
-                "--instruction-file",
-                str(EnvironmentPaths.agent_dir / "harvey-instruction.md"),
-                "--task-name",
-                self._harbor_task_name(),
-                "--documents-dir",
-                self.harbor_documents_dir,
-                "--output-dir",
-                self.harbor_output_dir,
-            ]
-        else:
-            args = [
-                "run",
-                "--task",
-                self.harvey_task or "",
-            ]
-        args.extend(
-            [
-                "--model",
-                self._model_name_for_harvey(),
-                "--base-url",
-                self._base_url(),
-                "--run-id",
-                run_id,
-                "--max-turns",
-                str(self.max_turns),
-                "--max-tokens",
-                str(self.max_tokens),
-                "--max-tool-result-chars",
-                str(self.max_tool_result_chars),
-                "--shell-timeout",
-                str(self.shell_timeout),
-                "--sandbox-backend",
-                "local",
-                "--allow-local-tools",
-            ]
-        )
+        args = [
+            "--instruction-file",
+            str(EnvironmentPaths.agent_dir / "harvey-instruction.md"),
+            "--task-name",
+            self._harbor_task_name(),
+            "--documents-dir",
+            self.harbor_documents_dir,
+            "--output-dir",
+            self.harbor_output_dir,
+            "--model",
+            self._model_name_for_harvey(),
+            "--base-url",
+            self._base_url(),
+            "--run-id",
+            run_id,
+            "--max-turns",
+            str(self.max_turns),
+            "--max-tokens",
+            str(self.max_tokens),
+            "--shell-timeout",
+            str(self.shell_timeout),
+        ]
         result_dir = f"{self.container_harvey_root}/results/{run_id}"
-        output_copy_dir = self._env("HARBOR_HARVEY_OUTPUT_COPY_DIR")
-        if self.prompt_source == "harbor" and output_copy_dir is None:
-            output_copy_dir = self.harbor_output_dir
-        output_copy_block = ""
-        if output_copy_dir:
-            output_copy_block = (
-                f"mkdir -p {shlex.quote(output_copy_dir)}; "
-                f"if [ -d {shlex.quote(result_dir + '/output')} ]; then "
-                f"cp -a {shlex.quote(result_dir + '/output/.')} {shlex.quote(output_copy_dir + '/')}; "
-                "fi; "
-            )
         return "\n".join(
             [
                 "set -euo pipefail",
                 f"HARVEY_ROOT={shlex.quote(self.container_harvey_root)}",
-                f"PROBE={shlex.quote(self.container_probe_path)}",
+                f"RUNTIME={shlex.quote(self.container_runtime_path)}",
                 f"PREBAKED_PYTHON={shlex.quote(self._prebaked_python())}",
-                f"BOOTSTRAP_PIP_PACKAGES={shlex.quote(self._bootstrap_pip_packages())}",
                 self._write_instruction_block(instruction),
-                'if [ -n "${BOOTSTRAP_PIP_PACKAGES}" ]; then',
-                "  python -m pip install --quiet --no-cache-dir ${BOOTSTRAP_PIP_PACKAGES}",
-                "fi",
                 'if [ -n "${HARBOR_HARVEY_PYTHON:-}" ]; then',
-                '  RUNNER=( "${HARBOR_HARVEY_PYTHON}" "${PROBE}" )',
+                '  RUNNER=( "${HARBOR_HARVEY_PYTHON}" "${RUNTIME}" )',
                 'elif [ -x "${PREBAKED_PYTHON}" ]; then',
-                '  RUNNER=( "${PREBAKED_PYTHON}" "${PROBE}" )',
+                '  RUNNER=( "${PREBAKED_PYTHON}" "${RUNTIME}" )',
                 "elif command -v uv >/dev/null 2>&1; then",
-                '  RUNNER=( uv run --project "${HARVEY_ROOT}" "${PROBE}" )',
+                '  RUNNER=( uv run --project "${HARVEY_ROOT}" "${RUNTIME}" )',
                 "else",
-                '  RUNNER=( python "${PROBE}" )',
+                '  echo "Harvey runtime requires HARBOR_HARVEY_PYTHON, the prebaked venv, or uv" >&2',
+                "  exit 1",
                 "fi",
                 '"${RUNNER[@]}" ' + " ".join(shlex.quote(arg) for arg in args),
                 f"RESULT_DIR={shlex.quote(result_dir)}",
                 f"rm -rf {shlex.quote(str(EnvironmentPaths.agent_dir / 'harvey-results'))}",
                 f'if [ -d "$RESULT_DIR" ]; then cp -a "$RESULT_DIR" {shlex.quote(str(EnvironmentPaths.agent_dir / "harvey-results"))}; fi',
                 f"mkdir -p {shlex.quote(str(EnvironmentPaths.artifacts_dir / 'harvey-output'))}",
-                f'if [ -d "$RESULT_DIR/output" ]; then cp -a "$RESULT_DIR/output/." {shlex.quote(str(EnvironmentPaths.artifacts_dir / "harvey-output/"))}; fi',
-                output_copy_block.rstrip(),
+                f"if [ -d {shlex.quote(self.harbor_output_dir)} ]; then cp -a {shlex.quote(self.harbor_output_dir + '/.')} {shlex.quote(str(EnvironmentPaths.artifacts_dir / 'harvey-output/'))}; fi",
             ]
         )
 
@@ -348,10 +326,9 @@ class HarveyHarnessAgent(BaseAgent):
         env = {
             "OPENAI_API_KEY": self._api_key(),
             "OPENAI_BASE_URL": self._base_url(),
-            "OPENAI_API_BASE": self._base_url(),
         }
         for key, value in {**os.environ, **self.extra_env}.items():
-            if key.startswith("HARBOR_HARVEY_") or key == "CASTFORM_API_KEY":
+            if key.startswith("HARBOR_HARVEY_"):
                 env[key] = value
         return {key: value for key, value in env.items() if value}
 
@@ -380,7 +357,7 @@ class HarveyHarnessAgent(BaseAgent):
             return explicit
         trial_name = self.logs_dir.parent.name if self.logs_dir.parent.name else "trial"
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        task_name = self.harvey_task or self._harbor_task_name()
+        task_name = self._harbor_task_name()
         return f"harbor-agent/{task_name}/{self._slug(self._model_name_for_harvey())}/{trial_name}-{timestamp}"
 
     def _harbor_task_name(self) -> str:
@@ -400,16 +377,14 @@ class HarveyHarnessAgent(BaseAgent):
             [
                 f"INSTRUCTION_FILE={shlex.quote(str(instruction_path))}",
                 'mkdir -p "$(dirname "$INSTRUCTION_FILE")"',
-                "python - <<'PY'",
-                "import base64",
-                "from pathlib import Path",
-                f"Path({str(instruction_path)!r}).write_bytes(base64.b64decode({encoded!r}))",
-                "PY",
+                f'printf %s {shlex.quote(encoded)} | base64 -d > "$INSTRUCTION_FILE"',
             ]
         )
 
     def _model_name_for_harvey(self) -> str:
         model = self._env("HARBOR_HARVEY_MODEL") or self.model_name or ""
+        if not model:
+            raise RuntimeError("HarveyHarnessAgent requires a model name")
         if self._env_bool(
             "HARBOR_HARVEY_STRIP_OPENAI_PREFIX", True
         ) and model.startswith("openai/"):
@@ -419,40 +394,21 @@ class HarveyHarnessAgent(BaseAgent):
     def _api_key(self) -> str:
         value = self.extra_env.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
         if not value:
-            value = self.extra_env.get("CASTFORM_API_KEY") or os.environ.get(
-                "CASTFORM_API_KEY"
-            )
-        if not value:
-            raise RuntimeError(
-                "HarveyHarnessAgent requires OPENAI_API_KEY or CASTFORM_API_KEY"
-            )
+            raise RuntimeError("HarveyHarnessAgent requires OPENAI_API_KEY")
         return value
 
     def _base_url(self) -> str:
-        value = (
-            self.extra_env.get("OPENAI_BASE_URL")
-            or self.extra_env.get("OPENAI_API_BASE")
-            or self.extra_env.get("NEON_AI_GATEWAY_BASE_URL")
-            or os.environ.get("OPENAI_BASE_URL")
-            or os.environ.get("OPENAI_API_BASE")
-            or os.environ.get("NEON_AI_GATEWAY_BASE_URL")
+        value = self.extra_env.get("OPENAI_BASE_URL") or os.environ.get(
+            "OPENAI_BASE_URL"
         )
         if not value:
-            raise RuntimeError(
-                "HarveyHarnessAgent requires OPENAI_BASE_URL or NEON_AI_GATEWAY_BASE_URL"
-            )
+            raise RuntimeError("HarveyHarnessAgent requires OPENAI_BASE_URL")
         return value.rstrip("/")
 
     def _prebaked_python(self) -> str:
         return (
             self._env("HARBOR_HARVEY_PREBAKED_PYTHON") or DEFAULT_PREBAKED_VENV_PYTHON
         )
-
-    def _bootstrap_pip_packages(self) -> str:
-        raw = self._env("HARBOR_HARVEY_BOOTSTRAP_PIP_PACKAGES")
-        if raw is not None:
-            return raw
-        return DEFAULT_BOOTSTRAP_PIP_PACKAGES
 
     def _env(self, name: str) -> str | None:
         return self.extra_env.get(name) or os.environ.get(name)
@@ -474,18 +430,6 @@ class HarveyHarnessAgent(BaseAgent):
         if not value:
             return None
         return Path(value).expanduser().resolve()
-
-    @staticmethod
-    def _candidate_repo_roots() -> tuple[Path, ...]:
-        """Find likely checkout roots without assuming a fixed package depth."""
-
-        source = Path(__file__).resolve()
-        candidates = [Path.cwd().resolve(), *source.parents]
-        unique: list[Path] = []
-        for candidate in candidates:
-            if candidate not in unique:
-                unique.append(candidate)
-        return tuple(unique)
 
     @staticmethod
     def _slug(value: str) -> str:

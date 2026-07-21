@@ -5,7 +5,7 @@ description = "Harvey LAB Harbor environment using Harvey's native harness"
 requires-python = "==3.12.*"
 dependencies = [
     "benchmax",
-    "harbor>=0.18.0,<0.19",
+    "harbor[modal]>=0.18.0,<0.19",
     "httpx>=0.27.0",
     "openai>=2.15.0",
 ]
@@ -15,7 +15,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["harvey_agent", "harvey_castform_probe", "harvey_env"]
+py-modules = ["harvey_agent", "harvey_env", "harvey_runtime"]
 
 [tool.uv.sources]
 benchmax = { workspace = true }

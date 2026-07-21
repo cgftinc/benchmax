@@ -23,7 +23,7 @@ class ChromaSearch:
 
     Pass **either** Cloud credentials (``token_provider`` + ``tenant`` +
     ``database``) **or** a self-hosted ``host``. Cloud takes precedence
-    if both are set; wizard-emitted env classes always use Cloud.
+    if both are set; generated Cloud configurations use Cloud.
 
     The Chroma Cloud key is resolved per request via ``token_provider``.
     With the default (``env_token("CHROMA_API_KEY")``) the key is read
@@ -164,7 +164,9 @@ class ChromaSearch:
         return [
             {
                 "content": client.extract_content(r["content"], r["metadata"]),
-                "source": str(r["metadata"].get("file") or r["metadata"].get("file_path") or ""),
+                "source": str(
+                    r["metadata"].get("file") or r["metadata"].get("file_path") or ""
+                ),
                 "metadata": r["metadata"],
                 "score": float(r.get("score", 0.0) or 0.0),
             }

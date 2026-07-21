@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pickle
+import subprocess
+import sys
 
 import cloudpickle
 import pytest
@@ -10,6 +12,25 @@ import pytest
 from castform.platform.credentials import platform_bearer
 from castform.rag.corpus.postgres.search import PostgresSearch
 from castform.rag.corpus.search_client import SearchClient
+
+
+def test_postgres_search_import_does_not_require_tqdm():
+    """Rollout-only search stays usable with base Castform dependencies."""
+
+    code = """
+import sys
+
+class BlockTqdm:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'tqdm' or fullname.startswith('tqdm.'):
+            raise ModuleNotFoundError('tqdm intentionally unavailable')
+        return None
+
+sys.meta_path.insert(0, BlockTqdm())
+from castform.rag.corpus.postgres.search import PostgresSearch
+assert PostgresSearch('corpus', 'https://example.invalid').available_modes == ['lexical']
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 class TestConformance:

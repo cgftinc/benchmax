@@ -1,55 +1,82 @@
-"""Centralized URL configuration for the Castform platform.
+"""Profile-aware URL configuration for the Castform platform.
 
-All URLs derive from a single base domain, resolved from exactly two places: the
-``CASTFORM_BASE_DOMAIN`` env var, or the built-in ``castform.com`` default.
-Individual URLs may be overridden via their own env vars
-(``CASTFORM_PLATFORM_URL`` / ``CASTFORM_LLM_URL`` / ``CASTFORM_AUTH_URL`` /
-``CASTFORM_WEB_APP_URL``) — e.g. point platform at ``http://localhost:3000`` for
-local dev while auth keeps talking to the real host.
-
-Usage::
-
-    from castform import config
-    client = httpx.Client(base_url=config.platform_url())
+Selection precedence is an explicit profile, ``CASTFORM_PROFILE``, then the
+active profile. The built-in profile is ``prod`` at ``castform.com``. Existing
+URL environment variables remain the highest precedence for development and CI.
 """
 
 import os
 
-DEFAULT_BASE_DOMAIN = "castform.com"
+from castform import profile_config
+
+DEFAULT_BASE_DOMAIN = profile_config.DEFAULT_DOMAIN
 
 
-def base_domain() -> str:
-    """Resolve the platform base domain: ``CASTFORM_BASE_DOMAIN`` or the
-    ``castform.com`` default. To target another environment (e.g. internal
-    staging), export ``CASTFORM_BASE_DOMAIN=castform.dev``."""
-    return os.environ.get("CASTFORM_BASE_DOMAIN") or DEFAULT_BASE_DOMAIN
+def _profile(profile: str | None = None) -> dict[str, str]:
+    selected = profile_config.get_profile(profile)
+    if selected is None:
+        name = profile_config.selected_profile_name(profile)
+        raise RuntimeError(
+            f"Castform profile {name!r} is not configured. Run "
+            f"`castform login --profile {name} --domain <domain>`."
+        )
+    return selected
 
 
-def platform_url() -> str:
-    """Control-plane API (run management, dataset upload, env bundles).
-
-    Returns the API host without the ``/v1`` suffix — clients prepend
-    versioned paths (e.g. ``/v1/storage/upload-url``) themselves. The
-    user-facing web app lives at ``app.{domain}`` and is not the API.
-    """
-    return os.environ.get("CASTFORM_PLATFORM_URL") or f"https://api.{base_domain()}"
-
-
-def web_app_url() -> str:
-    """User-facing web app (run dashboard, etc.). Runs are viewable at
-    ``{web_app_url}/train/{run_id}``."""
-    return os.environ.get("CASTFORM_WEB_APP_URL") or f"https://app.{base_domain()}"
+def base_domain(profile: str | None = None) -> str:
+    """Resolve a profile's domain, with the legacy environment override."""
+    if override := os.environ.get("CASTFORM_BASE_DOMAIN"):
+        return override
+    if domain := _profile(profile).get("domain"):
+        return domain
+    name = profile_config.selected_profile_name(profile)
+    raise RuntimeError(
+        f"Castform profile {name!r} has no domain; configure the required service URL explicitly."
+    )
 
 
-def llm_url() -> str:
-    """OpenAI-compatible LLM endpoint hosted by the platform."""
-    return os.environ.get("CASTFORM_LLM_URL") or f"https://llm.{base_domain()}/v1"
+def profile_target(profile: str | None = None) -> str:
+    """Human-readable target for CLI status messages."""
+    selected = _profile(profile)
+    return (
+        selected.get("domain")
+        or selected.get("platform_url")
+        or selected.get("auth_url")
+        or "<incomplete>"
+    )
 
 
-def auth_url() -> str:
-    """Auth-service base URL (device-authorization + JWT mint endpoints).
+def platform_url(profile: str | None = None) -> str:
+    """Control-plane API base URL without the ``/v1`` suffix."""
+    return (
+        os.environ.get("CASTFORM_PLATFORM_URL")
+        or _profile(profile).get("platform_url")
+        or f"https://api.{base_domain(profile)}"
+    )
 
-    Used by ``castform login`` and the per-process session→JWT mint. Derives from
-    the same base domain as everything else, or ``CASTFORM_AUTH_URL`` to override.
-    """
-    return os.environ.get("CASTFORM_AUTH_URL") or f"https://auth.{base_domain()}"
+
+def web_app_url(profile: str | None = None) -> str:
+    """User-facing web application URL."""
+    return (
+        os.environ.get("CASTFORM_WEB_APP_URL")
+        or _profile(profile).get("app_url")
+        or f"https://app.{base_domain(profile)}"
+    )
+
+
+def llm_url(profile: str | None = None) -> str:
+    """OpenAI-compatible Castform LLM endpoint."""
+    return (
+        os.environ.get("CASTFORM_LLM_URL")
+        or _profile(profile).get("llm_url")
+        or f"https://llm.{base_domain(profile)}/v1"
+    )
+
+
+def auth_url(profile: str | None = None) -> str:
+    """Auth-service base URL used for login and session JWT minting."""
+    return (
+        os.environ.get("CASTFORM_AUTH_URL")
+        or _profile(profile).get("auth_url")
+        or f"https://auth.{base_domain(profile)}"
+    )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -10,7 +11,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
-from openai import AsyncOpenAI, BadRequestError
+from openai import AsyncOpenAI, BadRequestError, OpenAIError
 from openai.types.chat import (
     ChatCompletion,
     ChatCompletionAssistantMessageParam,
@@ -29,11 +30,14 @@ from benchmax.envs.shared_types import (
     Example,
     RewardMap,
     RolloutAttempt,
+    RolloutFailure,
     RolloutRequest,
 )
 from benchmax.auth import ModelRequestContext
 
 __all__ = ["BaseEnv", "BaseRollout"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -42,6 +46,8 @@ class BaseRollout(RolloutAttempt):
 
     messages: Messages
     example_args: Mapping[str, Any]
+    # Which run context requested the rollout; reward hooks may branch on it.
+    split: DatasetSplit = "train"
 
 
 class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
@@ -145,9 +151,48 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                             tools=tools,
                         )
                     except BadRequestError as error:
-                        if error.code != "context_budget_exceeded":
-                            raise
-                        termination_reason = "context_exceeded"
+                        if error.code == "context_budget_exceeded":
+                            termination_reason = "context_exceeded"
+                        else:
+                            termination_reason = "model_error"
+                        logger.warning(
+                            "base.rollout.model_failed rollout_id=%s "
+                            "termination_reason=%s",
+                            request.rollout_id,
+                            termination_reason,
+                            exc_info=True,
+                        )
+                        break
+                    except OpenAIError:
+                        termination_reason = "model_error"
+                        logger.exception(
+                            "base.rollout.model_failed rollout_id=%s "
+                            "termination_reason=%s",
+                            request.rollout_id,
+                            termination_reason,
+                        )
+                        break
+                    except Exception:
+                        # Authentication is resolved inside this exact runtime
+                        # boundary and custom providers need not raise an
+                        # OpenAI exception. Keep response-processing and env
+                        # programming errors outside this catch.
+                        termination_reason = "model_error"
+                        logger.exception(
+                            "base.rollout.model_failed rollout_id=%s "
+                            "termination_reason=%s",
+                            request.rollout_id,
+                            termination_reason,
+                        )
+                        break
+                    if not completion.choices:
+                        termination_reason = "model_error"
+                        logger.error(
+                            "base.rollout.model_failed rollout_id=%s "
+                            "termination_reason=%s: response contained no choices",
+                            request.rollout_id,
+                            termination_reason,
+                        )
                         break
                     assistant_turn = completion.choices[0]
                     tool_calls = _function_tool_calls(assistant_turn.message)
@@ -169,11 +214,32 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                         break
 
                     tool_calls_used += len(tool_calls)
-                    tool_messages = await self._execute_tool_calls(
-                        request.rollout_id,
-                        tool_calls,
-                        tools,
-                    )
+                    try:
+                        tool_messages = await self._execute_tool_calls(
+                            request.rollout_id,
+                            tool_calls,
+                            tools,
+                        )
+                    except RolloutFailure as failure:
+                        termination_reason = failure.termination_reason
+                        logger.error(
+                            "base.rollout.tool_failed rollout_id=%s "
+                            "termination_reason=%s: %s",
+                            request.rollout_id,
+                            termination_reason,
+                            failure,
+                            exc_info=(type(failure), failure, failure.__traceback__),
+                        )
+                        break
+                    except Exception:
+                        termination_reason = "tool_error"
+                        logger.exception(
+                            "base.rollout.tool_failed rollout_id=%s "
+                            "termination_reason=%s",
+                            request.rollout_id,
+                            termination_reason,
+                        )
+                        break
                     messages.extend(tool_messages)
                 else:
                     termination_reason = "max_turns_exceeded"
@@ -183,8 +249,29 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     termination_reason=termination_reason,
                     messages=messages,
                     example_args=example_args,
+                    split=request.split,
                 )
-                rewards = await self.compute_reward(rollout)
+                if termination_reason != "finished":
+                    return replace(
+                        rollout,
+                        rewards={key: 0.0 for key in self.reward_keys},
+                    )
+                try:
+                    rewards = await self.compute_reward(rollout)
+                except RolloutFailure as failure:
+                    logger.error(
+                        "base.rollout.reward_failed rollout_id=%s "
+                        "termination_reason=%s: %s",
+                        request.rollout_id,
+                        failure.termination_reason,
+                        failure,
+                        exc_info=(type(failure), failure, failure.__traceback__),
+                    )
+                    return replace(
+                        rollout,
+                        termination_reason=failure.termination_reason,
+                        rewards={key: 0.0 for key in self.reward_keys},
+                    )
                 return replace(rollout, rewards=rewards)
 
     async def _execute_tool_calls(
@@ -232,9 +319,15 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                 continue
 
             result = await self.run_tool(rollout_id, tool_name, **tool_args)
-            tool_messages.append(
-                _tool_message(tool_call.id, _serialize_tool_result(result))
-            )
+            if _is_tool_content_parts(result):
+                # Rich tool results (e.g. an image crop) pass through as
+                # OpenAI content parts; VL chat templates render them with
+                # real vision tokens inside the tool response.
+                tool_messages.append(_tool_message(tool_call.id, list(result)))
+            else:
+                tool_messages.append(
+                    _tool_message(tool_call.id, _serialize_tool_result(result))
+                )
 
         return tool_messages
 
@@ -377,7 +470,7 @@ def _to_assistant_message(
 
 def _tool_message(
     tool_call_id: str,
-    content: str,
+    content: str | list[Any],
 ) -> Message:
     """Build the transcript message for one tool result."""
 
@@ -397,8 +490,25 @@ def _termination_reason(finish_reason: str | None) -> str:
     if finish_reason == "stop":
         return "finished"
     if finish_reason is None:
-        return "unknown"
+        return "model_error"
     return str(finish_reason)
+
+
+_TOOL_CONTENT_PART_TYPES = frozenset({"text", "image_url"})
+
+
+def _is_tool_content_parts(result: object) -> bool:
+    """Whether a tool result is an explicit OpenAI content-part list."""
+
+    return (
+        isinstance(result, (list, tuple))
+        and len(result) > 0
+        and all(
+            isinstance(part, Mapping)
+            and part.get("type") in _TOOL_CONTENT_PART_TYPES
+            for part in result
+        )
+    )
 
 
 def _serialize_tool_result(result: object) -> str:

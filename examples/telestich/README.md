@@ -68,7 +68,7 @@ components onto a `_Rollout` record. Reward = the sum of the logged components:
    small graded reward (`PARTIAL_HI`→`PARTIAL_LO`) so there's always a gradient.
    Cheating / no answer / wrong line count / ≤25% correct → **0**.
 2. **Quality** — the shared **multi-anchor** rubric judge
-   (`benchmax.rubrics.evaluate_rubric_ranking`) ranks the CORRECT poems against
+   (`benchmax.rewards.evaluate_rubric_ranking`) ranks the CORRECT poems against
    **both** references inserted blind (`acceptable` as a floor, `great` as the bar),
    in **batches of ≤`JUDGE_BATCH` poems** per call (ranking the whole group at once
    lets near-identical siblings contaminate each other's placement and the judge

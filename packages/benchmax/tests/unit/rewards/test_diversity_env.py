@@ -25,17 +25,20 @@ from benchmax.envs import (
     Tool,
     canonical_example_id,
 )
-from benchmax.rewards.diversity import DiversityConfig, scale_by_diversity
+from benchmax.auth import InjectedAuth
+from benchmax.rewards import Judge, LLMDiversityConfig, NgramDiversityConfig
+from benchmax.rewards.diversity import scale_by_diversity
 
 
 # ---------------------------------------------------------------------------
 # Toy env that uses diversity in compute_group_rewards
 # ---------------------------------------------------------------------------
 
-_DIVERSITY_CFG = DiversityConfig(method="ngram", ngram_n=3, similarity_threshold=0.5)
+_DIVERSITY_CFG = NgramDiversityConfig(n=3, similarity_threshold=0.5)
 
 
 class _DiversityEnv(BaseEnv):
+    reward_keys = ("quality",)
     system_prompt = "You are a helpful assistant."
     max_turns = 1
 
@@ -222,19 +225,14 @@ class TestPickleRoundTripEnv:
         assert rewards["r2"]["quality"] == pytest.approx(0.5)
 
     def test_diversity_config_pickles_with_all_fields(self):
-        config = DiversityConfig(
-            method="llm",
-            model="test-model",
-            base_url="http://fake/v1",
-            api_key="",  # empty — resolved at call time
+        config = LLMDiversityConfig(
+            judge=Judge(
+                model="test-model",
+                base_url="http://fake/v1",
+                auth=InjectedAuth("judge"),
+            ),
             max_tokens=768,
-            ngram_n=4,
-            similarity_threshold=0.6,
-            max_retries=3,
-            fallback_on_error="uniform",
         )
         restored = pickle.loads(cloudpickle.dumps(config))
-        assert restored.method == "llm"
-        assert restored.model == "test-model"
-        assert restored.max_retries == 3
-        assert restored.fallback_on_error == "uniform"
+        assert restored.judge.model == "test-model"
+        assert restored.max_tokens == 768

@@ -45,9 +45,14 @@ from benchmax.envs import (
     Tool,
     canonical_example_id,
 )
+from benchmax.envs.base import resolve_dataset_path
 from benchmax.envs.logging import rollout_context as bind_rollout_context
-from benchmax.envs.reward_helpers import extract_completion_text
-from benchmax.rubrics.rubric import Rubric, evaluate_rubric_ranking
+from benchmax.rewards import (
+    Judge,
+    Rubric,
+    evaluate_rubric_ranking,
+    extract_completion_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +123,7 @@ QUALITY_RUBRIC = Rubric(
         "serious flaw even when its imagery is pretty. Prefer economy; every line must "
         "earn its place."
     ),
-    type="positive",
+    polarity="positive",
 )
 
 # Deterministic quality-score penalties (multiplicative on a CORRECT poem's judged
@@ -827,6 +832,7 @@ def _programmatic_feedback(poem: str, target: str) -> str | None:
 # ENV CLASS
 # ══════════════════════════════════════════════════════════════════════
 class TelestichEnv(BaseEnv):
+    reward_keys = ("quality", "rhyme", "diversity", "conciseness")
     system_prompt = """\
 A telestich is a poem whose lines, read by their LAST letters top to bottom, \
 spell a hidden word the user gives you. Use the word the user names as a single \
@@ -905,6 +911,8 @@ then stop."""
         max_tool_calls: int = 3,
         max_turns: int | None = None,
         system_prompt: str | None = None,
+        train_dataset_path: str = "train.jsonl",
+        eval_dataset_path: str = "eval.jsonl",
     ) -> None:
         super().__init__(
             max_turns=max_tool_calls + 1 if max_turns is None else max_turns,
@@ -913,17 +921,26 @@ then stop."""
         self._system_prompt = (
             self.system_prompt if system_prompt is None else system_prompt
         )
-        self._judge_base_url = judge_base_url
-        self._judge_auth = judge_auth
-        self._judge_timeout = judge_timeout
+        self._judge = Judge(
+            model=JUDGE_MODEL,
+            base_url=judge_base_url,
+            auth=judge_auth,
+            timeout=judge_timeout,
+        )
         self._max_tool_calls = max_tool_calls
         self._tool_calls: dict[str, int] = {}
+        # Uploaded blob paths and the runtime download layout share the same
+        # relative form, so the launch script passes its upload paths here.
+        self._dataset_paths = {
+            "train": train_dataset_path,
+            "eval": eval_dataset_path,
+        }
 
     async def create_dataset(
         self, split: DatasetSplit, base_dir: Path
     ) -> JsonlDataset[JsonRow]:
         return JsonlDataset(
-            base_dir / f"{split}.jsonl",
+            resolve_dataset_path(base_dir, self._dataset_paths[split]),
             row_to_example=self._example_from_row,
         )
 
@@ -1061,30 +1078,23 @@ then stop."""
         calibrated score per poem — see _quality_elo. ELO_JUDGE=False restores the disjoint
         JUDGE_BATCH ranker: each call ranks ≤JUDGE_BATCH poems against the blind anchors
         (run 0ec8e2dc: full-group 15/36 false-better → batch-of-3 0/36), scores in `poems`
-        order, a failed batch → 0s; `anchor_labels` only name the anchors in the debug log."""
+        order; `anchor_labels` only name the anchors in the debug log."""
         if not poems:
             return []
         if ELO_JUDGE and anchors:
             return await self._quality_elo(prompt, poems, anchors, band_edges)
 
         async def _score_batch(batch: list[str]) -> list[float]:
-            try:
-                res = await evaluate_rubric_ranking(
-                    rubric=QUALITY_RUBRIC,
-                    question=prompt,
-                    responses=batch,
-                    model_name=JUDGE_MODEL,
-                    base_url=self._judge_base_url,
-                    auth=self._judge_auth,
-                    timeout=self._judge_timeout,
-                    anchors=anchors or None,
-                    band_edges=band_edges or None,
-                    anchor_labels=anchor_labels or None,
-                )
-                return res["scores"]
-            except Exception:
-                logger.exception("[TelestichEnv] quality batch failed; scoring 0s")
-                return [0.0] * len(batch)
+            res = await evaluate_rubric_ranking(
+                rubric=QUALITY_RUBRIC,
+                question=prompt,
+                responses=batch,
+                judge=self._judge,
+                anchors=anchors or None,
+                band_edges=band_edges or None,
+                anchor_labels=anchor_labels or None,
+            )
+            return list(res.scores)
 
         batches = [
             poems[i : i + JUDGE_BATCH] for i in range(0, len(poems), JUDGE_BATCH)
@@ -1103,8 +1113,8 @@ then stop."""
         call ranks an ELO_SLICE-sized slice of poems against BOTH anchors (in every call);
         poems sit in overlapping slices (_make_slices), so the pooled pairwise outcomes feed
         a BT fit with the anchors pinned at fixed ratings (_bt_fit). Ratings map back to band
-        scores (_rating_to_band). Slices run concurrently; a failed slice contributes no
-        pairs. Returns band scores in `poems` order."""
+        scores (_rating_to_band). Slices run concurrently and a judge failure fails the
+        group score. Returns band scores in `poems` order."""
         n = len(poems)
         n_anchors = len(anchors)
         anchor_ids = list(range(n, n + n_anchors))
@@ -1116,20 +1126,13 @@ then stop."""
         }
 
         async def _slice_pairs(sl: list[int]) -> list[tuple[int, int]]:
-            try:
-                res = await evaluate_rubric_ranking(
-                    rubric=QUALITY_RUBRIC,
-                    question=prompt,
-                    responses=[poems[i] for i in sl] + list(anchors),
-                    model_name=JUDGE_MODEL,
-                    base_url=self._judge_base_url,
-                    auth=self._judge_auth,
-                    timeout=self._judge_timeout,
-                )
-                sc = res["scores"]
-            except Exception:
-                logger.exception("[TelestichEnv] elo slice failed; dropping slice")
-                return []
+            res = await evaluate_rubric_ranking(
+                rubric=QUALITY_RUBRIC,
+                question=prompt,
+                responses=[poems[i] for i in sl] + list(anchors),
+                judge=self._judge,
+            )
+            sc = res.scores
             players = list(sl) + anchor_ids  # local item index → global player id
             return [
                 (players[a], players[b])

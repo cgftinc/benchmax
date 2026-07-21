@@ -1,0 +1,41 @@
+{"task": "1+1", "answer": "2", "__fixture_fail_in": "init_rollout"}
+{"task": "1+1", "answer": "2"}
+{"task": "2+3", "answer": "5"}
+{"task": "4-1", "answer": "3"}
+{"task": "5+2", "answer": "7"}
+{"task": "8-3", "answer": "5"}
+{"task": "9+0", "answer": "9"}
+{"task": "3+4", "answer": "7"}
+{"task": "2*2", "answer": "4"}
+{"task": "4+1", "answer": "5", "__fixture_fail_in": "run_tool"}
+{"task": "6+3", "answer": "9"}
+{"task": "7-2", "answer": "5"}
+{"task": "1+8", "answer": "9"}
+{"task": "5*2", "answer": "10"}
+{"task": "3+3", "answer": "6"}
+{"task": "9-4", "answer": "5"}
+{"task": "2+7", "answer": "9"}
+{"task": "8+1", "answer": "9"}
+{"task": "3*3", "answer": "9", "__fixture_fail_in": "compute_reward"}
+{"task": "4*2", "answer": "8"}
+{"task": "5+5", "answer": "10"}
+{"task": "6+2", "answer": "8"}
+{"task": "1+9", "answer": "10"}
+{"task": "3+6", "answer": "9"}
+{"task": "7+1", "answer": "8"}
+{"task": "2*4", "answer": "8"}
+{"task": "9-1", "answer": "8"}
+{"task": "6+6", "answer": "12", "__fixture_fail_in": "release_rollout"}
+{"task": "4+5", "answer": "9"}
+{"task": "8-2", "answer": "6"}
+{"task": "3+5", "answer": "8"}
+{"task": "2+8", "answer": "10"}
+{"task": "5-3", "answer": "2"}
+{"task": "7+2", "answer": "9", "__fixture_fail_in": "compute_group_reward"}
+{"task": "1+5", "answer": "6"}
+{"task": "4-2", "answer": "2"}
+{"task": "8+0", "answer": "8", "__fixture_fail_in": "preprocessing"}
+{"task": "6-1", "answer": "5"}
+{"task": "5*4", "answer": "20", "__fixture_emit_log": "fixture-warning-from-run_tool"}
+{"task": "9+0", "answer": "9"}
+{"task": "2+6", "answer": "8"}

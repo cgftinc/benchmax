@@ -7,13 +7,33 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeAlias
 
-from benchmax.envs.dataset import FrozenDataset
+from benchmax.envs.dataset import Dataset
 from benchmax.envs.shared_types import Example
 
 JsonRow: TypeAlias = dict[str, Any]
 
 
-class JsonlDataset[Payload](FrozenDataset[Payload]):
+def resolve_dataset_path(base_dir: Path, relative_path: str) -> Path:
+    """Resolve an uploaded dataset file without letting it escape the data root.
+
+    Environments receive dataset locations as constructor arguments relative to
+    the runtime data root (the launcher's ``base_dir``), because upload blob
+    paths and the runtime download layout share the same relative form.
+    """
+
+    configured = Path(relative_path)
+    if configured.is_absolute():
+        raise ValueError("dataset paths must be relative to base_dir")
+    root = base_dir.expanduser().resolve()
+    resolved = (root / configured).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("dataset paths must stay within base_dir") from exc
+    return resolved
+
+
+class JsonlDataset[Payload](Dataset[Payload]):
     """Load ordered JSON objects and delegate example construction to the caller."""
 
     def __init__(
@@ -52,4 +72,4 @@ class JsonlDataset[Payload](FrozenDataset[Payload]):
         super().__init__(examples)
 
 
-__all__ = ["JsonRow", "JsonlDataset"]
+__all__ = ["JsonRow", "JsonlDataset", "resolve_dataset_path"]

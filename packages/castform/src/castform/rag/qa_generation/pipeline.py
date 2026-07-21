@@ -1782,8 +1782,8 @@ class Pipeline:
         """Run the async work queue, then close every per-loop async client built
         during the run (corpus ``AsyncClient`` + ``AsyncOpenAI`` generator/judge
         clients). ``asyncio.run`` mints a fresh loop per ``Pipeline.run`` and nothing
-        else closes these, so without this a long-lived host (wizard, ``castform
-        validate``, notebook) leaks one transport set per run."""
+        else closes these, so without this a long-lived host or notebook leaks
+        one transport set per run."""
         try:
             return await self._arun_work_queue(
                 source=source,

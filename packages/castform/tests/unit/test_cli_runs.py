@@ -186,7 +186,7 @@ def _rollouts_ns(**kw):
 
 
 def _rollout_ns(**kw):
-    base = dict(run_id="r1", rollout_id="ro1", dataset=None, view=False, json=False)
+    base = dict(run_id="r1", rollout_id="ro1", dataset=None, json=False)
     base.update(kw)
     return _ns(**base)
 
@@ -289,30 +289,6 @@ def test_runs_rollout_gold_not_found_is_graceful(monkeypatch, capsys, tmp_path):
         runs._cmd_runs_rollout(_rollout_ns(dataset=str(tmp_path / "nope.jsonl"))) == 0
     )
     assert "not found locally" in capsys.readouterr().out
-
-
-def test_runs_rollout_view_writes_html_and_opens_absolute_uri(monkeypatch, tmp_path):
-    # Regression: --view wrote a RELATIVE path then called .as_uri(), which raises
-    # ValueError. It must resolve to an absolute file:// URI and not crash.
-    opened: dict = {}
-    monkeypatch.chdir(tmp_path)
-    _patch(
-        monkeypatch,
-        rollout_details={
-            "step": 7,
-            "totalReward": 0.5,
-            "promptMessages": [{"role": "user", "content": "Q?"}],
-            "messages": [{"role": "assistant", "content": "A"}],
-            "rewards": [{"name": "answer_correctness", "value": 1.0}],
-        },
-    )
-    monkeypatch.setattr(
-        "castform.platform.browser.maybe_open_browser",
-        lambda uri: opened.setdefault("uri", uri),
-    )
-    assert runs._cmd_runs_rollout(_rollout_ns(view=True)) == 0
-    assert (tmp_path / "rollout-ro1.html").exists()
-    assert opened["uri"].startswith("file://") and "rollout-ro1.html" in opened["uri"]
 
 
 def test_gold_join_helpers(tmp_path):

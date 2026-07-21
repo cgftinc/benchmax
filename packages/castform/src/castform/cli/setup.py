@@ -1,14 +1,14 @@
 """castform setup — scaffold a project for an agent-driven RL run (slice 1.8).
 
 Logs you in (no-op if already authed), then writes the agent scaffold from the
-packaged templates (``benchmax/cli/scaffold``): CLAUDE.md / AGENTS.md, the
+packaged templates (``castform.cli.scaffold``): CLAUDE.md / AGENTS.md, the
 per-stage skills into each agent's skills dir (claude → ``.claude/skills/``,
 codex → ``.agents/skills/``, with the body's path references retargeted), a
-starter prompt, and a runnable seed ``main.py`` + tiny seed datasets per template
-(``generic`` → a minimal single-turn env, ``rag`` → a SearchEnv) so ``python
-main.py validate`` runs on day one. ``--no-template`` skips the seed (docs + skills
-only; the agent writes ``main.py`` from the design-environment skill). Does NOT
-open the agent.
+starter prompt, and a standalone ``pyproject.toml`` + runnable seed ``main.py`` +
+tiny seed datasets per template (``generic`` → a minimal single-turn env,
+``rag`` → a hosted-corpus search env) so ``python main.py validate`` runs on day
+one. ``--no-template`` skips the seed (docs + skills only; the agent writes
+``main.py`` from the design-environment skill). Does NOT open the agent.
 The scaffold prose duplicates the web-app generator (``buildAgentContextBody``)
 for now — accepted divergence debt; keep aligned.
 """
@@ -62,6 +62,19 @@ _TEMPLATE_SEEDS = {
 }
 
 
+def _project_toml(template: str) -> str:
+    castform_requirement = "castform[rag]" if template == "rag" else "castform"
+    return f'''[project]
+name = "castform-environment"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "benchmax",
+    "{castform_requirement}",
+]
+'''
+
+
 def _retarget(text: str, agent: str) -> str:
     """Rewrite the scaffold's ``.claude/skills`` references to ``agent``'s dir."""
     return text.replace(".claude/skills", _SKILLS_DIR[agent])
@@ -102,7 +115,7 @@ _PRIMARY_PROMPT = (
 # (command, what it does) — the few verbs worth surfacing right after setup.
 _QUICK_COMMANDS = (
     ("python main.py validate", "baseline · local group of 2 · no GPU"),
-    ("castform launch", "train on GPUs · spends credits"),
+    ("python main.py launch", "train on GPUs · spends credits"),
     ("castform runs status <id>", "monitor a launched run"),
     ("castform guide", "full walkthrough + more prompts"),
 )
@@ -172,13 +185,13 @@ def _login_first(skip: bool) -> None:
         who = (
             credentials._jwt_claims(jwt).get("email") if jwt else None
         ) or "your account"
-        print(f"Signed in as {who} ({config.base_domain()}).")
+        print(f"Signed in as {who} ({config.profile_target()}).")
     except RuntimeError:
         print("Signing in…")
         from castform.platform.login import _login
 
         _login()
-        print(f"✓ Signed in to {config.base_domain()}.")
+        print(f"✓ Signed in to {config.profile_target()}.")
 
 
 def _choose_agents(arg: str | None) -> set[str]:
@@ -247,15 +260,24 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             dest = target.joinpath(*skills_dir, name, "SKILL.md")
             skill_writes.append(w(dest, prep(skill, agent)))
 
-    # 3) env template — every template ships a runnable seed main.py + tiny seed
-    #    datasets so `python main.py validate` runs on day one; the agent then
+    # 3) env template — every template ships a standalone pyproject, runnable
+    #    main.py, and tiny seed datasets so `python main.py validate` runs on day
+    #    one; the agent then
     #    tailors them. --no-template skips the seed (docs + skills only). main.py
     #    honors --force (the guard above cleared it); the datasets ALWAYS
-    #    skip-if-exists — --force is only for the main.py guard, and real data (e.g. a
-    #    rag `castform data qa-gen` output) must never be clobbered by the placeholder.
+    #    skip-if-exists — --force is only for the main.py guard, and real prepared
+    #    data must never be clobbered by the placeholder.
     env_writes: list[bool] = []
     if not args.no_template:
         seed = _TEMPLATE_SEEDS[args.template]
+        env_writes.append(
+            _write(
+                target / "pyproject.toml",
+                _project_toml(args.template),
+                force=False,
+                log=log,
+            )
+        )
         env_writes.append(
             w(target / "main.py", (root / seed["main"]).read_text("utf-8"))
         )
@@ -290,7 +312,11 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         ]
         if env_writes:  # every template ships a seed main.py + datasets
             groups.append(
-                ("env template", env_writes, f"main.py + datasets ({args.template})")
+                (
+                    "env template",
+                    env_writes,
+                    f"pyproject + main.py + datasets ({args.template})",
+                )
             )
         label_w = max(len(label) for label, _, _ in groups)
         for label, writes, detail in groups:
@@ -302,19 +328,6 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             f"{target} has been set up for castform and your coding agent.", bold=True
         )
     )
-
-    if env_writes and args.template == "rag":  # rag data path pulls extra deps
-        print()
-        print(
-            paint(
-                "  Note: the postgres rag env validates on base castform, but "
-                "`castform data qa-gen`\n  and non-postgres corpus backends need "
-                "extra deps — install with:\n"
-                "    uv pip install 'castform[rag]'  (or [turbopuffer] / [pinecone] "
-                "/ [chroma])",
-                _GREY,
-            )
-        )
 
     _print_get_started()
     return 0
@@ -340,8 +353,9 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--template",
         choices=["generic", "rag"],
         default="generic",
-        help="Env seed: 'generic' = a minimal single-turn env, 'rag' = a SearchEnv "
-        "(both ship a runnable main.py + tiny datasets; default: generic)",
+        help="Env seed: 'generic' = a minimal single-turn env, 'rag' = a hosted-"
+        "corpus search env (both ship a pyproject, runnable main.py, and tiny "
+        "datasets; default: generic)",
     )
     p.add_argument(
         "--no-template",

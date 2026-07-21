@@ -25,3 +25,10 @@ def test_help_snapshot(monkeypatch):
         "castform --help drifted from the committed snapshot; if intentional, "
         "regen with CASTFORM_UPDATE_GOLDEN=1 and review the diff."
     )
+
+
+def test_retired_orchestration_commands_are_not_registered():
+    top_level = next(
+        action for action in build_parser()._actions if action.dest == "command"
+    )
+    assert not ({"launch", "data", "corpus"} & set(top_level.choices))

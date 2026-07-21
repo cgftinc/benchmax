@@ -4,7 +4,22 @@ from pathlib import Path
 
 import pytest
 
-from benchmax.envs import Example, JsonRow, JsonlDataset
+from benchmax.envs import Dataset, Example, JsonRow, JsonlDataset
+
+
+def test_dataset_snapshots_membership_and_preserves_order() -> None:
+    examples = [
+        Example(id="first", payload={"value": 1}),
+        Example(id="second", payload={"value": 2}),
+    ]
+
+    dataset = Dataset(examples)
+    examples.reverse()
+    examples.append(Example(id="third", payload={"value": 3}))
+
+    assert len(dataset) == 2
+    assert dataset[0].id == "first"
+    assert [example.id for example in dataset] == ["first", "second"]
 
 
 def test_jsonl_dataset_delegates_complete_rows_in_source_order(

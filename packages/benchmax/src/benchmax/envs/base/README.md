@@ -25,7 +25,7 @@ from benchmax.envs import (
     JsonlDataset,
     canonical_example_id,
 )
-from benchmax.envs.reward_helpers import extract_completion_text
+from benchmax.rewards import extract_completion_text
 
 
 def math_example(row):
@@ -37,6 +37,7 @@ def math_example(row):
 
 
 class MathEnv(BaseEnv):
+    reward_keys = ("correct",)
     max_turns = 1
 
     async def create_dataset(self, split, base_dir: Path):
@@ -53,11 +54,20 @@ class MathEnv(BaseEnv):
         return {"correct": float(answer == rollout.example_args["answer"])}
 ```
 
-`run_rollout` calls `compute_reward` after the chat loop. Override
+`reward_keys` is the complete final reward shape, including both individual and
+group-relative dimensions. BenchMax uses this explicit schema to return the
+same keys, all zero, for operationally failed attempts; it never infers a shape
+from siblings.
+
+`run_rollout` calls `compute_reward` only after a normally finished chat loop.
+Context/output/tool/model failures return the declared zero shape and a
+non-`finished` termination reason. Override
 `compute_group_rewards` when scoring also depends on the completed group. The
 group reward keys are merged into each rollout's individual reward map;
-duplicate keys raise instead of silently overwriting a score. Either hook may
-return `None`, but every final rollout must receive at least one named reward.
+duplicate keys raise instead of silently overwriting a score. Failed attempts
+are excluded from group-relative scoring so they cannot distort their siblings.
+Either hook may return `None`, but every successful final rollout must exactly
+match `reward_keys`.
 
 For tools, override `list_tools` with OpenAI-compatible tool dictionaries and
 override `run_tool` to dispatch them. Environments without tools inherit the

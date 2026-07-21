@@ -1,4 +1,4 @@
-"""castform doctor — check the local environment is ready to validate/launch.
+"""castform doctor — check the local environment is ready to run env scripts.
 
 A fast, read-only preflight a user or agent can run before ``python main.py validate``:
 the Python interpreter, the castform install, sign-in state, and which env-dependency
@@ -43,14 +43,14 @@ def _version() -> str:
 
 
 def _auth_check() -> tuple[bool, str]:
-    """(signed_in, detail). Resolves the same bearer seam validate/launch use."""
+    """Return whether the current Castform session resolves successfully."""
     try:
         credentials.platform_bearer()
     except Exception:
         return False, "not signed in — run `castform login`"
     jwt = credentials._session_jwt()
     who = (credentials._jwt_claims(jwt).get("email") if jwt else None) or "your account"
-    return True, f"{who} ({config.base_domain()})"
+    return True, f"{who} ({config.profile_target()})"
 
 
 def _collect() -> dict:

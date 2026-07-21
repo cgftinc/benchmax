@@ -40,13 +40,15 @@ from benchmax.envs import (
     Tool,
     canonical_example_id,
 )
-from benchmax.envs.reward_helpers import (
+from benchmax.rewards import (
+    Judge,
+    Rubric,
     clip01,
+    evaluate_single_rubric,
     extract_completion_text,
     search_within_budget,
 )
 from castform.rag.corpus.search_client import SearchClient
-from benchmax.rubrics.rubric import Rubric, evaluate_single_rubric
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +115,7 @@ CORRECTNESS_RUBRIC = Rubric(
         "Response correctly answers the question and is "
         "factually consistent with the reference answer."
     ),
-    type="positive",
+    polarity="positive",
     score_map={
         0: "Provided answer is missing or incorrect.",
         1: "Fully correct and factually consistent.",
@@ -128,7 +130,7 @@ CONCISENESS_RUBRIC = Rubric(
         "Response is concise and avoids unnecessary verbosity "
         "while still directly answering the question."
     ),
-    type="positive",
+    polarity="positive",
 )
 
 MAX_TOOL_OUTPUT_CHARS = 10000
@@ -154,11 +156,7 @@ async def judge_answer_quality(
     question: str,
     ground_truth: str,
     response: str,
-    model: str,
-    base_url: str,
-    api_key: str,
-    auth: ModelAuth | None = None,
-    timeout: float = 30.0,
+    judge: Judge,
     correctness_rubric: Rubric = CORRECTNESS_RUBRIC,
     conciseness_rubric: Rubric = CONCISENESS_RUBRIC,
 ) -> tuple[float, float]:
@@ -180,29 +178,21 @@ async def judge_answer_quality(
             question=question,
             ground_truth=ground_truth,
             response=response,
-            model_name=model,
-            base_url=base_url,
-            api_key=api_key,
-            auth=auth,
-            timeout=timeout,
+            judge=judge,
         )
         conciseness_task = evaluate_single_rubric(
             rubric=conciseness_rubric,
             question=question,
             ground_truth=ground_truth,
             response=response,
-            model_name=model,
-            base_url=base_url,
-            api_key=api_key,
-            auth=auth,
-            timeout=timeout,
+            judge=judge,
         )
         correctness_result, conciseness_result = await asyncio.gather(
             correctness_task, conciseness_task
         )
         return (
-            clip01(correctness_result.get("score", 0.0)),
-            clip01(conciseness_result.get("score", 0.0)),
+            clip01(correctness_result.score),
+            clip01(conciseness_result.score),
         )
     except Exception:
         return (0.0, 0.0)
@@ -346,6 +336,7 @@ class SearchEnv(BaseEnv):
         "citation_precision": 0.0,
         "answer_length": 0.0,
     }
+    reward_keys = tuple(_ZERO_REWARDS)
 
     SYSTEM_PROMPT_TEMPLATE = """\
 Answer the given question by searching over {corpus_description}.
@@ -431,10 +422,12 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         )
 
         self._search = search
-        self._judge_base_url = judge_base_url
-        self._judge_model = judge_model
-        self._judge_auth = judge_auth
-        self._judge_timeout = judge_timeout
+        self._judge = Judge(
+            model=judge_model,
+            base_url=judge_base_url,
+            auth=judge_auth,
+            timeout=judge_timeout,
+        )
         self._w_correctness = w_correctness
         self._w_retrieval_hit = w_retrieval_hit
         self._w_citation_precision = w_citation_precision
@@ -569,12 +562,9 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             question=prompt,
             ground_truth=gt_str,
             response=answer,
-            model_name=self._judge_model,
-            base_url=self._judge_base_url,
-            auth=self._judge_auth,
-            timeout=self._judge_timeout,
+            judge=self._judge,
         )
-        correctness = clip01(result.get("score", 0.0))
+        correctness = clip01(result.score)
 
         recall, precision = self._score_citations(answer, reference_chunks)
         length_score = clip01(1.0 - len(answer) / ANSWER_LENGTH_CAP)
@@ -676,11 +666,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             question=question,
             ground_truth=ground_truth,
             response=response,
-            model=self._judge_model,
-            base_url=self._judge_base_url,
-            api_key="",
-            auth=self._judge_auth,
-            timeout=self._judge_timeout,
+            judge=self._judge,
         )
 
     # ------------------------------------------------------------------

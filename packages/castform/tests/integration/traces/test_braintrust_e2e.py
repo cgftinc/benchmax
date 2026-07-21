@@ -99,12 +99,15 @@ class TestBraintrustE2E:
             f"ORDER BY created DESC LIMIT 5"
         )
         resp = request_with_retry(
-            "POST", _BTQL_URL,
+            "POST",
+            _BTQL_URL,
             headers=headers,
             json={"query": query, "fmt": "json"},
             timeout=30,
         )
-        assert resp.status_code == 200, f"BTQL returned {resp.status_code}: {resp.text[:200]}"
+        assert resp.status_code == 200, (
+            f"BTQL returned {resp.status_code}: {resp.text[:200]}"
+        )
 
         data = resp.json()
         rows = data.get("data", data) if isinstance(data, dict) else data
@@ -123,7 +126,7 @@ class TestBraintrustE2E:
                 assert isinstance(msg.content, str)
 
     def test_fetch_traces_default_limit(self):
-        """Fetch with no limit — matches the wizard Modal worker usage."""
+        """Fetch with no limit to cover the bulk preparation path."""
         _skip_if_no_creds()
         adapter = BraintrustTraceAdapter(api_key=_API_KEY)
 

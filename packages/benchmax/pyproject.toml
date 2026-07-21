@@ -1,7 +1,7 @@
 [project]
 name = "benchmax"
 version = "0.1.2.dev36"
-description = "Framework-Agnostic RL Environments for LLM Fine-Tuning"
+description = "Platform-independent runtime for grouped LLM environments"
 readme = "README.md"
 authors = [{ name = "BenchMax Authors" }]
 requires-python = "==3.12.*"
@@ -9,6 +9,7 @@ dependencies = [
     "cloudpickle>=3.0.0",
     "json-repair>=0.59.10",
     "openai>=2.15.0",
+    "packaging>=24.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -16,11 +17,11 @@ classifiers = [
 ]
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/benchmax"]
 
 [project.optional-dependencies]
 harbor = ["harbor>=0.18.0,<0.19"]

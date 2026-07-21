@@ -1,130 +1,86 @@
 ---
 name: launch-run
-description: Launch a castform GPU training run with `castform launch` (validate → upload → launch) and set launcher args correctly. Use only after verify-environment is green — this spends GPU.
+description: Review, bundle, upload, and explicitly launch a Castform GPU training run from the project script.
 ---
 
 # Launch a run
 
-This is stage 4 of `castform setup → data → validate → launch`. Use it only after
-`python main.py validate` is green and the user agrees to spend GPU credits.
-
-## Fast path
-
-`castform launch` runs pre-flight validate, uploads env+datasets, then launches.
-It warns about GPU cost and prompts to continue (pass `--yes` only for
-non-interactive use).
+Use this only after **verify-environment** reports a believable green baseline.
+Launching spends GPU credits. The workflow lives in `main.py`, not a CLI launch
+command:
 
 ```bash
-castform launch --name my-run --set model=Qwen/Qwen3.5-4B
+uv run python main.py launch
 ```
 
-It prints the run URL and a `castform runs status …` command to track it. Then go
-to the **view-progress** skill.
+Do not pass `--yes` unless the user has already explicitly authorized the cost.
 
-Defaults are fine for a smoke run. For a serious run, set the rollout budget and
-epochs deliberately. If eval falls while train rises, the best checkpoint may be
-before the final step.
+## Required ordering
 
-## Going deeper
+Read the script and confirm that `launch()` does all of the following in order:
 
-### Discover the accepted args (don't guess)
+1. calls the same local `validate()` gate used during iteration;
+2. stops if either sibling did not finish;
+3. asks the human to confirm a credit-spending GPU launch;
+4. builds one `Bundle` with `dump_bundle`;
+5. passes that exact object to `upload_training_run(bundle=bundle, ...)`;
+6. passes the returned paths to `TrainerClient.launch_training_run`.
 
-The accepted args and their **live defaults / ranges / soft-caps** are defined by
-the server — list them at runtime:
+The upload helper must not silently rebundle the environment.
 
-```bash
-castform launch --list-args
-```
+Dataset upload is explicit and optional. Supply `train_dataset` and/or
+`eval_dataset` only for splits Castform should upload. Omit them for data resolved
+by the environment at runtime (for example Harbor- or Git-managed data). Do not
+use an empty list as an omission sentinel: it uploads an empty JSONL file.
 
-`--list-args` is a **live server fetch** (so is the SDK's `list_launch_args()`) —
-the arg set is **not** enumerable offline. Set args with `--set key=value`; the
-CLI validates each against the live schema and **rejects unknown keys** (and
-server-only fields), so you can't silently send a wrong name.
+## Dependencies
 
-### Knobs worth tuning
-
-Server-side source of truth: `platform-service/src/lib/trainer-args.ts`. These are
-the launch-arg defaults (a per-model config may override; `--list-args` is
-authoritative at runtime):
-
-| `--set` key | default | what it does |
-|---|---|---|
-| `model` | `Qwen/Qwen3.5-4B` | model id; selects the trainer config (e.g. also `Qwen/Qwen3.5-35B-A3B`). Launch uses the HF-style id (`Qwen/Qwen3.5-4B`); the validate/eval path names the same model `qwen3.5-4b` — don't cross them. |
-| `learning_rate` | `1e-5` | Adam learning rate (slime `--lr`). |
-| `num_epochs` | `5` | passes over the train set. For RAG, 3 is often a safer first serious run than training deep into an overfit tail; watch eval and keep the best checkpoint, not just the final. |
-| `group_size` | `9` | rollouts per prompt for GRPO; drives **both** train and eval rollout counts. |
-| `lora_rank` | `128` | LoRA adapter rank (trainable-parameter count). |
-| `lora_alpha` | `256` | LoRA scaling factor; convention is `2 × lora_rank`. |
-| `max_rollout_len` | model-derived | total tokens across the WHOLE rollout (all turns), not a per-response cap; `> 16384` risks OOM. **`max_response_len` is not a thing** — the server rejects it. Over-budget rollouts are truncated and dropped from the loss, so set it generously while keeping search output compact. |
-| `max_turns` | `4` (trainer default) | max turns per rollout; keep it aligned with the environment's enforced `max_turns`. |
-
-**Tool calls cap at 8 at launch — and you can't raise them.** Unlike `python main.py validate`
-(which takes `--max-tool-calls`), launch exposes only `max_turns` as a `--set` knob;
-`max_tool_calls` is fixed at 8. A multi-turn env that needs more is silently truncated
-in training.
-
-<!-- rag:start -->
-For a search env, keep `MAX_SEARCH_CALLS` ≤ 8 (see design-environment's Tools / turns).
-
-Budget the transcript, not just the final answer: tool outputs count against
-`max_rollout_len` across all turns, so the transcript token budget for a search env is
-roughly `MAX_SEARCH_CALLS × MAX_TOOL_OUTPUT_CHARS`. That can push a run into truncation
-or OOM even when each individual search result is reasonable — `castform launch` warns
-before the confirm prompt when the estimate exceeds `max_rollout_len`. Prefer a smaller
-default search budget, trimmed per-chunk bodies, and a `max_rollout_len` you chose after
-checking `castform launch --list-args`.
-<!-- rag:end -->
-
-### Bake the config into main.py (reproducible launches)
-
-A `main.py` can carry a `LAUNCH_CONFIG` dict (and `VALIDATE_CONFIG` for the
-pre-launch check) that `castform launch` / `python main.py validate` read, so the run
-reproduces from the file without remembering flags — a `--set` / CLI flag still
-overrides per invocation:
+`RUNTIME_DEPENDENCIES` is explicit and authoritative for the remote rollout
+runtime:
 
 ```python
-LAUNCH_CONFIG = {
-    "max_turns": 7,             # keep aligned with the environment limit
-    "max_rollout_len": 16384,   # whole-rollout token budget
-    "num_epochs": 3,
-    # "type": "simple",         # gpu pool; "simple-cpu" for a smoke run
-}
-VALIDATE_CONFIG = {"max_turns": 7, "max_tool_calls": 6, "examples": 6}
+bundle = dump_bundle(
+    CustomEnv,
+    constructor_args=ENV_ARGS,
+    pip_dependencies=RUNTIME_DEPENDENCIES,
+)
 ```
 
-The launcher keys must be real `--set` args (`--list-args`) — an unknown key is
-skipped with a warning, not sent. `max_tool_calls` is **not** a launch arg (stays 8),
-so keep it out of `LAUNCH_CONFIG`; it *is* honored in `VALIDATE_CONFIG`.
+List every external package imported while the environment, tools or rewards run.
+Do not copy the whole project dependency list automatically: data-preparation and
+development packages may not belong in the rollout image. BenchMax captures local
+modules under the environment project automatically. Source from another project
+must be explicit: use `local_modules=` to capture it, or list its installed
+distribution in `pip_dependencies` to keep it as a remote reference.
+
+For Harbor, add the selected provider extra explicitly, such as
+`harbor[modal]>=0.18,<0.19` or `harbor[daytona]>=0.18,<0.19`.
+
+## Launch configuration
+
+Review `LAUNCH_CONFIG` in source. In particular:
+
+- `max_rollout_len` is the whole-rollout token budget, not one response;
+- keep trainer turn/tool limits compatible with the environment's own limits;
+- start with modest epochs and judge the eval curve, not only train reward;
+- use `TrainerClient.list_launch_args()` when you need the live accepted schema
+  instead of guessing an argument name.
+
 <!-- rag:start -->
-This is the fix for the `MAX_SEARCH_CALLS` ↔ `--max-turns` sync footgun — set the
-budget once, in the file, next to `MAX_SEARCH_CALLS`.
+For search environments, budget for repeated tool output across turns. Confirm
+the rollout bundle includes the runtime search client but not large local corpus-
+preparation dependencies unless the environment imports them.
 <!-- rag:end -->
 
-### Epochs, checkpoints, and overfitting
+## Credentials
 
-Read eval, not train, as the launch succeeds. A healthy train curve can keep rising
-while eval peaks and then falls; in that case the final checkpoint is worse than an
-earlier one.
-<!-- rag:start -->
-For RAG, start with fewer epochs when the validation curve from a prior run showed a
-peak before the end, and record the best eval step in your run notes.
-<!-- rag:end -->
+Model and judge credentials must resolve per request (`InjectedAuth` for named
+runtime providers); never freeze a temporary token in the bundle. Harbor sandbox
+credentials are currently explicit constructor inputs. Review them before
+bundling and limit their scope; a reference-injection design is deferred.
 
-The CLI may not expose checkpoint listing/serving for a non-final step yet. If eval
-peaks early, do not assume the platform is serving the final model you want; use the
-run URL or support/internal tooling to confirm checkpoint availability before calling
-the run "done."
+## Handoff
 
-### Auth and long-running launches
-
-Device-login sessions can expire during overnight investigation. If a launch or
-follow-up `runs` command starts failing auth after a long pause, refresh with
-`castform login` (or use `PLATFORM_API_KEY` for headless runs) and retry the read or
-launch operation.
-
-Server-controlled fields — `save`, `load`, `global_batch_size`, the eval mirrors —
-are **not settable**: the launch handler fills them in and rejects caller input
-that carries them. (`rollout_batch_size` is derived too, not a launch arg.)
-The run type is platform-internal. `castform launch` uses the standard GPU
-training pool; lifecycle smoke tests should use `python main.py validate` instead of a
-launch-only CPU template.
+Record the run ID printed by the script, then load **view-progress**. If upload or
+launch fails, preserve the error, correct the script or credentials, and rerun the
+smallest failed stage. Never bypass a failed validation gate.

@@ -9,8 +9,10 @@ live under ``runs`` rather than top-level for a single coherent group.
 from __future__ import annotations
 
 import argparse
+import json
 import textwrap
 from pathlib import Path
+from typing import Any
 
 from castform import config
 from castform.cli._client import handle_errors, trainer_client
@@ -21,7 +23,41 @@ from castform.cli._output import (
     render_table,
     truncate,
 )
-from castform.cli._project import ProjectError, _load_jsonl, row_question_and_gold
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Read non-empty JSON objects from *path* for the optional gold join."""
+    rows: list[dict[str, Any]] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        value = json.loads(line)
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
+
+
+def _row_question_and_gold(row: Any) -> tuple[object, object]:
+    """Return the question and gold answer from supported local dataset rows."""
+    if not isinstance(row, dict):
+        return None, None
+    question = row.get("prompt") or row.get("question")
+    if isinstance(question, list):
+        question = next(
+            (
+                message.get("content")
+                for message in reversed(question)
+                if isinstance(message, dict)
+                and message.get("role") == "user"
+                and message.get("content")
+            ),
+            None,
+        )
+    gold = row.get("ground_truth")
+    if gold is None:
+        gold = row.get("answer")
+    return question, gold
 
 
 def _run_url(run_id: str) -> str:
@@ -52,11 +88,11 @@ def _gold_index(dataset_paths: list[str]) -> dict[str, object]:
             continue
         try:
             rows = _load_jsonl(p)
-        except ProjectError:
+        except (OSError, json.JSONDecodeError):
             continue
         index: dict[str, object] = {}
         for r in rows:
-            q, gold = row_question_and_gold(r)
+            q, gold = _row_question_and_gold(r)
             if isinstance(q, str) and gold is not None:
                 index[" ".join(q.split())] = gold
         if index:
@@ -272,31 +308,6 @@ def _cmd_runs_rollout(args: argparse.Namespace) -> int:
     )
     gold = _match_gold(prompt, _gold_index(datasets))
 
-    if args.view:
-        from castform.cli.dataview import build_view_model, write_html
-        from castform.platform import browser
-
-        record = {
-            "id": args.rollout_id,
-            "messages": details.get("messages") or [],
-            "scores": {
-                r.get("name"): r.get("value") for r in details.get("rewards") or []
-            },
-            "metadata": {
-                "run_id": args.run_id,
-                "step": details.get("step"),
-                "total_reward": details.get("totalReward"),
-                "gold": gold,
-            },
-        }
-        model = build_view_model(
-            [record], source=f"rollout {args.rollout_id}", type_override="traces"
-        )
-        out = write_html(model, Path(f"rollout-{args.rollout_id}.html")).resolve()
-        print(f"Wrote {out}")
-        browser.maybe_open_browser(out.as_uri())
-        return 0
-
     if args.json:
         print_json({**details, "gold": gold})
         return 0
@@ -384,9 +395,6 @@ def register(sub: argparse._SubParsersAction) -> None:
     p_rollout.add_argument(
         "--dataset",
         help="Local jsonl to join gold from (default: eval_dataset.jsonl, then train)",
-    )
-    p_rollout.add_argument(
-        "--view", action="store_true", help="Open the rollout in the HTML viewer"
     )
     p_rollout.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_rollout.set_defaults(func=_cmd_runs_rollout)

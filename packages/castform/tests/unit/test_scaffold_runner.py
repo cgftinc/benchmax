@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 import castform.cli.scaffold as scaffold_pkg
-from castform.cli._project import _load_module_from_file, discover_env_class
+
+from ._scaffold import discover_env_class, load_module
 
 _SCAFFOLD_DIR = Path(scaffold_pkg.__file__).parent
 _SEEDS = {
@@ -24,7 +25,7 @@ _SEEDS = {
 def mod(request, tmp_path, monkeypatch):
     """Load a scaffold seed as a module (its `__main__` block does not fire)."""
     monkeypatch.chdir(tmp_path)
-    return _load_module_from_file(_SEEDS[request.param])
+    return load_module(_SEEDS[request.param])
 
 
 def _fake_report(ok: bool = True):
@@ -55,6 +56,7 @@ def _patch_stage_recorders(mod, monkeypatch):
 
     def _data(**k):
         calls.append(("data", k))
+        return True
 
     def _validate():  # returns a passing report so main() exits 0
         calls.append(("validate",))
@@ -80,6 +82,24 @@ def test_dispatch_data_only(mod, monkeypatch):
     calls = _patch_stage_recorders(mod, monkeypatch)
     assert mod.main(["data", "--force"]) == 0
     assert calls == [("data", {"force": True})]
+
+
+def test_data_stage_does_not_require_login(mod, monkeypatch):
+    monkeypatch.setattr(mod, "generate_data", lambda **kwargs: True)
+    monkeypatch.setattr(
+        mod,
+        "ensure_session",
+        lambda: (_ for _ in ()).throw(AssertionError("data requested login")),
+    )
+    assert mod.main(["data"]) == 0
+
+
+def test_validate_stage_ensures_session(mod, monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(mod, "ensure_session", lambda: calls.append("login"))
+    monkeypatch.setattr(mod, "validate", lambda: _fake_report(ok=True))
+    assert mod.main(["validate"]) == 0
+    assert calls == ["login"]
 
 
 def test_bare_and_all_run_data_then_validate_then_stop(mod, monkeypatch):
@@ -124,8 +144,9 @@ def test_main_exit_1_when_launch_gated(mod, monkeypatch):
 
 def test_validate_calls_public_group_validation(mod, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "train_dataset.jsonl").write_text('{"prompt": "q"}\n')
-    (tmp_path / "eval_dataset.jsonl").write_text('{"prompt": "q2"}\n')
+    field = "question" if hasattr(mod, "CustomSearchEnv") else "prompt"
+    (tmp_path / "train_dataset.jsonl").write_text(f'{{"{field}": "q"}}\n')
+    (tmp_path / "eval_dataset.jsonl").write_text(f'{{"{field}": "q2"}}\n')
     captured: dict = {}
 
     async def fake_validate_environment(env, **kw):
@@ -150,6 +171,13 @@ def test_validate_calls_public_group_validation(mod, tmp_path, monkeypatch):
 
 def _patch_launch_sdk(mod, monkeypatch, launched: dict, *, validate_ok: bool = True):
     monkeypatch.setattr(mod, "validate", lambda: _fake_report(ok=validate_ok))
+    bundle = object()
+
+    def fake_dump_bundle(env_class, **kwargs):
+        launched["_bundle_call"] = {"env_class": env_class, **kwargs}
+        return bundle
+
+    monkeypatch.setattr(mod, "dump_bundle", fake_dump_bundle)
     Uploaded = dataclasses.make_dataclass(
         "Uploaded",
         [
@@ -159,9 +187,12 @@ def _patch_launch_sdk(mod, monkeypatch, launched: dict, *, validate_ok: bool = T
             "eval_dataset_path",
         ],
     )
-    monkeypatch.setattr(
-        mod, "upload_training_run", lambda **k: Uploaded("e", "m", "t", "v")
-    )
+
+    def fake_upload_training_run(**kwargs):
+        launched["_upload_call"] = kwargs
+        return Uploaded("e", "m", "t", "v")
+
+    monkeypatch.setattr(mod, "upload_training_run", fake_upload_training_run)
 
     class FakeClient:
         def __enter__(self):
@@ -214,6 +245,14 @@ def test_launch_confirmed_spreads_uploaded_paths(mod, tmp_path, monkeypatch):
     assert launched["env_cls_path"] == "e"
     assert launched["train_dataset_path"] == "t"
     assert launched["name"] == mod._run_name()
+    assert launched["_bundle_call"] == {
+        "env_class": discover_env_class(mod),
+        "constructor_args": mod.ENV_ARGS,
+        "pip_dependencies": mod.RUNTIME_DEPENDENCIES,
+    }
+    assert launched["_upload_call"]["bundle"] is not None
+    assert "env_class" not in launched["_upload_call"]
+    assert "pip_dependencies" not in launched["_upload_call"]
     # LAUNCH_CONFIG feeds launcher_args, minus reserved keys
     assert "type" not in (launched["launcher_args"] or {})
     assert "name" not in (launched["launcher_args"] or {})
@@ -233,3 +272,14 @@ def test_launch_assume_yes_skips_prompt(mod, tmp_path, monkeypatch):
     )
     assert mod.launch(assume_yes=True) == "run-123"
     assert launched["name"] == mod._run_name()
+
+
+def test_runtime_dependencies_are_script_owned(mod):
+    env_class = discover_env_class(mod)
+    assert isinstance(mod.RUNTIME_DEPENDENCIES, list)
+    assert not hasattr(env_class, "PIP_DEPENDENCIES")
+
+
+def test_rag_seed_does_not_import_workspace_showcase():
+    source = _SEEDS["rag"].read_text()
+    assert "postgres_search_env" not in source

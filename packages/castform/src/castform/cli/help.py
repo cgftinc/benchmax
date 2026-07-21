@@ -1,8 +1,8 @@
 """castform guide — the getting-started walkthrough, rendered for the terminal.
 
 `castform setup` prints a compact get-started block and points here for the full
-walkthrough. This renders the packaged ``scaffold/STARTER.md`` with a tiny,
-purpose-built markdown formatter (not a general one) under the same convention
+walkthrough. This renders a concise CLI guide with a tiny, purpose-built markdown
+formatter (not a general one) under the same convention
 ``setup`` uses: section headers become fully-colored ``──── title ────`` rules,
 *prompts* become colored titled boxes, *commands* render as unboxed indented
 text, blockquotes get a colored bar, and tables align into columns. Command/code
@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import re
 import textwrap
-from importlib import resources
 
 from castform.cli._output import (
     BLUE,
@@ -32,6 +31,31 @@ _EM_RE = re.compile(r"\*([^*]+)\*")
 # A fenced block is a *command* example (rendered unboxed) when its first line
 # looks like a shell command; otherwise it's a *prompt* (a colored, titled box).
 _CMD_PREFIXES = ("castform", "uv ", "uv\t", "pip ", "cd ", "python", "source ", "$")
+
+_GUIDE = """# Get started
+
+Use `castform setup` to create a project with an environment script. The script owns
+data preparation, local validation, bundling, upload, and launch; the CLI handles
+your Castform session and run inspection or cancellation.
+
+## Quick commands
+
+```
+castform setup
+python main.py validate
+python main.py launch
+castform runs status <run-id>
+```
+
+| Task | Command |
+|------|---------|
+| Sign in | `castform login` |
+| Check your setup | `castform doctor` |
+| List runs | `castform runs list` |
+| Inspect a run | `castform runs get <run-id>` |
+| Inspect rollout text or JSON | `castform runs rollout <run-id> <rollout-id>` |
+| Stop a run | `castform stop <run-id>` |
+"""
 
 
 def _inline(text: str) -> str:
@@ -225,9 +249,6 @@ def render_doc(md: str, width: int) -> list[str]:
 
 def _cmd_help(args: argparse.Namespace) -> int:
     width = min(term_width() - 2, 76)
-    md = (resources.files("castform.cli.scaffold") / "STARTER.md").read_text(
-        encoding="utf-8"
-    )
-    print("\n".join(render_doc(md, width)))
+    print("\n".join(render_doc(_GUIDE, width)))
     print()  # trailing blank line (shared convention)
     return 0

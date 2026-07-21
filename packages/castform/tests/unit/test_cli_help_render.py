@@ -60,3 +60,5 @@ def test_cmd_help_prints_guide(capsys):
     assert help_cmd._cmd_help(object()) == 0
     out = capsys.readouterr().out
     assert "Get started" in out and "Quick commands" in out
+    assert "python main.py launch" in out
+    assert "castform launch" not in out

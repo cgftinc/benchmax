@@ -16,8 +16,10 @@ import os
 
 import pytest
 
+from benchmax.bundle import dump_bundle
 from benchmax.envs import BaseEnv, Example, JsonlDataset, canonical_example_id
 from castform.platform.client import RolloutClient
+from castform.platform.exceptions import RolloutError
 
 pytestmark = pytest.mark.integration
 
@@ -69,18 +71,25 @@ def test_rollout_client_resolves_bearer_via_seam(monkeypatch):
         "CASTFORM_BASE_DOMAIN", os.environ.get("CASTFORM_BASE_DOMAIN", "castform.dev")
     )
 
+    bundle = dump_bundle(_make_echo_env())
     client = RolloutClient()  # no api_key → bearer + LLM-leg key resolve via the seam
-    result = client.validate_examples(
-        [{"prompt": "hi"}, {"prompt": "yo"}],
-        env_class=_make_echo_env(),
-        n=2,
-        verbose=True,
-    )
+    outcomes: list[dict] = []
+    errors: list[str] = []
+    for index, example in enumerate(({"prompt": "hi"}, {"prompt": "yo"})):
+        try:
+            outcomes.append(
+                client.stream_rollout(
+                    raw_example=example,
+                    env_cls_bytes=bundle.pickled,
+                    env_metadata_bytes=bundle.metadata.to_json_bytes(),
+                    example_index=index,
+                )
+            )
+        except (RolloutError, RuntimeError) as exc:
+            errors.append(str(exc))
 
     auth_failures = [
-        e.error
-        for e in result.examples
-        if not e.ok and e.error and any(m in e.error for m in _AUTH_MARKERS)
+        error for error in errors if any(marker in error for marker in _AUTH_MARKERS)
     ]
     assert not auth_failures, f"seam-resolved bearer rejected: {auth_failures}"
-    assert any(e.ok for e in result.examples), [e.error for e in result.examples]
+    assert any(outcome.get("success") for outcome in outcomes), errors

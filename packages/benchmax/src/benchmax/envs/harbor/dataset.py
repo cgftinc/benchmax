@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from benchmax.envs.dataset import FrozenDataset
+from benchmax.envs.dataset import Dataset
 from benchmax.envs.harbor._optional import require_harbor
 from benchmax.envs.shared_types import Example
 
@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 __all__ = ["HarborDataset"]
 
 
-class HarborDataset(FrozenDataset[Any]):
-    """Immutable, content-addressed snapshot of one Harbor dataset."""
+class HarborDataset(Dataset[Any]):
+    """Fixed, content-addressed snapshot of one Harbor dataset."""
 
     @classmethod
     async def create(

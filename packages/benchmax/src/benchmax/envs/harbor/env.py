@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["HarborEnv", "HarborTrialError"]
+__all__ = ["HarborEnv"]
 
 _SAFE_TRIAL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DEFAULT_MODAL_APP_NAME = "harbor-benchmax"
@@ -46,11 +46,9 @@ _TERMINATION_REASON_BY_EXCEPTION = {
     "ContextWindowExceededError": "context_exceeded",
     "NonZeroAgentExitCodeError": "harness_error",
     "OutputLengthExceededError": "output_exceeded",
+    "SandboxBuildFailedError": "sandbox_error",
+    "VerifierTimeoutError": "verifier_timeout",
 }
-
-
-class HarborTrialError(RuntimeError):
-    """A Harbor trial failed before producing a trustworthy reward."""
 
 
 class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
@@ -60,19 +58,24 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
     ``eval_ratio`` is used only when ``eval_dataset`` is absent.
     """
 
-    PIP_DEPENDENCIES = ["harbor>=0.18.0,<0.19"]
-
     @property
     def requires_public_model_endpoint(self) -> bool:
         """Use a public model URL when Harbor runs in a remote sandbox."""
 
         return self._requires_public_model_endpoint
 
+    @property
+    def reward_keys(self) -> Sequence[str]:
+        """Return the verifier reward shape declared at construction time."""
+
+        return self._reward_keys
+
     def __init__(
         self,
         *,
         dataset: DatasetConfig,
         trial: HarborTrialTemplate,
+        reward_keys: Sequence[str],
         sandbox_credentials: SandboxCredentials | None = None,
         eval_dataset: DatasetConfig | None = None,
         eval_ratio: float = 0.1,
@@ -94,6 +97,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         )
         self._eval_ratio = float(eval_ratio)
         self._trial = _with_environment_defaults(trial)
+        self._reward_keys = _normalize_reward_keys(reward_keys)
         self._sandbox_credentials = sandbox_credentials
         self._requires_public_model_endpoint = requires_public_model_endpoint
         self._trial_slots = (
@@ -246,13 +250,27 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                 agent.name or agent.import_path,
                 model_name,
             )
-            trial = await Trial.create(trial_config)
-            result = await trial.run()
-            rollout = _rollout_attempt(
-                request.rollout_id,
-                result,
-                trial_dir=Path(trial_config.trials_dir) / request.rollout_id,
-            )
+            try:
+                trial = await Trial.create(trial_config)
+                result = await trial.run()
+            except Exception:
+                logger.exception(
+                    "harbor.rollout.failed rollout_id=%s task=%s",
+                    request.rollout_id,
+                    request.example.id,
+                )
+                rollout = _zero_reward_rollout(
+                    request.rollout_id,
+                    reward_keys=self._reward_keys,
+                    termination_reason="harness_error",
+                )
+            else:
+                rollout = _rollout_attempt(
+                    request.rollout_id,
+                    result,
+                    trial_dir=Path(trial_config.trials_dir) / request.rollout_id,
+                    reward_keys=self._reward_keys,
+                )
             logger.info(
                 "harbor.rollout.done rollout_id=%s termination_reason=%s rewards=%s",
                 request.rollout_id,
@@ -270,8 +288,9 @@ def _rollout_attempt(
     result: TrialResult,
     *,
     trial_dir: Path,
+    reward_keys: Sequence[str],
 ) -> RolloutAttempt:
-    """Accept scored task terminations, but reject infrastructure failures."""
+    """Normalize every completed Harbor trial into a scored rollout attempt."""
 
     verifier_result = result.verifier_result
     rewards = verifier_result.rewards if verifier_result is not None else None
@@ -283,35 +302,89 @@ def _rollout_attempt(
                 f"{result.exception_info.exception_type}: "
                 f"{result.exception_info.exception_message}"
             )
-        raise HarborTrialError(
-            f"Harbor trial {rollout_id!r} produced no trustworthy reward ({detail})"
+        logger.error(
+            "harbor.rollout.zero_reward rollout_id=%s error=%s",
+            rollout_id,
+            detail,
+        )
+        return _zero_reward_rollout(
+            rollout_id,
+            reward_keys=reward_keys,
+            termination_reason=(
+                "verifier_error"
+                if result.exception_info is None
+                else _result_termination_reason(result)
+            ),
         )
 
-    if (
-        result.exception_info is not None
-        and result.exception_info.exception_type not in _TERMINATION_REASON_BY_EXCEPTION
-    ):
-        raise HarborTrialError(
-            f"Harbor trial {rollout_id!r} failed with infrastructure exception "
-            f"{result.exception_info.exception_type}: "
-            f"{result.exception_info.exception_message}"
+    if result.exception_info is not None:
+        logger.error(
+            "harbor.rollout.zero_reward rollout_id=%s error=%s: %s",
+            rollout_id,
+            result.exception_info.exception_type,
+            result.exception_info.exception_message,
+        )
+        return _zero_reward_rollout(
+            rollout_id,
+            reward_keys=reward_keys,
+            termination_reason=_result_termination_reason(result),
         )
 
-    termination_reason = (
-        "finished"
-        if result.exception_info is None
-        else _exception_termination_reason(result.exception_info.exception_type)
-    )
     normalized_rewards = {str(key): float(value) for key, value in rewards.items()}
-    if result.exception_info is None and "partial_credit" not in normalized_rewards:
-        partial_credit = _rewardkit_partial_credit(trial_dir)
-        if partial_credit is not None:
-            normalized_rewards["partial_credit"] = partial_credit
+    if "partial_credit" in reward_keys and "partial_credit" not in normalized_rewards:
+        if result.exception_info is None and "reward" in normalized_rewards:
+            partial_credit = _rewardkit_partial_credit(trial_dir)
+            normalized_rewards["partial_credit"] = (
+                0.0 if partial_credit is None else partial_credit
+            )
+        else:
+            normalized_rewards["partial_credit"] = 0.0
+    return RolloutAttempt(
+        rollout_id=rollout_id,
+        termination_reason=_result_termination_reason(result),
+        rewards=normalized_rewards,
+    )
+
+
+def _zero_reward_rollout(
+    rollout_id: str,
+    *,
+    reward_keys: Sequence[str],
+    termination_reason: str,
+) -> RolloutAttempt:
+    """Keep a failed Harbor rollout in its group without inventing reward signal."""
+
     return RolloutAttempt(
         rollout_id=rollout_id,
         termination_reason=termination_reason,
-        rewards=normalized_rewards,
+        rewards={key: 0.0 for key in reward_keys},
     )
+
+
+def _result_termination_reason(result: TrialResult) -> str:
+    """Use known Harbor terminal states and fall back to existing metadata."""
+
+    if result.exception_info is None:
+        return "finished"
+    return _TERMINATION_REASON_BY_EXCEPTION.get(
+        result.exception_info.exception_type,
+        "harness_error",
+    )
+
+
+def _normalize_reward_keys(reward_keys: Sequence[str]) -> tuple[str, ...]:
+    """Validate Harbor's explicit verifier reward schema eagerly."""
+
+    if isinstance(reward_keys, (str, bytes)) or not isinstance(reward_keys, Sequence):
+        raise TypeError("reward_keys must be a sequence of strings")
+    keys = tuple(reward_keys)
+    if not keys:
+        raise ValueError("reward_keys must declare at least one verifier reward")
+    if any(not isinstance(key, str) or not key.strip() for key in keys):
+        raise ValueError("reward_keys must contain non-empty strings")
+    if len(set(keys)) != len(keys):
+        raise ValueError("reward_keys must not contain duplicates")
+    return keys
 
 
 def _rewardkit_partial_credit(trial_dir: Path) -> float | None:
@@ -358,12 +431,6 @@ def _rewardkit_partial_credit(trial_dir: Path) -> float | None:
     if total_weight <= 0:
         return None
     return earned_credit / total_weight
-
-
-def _exception_termination_reason(exception_type: str) -> str:
-    """Normalize expected Harbor exceptions to Benchmax tracking labels."""
-
-    return _TERMINATION_REASON_BY_EXCEPTION[exception_type]
 
 
 def _openai_model_name(model: str) -> str:

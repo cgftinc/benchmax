@@ -11,7 +11,7 @@ import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx
 
@@ -29,12 +29,6 @@ from .exceptions import (
 )
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from types import ModuleType
-
-    from benchmax.envs.environment import Environment
-    from benchmax.envs.shared_types import RolloutAttempt
 
 
 @dataclass(frozen=True)
@@ -56,53 +50,6 @@ class LaunchArgSpec:
     # tuple (not list) so the frozen dataclass actually stays immutable —
     # list would still be mutable in place.
     enum: tuple[str, ...] | None = None
-
-
-@dataclass(frozen=True)
-class ExampleValidation:
-    """Per-example outcome from RolloutClient.validate_examples.
-
-    ``rewards`` carries the rollout's final reward components — the per-rollout
-    final rewards for a per-example entry, and the **mean** of the group
-    rollouts' final rewards for the group entry (index ``-1``). None when the
-    rollout failed or the server reported no reward values. Surfacing these is
-    what lets ``python main.py validate`` show numbers, not just pass/fail.
-    """
-
-    index: int
-    ok: bool
-    error: str | None = None
-    rewards: dict[str, float] | None = None
-    # Full streamed transcript for this rollout when the caller asked for it
-    # (full_messages=True); None otherwise. Lets script-owned validation tooling
-    # surface real completions for a reward audit, not just scores.
-    messages: list[dict[str, Any]] | None = None
-
-
-@dataclass(frozen=True)
-class ValidationResult:
-    """Aggregate result from RolloutClient.validate_examples.
-
-    Bool-castable: ``if not validate_examples(...)`` keeps working for the
-    common "did everything pass" pattern. The ``examples`` field exposes
-    per-example detail for richer reporting.
-    """
-
-    examples: list[ExampleValidation]
-    # Outcome of the compute_group_reward contract check, run on the real
-    # smoke-rollout transcripts. None when the env has no group reward, the
-    # env class wasn't supplied, or the check was skipped (deps not installed
-    # locally — it runs on the trainer instead). Its index is -1.
-    group_reward: ExampleValidation | None = None
-
-    @property
-    def ok(self) -> bool:
-        rollouts_ok = all(ex.ok for ex in self.examples)
-        group_ok = self.group_reward is None or self.group_reward.ok
-        return rollouts_ok and group_ok
-
-    def __bool__(self) -> bool:
-        return self.ok
 
 
 # MIME type mappings for common file extensions
@@ -130,35 +77,6 @@ def _get_mime_type(path: Path) -> str:
 def _file_hash(content: bytes, length: int = 8) -> str:
     """Compute a short hash of file content."""
     return hashlib.sha256(content).hexdigest()[:length]
-
-
-def _mean_rewards(reward_dicts: list[Any]) -> dict[str, float] | None:
-    """Mean of each reward component across rollouts. None if no numeric values.
-
-    Bools are excluded (``bool`` is an ``int`` subclass but not a reward).
-    """
-    sums: dict[str, float] = {}
-    counts: dict[str, int] = {}
-    for rewards in reward_dicts:
-        if not isinstance(rewards, dict):
-            continue
-        for key, value in rewards.items():
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                sums[key] = sums.get(key, 0.0) + float(value)
-                counts[key] = counts.get(key, 0) + 1
-    if not counts:
-        return None
-    return {key: sums[key] / counts[key] for key in sums}
-
-
-def _has_group_reward(env_class: type[Any]) -> bool:
-    """Return whether an environment exposes a group reward hook.
-
-    This is kept beside the legacy remote rollout client while hosted validation
-    is deferred; the public validation API no longer depends on this path.
-    """
-
-    return callable(getattr(env_class, "compute_group_reward", None))
 
 
 def _rollout_list(payload: Any) -> list[dict[str, Any]]:
@@ -443,8 +361,8 @@ class TrainerClient:
         self,
         env_cls_path: str,
         env_metadata_path: str,
-        train_dataset_path: str,
-        eval_dataset_path: str,
+        train_dataset_path: str | None = None,
+        eval_dataset_path: str | None = None,
         name: str | None = None,
         launcher_args: dict[str, Any] | None = None,
     ) -> str:
@@ -453,12 +371,14 @@ class TrainerClient:
         Args:
             env_cls_path: Path to the environment class pickle (.pkl file)
             env_metadata_path: Path to the environment metadata JSON file
-            train_dataset_path: Path to the training dataset
-            eval_dataset_path: Path to the evaluation dataset
+            train_dataset_path: Optional path to an uploaded training dataset.
+                Omit it when the environment resolves training data at runtime.
+            eval_dataset_path: Optional path to an uploaded evaluation dataset.
+                Omit it when the environment resolves evaluation data at runtime.
             name: Optional name for the training run
             launcher_args: Extra launcher args forwarded to the server
-                (e.g. {"max_rollout_len": 4000}). The 4 required paths
-                above always take precedence.
+                (e.g. {"max_rollout_len": 4000}). Bundle and optional dataset
+                path parameters always take precedence over this mapping.
         Returns:
             The training run ID.
 
@@ -466,13 +386,27 @@ class TrainerClient:
             AuthenticationError: If API key is invalid
             JobLaunchError: If training run launch fails
         """
-        args: dict[str, Any] = {
-            **(launcher_args or {}),
-            "env_cls_path": env_cls_path,
-            "env_metadata_path": env_metadata_path,
-            "train_dataset_path": train_dataset_path,
-            "eval_dataset_path": eval_dataset_path,
+        reserved_paths = {
+            "env_cls_path",
+            "env_metadata_path",
+            "train_dataset_path",
+            "eval_dataset_path",
         }
+        args: dict[str, Any] = {
+            key: value
+            for key, value in (launcher_args or {}).items()
+            if key not in reserved_paths
+        }
+        args.update(
+            {
+                "env_cls_path": env_cls_path,
+                "env_metadata_path": env_metadata_path,
+            }
+        )
+        if train_dataset_path is not None:
+            args["train_dataset_path"] = train_dataset_path
+        if eval_dataset_path is not None:
+            args["eval_dataset_path"] = eval_dataset_path
         body: dict[str, Any] = {
             "name": name,
             "args": args,
@@ -709,7 +643,7 @@ class TrainerClient:
 # Resolving once at import froze RolloutClient on the first-seen URL while
 # StorageClient/TrainerClient picked up env changes at construction time —
 # tests for one client could pass while the other silently hit prod.
-_VALIDATION_MODEL = "gpt-5.4-nano"
+_DEFAULT_ROLLOUT_MODEL = "gpt-5.4-nano"
 
 # ANSI colours
 _GREEN = "\033[32m"
@@ -1036,7 +970,7 @@ class RolloutClient:
         env_metadata_bytes: bytes | None = None,
         example_index: int = 0,
         llm_base_url: str | None = None,
-        llm_model: str = _VALIDATION_MODEL,
+        llm_model: str = _DEFAULT_ROLLOUT_MODEL,
         llm_api_key: str = "",
         llm_api_version: str = "",
         max_turns: int = 4,
@@ -1200,243 +1134,6 @@ class RolloutClient:
 
         return final
 
-    def validate_examples(
-        self,
-        examples: list[dict[str, Any]],
-        env_cls_path: str | None = None,
-        env_metadata_path: str | None = None,
-        n: int = 2,
-        *,
-        env_class: type[Environment[Any, RolloutAttempt]] | None = None,
-        constructor_args: dict[str, Any] | None = None,
-        pip_dependencies: list[str] | None = None,
-        local_modules: list[ModuleType] | None = None,
-        env_cls_bytes: bytes | None = None,
-        env_metadata_bytes: bytes | None = None,
-        llm_base_url: str | None = None,
-        llm_api_key: str = "",
-        llm_model: str = _VALIDATION_MODEL,
-        max_turns: int = 4,
-        max_tool_calls: int = 8,
-        check_group_reward: bool = True,
-        group_reward_samples: int = 2,
-        verbose: bool = True,
-        full_messages: bool = False,
-    ) -> ValidationResult:
-        """Run rollouts on the first *n* examples and report pass/fail.
-
-        The environment can be specified three ways (mutually exclusive): an
-        **env class** (bundled to bytes here, so validation needs no prior
-        upload — preferred for a pre-launch smoke test), **blob paths** to an
-        already-uploaded env, or **raw bytes** (see class docstring).
-
-        Args:
-            examples:           Full dataset (list of raw dicts).
-            env_cls_path:       Blob path to the uploaded env .pkl file.
-            env_metadata_path:  Blob path to the uploaded env-meta .json file.
-            n:                  Number of examples to validate (default 2).
-            env_class:          Environment implementation to bundle and validate without
-                                uploading. Mutually exclusive with paths/bytes.
-            constructor_args:   kwargs baked into the env bundle (env_class only).
-            pip_dependencies:   Pip deps recorded in the bundle (env_class only).
-            local_modules:      Modules to pickle by-value (env_class only; for
-                                envs that import from local .py files).
-            env_cls_bytes:      Raw bytes of the pickled env class (will be base64-encoded).
-            env_metadata_bytes: Raw bytes of the env metadata JSON (will be base64-encoded).
-            llm_base_url:       Base URL for the rollout's LLM leg. Defaults to
-                                ``config.llm_url()``. Pass explicitly when the
-                                script's environment differs from the SDK default
-                                (otherwise the rollout LLM silently hits the
-                                default-domain host — see stream_rollout).
-            llm_api_key:        API key for the LLM leg. Required when
-                                ``llm_base_url`` points outside the platform LLM
-                                endpoint (stream_rollout refuses to forward the
-                                platform key to a third-party host).
-            check_group_reward: After the rollouts, run a REAL same-example
-                                group through rollout-service (one example,
-                                samples_per_example=N) so the env's
-                                ``compute_group_reward`` executes server-side in
-                                the trainer image, over co-located siblings —
-                                the trainer/external-eval path. A server-side
-                                failure (raise or contract violation) comes back
-                                as ``group_reward_error`` and fails validation.
-                                Only fires when ``env_class`` is given and the
-                                env overrides the method.
-            group_reward_samples: Size of that group (the batch's
-                                ``samples_per_example``). Costs this many extra
-                                rollouts; ignored unless the group check runs.
-            verbose:            Print colored progress to stdout (default True for
-                                interactive/notebook UX). Set False for programmatic
-                                callers that consume the returned ValidationResult.
-
-        Returns:
-            ValidationResult — bool-castable (``if not result``) for the common
-            "did everything pass" check, with per-example detail in
-            ``result.examples`` for richer reporting.
-        """
-        # An env class is bundled to bytes here so validation can run a smoke
-        # test BEFORE uploading anything (the launch flow uploads only after
-        # validation passes). Mutually exclusive with explicit paths/bytes.
-        if env_class is not None:
-            if any(
-                (env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes)
-            ):
-                raise ValueError(
-                    "Provide env_class OR explicit env paths/bytes, not both."
-                )
-            from benchmax.bundle import dump_bundle
-
-            bundle = dump_bundle(
-                env_class,
-                constructor_args=constructor_args,
-                pip_dependencies=pip_dependencies,
-                local_modules=local_modules,
-            )
-            env_cls_bytes = bundle.pickled
-            env_metadata_bytes = bundle.metadata.to_json_bytes()
-
-        # Validate env args early so we fail before running any rollouts.
-        self._build_env(
-            env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes
-        )
-
-        # compute_group_reward runs on a whole rollout GROUP, which the
-        # per-example smoke above never forms (each is a group of 1). Run a real
-        # same-example group server-side (run_group, below) so the env method
-        # executes on the trainer's path; the server reports any failure as
-        # group_reward_error. Needs the env_class, and is pointless unless the
-        # env overrides the no-op default.
-        want_group = False
-        if check_group_reward and env_class is not None:
-            want_group = _has_group_reward(env_class)
-
-        sample = examples[:n]
-        if verbose:
-            print(
-                _hdr(
-                    f"── Remote validation: {len(sample)} example(s) on {llm_model} ──"
-                )
-            )
-
-        per_example: list[ExampleValidation] = []
-        # A transient worker/sandbox error (e.g. a missing worker_args.json at
-        # setup) is infra flake, not an env bug — retry the rollout once before
-        # recording a failure, so one flake doesn't fail the whole validate.
-        worker_retries = 1
-        for i, example in enumerate(sample):
-            if verbose:
-                print(_info(f"\n  Example {i} — {json.dumps(example)[:120]}"))
-            try:
-                rollout_kwargs: dict[str, Any] = dict(
-                    raw_example=example,
-                    env_cls_path=env_cls_path,
-                    env_metadata_path=env_metadata_path,
-                    env_cls_bytes=env_cls_bytes,
-                    env_metadata_bytes=env_metadata_bytes,
-                    example_index=i,
-                    llm_base_url=llm_base_url,
-                    llm_api_key=llm_api_key,
-                    llm_model=llm_model,
-                    max_turns=max_turns,
-                    max_tool_calls=max_tool_calls,
-                    capture_messages=full_messages,
-                    full_messages=full_messages,
-                )
-                final = self.stream_rollout(**rollout_kwargs)
-                for _ in range(worker_retries):
-                    if final.get("event") != "worker_error":
-                        break
-                    if verbose:
-                        print(
-                            _info(
-                                f"  Example {i}: transient worker error — retrying once"
-                            )
-                        )
-                    final = self.stream_rollout(**rollout_kwargs)
-                ok = bool(final.get("success"))
-                per_example.append(
-                    ExampleValidation(
-                        index=i,
-                        ok=ok,
-                        error=None
-                        if ok
-                        else (final.get("error") or "rollout reported success=False"),
-                        # Surface the per-rollout reward components (dropped here
-                        # before — they're what `python main.py validate` displays).
-                        rewards=final.get("rewards"),
-                        # Captured only when full_messages=True (capture_messages
-                        # above); lets --json carry the real transcript for audit.
-                        messages=final.get("messages"),
-                    )
-                )
-            except (RolloutError, RuntimeError) as exc:
-                if verbose:
-                    print(_err(f"  Example {i} failed: {exc}"))
-                per_example.append(ExampleValidation(index=i, ok=False, error=str(exc)))
-
-        group_reward: ExampleValidation | None = None
-        if want_group and sample and group_reward_samples >= 1:
-            # Faithful check: run a REAL same-example group through
-            # rollout-service (one example, samples_per_example=N) so the env's
-            # compute_group_reward runs server-side in the trainer image, over
-            # co-located siblings — exactly the trainer/external-eval path. A
-            # server-side failure comes back as group_reward_error per rollout.
-            if verbose:
-                print(
-                    _info(
-                        f"\n  Group reward — {group_reward_samples} server-side "
-                        "sibling(s) of example 0"
-                    )
-                )
-            try:
-                events = self.run_group(
-                    sample[0],
-                    samples=group_reward_samples,
-                    env_cls_path=env_cls_path,
-                    env_metadata_path=env_metadata_path,
-                    env_cls_bytes=env_cls_bytes,
-                    env_metadata_bytes=env_metadata_bytes,
-                    llm_base_url=llm_base_url,
-                    llm_api_key=llm_api_key,
-                    llm_model=llm_model,
-                    max_turns=max_turns,
-                    max_tool_calls=max_tool_calls,
-                    verbose=verbose,
-                )
-                group_reward = self._assess_group_events(
-                    events, group_reward_samples, verbose
-                )
-            except RolloutNotFound:
-                # The batch proxy (/v1/rollout/batch/stream) isn't deployed on
-                # this server yet — skip rather than fail, so the SDK can land
-                # ahead of platform-service. group_reward stays None; the offline
-                # local check still covered shape.
-                if verbose:
-                    print(
-                        _info(
-                            "  compute_group_reward: skipped — server has no "
-                            "/rollout/batch/stream yet"
-                        )
-                    )
-            except (RolloutError, RuntimeError) as exc:
-                if verbose:
-                    print(_err(f"  group reward check failed: {exc}"))
-                group_reward = ExampleValidation(index=-1, ok=False, error=str(exc))
-
-        result = ValidationResult(examples=per_example, group_reward=group_reward)
-        if verbose:
-            print()
-            if result.ok:
-                print(_ok("Remote validation passed"))
-            else:
-                print(
-                    _err(
-                        "Remote validation failed — check output above before launching a full job"
-                    )
-                )
-
-        return result
-
     def run_group(
         self,
         example: dict[str, Any],
@@ -1448,20 +1145,20 @@ class RolloutClient:
         env_metadata_bytes: bytes | None = None,
         llm_base_url: str | None = None,
         llm_api_key: str = "",
-        llm_model: str = _VALIDATION_MODEL,
+        llm_model: str = _DEFAULT_ROLLOUT_MODEL,
         max_turns: int = 4,
         max_tool_calls: int = 8,
         verbose: bool = True,
     ) -> list[dict[str, Any]]:
-        """Run ONE example as a real ``samples``-member group; return its
-        ``rollout_completed`` events.
+        """Run one example through rollout-service's legacy batch-group API.
 
         Submits a one-row batch with ``samples_per_example=samples`` to
-        ``/v1/rollout/batch/stream``. rollout-service co-locates the siblings on
-        one worker and runs ``env.compute_group_reward`` over them — the same
-        path the trainer/external-eval use, in the trainer image. Each event
-        carries ``success``, ``rewards`` and (on a server new enough to report
-        it) ``group_reward_error``. Raises the same typed errors as
+        ``/v1/rollout/batch/stream`` and returns its ``rollout_completed``
+        events. This lower-level client is retained for RAG preparation flows;
+        it is not Castform environment validation and does not implement the new
+        BenchMax ``Environment.run_group`` contract. Each event carries
+        ``success``, ``rewards`` and, on a compatible server,
+        ``group_reward_error``. Raises the same typed errors as
         ``stream_rollout`` on a non-200.
         """
         env = self._build_env(
@@ -1489,9 +1186,8 @@ class RolloutClient:
         payload = {
             "dataset_bytes": base64.b64encode(json.dumps(example).encode()).decode(),
             "is_dataset_standardized": False,
-            # One example → one group; compute_group_reward needs all siblings
-            # co-located on a single worker anyway. Pin to 1 so rollout-service
-            # doesn't spin up extra workers that get an empty partition and crash.
+            # One example maps to one legacy server group. Pin to 1 so the
+            # service does not start workers with empty partitions.
             "concurrent_workers": 1,
             "env": env,
             "llm": {
@@ -1538,9 +1234,9 @@ class RolloutClient:
                     completed.append(event)
                 elif etype == "worker_error":
                     # A sandbox process crashed. Non-fatal to the group on its
-                    # own — the verdict comes from the rollout_completed events
-                    # (_assess_group_events fails if none succeeded). Surfaced
-                    # for visibility, not raised.
+                    # own: callers receive the completed sibling events and can
+                    # decide how to treat an incomplete group. Surface it for
+                    # visibility without discarding those outcomes.
                     if verbose:
                         print(_err(f"  worker_error: {str(event.get('error'))[:200]}"))
                 elif etype == "error":
@@ -1548,58 +1244,3 @@ class RolloutClient:
                 elif etype in ("batch_completed", "cancelled"):
                     break
         return completed
-
-    def _assess_group_events(
-        self,
-        events: list[dict[str, Any]],
-        samples: int,
-        verbose: bool,
-    ) -> ExampleValidation:
-        """Turn a group's ``rollout_completed`` events into a pass/fail verdict.
-
-        Fails when the server reported a ``group_reward_error`` for any sibling
-        — compute_group_reward raised or violated its contract (see
-        rollout-service's ``_compute_group_rewards_safe``). Also fails if every
-        group rollout failed (nothing to assess). Index -1.
-
-        Note: a server that predates ``group_reward_error`` can't report a
-        failure, so a green verdict there means "no failure observed", not
-        "verified" — the offline local check still covers shape regardless.
-        """
-        errors = [
-            e["group_reward_error"] for e in events if e.get("group_reward_error")
-        ]
-        if errors:
-            msg = str(errors[0])
-            if verbose:
-                print(_err(f"  compute_group_reward FAILED server-side: {msg}"))
-            return ExampleValidation(index=-1, ok=False, error=msg)
-
-        succeeded = [e for e in events if e.get("success")]
-        if not succeeded:
-            first = next(
-                (e.get("error") for e in events if e.get("error")),
-                "no successful group rollouts",
-            )
-            if verbose:
-                print(
-                    _err(
-                        "  group reward not validated — all group rollouts "
-                        f"failed: {first}"
-                    )
-                )
-            return ExampleValidation(
-                index=-1, ok=False, error=f"all group rollouts failed: {first}"
-            )
-
-        # Mean of the succeeded siblings' final rewards — the numbers the group
-        # path computed and used to discard before.
-        mean = _mean_rewards([e.get("rewards") for e in succeeded])
-        if verbose:
-            print(
-                _ok(
-                    "  compute_group_reward OK server-side on a group of "
-                    f"{len(succeeded)}"
-                )
-            )
-        return ExampleValidation(index=-1, ok=True, rewards=mean)

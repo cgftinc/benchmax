@@ -46,6 +46,75 @@ async def test_validation_runs_one_local_group_of_exactly_two() -> None:
     assert {request.example.id for request in env.groups[0]} == {"example-1"}
 
 
+@pytest.mark.parametrize(
+    "termination_reasons, expected_ok",
+    [
+        (("finished", "finished"), True),
+        (("finished", "harness_error"), False),
+        (("context_exceeded", "finished"), False),
+    ],
+)
+async def test_validation_requires_every_outcome_to_finish(
+    termination_reasons: tuple[str, str],
+    expected_ok: bool,
+) -> None:
+    class TerminatingEnvironment(RecordingEnvironment):
+        async def run_group(self, requests):
+            group = list(requests)
+            self.groups.append(group)
+            return {
+                request.rollout_id: RolloutOutcome(
+                    # A finished zero is valid; termination state, not score,
+                    # determines whether the environment executed correctly.
+                    rewards={"score": 0.0},
+                    termination_reason=termination_reasons[index],
+                )
+                for index, request in enumerate(group)
+            }
+
+    report = await validate_environment(
+        TerminatingEnvironment(),
+        example=Example(id="example-1", payload={}),
+        model="test-model",
+        base_url="https://model.example/v1",
+        model_auth=StaticBearerAuth("test-token"),
+    )
+
+    assert report.ok is expected_ok
+    assert bool(report) is expected_ok
+
+
+@pytest.mark.parametrize(
+    "returned_ids",
+    [
+        ("validate-0",),
+        ("validate-0", "validate-1", "validate-2"),
+        ("wrong-0", "wrong-1"),
+    ],
+)
+async def test_validation_rejects_missing_extra_or_replaced_rollout_ids(
+    returned_ids: tuple[str, ...],
+) -> None:
+    class WrongIdsEnvironment(RecordingEnvironment):
+        async def run_group(self, requests):
+            return {
+                rollout_id: RolloutOutcome(
+                    rewards={"score": 1.0},
+                    termination_reason="finished",
+                )
+                for rollout_id in returned_ids
+            }
+
+    with pytest.raises(ValueError, match="unexpected rollout IDs"):
+        await validate_environment(
+            WrongIdsEnvironment(),
+            example=Example(id="example-1", payload={}),
+            model="test-model",
+            base_url="https://model.example/v1",
+            model_auth=StaticBearerAuth("test-token"),
+        )
+
+
 async def test_validation_binds_rollout_auth_for_injected_judges() -> None:
     class JudgeEnvironment(RecordingEnvironment):
         async def run_group(self, requests):
@@ -72,10 +141,12 @@ async def test_validation_binds_rollout_auth_for_injected_judges() -> None:
     assert env.judge_headers == {"Authorization": "Bearer validation-token"}
 
 
-async def test_remote_request_runs_local_first_then_stops_at_deferred_boundary() -> None:
+async def test_remote_request_runs_local_first_then_stops_at_deferred_boundary() -> (
+    None
+):
     env = RecordingEnvironment()
 
-    with pytest.raises(RemoteValidationUnavailable, match="Local validation passed"):
+    with pytest.raises(RemoteValidationUnavailable, match="Local validation completed"):
         await validate_environment(
             env,
             example=Example(id="example-1", payload={}),
@@ -93,7 +164,9 @@ async def test_castform_auth_resolves_the_session_for_each_model_call(
     monkeypatch,
 ) -> None:
     tokens = iter(("token-1", "token-2"))
-    monkeypatch.setattr("castform.model_auth.config.llm_url", lambda: "https://llm.test/v1")
+    monkeypatch.setattr(
+        "castform.model_auth.config.llm_url", lambda: "https://llm.test/v1"
+    )
     monkeypatch.setattr("castform.model_auth.platform_bearer", lambda: next(tokens))
     context = ModelRequestContext(
         base_url="https://llm.test/v1",
@@ -110,8 +183,59 @@ async def test_castform_auth_resolves_the_session_for_each_model_call(
     }
 
 
+async def test_default_validation_auth_resolves_per_call_for_rollout_and_judge(
+    monkeypatch,
+) -> None:
+    tokens = iter(("rollout-0", "rollout-1", "judge"))
+    monkeypatch.setattr(
+        "castform.validation.config.llm_url", lambda: "https://llm.test/v1"
+    )
+    monkeypatch.setattr(
+        "castform.model_auth.config.llm_url", lambda: "https://llm.test/v1"
+    )
+    monkeypatch.setattr("castform.model_auth.platform_bearer", lambda: next(tokens))
+
+    class AuthEnvironment(RecordingEnvironment):
+        async def run_group(self, requests):
+            group = list(requests)
+            self.rollout_headers = []
+            for request in group:
+                self.rollout_headers.append(
+                    await request.model_auth.headers_for_request(
+                        ModelRequestContext(
+                            base_url=request.base_url,
+                            model=request.model,
+                            rollout_id=request.rollout_id,
+                        )
+                    )
+                )
+            self.judge_headers = await InjectedAuth("judge").headers_for_request(
+                ModelRequestContext(
+                    base_url=group[0].base_url,
+                    model="judge-model",
+                    rollout_id=group[0].rollout_id,
+                )
+            )
+            return await super().run_group(group)
+
+    env = AuthEnvironment()
+    await validate_environment(
+        env,
+        example=Example(id="example-1", payload={}),
+        model="test-model",
+    )
+
+    assert env.rollout_headers == [
+        {"Authorization": "Bearer rollout-0"},
+        {"Authorization": "Bearer rollout-1"},
+    ]
+    assert env.judge_headers == {"Authorization": "Bearer judge"}
+
+
 async def test_castform_auth_refuses_a_third_party_endpoint(monkeypatch) -> None:
-    monkeypatch.setattr("castform.model_auth.config.llm_url", lambda: "https://llm.test/v1")
+    monkeypatch.setattr(
+        "castform.model_auth.config.llm_url", lambda: "https://llm.test/v1"
+    )
     context = ModelRequestContext(
         base_url="https://api.openai.com/v1",
         model="test-model",

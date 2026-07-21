@@ -19,11 +19,34 @@ from .browser import maybe_open_browser
 from .device_auth import poll_for_token, request_device_code
 
 
-def _login() -> None:
-    """Run the device flow and cache the session. Raises DeviceAuthError on failure."""
-    from castform import config
+def _login(
+    *,
+    profile: str | None = None,
+    domain: str | None = None,
+    platform_url: str | None = None,
+    llm_url: str | None = None,
+    auth_url: str | None = None,
+    app_url: str | None = None,
+) -> str:
+    """Run device login for one profile and return its name."""
+    from castform import config, profile_config
 
-    auth = config.auth_url()
+    selected = profile_config.selected_profile_name(profile)
+    if any((domain, platform_url, llm_url, auth_url, app_url)):
+        profile_config.upsert_profile(
+            selected,
+            domain=domain,
+            platform_url=platform_url,
+            llm_url=llm_url,
+            auth_url=auth_url,
+            app_url=app_url,
+        )
+    elif profile_config.get_profile(selected) is None:
+        raise RuntimeError(
+            f"Profile {selected!r} is not configured. Pass --domain or explicit service URLs."
+        )
+
+    auth = config.auth_url(selected)
     dc = request_device_code(auth)
     verification = dc.get("verification_uri_complete") or dc["verification_uri"]
     print(f"\nTo sign in, open this URL in your browser:\n\n    {verification}\n")
@@ -43,7 +66,8 @@ def _login() -> None:
         session["refresh_token"] = tok["refresh_token"]
     if tok.get("expires_in"):
         session["expires_at"] = int(time.time()) + int(tok["expires_in"])
-    credentials.write_castform_session(session)
+    credentials.write_castform_session(session, selected, auth_url=auth)
+    return selected
 
 
 def ensure_session(*, interactive: bool | None = None) -> None:

@@ -5,7 +5,7 @@ end — a 401 has to surface as a genuine ``openai.AuthenticationError`` for the
 retry-with-reconstruction to trigger. Unlike the other integration tests it does
 NOT hit a live API: it stands up a local OpenAI-compatible stub server, the only
 way to script a deterministic ``401 -> fresh-token -> 200`` transition. No
-credentials required (the token is supplied via ``token_provider``).
+credentials required (the test supplies a rotating runtime auth provider).
 
 Run: uv run pytest tests/integration/test_rubric_auth_retry.py -v -m integration
 """
@@ -18,7 +18,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from benchmax.rubrics.rubric import Rubric, evaluate_single_rubric
+from benchmax.auth import ModelRequestContext
+from benchmax.rewards import Judge, JudgeError, Rubric, evaluate_single_rubric
 
 _VALID_TOKEN = "fresh-token"
 
@@ -98,38 +99,48 @@ def _rubric() -> Rubric:
     return Rubric(title="T", description="D")
 
 
+class _RotatingAuth:
+    def __init__(self, tokens):
+        self._tokens = iter(tokens)
+
+    async def headers_for_request(self, context: ModelRequestContext):
+        del context
+        return {"Authorization": f"Bearer {next(self._tokens)}"}
+
+
 @pytest.mark.integration
 async def test_auth_retry_refreshes_token_in_loop(stub_server):
     base_url, state = stub_server
     # Attempt 1 hands the server a stale token (401); the rebuilt client picks up
-    # a fresh token from token_provider and attempt 2 succeeds.
-    tokens = iter(["stale-token", _VALID_TOKEN])
+    # a fresh token from the provider and attempt 2 succeeds.
+    judge = Judge(
+        model="stub",
+        base_url=base_url,
+        auth=_RotatingAuth(["stale-token", _VALID_TOKEN]),
+    )
     result = await evaluate_single_rubric(
         rubric=_rubric(),
         question="q",
         response="r",
-        model_name="stub",
-        base_url=base_url,
-        token_provider=lambda: next(tokens),
+        judge=judge,
     )
-    assert result["score"] == 1
-    assert "error" not in result  # success path carries no error keys
+    assert result.score == 1
     assert state["requests"] == ["Bearer stale-token", f"Bearer {_VALID_TOKEN}"]
 
 
 @pytest.mark.integration
-async def test_persistent_401_surfaces_error_keys(stub_server):
+async def test_persistent_401_raises_judge_error(stub_server):
     base_url, state = stub_server
-    result = await evaluate_single_rubric(
-        rubric=_rubric(),
-        question="q",
-        response="r",
-        model_name="stub",
-        base_url=base_url,
-        token_provider=lambda: "always-stale",
-    )
-    assert result["score"] == 0
-    assert result["error_type"] in ("AuthenticationError", "PermissionDeniedError")
-    assert "Error:" in result["reasoning"]
+    with pytest.raises(JudgeError, match="401"):
+        await evaluate_single_rubric(
+            rubric=_rubric(),
+            question="q",
+            response="r",
+            judge=Judge(
+                model="stub",
+                base_url=base_url,
+                auth=_RotatingAuth(["always-stale"] * 3),
+            ),
+        )
     # 1 initial + 2 rebuild-and-retry attempts, all 401.
     assert len(state["requests"]) == 3

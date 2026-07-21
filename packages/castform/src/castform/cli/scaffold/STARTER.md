@@ -1,98 +1,81 @@
 # Get started
 
-`castform setup` scaffolded the project guide, agent skills, a runnable seed
-`main.py`, and tiny seed datasets. Tailor the seed, validate cheaply, then decide
-whether to iterate or launch.
-
-**Every castform run is the same four steps:**
+`castform setup` created a standalone Python 3.12 project. The project script,
+not the CLI, owns the reproducible training workflow:
 
 ```bash
-castform setup        # 1. scaffold agent skills + project guides
-castform data …       # 2. data — write your own jsonl, or generate (rag/traces)
-python main.py validate     # 3. validate the env — baseline on real rollouts, cheap, no GPU
-castform launch       # 4. launch — train on GPUs (spends credits)
+uv sync
+uv run python main.py data       # prepare or refresh project data
+uv run python main.py validate   # one local group with two siblings; no GPU
+uv run python main.py launch     # validate, confirm cost, upload and launch
 ```
 
-Step 2 is where the data comes from:
+Bare `uv run python main.py` runs data preparation followed by validation and
+then stops. A launch is always a separate, confirmed action.
 
-```bash
-castform data upload mydata.jsonl                             # provide your own jsonl
-castform corpus ingest ./docs && castform data qa-gen --fast # generate (rag)
-castform data traces --project my-agent                       # generate (traces)
-```
+## Work with your agent
 
-Validate first (cheap, real rollouts, no GPU):
+Point your coding agent at the real task and ask it to load the matching skill in
+`.claude/skills/` before each stage.
 
-```
-python main.py validate
-```
-
-Then point your coding agent (Claude Code / Codex) at your real task. Pick the
-variant that matches your goal, replace the `<…>` placeholder, and paste it in.
-The agent should load the matching skill in `.claude/skills/` before each stage,
-especially `verify-environment` before every `python main.py validate`.
-
-## Paste one of these into your agent
-
-**Your own task** (fully wired end-to-end today):
+**General environment:**
 
 ```
-i want to start a training run to improve a model on <your task>. create a
-reasonable environment with relevant tools, generate a small synthetic dataset,
-run a baseline eval, review the results, and propose next steps to either
-iterate or launch.
+Build a Castform environment for <task>. Start with a small representative train
+and eval set, define an explicit reward shape, validate two sibling rollouts, and
+show me the result before proposing a launch.
 ```
 
-**RAG over your corpus:**
+**RAG environment:**
 
 ```
-i want to start a training run to improve a model on retrieval-augmented
-answering over my own corpus. connect <your corpus or data source>, create a rag
-environment with retrieval tools, generate a small synthetic dataset of
-questions and grounded answers, run a baseline eval, review the results, and
-propose next steps to either iterate or launch.
+Build a Castform search environment over <corpus>. Keep corpus preparation in the
+data stage, test retrieval and reward behavior locally, and show me validation
+results before proposing a launch.
 ```
 
-**From your agent's production traces:**
+Use these skills in order:
 
-```
-i want to start a training run to improve a model on my own agent's tasks using
-my production traces. ingest <your exported traces>, create an environment with
-the relevant tools, build a small eval set from the traces, run a baseline eval
-against my current model, review the results, and propose next steps to either
-iterate or launch.
-```
+| Stage | Skill |
+|---|---|
+| environment and rewards | `design-environment` |
+| data preparation or references | `generate-data` |
+| local group validation | `verify-environment` |
+| explicit GPU launch | `launch-run` |
+| monitoring and diagnosis | `view-progress` |
 
-> **Generic, RAG, and traces all run end-to-end on today's CLI** — the four-step
-> path is identical; only the **data** step differs. RAG: `corpus ingest` →
-> `data qa-gen` (local) or `data qa-gen --provider` (a vector DB). Traces:
-> `data traces` pulls and shapes Braintrust traces. See **generate-data**.
+## A green baseline
 
-## The milestone: a green baseline
+A green baseline means both validation siblings finished, returned the declared
+reward keys, and produced believable task-specific scores. A zero score can be a
+valid completed result. An operational failure instead has a non-`finished`
+`termination_reason`, the same reward keys all set to zero, and a corresponding
+log entry.
 
-When `python main.py validate` passes on your env with sane, **varying** rewards,
-you've hit a **green baseline**. That's the decision point — the agent should
-stop and ask:
+After a green baseline, decide deliberately:
 
-> **Baseline is green — iterate or launch?**
-> - *Iterate* — improve the reward / data / env and re-validate (still no GPU).
-> - *Launch* — `castform launch` to train on GPUs (this spends credits).
+- iterate on the environment, data or reward and validate again; or
+- inspect the bundle dependencies and run `uv run python main.py launch`.
 
-## Quick commands
+The seed script uploads its JSONL splits. If the environment instead resolves a
+split at runtime—through Harbor, Git, or another provider—omit that split from
+`upload_training_run`. Use `None`/omission for no upload; `[]` uploads an empty
+JSONL deliberately.
 
-| Do | Command |
-|----|---------|
-| Sign in | `castform login` |
-| Verify env + see rewards (no GPU) | `python main.py validate` |
-| See accepted launch args | `castform launch --list-args` |
-| Launch a run (GPU) | `castform launch --set model=Qwen/Qwen3.5-4B` |
-| Status / progress | `castform runs status <id>` |
-| Reward curves | `castform runs scalars <id> --mode eval --json` |
-| Env/error logs | `castform runs logs <id>` |
-| Stop a run | `castform stop <id>` |
-| Upload a dataset file | `castform data upload <file>` |
+## Useful CLI commands
 
-`runs logs` is for environment and error logs; answer transcripts and
-per-component reward details live in stored rollouts today, so use the
-**view-progress** skill when a run's eval curve needs real answer-quality
-debugging.
+| Task | Command |
+|---|---|
+| sign in | `castform login` |
+| scaffold a project | `castform setup` |
+| check local/platform setup | `castform doctor` |
+| show this workflow | `castform guide` |
+| list runs | `castform runs list` |
+| inspect status | `castform runs status <run-id>` |
+| inspect a rollout | `castform runs rollout <run-id> <rollout-id>` |
+| inspect logs | `castform runs logs <run-id>` |
+| cancel a run | `castform stop <run-id>` |
+
+Data and corpus workflows are ordinary Python library calls in `main.py` or a
+separate project script. Launching is likewise script-owned; there is no parallel
+CLI orchestration path.

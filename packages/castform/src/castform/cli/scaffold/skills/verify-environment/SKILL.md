@@ -1,43 +1,53 @@
 ---
 name: verify-environment
-description: Verify a Castform environment through the script-owned validation function before spending GPU credits.
+description: Run and inspect the script-owned local two-sibling validation before spending GPU credits.
 ---
 
 # Verify the environment
 
-Validation is part of the project script, not a Castform CLI command. Inspect
-`main.py` before running it and confirm its `validate()` stage calls
-`castform.validate_environment`.
-
-Run:
+Inspect `main.py`, then run:
 
 ```bash
 uv run python main.py validate
 ```
 
-The local check always executes one real `Environment.run_group` call containing
-exactly two sibling rollouts for the same example. Read both reward mappings and
-confirm that:
+The validation stage must call `castform.validate_environment` once for one real
+`Environment.run_group` containing exactly two siblings of the same example. This
+is local validation; keep `include_remote=False`.
 
-- both rollouts terminate successfully;
-- every expected reward key is present and finite;
-- rewards respond to meaningful output differences;
-- group-relative rewards do not depend on global or cross-group state.
+## Read both outcomes
 
-The validation model and whether hosted validation is requested live in
-`VALIDATE_CONFIG` in `main.py`. `include_remote=False` means local only.
-`include_remote=True` means local first, then hosted validation; hosted group
-validation is currently unavailable until rollout-service supports the same
-group-native contract.
+For each sibling, inspect:
 
-If the environment uses an LLM judge, its auth must be declared in the
-environment, for example `InjectedAuth("judge")`. A missing declaration is an
-environment bug. The trainer/runtime supplies the concrete rotating provider;
-the environment must not read Castform credentials itself.
+- `termination_reason`;
+- the complete reward mapping and total;
+- evidence that the response was actually scored by the intended reward;
+- any environment, tool, sandbox or judge error logs.
 
-For a held-out check, change the dataset split/example selected by the script,
-then rerun the same command. Keep validation configuration in source so another
-person can reproduce the result without reconstructing CLI flags.
+A successful outcome has `termination_reason == "finished"` and exactly the
+environment's declared `reward_keys`. Its scores may legitimately all be zero. An
+operational failure has a different termination reason, the same keys all zero,
+and a visible log entry. It must not cancel the other sibling.
 
-Do not launch when validation raises, returns malformed reward maps, or produces
-only constant rewards without a task-specific reason.
+Do not call the baseline green when:
+
+- an outcome failed, even if its reward mapping looks structurally valid;
+- rewards are malformed, non-finite or missing declared keys;
+- the reward is constant for reasons the task does not justify;
+- the judge or verifier failure was mistaken for a valid zero score;
+- group-relative scoring depends on failed siblings or cross-group state.
+
+## Targeted checks
+
+Before launch, add unit tests for empty, wrong, partial and correct answers. Exercise
+tool exceptions and judge exceptions and assert the failure termination reason,
+zeroed declared shape and log message. For a group-relative reward, verify that one
+failed sibling does not alter successful siblings' scoring inputs.
+
+If the environment uses `InjectedAuth("judge")`, Castform validation binds that
+name to its call-time credential provider for the duration of the run. A missing or
+unknown binding should fail visibly; the environment must not read a platform token
+itself.
+
+When the baseline is green, report both outcomes and ask whether to iterate or load
+**launch-run**. Do not launch automatically.

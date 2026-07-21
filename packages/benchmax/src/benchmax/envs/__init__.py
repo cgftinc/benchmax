@@ -7,7 +7,7 @@ from benchmax.envs.base import (
     Messages,
     Tool,
 )
-from benchmax.envs.dataset import Dataset, FrozenDataset
+from benchmax.envs.dataset import Dataset
 from benchmax.envs.environment import Environment
 from benchmax.envs.identity import canonical_example_id
 from benchmax.envs.shared_types import (
@@ -15,6 +15,7 @@ from benchmax.envs.shared_types import (
     Example,
     RewardMap,
     RolloutAttempt,
+    RolloutFailure,
     RolloutOutcome,
     RolloutRequest,
 )
@@ -27,7 +28,6 @@ __all__ = [
     "DatasetSplit",
     "Example",
     "Environment",
-    "FrozenDataset",
     "JsonRow",
     "JsonlDataset",
     "InjectedAuth",
@@ -36,6 +36,7 @@ __all__ = [
     "ModelAuth",
     "RewardMap",
     "RolloutAttempt",
+    "RolloutFailure",
     "RolloutOutcome",
     "RolloutRequest",
     "Tool",
