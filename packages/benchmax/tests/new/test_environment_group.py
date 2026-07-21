@@ -399,6 +399,31 @@ async def test_run_group_rejects_nonzero_reward_on_failed_attempt() -> None:
         await InvalidFailureEnv().run_group([request])
 
 
+async def test_returned_terminal_attempt_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class TerminalEnv(Environment[dict[str, Any], RolloutAttempt]):
+        reward_keys = ("reward",)
+
+        async def create_dataset(self, split, base_dir):
+            return Dataset([])
+
+        async def run_rollout(self, request) -> RolloutAttempt:
+            return RolloutAttempt(
+                rollout_id=request.rollout_id,
+                termination_reason="context_exceeded",
+                rewards={"reward": 0.0},
+            )
+
+    request = _request("rollout-1", Example(id="example-1", payload={}))
+
+    outcomes = await TerminalEnv().run_group([request])
+
+    assert outcomes["rollout-1"].termination_reason == "context_exceeded"
+    assert "benchmax.rollout.terminated rollout_id=rollout-1" in caplog.text
+    assert "termination_reason=context_exceeded" in caplog.text
+
+
 def test_rollout_request_split_is_validated_and_defaults_to_train() -> None:
     from benchmax.auth import StaticBearerAuth
     from benchmax.envs.shared_types import Example, RolloutRequest

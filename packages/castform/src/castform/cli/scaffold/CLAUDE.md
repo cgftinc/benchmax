@@ -44,9 +44,11 @@ Operational rollout or judge failures return the same keys with zero values, a
 non-`finished` `termination_reason`, and an error log. They do not cancel or
 distort siblings. Do not turn a configuration or programming error into a reward.
 
-Local validation calls `validate_environment` once with exactly two siblings.
-Review both outcomes; a completed zero reward is valid, while a zeroed result with
-a failure termination reason is not. Validation is local-only in this workflow.
+Local validation obtains its example through the environment's public
+`create_dataset` method, then calls `validate_environment` once with exactly two
+siblings. Review both outcomes; a completed zero reward is valid, while a zeroed
+result with a failure termination reason is not. Validation is local-only in this
+workflow.
 
 ## Bundle and launch boundary
 

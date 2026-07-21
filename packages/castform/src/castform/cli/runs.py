@@ -301,11 +301,7 @@ def _cmd_runs_rollout(args: argparse.Namespace) -> int:
         details = client.get_rollout_details(args.run_id, args.rollout_id)
 
     prompt = _user_prompt(details.get("promptMessages"))
-    datasets = (
-        [args.dataset]
-        if args.dataset
-        else ["eval_dataset.jsonl", "train_dataset.jsonl"]
-    )
+    datasets = [args.dataset] if args.dataset else ["eval.jsonl", "train.jsonl"]
     gold = _match_gold(prompt, _gold_index(datasets))
 
     if args.json:
@@ -394,7 +390,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     p_rollout.add_argument("rollout_id")
     p_rollout.add_argument(
         "--dataset",
-        help="Local jsonl to join gold from (default: eval_dataset.jsonl, then train)",
+        help="Local jsonl to join gold from (default: eval.jsonl, then train.jsonl)",
     )
     p_rollout.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_rollout.set_defaults(func=_cmd_runs_rollout)

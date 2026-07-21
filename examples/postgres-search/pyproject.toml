@@ -12,10 +12,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = ["postgres_search_env"]
 
-[tool.uv.sources]
-benchmax = { workspace = true }
-castform = { workspace = true }
-
 [dependency-groups]
 dev = [
     "cloudpickle>=3.0.0",

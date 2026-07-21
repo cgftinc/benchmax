@@ -41,4 +41,9 @@ def test_real_bundle_roundtrip_uses_automatic_local_capture():
     assert issubclass(env_class, Environment)
     assert env_class.__name__ == "TelestichEnv"
     assert restored_args == constructor_args
-    assert bundle.metadata.pip_dependencies == example.RUNTIME_DEPENDENCIES
+    assert bundle.metadata.pip_dependencies == (
+        "english-words",
+        "openai",
+        "pronouncing",
+        "wordfreq",
+    )

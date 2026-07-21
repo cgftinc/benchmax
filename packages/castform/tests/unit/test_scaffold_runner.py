@@ -29,7 +29,9 @@ def mod(request, tmp_path, monkeypatch):
 
 
 def _fake_report(ok: bool = True):
-    outcome = types.SimpleNamespace(rewards={"score": 1.0})
+    outcome = types.SimpleNamespace(
+        rewards={"score": 1.0}, termination_reason="finished"
+    )
     return types.SimpleNamespace(
         ok=ok,
         local={"validate-0": outcome, "validate-1": outcome},
@@ -44,7 +46,16 @@ def test_import_defines_stages_without_running(mod, tmp_path, monkeypatch):
     """Loading a seed defines the runner but executes NO stage (the `__main__`
     block is import-safe)."""
     assert all(hasattr(mod, n) for n in ("main", "generate_data", "validate", "launch"))
-    assert not (tmp_path / "train_dataset.jsonl").exists()
+    assert not (tmp_path / "train.jsonl").exists()
+
+
+def test_rag_runtime_dependency_matches_the_generating_sdk(mod):
+    if not hasattr(mod, "CustomSearchEnv"):
+        pytest.skip("generic scaffold has no Castform runtime dependency")
+
+    from importlib.metadata import version
+
+    assert mod.RUNTIME_DEPENDENCIES == [f"castform=={version('castform')}"]
 
 
 # ── argparse dispatch: the right stage fns, and the safe-prefix STOP ────────────
@@ -142,28 +153,72 @@ def test_main_exit_1_when_launch_gated(mod, monkeypatch):
 # ── validate stage: script calls the public group-native function ───────────────
 
 
-def test_validate_calls_public_group_validation(mod, tmp_path, monkeypatch):
+def test_validate_loads_the_public_dataset_then_runs_group_validation(
+    mod, tmp_path, monkeypatch
+):
     monkeypatch.chdir(tmp_path)
     field = "question" if hasattr(mod, "CustomSearchEnv") else "prompt"
-    (tmp_path / "train_dataset.jsonl").write_text(f'{{"{field}": "q"}}\n')
-    (tmp_path / "eval_dataset.jsonl").write_text(f'{{"{field}": "q2"}}\n')
+    (tmp_path / "train.jsonl").write_text(f'{{"{field}": "q"}}\n')
+    (tmp_path / "eval.jsonl").write_text(f'{{"{field}": "q2"}}\n')
     captured: dict = {}
+    env_class = discover_env_class(mod)
+    original_create_dataset = env_class.create_dataset
+
+    async def recording_create_dataset(self, split, base_dir):
+        captured["dataset_call"] = (split, base_dir)
+        return await original_create_dataset(self, split, base_dir)
 
     async def fake_validate_environment(env, **kw):
         captured["env"] = env
         captured.update(kw)
         return _fake_report(ok=True)
 
+    monkeypatch.setattr(env_class, "create_dataset", recording_create_dataset)
     monkeypatch.setattr(mod, "validate_environment", fake_validate_environment)
     report = mod.validate()
 
     assert report.ok
-    assert isinstance(captured["env"], discover_env_class(mod))
+    assert isinstance(captured["env"], env_class)
+    assert captured["dataset_call"] == ("train", Path("."))
     assert captured["example"].id
     assert captured["model"] == str(mod.VALIDATE_CONFIG["model"])
     assert captured["include_remote"] is bool(
         mod.VALIDATE_CONFIG.get("include_remote", False)
     )
+
+
+def test_validate_surfaces_public_dataset_materialization_failure(mod, monkeypatch):
+    env_class = discover_env_class(mod)
+
+    async def fail_create_dataset(self, split, base_dir):
+        raise RuntimeError("dataset materialization failed")
+
+    async def should_not_validate(*args, **kwargs):
+        raise AssertionError("validation ran without a materialized example")
+
+    monkeypatch.setattr(env_class, "create_dataset", fail_create_dataset)
+    monkeypatch.setattr(mod, "validate_environment", should_not_validate)
+
+    with pytest.raises(RuntimeError, match="dataset materialization failed"):
+        mod.validate()
+
+
+def test_scorecard_prints_termination_reason_and_complete_reward_shape(mod, capsys):
+    outcome = types.SimpleNamespace(
+        rewards={"correct": 0.0, "format": 0.0},
+        termination_reason="judge_error",
+    )
+    report = types.SimpleNamespace(
+        ok=False,
+        local={"validate-0": outcome},
+    )
+
+    mod._print_scorecard(report)
+
+    output = capsys.readouterr().out
+    assert "termination_reason=judge_error" in output
+    assert "rewards={'correct': 0.0, 'format': 0.0}" in output
+    assert "validate: FAIL" in output
 
 
 # ── launch stage: validate-gate, [y/N] confirm, and the asdict spread ───────────
@@ -209,8 +264,8 @@ def _patch_launch_sdk(mod, monkeypatch, launched: dict, *, validate_ok: bool = T
 
 
 def _seed_datasets(tmp_path):
-    (tmp_path / "train_dataset.jsonl").write_text('{"prompt": "q"}\n')
-    (tmp_path / "eval_dataset.jsonl").write_text('{"prompt": "q2"}\n')
+    (tmp_path / "train.jsonl").write_text('{"prompt": "q"}\n')
+    (tmp_path / "eval.jsonl").write_text('{"prompt": "q2"}\n')
 
 
 def test_launch_blocked_by_failing_validate(mod, tmp_path, monkeypatch):

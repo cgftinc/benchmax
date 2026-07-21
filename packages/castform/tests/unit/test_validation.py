@@ -115,10 +115,17 @@ async def test_validation_rejects_missing_extra_or_replaced_rollout_ids(
         )
 
 
-async def test_validation_binds_rollout_auth_for_injected_judges() -> None:
+async def test_validation_keeps_rollout_and_named_judge_auth_independent() -> None:
     class JudgeEnvironment(RecordingEnvironment):
         async def run_group(self, requests):
             group = list(requests)
+            self.rollout_headers = await group[0].model_auth.headers_for_request(
+                ModelRequestContext(
+                    base_url=group[0].base_url,
+                    model=group[0].model,
+                    rollout_id=group[0].rollout_id,
+                )
+            )
             context = ModelRequestContext(
                 base_url=group[0].base_url,
                 model="judge-model",
@@ -135,10 +142,78 @@ async def test_validation_binds_rollout_auth_for_injected_judges() -> None:
         example=Example(id="example-1", payload={}),
         model="test-model",
         base_url="https://model.example/v1",
-        model_auth=StaticBearerAuth("validation-token"),
+        model_auth=StaticBearerAuth("rollout-token"),
+        auth_bindings={"judge": StaticBearerAuth("judge-token")},
     )
 
-    assert env.judge_headers == {"Authorization": "Bearer validation-token"}
+    assert env.rollout_headers == {"Authorization": "Bearer rollout-token"}
+    assert env.judge_headers == {"Authorization": "Bearer judge-token"}
+
+
+async def test_custom_rollout_auth_does_not_replace_default_judge_auth(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "castform.model_auth.config.llm_url", lambda: "https://llm.test/v1"
+    )
+    monkeypatch.setattr(
+        "castform.model_auth.platform_bearer", lambda: "castform-judge-token"
+    )
+
+    class JudgeEnvironment(RecordingEnvironment):
+        async def run_group(self, requests):
+            group = list(requests)
+            self.rollout_headers = await group[0].model_auth.headers_for_request(
+                ModelRequestContext(
+                    base_url=group[0].base_url,
+                    model=group[0].model,
+                    rollout_id=group[0].rollout_id,
+                )
+            )
+            self.judge_headers = await InjectedAuth("judge").headers_for_request(
+                ModelRequestContext(
+                    base_url="https://llm.test/v1",
+                    model="judge-model",
+                    rollout_id=group[0].rollout_id,
+                )
+            )
+            return await super().run_group(group)
+
+    env = JudgeEnvironment()
+    await validate_environment(
+        env,
+        example=Example(id="example-1", payload={}),
+        model="test-model",
+        base_url="https://third-party.example/v1",
+        model_auth=StaticBearerAuth("rollout-token"),
+    )
+
+    assert env.rollout_headers == {"Authorization": "Bearer rollout-token"}
+    assert env.judge_headers == {"Authorization": "Bearer castform-judge-token"}
+
+
+async def test_explicit_auth_bindings_do_not_gain_an_implicit_judge() -> None:
+    class JudgeEnvironment(RecordingEnvironment):
+        async def run_group(self, requests):
+            group = list(requests)
+            await InjectedAuth("judge").headers_for_request(
+                ModelRequestContext(
+                    base_url=group[0].base_url,
+                    model="judge-model",
+                    rollout_id=group[0].rollout_id,
+                )
+            )
+            return await super().run_group(group)
+
+    with pytest.raises(RuntimeError, match="No runtime model-auth provider.*judge"):
+        await validate_environment(
+            JudgeEnvironment(),
+            example=Example(id="example-1", payload={}),
+            model="test-model",
+            base_url="https://model.example/v1",
+            model_auth=StaticBearerAuth("rollout-token"),
+            auth_bindings={},
+        )
 
 
 async def test_remote_request_runs_local_first_then_stops_at_deferred_boundary() -> (

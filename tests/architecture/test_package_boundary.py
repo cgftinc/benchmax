@@ -59,3 +59,13 @@ def test_workspace_dependency_direction_and_example_manifests() -> None:
     for manifest_path in example_manifests:
         manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
         assert manifest["project"].get("dependencies"), manifest_path
+        sources = manifest.get("tool", {}).get("uv", {}).get("sources", {})
+        workspace_sources = [
+            name
+            for name, source in sources.items()
+            if isinstance(source, dict) and source.get("workspace") is True
+        ]
+        assert not workspace_sources, (
+            f"{manifest_path} is tied to workspace sources {workspace_sources}; "
+            "development overrides belong in the workspace root"
+        )

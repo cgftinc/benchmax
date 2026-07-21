@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from importlib import resources
 from pathlib import Path
 
@@ -63,16 +64,33 @@ _TEMPLATE_SEEDS = {
 
 
 def _project_toml(template: str) -> str:
-    castform_requirement = "castform[rag]" if template == "rag" else "castform"
+    benchmax_requirement = _installed_requirement("benchmax")
+    castform_name = "castform[rag]" if template == "rag" else "castform"
+    castform_requirement = _installed_requirement(
+        castform_name, distribution="castform"
+    )
     return f'''[project]
 name = "castform-environment"
 version = "0.1.0"
 requires-python = "==3.12.*"
 dependencies = [
-    "benchmax",
+    "{benchmax_requirement}",
     "{castform_requirement}",
 ]
 '''
+
+
+def _installed_requirement(name: str, *, distribution: str | None = None) -> str:
+    """Pin scaffolds to the package pair that generated them."""
+
+    distribution = distribution or name
+    try:
+        installed = version(distribution)
+    except PackageNotFoundError as error:
+        raise RuntimeError(
+            f"cannot scaffold without an installed {distribution!r} distribution"
+        ) from error
+    return f"{name}=={installed}"
 
 
 def _retarget(text: str, agent: str) -> str:
@@ -283,7 +301,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         )
         env_writes.append(
             _write(
-                target / "train_dataset.jsonl",
+                target / "train.jsonl",
                 (root / seed["train"]).read_text("utf-8"),
                 force=False,
                 log=log,
@@ -291,7 +309,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         )
         env_writes.append(
             _write(
-                target / "eval_dataset.jsonl",
+                target / "eval.jsonl",
                 (root / seed["eval"]).read_text("utf-8"),
                 force=False,
                 log=log,

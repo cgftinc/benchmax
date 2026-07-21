@@ -30,16 +30,16 @@ def _py_check() -> tuple[bool, str]:
     return ok, detail
 
 
-def _version() -> str:
+def _distribution_versions() -> dict[str, str]:
     from importlib.metadata import version
 
-    # Distribution is published as "castform"; "benchmax" covers dev installs.
+    versions: dict[str, str] = {}
     for dist in ("castform", "benchmax"):
         try:
-            return version(dist)
+            versions[dist] = version(dist)
         except Exception:
-            pass
-    return "unknown"
+            versions[dist] = "unknown"
+    return versions
 
 
 def _auth_check() -> tuple[bool, str]:
@@ -57,10 +57,12 @@ def _collect() -> dict:
     py_ok, py_detail = _py_check()
     auth_ok, auth_detail = _auth_check()
     extras = {name: extra_is_installed(name) for name in _EXTRA_SENTINEL}
+    versions = _distribution_versions()
     return {
         "python_ok": py_ok,
         "python": py_detail,
-        "benchmax_version": _version(),
+        "castform_version": versions["castform"],
+        "benchmax_version": versions["benchmax"],
         "signed_in": auth_ok,
         "auth": auth_detail,
         "extras": extras,
@@ -85,7 +87,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(paint("  castform doctor", bold=True))
     print()
     print(_row(info["python_ok"], "python", info["python"]))
-    print(_row(True, "castform (benchmax)", info["benchmax_version"]))
+    print(_row(True, "castform", info["castform_version"]))
+    print(_row(True, "benchmax", info["benchmax_version"]))
     print(_row(info["signed_in"], "signed in", info["auth"]))
     print()
     print("  env-dependency extras (optional — install only what your main.py uses)")

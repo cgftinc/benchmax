@@ -51,7 +51,7 @@ def test_harvey_environment_survives_by_value_bundle() -> None:
     restored = restored_class(**restored_args)
 
     assert isinstance(restored, HarborEnv)
-    assert bundle.metadata.pip_dependencies == ["harbor[modal]>=0.18.0,<0.19"]
+    assert bundle.metadata.pip_dependencies == ("harbor[modal]<0.19,>=0.18.0",)
     captured_sources = restored_class.__init__.__globals__["_AGENT_SOURCES"]
     assert set(captured_sources) == {"harvey_agent.py", "harvey_runtime.py"}
     assert "class HarveyHarnessAgent" in captured_sources["harvey_agent.py"]

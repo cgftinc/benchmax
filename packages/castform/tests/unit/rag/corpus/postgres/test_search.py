@@ -5,6 +5,7 @@ from __future__ import annotations
 import pickle
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import cloudpickle
 import pytest
@@ -57,6 +58,25 @@ class TestConformance:
         assert params["backend"] == "corpora"
         assert params["corpus_name"] == "c"
         assert "api_key" not in params
+
+    def test_runtime_name_resolution_never_creates_a_corpus(self):
+        class ReadOnlyClient:
+            def __init__(self) -> None:
+                self.resolved: list[str] = []
+
+            def get_corpus_by_name(self, name: str):
+                self.resolved.append(name)
+                return SimpleNamespace(id="corpus-id")
+
+            def get_or_create_corpus(self, name: str):
+                raise AssertionError("runtime search attempted corpus provisioning")
+
+        client = ReadOnlyClient()
+        search = PostgresSearch(corpus_name="existing", base_url="http://t")
+        search._client = client  # type: ignore[assignment]
+
+        assert search._get_corpus_id() == "corpus-id"
+        assert client.resolved == ["existing"]
 
 
 class TestAvailableModes:

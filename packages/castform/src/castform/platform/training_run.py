@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from benchmax.bundle import Bundle
+from benchmax.bundle import Bundle, bundle_digest
 from castform import config
 
 from .client import StorageClient
@@ -80,9 +80,11 @@ def upload_training_run(
         envs/<run_name>/<env_hash>/{env-cls.pkl, env-metadata.json}
         datasets/<run_name>/<dataset_hash>/{train.jsonl, eval.jsonl}
 
-    Hashes are sha256 of the pickled bundle (envs) and supplied JSONL bytes
-    (datasets), truncated to 16 / 8 hex chars. When no dataset is supplied,
-    Castform uploads only the bundle and returns ``None`` for both dataset paths.
+    Environment paths use BenchMax's complete-artifact digest, covering both
+    the pickle and canonical metadata. Dataset paths use sha256 of the supplied
+    JSONL bytes. The hashes are truncated to 16 / 8 hex chars. When no dataset
+    is supplied, Castform uploads only the bundle and returns ``None`` for both
+    dataset paths.
 
     Args:
         bundle: Completed BenchMax environment bundle. Its pickle and metadata
@@ -132,7 +134,7 @@ def upload_training_run(
         )
 
     if env_prefix is None:
-        env_hash = hashlib.sha256(bundle.pickled).hexdigest()[:16]
+        env_hash = bundle_digest(bundle)[:16]
         env_prefix = f"envs/{run_name}/{env_hash}"
 
     if dataset_prefix is None and has_datasets:

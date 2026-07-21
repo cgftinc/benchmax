@@ -108,6 +108,7 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
                 contract_errors.append(result)
             elif result.termination_reason != "finished":
                 _validate_failure_rewards(result, reward_keys)
+                _log_terminal_attempt(result)
                 outcomes[result.rollout_id] = RolloutOutcome(
                     rewards=dict(result.rewards or {}),
                     termination_reason=result.termination_reason,
@@ -266,6 +267,16 @@ def _log_operational_failure(rollout_id: str, failure: RolloutFailure) -> None:
         failure.termination_reason,
         failure,
         exc_info=(type(failure), failure, failure.__traceback__),
+    )
+
+
+def _log_terminal_attempt(rollout: RolloutAttempt) -> None:
+    """Always expose a returned non-success outcome to runtime logs."""
+
+    logger.warning(
+        "benchmax.rollout.terminated rollout_id=%s termination_reason=%s",
+        rollout.rollout_id,
+        rollout.termination_reason,
     )
 
 

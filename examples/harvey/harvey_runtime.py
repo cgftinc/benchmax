@@ -99,13 +99,11 @@ class OpenAIChatCompletionsAdapter(ModelAdapter):
         api_key: str,
         base_url: str,
         temperature: float,
-        max_tokens: int,
         reasoning_effort: str | None,
     ) -> None:
         super().__init__(
             model=model, temperature=temperature, reasoning_effort=reasoning_effort
         )
-        self.max_tokens = max_tokens
         self.gateway_controls_sampling = _gateway_controls_sampling(base_url)
         client_options: dict[str, Any] = {
             "api_key": api_key,
@@ -124,7 +122,6 @@ class OpenAIChatCompletionsAdapter(ModelAdapter):
         }
         if not self.gateway_controls_sampling:
             request["temperature"] = self.temperature
-            request["max_tokens"] = self.max_tokens
         if self.reasoning_effort and self.reasoning_effort.lower() != "none":
             request["extra_body"] = {"chat_template_kwargs": {"enable_thinking": True}}
 
@@ -379,7 +376,6 @@ def run(args: argparse.Namespace) -> None:
         "documents_dir": str(Path(args.documents_dir)),
         "output_dir": str(output_dir),
         "max_turns": args.max_turns,
-        "max_tokens": args.max_tokens,
         "temperature": args.temperature,
         "shell_timeout": args.shell_timeout,
         "reasoning_effort": args.reasoning_effort,
@@ -412,7 +408,6 @@ def run(args: argparse.Namespace) -> None:
                 api_key=api_key,
                 base_url=base_url,
                 temperature=args.temperature,
-                max_tokens=args.max_tokens,
                 reasoning_effort=args.reasoning_effort,
             ),
             system_prompt=system_prompt,
@@ -465,7 +460,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--max-turns", type=int, default=30)
-    parser.add_argument("--max-tokens", type=int, default=16384)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--shell-timeout", type=int, default=60)
     parser.add_argument("--reasoning-effort")

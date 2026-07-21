@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 from pathlib import Path
 from typing import Any, Optional
 
 import pytest
 
-from benchmax.bundle import Bundle, BundleMetadata
+from benchmax.bundle import Bundle, BundleMetadata, bundle_digest
 from castform.platform import (
     UploadedTrainingRun,
     upload_training_run,
@@ -81,8 +80,8 @@ def test_upload_training_run_can_upload_bundle_without_datasets():
     )
 
     assert [path for path, _ in storage.uploads] == [
-        f"envs/harbor-managed/{hashlib.sha256(_bundle().pickled).hexdigest()[:16]}/env-cls.pkl",
-        f"envs/harbor-managed/{hashlib.sha256(_bundle().pickled).hexdigest()[:16]}/env-metadata.json",
+        f"envs/harbor-managed/{bundle_digest(_bundle())[:16]}/env-cls.pkl",
+        f"envs/harbor-managed/{bundle_digest(_bundle())[:16]}/env-metadata.json",
     ]
     assert result.train_dataset_path is None
     assert result.eval_dataset_path is None
@@ -313,7 +312,7 @@ def test_upload_training_run_uploads_supplied_bundle_exactly():
     assert result.env_metadata_path == "blob://fixed/env/env-metadata.json"
 
 
-def test_upload_training_run_hashes_the_supplied_bundle_bytes():
+def test_upload_training_run_uses_benchmax_complete_artifact_digest():
     storage = FakeStorageClient()
     bundle = _bundle(pickled=b"exact hash input")
 
@@ -325,7 +324,37 @@ def test_upload_training_run_hashes_the_supplied_bundle_bytes():
         storage_client=storage,  # type: ignore[arg-type]
     )
 
-    expected_hash = hashlib.sha256(bundle.pickled).hexdigest()[:16]
+    expected_hash = bundle_digest(bundle)[:16]
     paths = [path for path, _ in storage.uploads]
     assert f"envs/hash-input/{expected_hash}/env-cls.pkl" in paths
     assert f"envs/hash-input/{expected_hash}/env-metadata.json" in paths
+
+
+def test_upload_path_changes_when_only_bundle_metadata_changes():
+    storage = FakeStorageClient()
+    first = _bundle(pickled=b"same pickle")
+    second = Bundle(
+        pickled=first.pickled,
+        metadata=dataclasses.replace(first.metadata, benchmax_version="0.2.0"),
+    )
+
+    upload_training_run(
+        bundle=first,
+        run_name="metadata-identity",
+        storage_client=storage,  # type: ignore[arg-type]
+    )
+    upload_training_run(
+        bundle=second,
+        run_name="metadata-identity",
+        storage_client=storage,  # type: ignore[arg-type]
+    )
+
+    env_directories = {
+        path.rsplit("/", 1)[0]
+        for path, _ in storage.uploads
+        if path.startswith("envs/")
+    }
+    assert env_directories == {
+        f"envs/metadata-identity/{bundle_digest(first)[:16]}",
+        f"envs/metadata-identity/{bundle_digest(second)[:16]}",
+    }

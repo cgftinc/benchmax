@@ -21,6 +21,7 @@ import dataclasses
 import json
 import re
 import sys
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
@@ -240,13 +241,13 @@ LAUNCH_CONFIG = {
     "num_epochs": 2,
 }
 
-TRAIN_FILE = "train_dataset.jsonl"
-EVAL_FILE = "eval_dataset.jsonl"
+TRAIN_FILE = "train.jsonl"
+EVAL_FILE = "eval.jsonl"
 ENV_ARGS: dict[str, Any] = {}
 
 # Data preparation uses the project's ``castform[rag]`` dependency, while the
 # remote rollout imports only the base Castform Postgres search client.
-RUNTIME_DEPENDENCIES = ["castform"]
+RUNTIME_DEPENDENCIES = [f"castform=={version('castform')}"]
 
 
 def _load_jsonl(path: str) -> list[dict[str, Any]]:
@@ -281,24 +282,30 @@ def generate_data(force: bool = False) -> bool:
 
 def _print_scorecard(report: Any) -> None:
     for rollout_id, outcome in report.local.items():
-        total = sum(outcome.rewards.values())
-        print(f"  {rollout_id}: total={total:.3f}  {dict(outcome.rewards)}")
+        rewards = dict(outcome.rewards)
+        total = sum(rewards.values())
+        print(
+            f"  {rollout_id}: termination_reason={outcome.termination_reason} "
+            f"total={total:.3f} rewards={rewards}"
+        )
     print(f"validate: {'PASS' if report.ok else 'FAIL'}")
+
+
+async def _run_validation(env: CustomSearchEnv) -> Any:
+    dataset = await env.create_dataset("train", Path("."))
+    if not dataset:
+        raise ValueError(f"{TRAIN_FILE} contains no validation examples")
+    return await validate_environment(
+        env,
+        example=dataset[0],
+        model=str(VALIDATE_CONFIG["model"]),
+        include_remote=bool(VALIDATE_CONFIG.get("include_remote", False)),
+    )
 
 
 def validate() -> Any:
     env = CustomSearchEnv(**ENV_ARGS)
-    rows = _load_jsonl(TRAIN_FILE)
-    if not rows:
-        raise ValueError(f"{TRAIN_FILE} contains no validation examples")
-    report = asyncio.run(
-        validate_environment(
-            env,
-            example=env._example_from_row(rows[0]),
-            model=str(VALIDATE_CONFIG["model"]),
-            include_remote=bool(VALIDATE_CONFIG.get("include_remote", False)),
-        )
-    )
+    report = asyncio.run(_run_validation(env))
     _print_scorecard(report)
     return report
 

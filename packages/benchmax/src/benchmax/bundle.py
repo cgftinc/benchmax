@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import inspect
 import io
@@ -9,6 +10,7 @@ import pickle
 import site
 import sys
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -29,8 +31,16 @@ class BundlingError(Exception):
     """Cloudpickle serialization or class-shape failure."""
 
 
-class IncompatiblePythonError(Exception):
+class IncompatibleRuntimeError(Exception):
+    """Bundle metadata is incompatible with the current BenchMax runtime."""
+
+
+class IncompatiblePythonError(IncompatibleRuntimeError):
     """Loader's interpreter doesn't match the bundle's python_version."""
+
+
+class IncompatibleBenchmaxError(IncompatibleRuntimeError):
+    """Loader's BenchMax doesn't match the bundle's benchmax_version."""
 
 
 # register_pickle_by_value mutates process-global state; serialize against races.
@@ -41,28 +51,59 @@ _BUNDLE_LOCK = threading.Lock()
 class BundleMetadata:
     """Readable without unpickling: install deps, version checks, UI source."""
 
-    pip_dependencies: list[str]
+    pip_dependencies: tuple[str, ...]
     python_version: str
     benchmax_version: str
     env_class_source: str | None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "pip_dependencies",
+            _normalize_pip_dependencies(self.pip_dependencies),
+        )
+        for name in ("python_version", "benchmax_version"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if self.env_class_source is not None and not isinstance(
+            self.env_class_source, str
+        ):
+            raise TypeError("env_class_source must be a string or None")
+
     def to_json_bytes(self) -> bytes:
+        """Return canonical metadata bytes used by the artifact digest."""
+
         return json.dumps(
             {
                 "pip_dependencies": self.pip_dependencies,
                 "python_version": self.python_version,
                 "benchmax_version": self.benchmax_version,
                 "env_class_source": self.env_class_source,
-            }
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
         ).encode("utf-8")
 
     @classmethod
     def from_json_bytes(cls, data: bytes) -> "BundleMetadata":
-        d = json.loads(data.decode("utf-8"))
+        try:
+            d = json.loads(data.decode("utf-8"))
+        except (AttributeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("bundle metadata must be a UTF-8 JSON object") from exc
+        if not isinstance(d, dict):
+            raise ValueError("bundle metadata must be a JSON object")
+        try:
+            pip_dependencies = d["pip_dependencies"]
+            python_version = d["python_version"]
+            benchmax_version = d["benchmax_version"]
+        except KeyError as exc:
+            raise ValueError(f"bundle metadata is missing {exc.args[0]!r}") from exc
         return cls(
-            pip_dependencies=list(d["pip_dependencies"]),
-            python_version=d["python_version"],
-            benchmax_version=d["benchmax_version"],
+            pip_dependencies=pip_dependencies,
+            python_version=python_version,
+            benchmax_version=benchmax_version,
             env_class_source=d.get("env_class_source"),
         )
 
@@ -74,12 +115,68 @@ class Bundle:
     pickled: bytes
     metadata: BundleMetadata
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.pickled, bytes):
+            raise TypeError("bundle pickled payload must be bytes")
+        if not isinstance(self.metadata, BundleMetadata):
+            raise TypeError("bundle metadata must be BundleMetadata")
+
+
+_BUNDLE_DIGEST_DOMAIN = b"benchmax.bundle.v1\0"
+
+
+def bundle_digest(bundle: Bundle) -> str:
+    """Return the SHA-256 identity of the complete deployable artifact.
+
+    The identity covers the exact pickle and the canonical metadata bytes.
+    Length prefixes keep the components unambiguous, and the domain marker
+    leaves room for future artifact formats without silently reusing hashes.
+    """
+
+    if not isinstance(bundle, Bundle):
+        raise TypeError("bundle_digest requires a Bundle")
+    digest = hashlib.sha256(_BUNDLE_DIGEST_DOMAIN)
+    for component in (bundle.pickled, bundle.metadata.to_json_bytes()):
+        digest.update(len(component).to_bytes(8, byteorder="big"))
+        digest.update(component)
+    return digest.hexdigest()
+
+
+def validate_bundle_compatibility(metadata: BundleMetadata) -> None:
+    """Reject metadata built for a different Python or BenchMax runtime.
+
+    This check never reads the pickle or installs environment dependencies, so
+    execution runtimes can call it before performing either higher-risk step.
+    """
+
+    if not isinstance(metadata, BundleMetadata):
+        raise TypeError("bundle compatibility requires BundleMetadata")
+
+    current_python = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if metadata.python_version != current_python:
+        raise IncompatiblePythonError(
+            f"Bundle was packaged with Python {metadata.python_version} "
+            f"but this machine runs Python {current_python}."
+        )
+
+    current_benchmax = _benchmax_version()
+    if metadata.benchmax_version == "unknown" or current_benchmax == "unknown":
+        raise IncompatibleBenchmaxError(
+            "Cannot verify exact BenchMax compatibility because the bundle or "
+            "runtime version is unknown. Install BenchMax as a versioned package."
+        )
+    if metadata.benchmax_version != current_benchmax:
+        raise IncompatibleBenchmaxError(
+            f"Bundle was packaged with BenchMax {metadata.benchmax_version} "
+            f"but this runtime uses BenchMax {current_benchmax}."
+        )
+
 
 def dump_bundle(
     env_class: type[Environment[Any, RolloutAttempt]],
     *,
     constructor_args: dict[str, Any] | None = None,
-    pip_dependencies: list[str] | None = None,
+    pip_dependencies: Sequence[str] | None = None,
     local_modules: list[ModuleType] | None = None,
     env_class_source: str | None = None,
     auto_local_modules: bool = True,
@@ -112,7 +209,18 @@ def dump_bundle(
     _check_env_class(env_class)
 
     constructor_args = constructor_args or {}
-    pip_dependencies = pip_dependencies or []
+    try:
+        normalized_pip_dependencies = _normalize_pip_dependencies(
+            () if pip_dependencies is None else pip_dependencies
+        )
+    except (TypeError, ValueError) as exc:
+        raise BundlingError(f"Invalid pip_dependencies: {exc}") from exc
+    benchmax_version = _benchmax_version()
+    if benchmax_version == "unknown":
+        raise BundlingError(
+            "Cannot determine the BenchMax package version; install BenchMax as "
+            "a versioned package before creating a bundle"
+        )
     local_modules = local_modules or []
     project_roots = _bundle_project_roots(env_class, local_modules)
 
@@ -196,7 +304,7 @@ def dump_bundle(
     undeclared = _undeclared_external_source_refs(
         pickled,
         project_roots,
-        pip_dependencies,
+        normalized_pip_dependencies,
     )
     if undeclared:
         raise BundlingError(
@@ -207,9 +315,9 @@ def dump_bundle(
         )
 
     metadata = BundleMetadata(
-        pip_dependencies=pip_dependencies,
+        pip_dependencies=normalized_pip_dependencies,
         python_version=f"{sys.version_info.major}.{sys.version_info.minor}",
-        benchmax_version=_benchmax_version(),
+        benchmax_version=benchmax_version,
         env_class_source=(
             env_class_source if env_class_source is not None else _get_source(env_class)
         ),
@@ -219,7 +327,7 @@ def dump_bundle(
         "[bundle] dumped %s: %.1f KB pickled, %d pip deps",
         env_class.__name__,
         len(pickled) / 1024,
-        len(pip_dependencies),
+        len(normalized_pip_dependencies),
     )
     return Bundle(pickled=pickled, metadata=metadata)
 
@@ -234,7 +342,8 @@ def load_bundle(
 ):
     """Unpickle and (optionally) instantiate.
 
-    Verifies ``python_version`` matches. Never installs pip deps — image must.
+    Verifies ``python_version`` and ``benchmax_version`` match exactly. Never
+    installs pip deps — image must.
 
     Args:
         bundle: The Bundle to load.
@@ -242,15 +351,10 @@ def load_bundle(
             If False, return ``(env_class, constructor_args)``.
 
     Raises:
-        IncompatiblePythonError: bundle's python_version != current.
+        IncompatibleRuntimeError: bundle's Python or BenchMax version differs.
         BundlingError: corrupt bytes or a class that does not implement Environment.
     """
-    current = f"{sys.version_info.major}.{sys.version_info.minor}"
-    if bundle.metadata.python_version != current:
-        raise IncompatiblePythonError(
-            f"Bundle was packaged with Python {bundle.metadata.python_version} "
-            f"but this machine runs Python {current}."
-        )
+    validate_bundle_compatibility(bundle.metadata)
 
     try:
         payload = cloudpickle.loads(bundle.pickled)
@@ -356,7 +460,7 @@ def _unregistered_local_refs(
 def _undeclared_external_source_refs(
     pickled: bytes,
     project_roots: tuple[Path, ...],
-    pip_dependencies: list[str],
+    pip_dependencies: Sequence[str],
 ) -> list[str]:
     """Local source outside the env project must have an explicit owner.
 
@@ -379,7 +483,7 @@ def _undeclared_external_source_refs(
     )
 
 
-def _declared_distribution_names(pip_dependencies: list[str]) -> set[str]:
+def _declared_distribution_names(pip_dependencies: Sequence[str]) -> set[str]:
     names: set[str] = set()
     for dependency in pip_dependencies:
         try:
@@ -390,6 +494,52 @@ def _declared_distribution_names(pip_dependencies: list[str]) -> set[str]:
             # outside-project source reference here.
             continue
     return names
+
+
+def _normalize_pip_dependencies(dependencies: Sequence[str]) -> tuple[str, ...]:
+    """Validate and canonicalize an order-independent PEP 508 collection."""
+
+    if isinstance(dependencies, (str, bytes)) or not isinstance(dependencies, Sequence):
+        raise TypeError("pip dependencies must be a sequence of PEP 508 strings")
+
+    normalized: list[str] = []
+    declared_targets: dict[str, int] = {}
+    for index, value in enumerate(dependencies):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"dependency at index {index} must be a non-empty string")
+        try:
+            requirement = Requirement(value.strip())
+        except InvalidRequirement as exc:
+            raise ValueError(
+                f"dependency at index {index} is not valid PEP 508: {value!r}"
+            ) from exc
+        target = canonicalize_name(requirement.name)
+        previous_index = declared_targets.get(target)
+        if previous_index is not None:
+            raise ValueError(
+                f"dependency target {target!r} is declared more than once "
+                f"(indexes {previous_index} and {index}); combine constraints and "
+                "extras into one declaration"
+            )
+        declared_targets[target] = index
+        normalized.append(_canonical_requirement(requirement))
+    return tuple(sorted(normalized))
+
+
+def _canonical_requirement(requirement: Requirement) -> str:
+    """Render a parsed requirement with normalized names and stable ordering."""
+
+    value = canonicalize_name(requirement.name)
+    if requirement.extras:
+        extras = sorted(canonicalize_name(extra) for extra in requirement.extras)
+        value += f"[{','.join(extras)}]"
+    if requirement.url:
+        value += f" @ {requirement.url}"
+    else:
+        value += str(requirement.specifier)
+    if requirement.marker is not None:
+        value += f"; {requirement.marker}"
+    return value
 
 
 def _module_has_declared_distribution(

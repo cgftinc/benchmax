@@ -107,23 +107,32 @@ The rewards package follows a deep-module design:
 Declare remote runtime dependencies at the script boundary:
 
 ```python
-from benchmax.bundle import dump_bundle
+from benchmax.bundle import bundle_digest, dump_bundle
 
 bundle = dump_bundle(
     AnswerEnv,
     constructor_args={},
     pip_dependencies=["httpx>=0.28,<0.29"],
 )
+print(bundle_digest(bundle))
 ```
 
 BenchMax automatically captures project-local Python modules reachable from the
 environment. Source from a different project is never captured implicitly: pass
 its module object through `local_modules=` to include it, or list its installed
 distribution in `pip_dependencies` to keep it as a remote reference. External
-packages are never inferred from project metadata.
+packages are never inferred from project metadata. Dependency declarations must
+be valid PEP 508 strings; BenchMax canonicalizes and stores them as an immutable,
+order-independent collection in bundle metadata. Declare each distribution once,
+combining its constraints and extras in that declaration; repeated targets are
+rejected instead of relying on resolver-specific conflict behavior.
 
 BenchMax only prepares the bundle. Uploading it and launching a hosted run belong
-to the platform integration chosen by the caller.
+to the platform integration chosen by the caller. `bundle_digest` is the
+artifact identity for storage and caching; it covers both the exact pickle and
+canonical metadata. Execution runtimes can call `validate_bundle_compatibility`
+on metadata before installing dependencies or unpickling. Python and BenchMax
+versions must both match exactly.
 
 ## Breaking-version policy
 

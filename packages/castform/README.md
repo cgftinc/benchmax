@@ -47,7 +47,8 @@ uv run python main.py launch
 The generated script makes every boundary visible:
 
 1. prepare or reference data with normal Python library calls;
-2. call `validate_environment` for the real two-sibling environment contract;
+2. materialize an example through `Environment.create_dataset`, then call
+   `validate_environment` for the real two-sibling environment contract;
 3. call `dump_bundle(..., pip_dependencies=[...])` with explicit remote deps;
 4. call `upload_training_run(bundle=...)` with that exact bundle and only the
    dataset splits that should be uploaded;

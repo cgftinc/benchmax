@@ -25,8 +25,5 @@ py-modules = [
     "run_mini_castform",
 ]
 
-[tool.uv.sources]
-benchmax = { workspace = true }
-
 [dependency-groups]
 dev = ["pytest>=8.4.2", "pytest-asyncio>=1.2.0", "ruff>=0.14.2"]

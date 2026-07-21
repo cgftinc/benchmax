@@ -400,6 +400,14 @@ class CorpusClient:
                 return corpus
         raise CorpusNotFoundError(corpus_id)
 
+    def get_corpus_by_name(self, name: str) -> Corpus:
+        """Resolve an existing corpus by name without provisioning it."""
+
+        for corpus in self.list_corpora():
+            if corpus.name == name:
+                return corpus
+        raise CorpusNotFoundError(name)
+
     def delete_corpus(self, corpus_id: str) -> bool:
         """Delete a corpus and all its chunks.
 

@@ -66,7 +66,6 @@ class HarveyHarnessAgent(BaseAgent):
         container_harvey_root: str | None = None,
         container_runtime_path: str | None = None,
         max_turns: int | None = None,
-        max_tokens: int | None = None,
         shell_timeout: int | None = None,
         run_timeout_sec: int | None = None,
         upload: bool | None = None,
@@ -96,7 +95,6 @@ class HarveyHarnessAgent(BaseAgent):
             self._env("HARBOR_HARVEY_OUTPUT_DIR") or DEFAULT_HARBOR_OUTPUT_DIR
         )
         self.max_turns = max_turns or self._env_int("HARBOR_HARVEY_MAX_TURNS", 30)
-        self.max_tokens = max_tokens or self._env_int("HARBOR_HARVEY_MAX_TOKENS", 16384)
         self.shell_timeout = shell_timeout or self._env_int(
             "HARBOR_HARVEY_SHELL_TIMEOUT", 60
         )
@@ -290,8 +288,6 @@ class HarveyHarnessAgent(BaseAgent):
             run_id,
             "--max-turns",
             str(self.max_turns),
-            "--max-tokens",
-            str(self.max_tokens),
             "--shell-timeout",
             str(self.shell_timeout),
         ]

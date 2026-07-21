@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [{ name = "castie@castform.com" }]
 requires-python = "==3.12.*"
 dependencies = [
-    "benchmax",
+    "benchmax==0.1.2.dev36",
     "httpx[http2]>=0.27.0",
 ]
 classifiers = [

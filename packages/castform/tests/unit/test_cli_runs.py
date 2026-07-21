@@ -259,6 +259,28 @@ def test_runs_rollout_details_with_gold(monkeypatch, capsys, tmp_path):
     assert "step 139" in out
 
 
+def test_runs_rollout_uses_canonical_dataset_names_by_default(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "eval.jsonl").write_text(
+        '{"prompt": "where?", "ground_truth": "in eval"}\n'
+    )
+    _patch(
+        monkeypatch,
+        rollout_details={
+            "step": 1,
+            "totalReward": 1.0,
+            "promptMessages": [{"role": "user", "content": "where?"}],
+            "messages": [],
+            "rewards": [{"name": "score", "value": 1.0}],
+        },
+    )
+
+    assert runs._cmd_runs_rollout(_rollout_ns()) == 0
+    assert "in eval" in capsys.readouterr().out
+
+
 def test_runs_rollout_json_attaches_gold(monkeypatch, capsys, tmp_path):
     ds = tmp_path / "eval.jsonl"
     ds.write_text('{"prompt": "Q?", "ground_truth": "GOLD"}\n')

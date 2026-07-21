@@ -59,7 +59,7 @@ class PostgresSearch:
     def _get_corpus_id(self) -> str:
         if self._corpus_id is None:
             client = self._get_client()
-            corpus = client.get_or_create_corpus(self._corpus_name)
+            corpus = client.get_corpus_by_name(self._corpus_name)
             self._corpus_id = corpus.id
         return self._corpus_id
 

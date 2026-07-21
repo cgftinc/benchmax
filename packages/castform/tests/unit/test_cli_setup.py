@@ -25,8 +25,8 @@ _SKILLS = (
 _SEED_FILES = (
     "pyproject.toml",
     "main.py",
-    "train_dataset.jsonl",
-    "eval_dataset.jsonl",
+    "train.jsonl",
+    "eval.jsonl",
 )
 
 
@@ -48,7 +48,8 @@ def _ns(tmp, **kw):
     return argparse.Namespace(**base)
 
 
-def test_setup_writes_both_agents(tmp_path, capsys):
+def test_setup_writes_both_agents(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(setup, "version", lambda distribution: "0.1.2")
     assert setup._cmd_setup(_ns(tmp_path)) == 0
     assert (tmp_path / "CLAUDE.md").exists()
     assert (tmp_path / "AGENTS.md").exists()
@@ -147,9 +148,10 @@ def test_setup_content_cites_real_verbs(tmp_path):
     assert "upload_training_run(bundle=bundle" in launch_skill
 
 
-def test_setup_generic_ships_seed_env_and_data(tmp_path):
+def test_setup_generic_ships_seed_env_and_data(tmp_path, monkeypatch):
     """The generic flow ships a runnable seed main.py (a minimal single-turn env)
     plus tiny day-one datasets, so `python main.py validate` runs with zero edits."""
+    monkeypatch.setattr(setup, "version", lambda distribution: "0.1.2")
     assert setup._cmd_setup(_ns(tmp_path)) == 0
     assert (tmp_path / "CLAUDE.md").exists()  # docs written
     for name in _SEED_FILES:
@@ -157,10 +159,13 @@ def test_setup_generic_ships_seed_env_and_data(tmp_path):
     # the seed loads: a no-tool CustomEnv + non-empty datasets
     module = load_module(tmp_path / "main.py")
     assert discover_env_class(module).__name__ == "CustomEnv"
-    assert _read_jsonl(tmp_path / "train_dataset.jsonl")
-    assert _read_jsonl(tmp_path / "eval_dataset.jsonl")
+    assert _read_jsonl(tmp_path / "train.jsonl")
+    assert _read_jsonl(tmp_path / "eval.jsonl")
     project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
-    assert project["project"]["dependencies"] == ["benchmax", "castform"]
+    assert project["project"]["dependencies"] == [
+        "benchmax==0.1.2",
+        "castform==0.1.2",
+    ]
 
 
 def test_setup_no_template_ships_docs_and_skills_only(tmp_path):
@@ -203,23 +208,27 @@ def test_setup_template_rag_writes_searchenv(tmp_path):
     assert mod.LAUNCH_CONFIG["max_rollout_len"] == 16384
 
 
-def test_setup_template_rag_writes_seed_and_datasets(tmp_path):
+def test_setup_template_rag_writes_seed_and_datasets(tmp_path, monkeypatch):
     """--template rag ships the SearchEnv main.py + tiny seed datasets (question/
     answer/reference_chunks shape). Real data replaces them via public Castform
     RAG library calls; the datasets skip-if-exists, so real data is not clobbered."""
+    monkeypatch.setattr(setup, "version", lambda distribution: "0.1.2")
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
     assert (tmp_path / "main.py").exists()
-    assert (tmp_path / "train_dataset.jsonl").exists()
-    assert (tmp_path / "eval_dataset.jsonl").exists()
+    assert (tmp_path / "train.jsonl").exists()
+    assert (tmp_path / "eval.jsonl").exists()
     module = load_module(tmp_path / "main.py")
     assert discover_env_class(module).__name__ == "CustomSearchEnv"
-    assert set(_read_jsonl(tmp_path / "train_dataset.jsonl")[0]) >= {
+    assert set(_read_jsonl(tmp_path / "train.jsonl")[0]) >= {
         "question",
         "answer",
         "reference_chunks",
     }
     project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
-    assert project["project"]["dependencies"] == ["benchmax", "castform[rag]"]
+    assert project["project"]["dependencies"] == [
+        "benchmax==0.1.2",
+        "castform[rag]==0.1.2",
+    ]
 
 
 def test_generated_rag_project_imports_without_workspace_examples(tmp_path):
@@ -261,13 +270,13 @@ def test_setup_force_replaces_main_py_but_keeps_datasets(tmp_path):
     """--force clears the main.py overwrite guard but must NOT clobber datasets —
     real project-generated output is never overwritten by the placeholder seed."""
     (tmp_path / "main.py").write_text("MINE")
-    (tmp_path / "train_dataset.jsonl").write_text("REAL TRAIN DATA")
-    (tmp_path / "eval_dataset.jsonl").write_text("REAL EVAL DATA")
+    (tmp_path / "train.jsonl").write_text("REAL TRAIN DATA")
+    (tmp_path / "eval.jsonl").write_text("REAL EVAL DATA")
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'mine'\n")
     assert setup._cmd_setup(_ns(tmp_path, template="rag", force=True)) == 0
     assert (tmp_path / "main.py").read_text() != "MINE"  # guard cleared, seed written
-    assert (tmp_path / "train_dataset.jsonl").read_text() == "REAL TRAIN DATA"  # kept
-    assert (tmp_path / "eval_dataset.jsonl").read_text() == "REAL EVAL DATA"  # kept
+    assert (tmp_path / "train.jsonl").read_text() == "REAL TRAIN DATA"  # kept
+    assert (tmp_path / "eval.jsonl").read_text() == "REAL EVAL DATA"  # kept
     assert "name = 'mine'" in (tmp_path / "pyproject.toml").read_text()
 
 

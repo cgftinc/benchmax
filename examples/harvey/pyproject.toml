@@ -17,9 +17,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = ["harvey_agent", "harvey_env", "harvey_runtime"]
 
-[tool.uv.sources]
-benchmax = { workspace = true }
-
 [dependency-groups]
 dev = [
     "pytest>=8.4.2",

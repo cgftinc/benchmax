@@ -16,7 +16,11 @@ def _run(monkeypatch, *, signed_in: bool, py_ok: bool = True, json_mode: bool = 
         lambda: (signed_in, "you@x (x)" if signed_in else "not signed in"),
     )
     monkeypatch.setattr(doctor, "_py_check", lambda: (py_ok, "3.12.0"))
-    monkeypatch.setattr(doctor, "_version", lambda: "0.0.0")
+    monkeypatch.setattr(
+        doctor,
+        "_distribution_versions",
+        lambda: {"castform": "0.0.1", "benchmax": "0.0.2"},
+    )
     monkeypatch.setattr(doctor, "extra_is_installed", lambda name: name == "rag")
     return doctor._cmd_doctor(argparse.Namespace(json=json_mode))
 
@@ -45,6 +49,8 @@ def test_json_mode_shape_and_exit(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["python_ok"] is True
     assert payload["signed_in"] is True
+    assert payload["castform_version"] == "0.0.1"
+    assert payload["benchmax_version"] == "0.0.2"
     assert payload["extras"] == {
         "rag": True,
         "turbopuffer": False,

@@ -245,7 +245,7 @@ def test_allows_sibling_project_declared_as_remote_dependency(
         pip_dependencies=["sibling-helpers==1.0.0"],
     )
 
-    assert bundle.metadata.pip_dependencies == ["sibling-helpers==1.0.0"]
+    assert bundle.metadata.pip_dependencies == ("sibling-helpers==1.0.0",)
 
 
 def test_explicitly_captures_sibling_project_for_clean_load(

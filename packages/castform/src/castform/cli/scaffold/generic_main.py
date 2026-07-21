@@ -130,8 +130,8 @@ LAUNCH_CONFIG = {
 # Import-safe: stages run only from the ``if __name__ == "__main__"`` block below,
 # so importing this file for tests or environment inspection has no side effects.
 
-TRAIN_FILE = "train_dataset.jsonl"
-EVAL_FILE = "eval_dataset.jsonl"
+TRAIN_FILE = "train.jsonl"
+EVAL_FILE = "eval.jsonl"
 ENV_ARGS: dict[str, Any] = {}  # CustomEnv constructor kwargs (none by default)
 
 # Dependencies installed in the remote rollout runtime. Keep this declaration at
@@ -139,7 +139,7 @@ ENV_ARGS: dict[str, Any] = {}  # CustomEnv constructor kwargs (none by default)
 RUNTIME_DEPENDENCIES: list[str] = []
 
 # The tiny seed dataset — synthetic, reproducible. `castform setup` also commits
-# these as train_dataset.jsonl / eval_dataset.jsonl so validate runs on day one;
+# these as train.jsonl / eval.jsonl so validate runs on day one;
 # regenerate them any time with `python main.py data --force`.
 _SEED_TRAIN = [
     {"prompt": "What is the capital of France?", "ground_truth": "Paris"},
@@ -170,7 +170,7 @@ def _run_name() -> str:
 
 
 def generate_data(force: bool = False) -> bool:
-    """Produce `train_dataset.jsonl` / `eval_dataset.jsonl`.
+    """Produce `train.jsonl` / `eval.jsonl`.
 
     Provenance: a tiny synthetic seed, generated inline below (reproducible). Replace
     it with your real task's data — hand-write the jsonl, or generate it and inline
@@ -190,26 +190,31 @@ def generate_data(force: bool = False) -> bool:
 def _print_scorecard(report: Any) -> None:
     """Print the two sibling outcomes returned by local group validation."""
     for rollout_id, outcome in report.local.items():
-        total = sum(outcome.rewards.values())
-        print(f"  {rollout_id}: total={total:.3f}  {dict(outcome.rewards)}")
+        rewards = dict(outcome.rewards)
+        total = sum(rewards.values())
+        print(
+            f"  {rollout_id}: termination_reason={outcome.termination_reason} "
+            f"total={total:.3f} rewards={rewards}"
+        )
     print(f"validate: {'PASS' if report.ok else 'FAIL'}")
+
+
+async def _run_validation(env: CustomEnv) -> Any:
+    dataset = await env.create_dataset("train", Path("."))
+    if not dataset:
+        raise ValueError(f"{TRAIN_FILE} contains no validation examples")
+    return await validate_environment(
+        env,
+        example=dataset[0],
+        model=str(VALIDATE_CONFIG["model"]),
+        include_remote=bool(VALIDATE_CONFIG.get("include_remote", False)),
+    )
 
 
 def validate() -> Any:
     """Run the real environment group contract with exactly two siblings."""
     env = CustomEnv(**ENV_ARGS)
-    rows = _load_jsonl(TRAIN_FILE)
-    if not rows:
-        raise ValueError(f"{TRAIN_FILE} contains no validation examples")
-    example = env._example_from_row(rows[0])
-    report = asyncio.run(
-        validate_environment(
-            env,
-            example=example,
-            model=str(VALIDATE_CONFIG["model"]),
-            include_remote=bool(VALIDATE_CONFIG.get("include_remote", False)),
-        )
-    )
+    report = asyncio.run(_run_validation(env))
     _print_scorecard(report)
     return report
 

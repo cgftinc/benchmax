@@ -11,9 +11,9 @@ reviewable. There is no separate data or corpus orchestration CLI.
 
 ## BaseEnv JSONL path
 
-The generated BaseEnv seed reads `train_dataset.jsonl` and
-`eval_dataset.jsonl`. Each line is a JSON object containing the fields the
-environment's row converter and reward actually use:
+The generated BaseEnv seed reads `train.jsonl` and `eval.jsonl`. Each line is a
+JSON object containing the fields the environment's row converter and reward
+actually use:
 
 ```jsonl
 {"prompt": "What is 2 + 2?", "ground_truth": "4"}
