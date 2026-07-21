@@ -1,12 +1,12 @@
 [project]
 name = "castform"
-version = "0.1.2.dev39"
+version = "0.2.0"
 description = "SDK and CLI for the Castform training platform"
 readme = "README.md"
 authors = [{ name = "castie@castform.com" }]
 requires-python = "==3.12.*"
 dependencies = [
-    "benchmax==0.1.2.dev39",
+    "benchmax==0.2.0",
     "httpx[http2]>=0.27.0",
 ]
 classifiers = [

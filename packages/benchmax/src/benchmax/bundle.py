@@ -42,11 +42,15 @@ class IncompatiblePythonError(IncompatibleRuntimeError):
 
 
 class IncompatibleBenchmaxError(IncompatibleRuntimeError):
-    """Loader's BenchMax doesn't match the bundle's benchmax_version."""
+    """Loader's BenchMax major.minor doesn't match the bundle's benchmax_version."""
 
 
 # register_pickle_by_value mutates process-global state; serialize against races.
 _BUNDLE_LOCK = threading.Lock()
+
+_METADATA_KEYS = frozenset(
+    {"pip_dependencies", "python_version", "benchmax_version", "env_class_source"}
+)
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,12 @@ class BundleMetadata:
             raise ValueError("bundle metadata must be a UTF-8 JSON object") from exc
         if not isinstance(d, dict):
             raise ValueError("bundle metadata must be a JSON object")
+        unknown = sorted(set(d) - _METADATA_KEYS)
+        if unknown:
+            raise ValueError(
+                f"bundle metadata has unsupported keys {unknown}; "
+                "re-bundle with a current BenchMax release"
+            )
         try:
             pip_dependencies = d["pip_dependencies"]
             python_version = d["python_version"]
@@ -164,13 +174,21 @@ def validate_bundle_compatibility(metadata: BundleMetadata) -> None:
     current_benchmax = _benchmax_version()
     if metadata.benchmax_version == "unknown" or current_benchmax == "unknown":
         raise IncompatibleBenchmaxError(
-            "Cannot verify exact BenchMax compatibility because the bundle or "
+            "Cannot verify BenchMax compatibility because the bundle or "
             "runtime version is unknown. Install BenchMax as a versioned package."
         )
-    if metadata.benchmax_version != current_benchmax:
+    bundle_series = _version_major_minor(metadata.benchmax_version)
+    current_series = _version_major_minor(current_benchmax)
+    if bundle_series is None or current_series is None:
+        raise IncompatibleBenchmaxError(
+            f"Cannot parse BenchMax versions (bundle {metadata.benchmax_version}, "
+            f"runtime {current_benchmax}); expected major.minor[.patch]."
+        )
+    if bundle_series != current_series:
         raise IncompatibleBenchmaxError(
             f"Bundle was packaged with BenchMax {metadata.benchmax_version} "
-            f"but this runtime uses BenchMax {current_benchmax}."
+            f"but this runtime uses BenchMax {current_benchmax}; "
+            "major.minor versions must match."
         )
 
 
@@ -362,8 +380,8 @@ def load_bundle(
 ):
     """Unpickle and (optionally) instantiate.
 
-    Verifies ``python_version`` and ``benchmax_version`` match exactly. Never
-    installs pip deps — image must.
+    Verifies ``python_version`` matches exactly and ``benchmax_version`` shares
+    the runtime's major.minor. Never installs pip deps — image must.
 
     Args:
         bundle: The Bundle to load.
@@ -437,6 +455,14 @@ def _benchmax_version() -> str:
         return version("benchmax")
     except Exception:
         return "unknown"
+
+
+def _version_major_minor(value: str) -> tuple[int, int] | None:
+    parts = value.split(".")
+    try:
+        return int(parts[0]), int(parts[1])
+    except (IndexError, ValueError):
+        return None
 
 
 def _ensure_safe_python_version() -> None:

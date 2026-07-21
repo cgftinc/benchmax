@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import dataclasses
 import sys
-from importlib.metadata import version
 
 import pytest
 
@@ -90,14 +89,17 @@ def test_metadata_json_is_canonical() -> None:
         b'"pip_dependencies":["requests>=2"],'
         b'"python_version":"3.12"}'
     )
-    # Round-trips, and tolerates unknown legacy keys (old bundles carried
-    # runtime digests and pickle checksums).
+    assert BundleMetadata.from_json_bytes(metadata.to_json_bytes()) == metadata
+
+
+def test_metadata_rejects_unknown_keys() -> None:
+    # Pre-0.2 bundles carried runtime digests and pickle checksums.
     legacy = (
         b'{"benchmax_runtime_digest":"legacy","pickled_sha256":"abc",'
-        + metadata.to_json_bytes()[1:]
+        + _metadata().to_json_bytes()[1:]
     )
-    assert BundleMetadata.from_json_bytes(legacy) == metadata
-    assert BundleMetadata.from_json_bytes(metadata.to_json_bytes()) == metadata
+    with pytest.raises(ValueError, match="unsupported keys.*re-bundle"):
+        BundleMetadata.from_json_bytes(legacy)
 
 
 def test_bundle_digest_covers_pickle_and_canonical_metadata() -> None:
@@ -115,30 +117,38 @@ def test_bundle_digest_covers_pickle_and_canonical_metadata() -> None:
     assert len(bundle_digest(baseline)) == 64
 
 
-def test_public_compatibility_check_requires_exact_runtime_versions(
+def test_public_compatibility_check_requires_same_version_series(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     current_python = f"{sys.version_info.major}.{sys.version_info.minor}"
-    current_benchmax = version("benchmax")
+    monkeypatch.setattr("benchmax.bundle._benchmax_version", lambda: "0.2.1")
     compatible = BundleMetadata(
         pip_dependencies=(),
         python_version=current_python,
-        benchmax_version=current_benchmax,
+        benchmax_version="0.2.0",
         env_class_source=None,
     )
 
+    # Same major.minor: patch drift is allowed.
     validate_bundle_compatibility(compatible)
+    validate_bundle_compatibility(
+        dataclasses.replace(compatible, benchmax_version="0.2.9.dev3")
+    )
 
     with pytest.raises(IncompatiblePythonError, match="Python 0.0"):
         validate_bundle_compatibility(
             dataclasses.replace(compatible, python_version="0.0")
         )
-    with pytest.raises(IncompatibleBenchmaxError, match="BenchMax 0.0.0"):
+    with pytest.raises(IncompatibleBenchmaxError, match="major.minor"):
         validate_bundle_compatibility(
-            dataclasses.replace(compatible, benchmax_version="0.0.0")
+            dataclasses.replace(compatible, benchmax_version="0.1.2")
+        )
+    with pytest.raises(IncompatibleBenchmaxError, match="Cannot parse"):
+        validate_bundle_compatibility(
+            dataclasses.replace(compatible, benchmax_version="not-a-version")
         )
     monkeypatch.setattr("benchmax.bundle._benchmax_version", lambda: "unknown")
-    with pytest.raises(IncompatibleBenchmaxError, match="Cannot verify exact"):
+    with pytest.raises(IncompatibleBenchmaxError, match="Cannot verify"):
         validate_bundle_compatibility(compatible)
 
 
