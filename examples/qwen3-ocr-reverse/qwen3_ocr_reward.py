@@ -76,8 +76,12 @@ def strip_markup(value: str) -> str:
 
 def html_table_rows(value: str) -> list[str]:
     rows: list[str] = []
-    for row_html in re.findall(r"<tr\b[^>]*>(.*?)</tr>", value, flags=re.IGNORECASE | re.DOTALL):
-        cells = re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL)
+    for row_html in re.findall(
+        r"<tr\b[^>]*>(.*?)</tr>", value, flags=re.IGNORECASE | re.DOTALL
+    ):
+        cells = re.findall(
+            r"<t[dh]\b[^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL
+        )
         normalized_cells = [strip_markup(cell) for cell in cells]
         normalized_cells = [cell for cell in normalized_cells if cell]
         if normalized_cells:
@@ -193,7 +197,11 @@ def hungarian_maximize(scores: list[list[float]]) -> list[tuple[int, int]]:
             exc,
         )
         candidates = sorted(
-            ((score, i, j) for i, row in enumerate(scores) for j, score in enumerate(row)),
+            (
+                (score, i, j)
+                for i, row in enumerate(scores)
+                for j, score in enumerate(row)
+            ),
             reverse=True,
         )
         used_rows: set[int] = set()

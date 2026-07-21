@@ -6,8 +6,8 @@ import asyncio
 from pathlib import Path
 
 from benchmax.envs import BaseRollout
-from qwen3_ocr_env import Qwen3OCREnv
-from qwen3_ocr_env import OCR_PROMPT_TEMPLATE
+from main import Qwen3OCREnv
+from main import OCR_PROMPT_TEMPLATE
 from qwen3_ocr_reward import infinity_doc_reward, segments
 
 
@@ -56,8 +56,7 @@ def test_preprocess_uses_arrow_safe_content_shape() -> None:
         }
     )
     assert {
-        type(message["content"])
-        for message in example.payload["prompt_messages"]
+        type(message["content"]) for message in example.payload["prompt_messages"]
     } == {list}
 
 
@@ -131,7 +130,14 @@ def test_convert_infinity_doc_rows_writes_images(tmp_path: Path, monkeypatch) ->
             Path(path).write_bytes(b"png")
 
     rows = Qwen3OCREnv._convert_infinity_doc_rows(
-        [{"id": "doc-1", "image": FakeImage(), "gt": "# Title", "attributes": {"lang": "en"}}],
+        [
+            {
+                "id": "doc-1",
+                "image": FakeImage(),
+                "gt": "# Title",
+                "attributes": {"lang": "en"},
+            }
+        ],
         "train_images",
         [7],
     )

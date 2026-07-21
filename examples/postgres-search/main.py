@@ -15,9 +15,20 @@ deterministic):
 The old components stay available as opt-in helpers (:data:`CONCISENESS_RUBRIC`,
 :func:`judge_answer_quality`, :func:`score_search_efficiency`) for subclasses that
 override ``compute_reward``.
+
+`python main.py [data|validate|launch|all]` follows the standard example
+shape, but this env is a LIBRARY base: it needs a provisioned corpus
+(corpora-service) plus question/answer datasets, which this repository does
+not ship. The stages state exactly what is missing instead of pretending.
+
+Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
 
 from __future__ import annotations
+
+import argparse
+import sys
+
 
 import asyncio
 import logging
@@ -707,3 +718,54 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+
+# ── Runnable entrypoint ──────────────────────────────────────────────────────
+
+_REQUIRES = (
+    "postgres-search is a library environment: subclass SearchEnv with your "
+    "corpus's system_prompt, provision the corpus in corpora-service, and "
+    "supply train/eval question datasets. See the class docstring above."
+)
+
+
+def generate_data(*, force: bool) -> None:
+    del force
+    raise SystemExit(f"data: no corpus is bundled with this example. {_REQUIRES}")
+
+
+def validate() -> None:
+    raise SystemExit(f"validate: {_REQUIRES}")
+
+
+def launch(*, assume_yes: bool) -> None:
+    del assume_yes
+    raise SystemExit(f"launch: {_REQUIRES}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="Standard example stages; this env needs a provisioned corpus.",
+    )
+    parser.add_argument(
+        "stage",
+        nargs="?",
+        default="all",
+        choices=["data", "validate", "launch", "all"],
+    )
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("-y", "--yes", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.stage in ("data", "all"):
+        generate_data(force=args.force)
+    if args.stage in ("validate", "all"):
+        validate()
+    if args.stage == "launch":
+        launch(assume_yes=args.yes)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

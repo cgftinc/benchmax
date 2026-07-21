@@ -5,7 +5,7 @@ from pathlib import Path
 
 from benchmax.auth import StaticBearerAuth
 from benchmax.envs import RolloutRequest, canonical_example_id
-from math_env import MathEnv
+from main import MathEnv
 from model_server import LocalModelServer, completion_response
 
 

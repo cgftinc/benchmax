@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from benchmax.envs.base import BaseRollout
-from geo3k_dataset import Geo3KDataset
-from geo3k_env import Geo3KEnv
+from main import Geo3KDataset
+from main import Geo3KEnv
 
 
 @pytest.mark.asyncio
@@ -27,9 +27,7 @@ async def test_geo3k_example_is_openai_multimodal_and_scores_boxed_answer() -> N
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {
-                            "url": "data:image/png;base64,aW1hZ2U="
-                        },
+                        "image_url": {"url": "data:image/png;base64,aW1hZ2U="},
                     },
                     {"type": "text", "text": "Find x."},
                 ],
@@ -59,7 +57,7 @@ async def test_geo3k_example_is_openai_multimodal_and_scores_boxed_answer() -> N
 async def test_capped_subsets_sample_the_shuffled_split(monkeypatch, tmp_path) -> None:
     """Caps must sample the whole split deterministically, not its head."""
 
-    import geo3k_env as env_module
+    import main as env_module
     from datasets import Dataset as HFDataset
 
     rows = [
@@ -100,7 +98,7 @@ async def test_zoom_tool_returns_an_upscaled_crop_as_content_parts(tmp_path) -> 
     from PIL import Image
 
     from benchmax.envs.shared_types import Example
-    from geo3k_env import Geo3KEnv
+    from main import Geo3KEnv
 
     image = Image.new("RGB", (200, 100), "white")
     image.putpixel((190, 90), (255, 0, 0))

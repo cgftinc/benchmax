@@ -109,7 +109,7 @@ def test_rotation_is_picked_up_per_call(tmp_path, monkeypatch):
 
 def _write_session(tmp_path, monkeypatch, data, mode=0o600):
     f = tmp_path / "credentials.json"
-    f.write_text(json.dumps(data))
+    f.write_text(json.dumps({"version": 2, "profiles": {"prod": {"session": data}}}))
     f.chmod(mode)
     monkeypatch.setenv(_CRED_PATH_ENV, str(f))
     return f
@@ -200,6 +200,18 @@ def test_read_castform_session_malformed_returns_none(tmp_path, monkeypatch):
     f.chmod(0o600)
     monkeypatch.setenv(_CRED_PATH_ENV, str(f))
     assert read_castform_session() is None
+
+
+def test_unrecognized_store_format_reads_as_logged_out(tmp_path, monkeypatch):
+    # A pre-profiles bare session (or any non-v2 shape) is not migrated: the
+    # user logs in again and the next write replaces the file wholesale.
+    f = tmp_path / "credentials.json"
+    f.write_text(json.dumps({"access_token": "old-bare-session"}))
+    f.chmod(0o600)
+    monkeypatch.setenv(_CRED_PATH_ENV, str(f))
+    assert read_castform_session() is None
+    write_castform_session({"access_token": "fresh"})
+    assert read_castform_session() == {"access_token": "fresh"}
 
 
 def test_write_session_creates_dir_and_0600(tmp_path, monkeypatch):
@@ -319,7 +331,9 @@ def test_session_jwt_remints_on_session_change(tmp_path, monkeypatch):
     f = _write_session(tmp_path, monkeypatch, {"access_token": "sess_a"})
     assert platform_bearer() == tokens["sess_a"]
 
-    f.write_text(json.dumps({"access_token": "sess_b"}))
+    f.write_text(
+        json.dumps({"version": 2, "profiles": {"prod": {"session": {"access_token": "sess_b"}}}})
+    )
     f.chmod(0o600)
     assert platform_bearer() == tokens["sess_b"]  # not the cached sess_a JWT
 

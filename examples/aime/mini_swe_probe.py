@@ -236,7 +236,10 @@ def execute(command: str, timeout: int) -> dict:
             timeout=timeout,
             errors="backslashreplace",
         )
-        output = {"output": completed.stdout + completed.stderr, "returncode": completed.returncode}
+        output = {
+            "output": completed.stdout + completed.stderr,
+            "returncode": completed.returncode,
+        }
     except subprocess.TimeoutExpired as exc:
         collected = (exc.stdout or b"") + (exc.stderr or b"")
         if isinstance(collected, bytes):
@@ -269,7 +272,9 @@ def observation_content(output: dict) -> str:
     return json.dumps(body, indent=2)
 
 
-def save_trajectory(path: str, messages: list[dict], usage: dict, exit_status: str, submission: str) -> None:
+def save_trajectory(
+    path: str, messages: list[dict], usage: dict, exit_status: str, submission: str
+) -> None:
     data = {
         "info": {
             "model_stats": {"instance_cost": 0.0, "api_calls": usage["calls"]},
@@ -341,7 +346,9 @@ def main() -> int:
             continue
 
         try:
-            outputs = [execute(action["command"], args.shell_timeout) for action in actions]
+            outputs = [
+                execute(action["command"], args.shell_timeout) for action in actions
+            ]
         except Submitted as done:
             exit_status, submission = "Submitted", done.submission
             break

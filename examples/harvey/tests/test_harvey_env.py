@@ -9,7 +9,7 @@ from benchmax.envs.harbor import (
 from harbor import EnvironmentType, TrialVerifierConfig
 
 from harvey_agent import HarveyHarnessAgent
-from harvey_env import HarveyLabHarborEnv
+from main import HarveyLabHarborEnv
 
 
 def test_harvey_constructor_uses_latest_dataset_and_native_harness() -> None:

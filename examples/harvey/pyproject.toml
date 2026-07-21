@@ -15,7 +15,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["harvey_agent", "harvey_env", "harvey_runtime"]
+py-modules = ["harvey_agent", "harvey_runtime"]
 
 [dependency-groups]
 dev = [

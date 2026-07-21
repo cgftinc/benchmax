@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 
 from benchmax.envs.base import BaseRollout
 from benchmax.envs.shared_types import RewardMap
-from math_env import MathEnv
+from main import MathEnv
 
 
 class MathGroupEnv(MathEnv):

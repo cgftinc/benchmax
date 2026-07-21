@@ -1,6 +1,25 @@
-"""Visual geometry environment with an optional zoom tool for Qwen VL training."""
+"""Geo3K: visual geometry problems with an optional zoom tool.
+
+Loads the public chenhegu/geo3k_imgurl splits at runtime; the model answers
+geometry-diagram questions with \\boxed{...} answers and may call ``zoom`` to
+magnify a diagram region (the crop returns as an image inside the tool
+response). Reward is boxed-answer correctness.
+
+`python main.py [data|validate|launch|all]` drives the loop. The data stage
+prefetches the HuggingFace snapshot into ./data (skip if present; --force to
+refresh). Launch is an explicit, confirmed step — it spends GPU credits.
+
+Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
+"""
 
 from __future__ import annotations
+
+import argparse
+import asyncio
+import sys
+import uuid
+from collections.abc import Iterable, Mapping
+
 
 import base64
 import io
@@ -12,8 +31,13 @@ from typing import Any
 
 from benchmax.envs.base import BaseEnv, BaseRollout, JsonRow, Tool
 from benchmax.envs.dataset import Dataset
-from benchmax.envs.shared_types import DatasetSplit, RewardMap, RolloutFailure
-from geo3k_dataset import Geo3KDataset
+from benchmax.envs.identity import canonical_example_id
+from benchmax.envs.shared_types import (
+    DatasetSplit,
+    Example,
+    RewardMap,
+    RolloutFailure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -287,4 +311,177 @@ def _normalize_answer(value: object) -> str:
     return re.sub(r"[\s,$]", "", str(value or "")).casefold()
 
 
-__all__ = ["Geo3KEnv"]
+class Geo3KDataset(Dataset[JsonRow]):
+    """Normalize Geo3K rows into OpenAI multimodal prompt messages."""
+
+    def __init__(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        system_prompt: str | None = None,
+    ) -> None:
+        super().__init__(
+            [_example(dict(row), system_prompt=system_prompt) for row in rows]
+        )
+
+
+def _example(row: JsonRow, *, system_prompt: str | None = None) -> Example[JsonRow]:
+    problem = row.get("problem")
+    answer = row.get("answer")
+    images = row.get("images")
+    if not isinstance(problem, str) or not problem.strip():
+        raise ValueError("Geo3K rows require a non-empty problem")
+    if answer is None:
+        raise ValueError("Geo3K rows require an answer")
+    if not isinstance(images, list) or not images:
+        raise ValueError("Geo3K rows require at least one image")
+
+    content: list[dict[str, Any]] = []
+    for image in images:
+        if not isinstance(image, str) or not image:
+            raise TypeError("Geo3K images must be non-empty strings")
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": _normalize_data_uri(image)},
+            }
+        )
+    content.append(
+        {
+            "type": "text",
+            "text": problem.replace("<image>", "").strip(),
+        }
+    )
+    prompt_messages: list[dict[str, Any]] = []
+    if system_prompt:
+        prompt_messages.append({"role": "system", "content": system_prompt})
+    prompt_messages.append({"role": "user", "content": content})
+    payload: JsonRow = {
+        "prompt_messages": prompt_messages,
+        "answer": str(answer),
+    }
+    return Example(id=canonical_example_id(payload), payload=payload)
+
+
+def _normalize_data_uri(value: str) -> str:
+    """Repair the dataset's non-standard image/None media type."""
+
+    return value.replace("data:image/None;base64,", "data:image/png;base64,", 1)
+
+
+# ── Runnable entrypoint ──────────────────────────────────────────────────────
+
+MODEL = "Qwen/Qwen3-VL-4B-Instruct"
+VALIDATE_MODEL = "gpt-5.4-mini"
+# Caps sample the shuffled split (sample_seed) at trainer runtime.
+ENV_ARGS = {"max_train_examples": 256, "max_eval_examples": 32}
+# `datasets` loads the HF snapshot in create_dataset; pillow decodes images.
+RUNTIME_DEPENDENCIES = ["datasets>=4.0.0", "pillow>=10"]
+
+DATA_DIR = Path(__file__).parent / "data"
+
+
+def generate_data(*, force: bool) -> None:
+    marker = DATA_DIR / "geo3k"
+    if marker.exists() and any(marker.iterdir()) and not force:
+        print(f"data: {marker} present — skipping (--force to redo)")
+        return
+    env = Geo3KEnv(**ENV_ARGS)
+    train = asyncio.run(env.create_dataset("train", DATA_DIR))
+    evaluation = asyncio.run(env.create_dataset("eval", DATA_DIR))
+    print(
+        f"data: fetched {len(train)} train / {len(evaluation)} eval examples into {marker}"
+    )
+
+
+def validate() -> Any:
+    from castform import validate_environment
+
+    env = Geo3KEnv(**ENV_ARGS)
+    dataset = asyncio.run(env.create_dataset("eval", DATA_DIR))
+    report = asyncio.run(
+        validate_environment(env, example=dataset[0], model=VALIDATE_MODEL)
+    )
+    for rollout_id, outcome in report.local.items():
+        print(
+            f"  {rollout_id}: termination={outcome.termination_reason} "
+            f"rewards={dict(outcome.rewards)}"
+        )
+    return report
+
+
+def launch(*, assume_yes: bool) -> str | None:
+    from benchmax.bundle import dump_bundle
+    from castform import config
+    from castform.platform.client import TrainerClient
+    from castform.platform.training_run import upload_training_run
+
+    run_name = f"geo3k-{uuid.uuid4().hex[:8]}"
+    if not assume_yes:
+        reply = input(
+            f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] "
+        )
+        if reply.strip().lower() not in ("y", "yes"):
+            print("Launch aborted.")
+            return None
+
+    # Bundle-only upload: the env resolves its dataset from HuggingFace at
+    # trainer runtime, so no dataset blobs ship with the run.
+    bundle = dump_bundle(
+        Geo3KEnv,
+        constructor_args=ENV_ARGS,
+        pip_dependencies=RUNTIME_DEPENDENCIES,
+    )
+    uploaded = upload_training_run(bundle=bundle, run_name=run_name)
+    with TrainerClient() as trainer:
+        run_id = trainer.launch_training_run(
+            env_cls_path=uploaded.env_cls_path,
+            env_metadata_path=uploaded.env_metadata_path,
+            name=run_name,
+            launcher_args={"model": MODEL},
+        )
+    print(f"✓ Launched run_id={run_id}")
+    print(f"  View / cancel at: {config.web_app_url()}/train/{run_id}")
+    return run_id
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="Run the castform loop for this env: data → validate → launch.",
+    )
+    parser.add_argument(
+        "stage",
+        nargs="?",
+        default="all",
+        choices=["data", "validate", "launch", "all"],
+        help="Stage to run (default: all = data → validate, then STOP).",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Regenerate datasets even if present."
+    )
+    parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the launch confirmation (it spends GPU credits).",
+    )
+    args = parser.parse_args(argv)
+
+    from castform.platform import ensure_session
+
+    ok = True
+    if args.stage in ("data", "all"):
+        generate_data(force=args.force)
+    if args.stage in ("validate", "all"):
+        ensure_session()
+        report = validate()
+        ok = report is not None and report.ok
+    if args.stage == "launch":
+        ensure_session()
+        ok = launch(assume_yes=args.yes) is not None
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

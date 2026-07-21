@@ -5,7 +5,7 @@ from collections import Counter
 
 import pytest
 
-from telestich_env import (
+from main import (
     ACCEPTABLE_EDGE,
     ELO_GREAT_RATING,
     ELO_SLICE,

@@ -1,8 +1,21 @@
-# Telestich Environment
+# telestich
 
-> **Native-contract status:** this environment uses BenchMax's group-native
-> contract. Individual rollouts defer scoring, and `compute_group_rewards`
-> evaluates the complete sibling group.
+`TelestichEnv` rewards a model for writing **telestich** poems — poems where
+the last letter of each line, read top to bottom, spells out a hidden word.
+Scoring uses BenchMax's group-native contract: individual rollouts defer, and
+`compute_group_rewards` judges the complete sibling group (Elo-style).
+
+Purpose: the group-scoring reference environment, with a committed
+curriculum-ordered dataset (`telestich_dataset.jsonl`) and an LLM judge.
+
+## Getting started
+
+```bash
+uv sync            # from the benchmax workspace root
+cd examples/telestich
+uv run python main.py             # data (committed jsonl) → validate (no GPU)
+uv run python main.py launch      # train on GPUs (asks first; spends credits)
+```
 
 `TelestichEnv` rewards a model for writing **telestich** poems — poems where the
 last letter of each line, read top to bottom, spells out a hidden target word

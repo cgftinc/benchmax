@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from benchmax.envs.base import BaseRollout
-from dominant_color_env import DominantColorEnv
+from main import DominantColorEnv
 
 
 def _first_example(dataset):
@@ -23,7 +23,7 @@ async def test_examples_carry_rules_first_image_and_ordered_answer(tmp_path) -> 
     assert "see_next_image" in system["content"]
     assert "dominant color" in system["content"]
     # The full palette is enumerated up front.
-    from dominant_color_dataset import PALETTE
+    from main import PALETTE
 
     assert len(PALETTE) >= 15
     for name in PALETTE:
@@ -130,7 +130,7 @@ def test_tile_images_are_dominated_by_the_answer_color() -> None:
 
     from PIL import Image
 
-    from dominant_color_dataset import PALETTE, render_tile_image_uri
+    from main import PALETTE, render_tile_image_uri
 
     uri = render_tile_image_uri(
         "teal",

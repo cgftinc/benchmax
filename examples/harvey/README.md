@@ -1,13 +1,28 @@
-# Harvey LAB
+# harvey
 
-This example runs [`harveyai/lab:latest`](https://hub.harborframework.com/datasets/harveyai/lab/latest)
-through BenchMax's generic Harbor environment. It uses Modal for each Harbor
-sandbox and Harvey's native agent loop from the `harvey-labs` repository.
+Runs [`harveyai/lab:latest`](https://hub.harborframework.com/datasets/harveyai/lab/latest)
+— realistic legal-work tasks (memos, spreadsheets, document drafting) — through
+BenchMax's generic Harbor environment, with Modal sandboxes and Harvey's own
+native agent loop driving the model.
+
+Purpose: the proof that an arbitrary third-party harness trains on this
+platform without core special-casing — Harbor owns the sandbox, Harvey owns
+the agent loop, and the trainer only sees rollouts.
+
+## Getting started
+
+```bash
+uv sync            # from the benchmax workspace root
+cd examples/harvey
+# credentials: Modal from ~/.modal.toml, judge key from HARVEY_JUDGE_API_KEY
+uv run python main.py             # validate: two real Modal trials (no GPU)
+uv run python main.py launch      # train on GPUs (asks first; spends credits)
+```
 
 The integration has three explicit pieces:
 
-- `harvey_env.py` configures the dataset, Modal environment, RewardKit verifier,
-  and custom agent through current `HarborEnv` types.
+- `main.py` defines `HarveyLabHarborEnv` (dataset, Modal environment,
+  RewardKit verifier, custom agent) and the data/validate/launch stages.
 - `harvey_agent.py` is a Harbor custom agent. It uploads the Harvey source and
   starts its runtime inside the Harbor environment.
 - `harvey_runtime.py` runs Harvey's native agent loop inside that environment.

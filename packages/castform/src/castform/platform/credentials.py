@@ -146,21 +146,10 @@ def _empty_store() -> dict:
 
 
 def _credentials_store() -> dict:
+    """Read the store; any unrecognized format reads as empty (re-login rewrites it)."""
     data = _read_credentials_data()
-    if not data:
-        return _empty_store()
-    profiles = data.get("profiles")
-    if data.get("version") == 2 and isinstance(profiles, dict):
+    if data and data.get("version") == 2 and isinstance(data.get("profiles"), dict):
         return data
-    # Version 1 was one bare session. It can only be assigned safely to the
-    # built-in prod profile because it contains no issuer/profile metadata.
-    if isinstance(data.get("access_token"), str):
-        return {
-            "version": 2,
-            "profiles": {
-                profile_config.DEFAULT_PROFILE: {"session": data},
-            },
-        }
     return _empty_store()
 
 

@@ -7,7 +7,7 @@ import pytest
 import benchmax.envs.base.env as base_env_module
 from benchmax.envs import RolloutRequest, StaticBearerAuth
 from benchmax.rewards import JudgeError
-from telestich_env import TelestichEnv, _bucket, _count_tool_calls
+from main import TelestichEnv, _bucket, _count_tool_calls
 
 
 async def test_two_rollout_group_uses_native_benchmax_contract(monkeypatch) -> None:

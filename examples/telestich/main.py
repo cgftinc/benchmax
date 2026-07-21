@@ -14,9 +14,26 @@ rollout in a GRPO group (see ``compute_group_rewards``):
      and conciseness (shorter generation + tool thrift) on the group's top band.
 
 Final reward = quality + rhyme + diversity + conciseness (all components >= 0).
+
+`python main.py [data|validate|launch|all]` drives the loop. The committed
+``telestich_dataset.jsonl`` is the dataset (curriculum-ordered; regeneration
+is a deliberate manual step via ``telestich_datagen.py``). Launch uploads
+datasets + bundle and starts a GPU run (explicit, confirmed — it spends
+credits).
+
+Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
 
+from __future__ import annotations
+
+import argparse
 import asyncio
+import json
+import os
+import random
+import sys
+import uuid
+
 import logging
 import math
 import re
@@ -1398,3 +1415,178 @@ then stop."""
             partial_score=chk["partial_score"],
             misses=chk["misses"],
         )
+
+
+# ── Runnable entrypoint ──────────────────────────────────────────────────────
+
+MODEL = os.environ.get("TELESTICH_MODEL", "Qwen/Qwen3.5-4B")
+VALIDATE_MODEL = os.environ.get("TELESTICH_VALIDATE_MODEL", "gpt-5.4-mini")
+RUN_NAME = os.environ.get("TELESTICH_RUN_NAME", "")
+RUNTIME_DEPENDENCIES = ["english_words", "openai", "pronouncing", "wordfreq"]
+DATASET_PATH = Path(__file__).parent / "telestich_dataset.jsonl"
+
+
+def _rows() -> list[dict]:
+    if not DATASET_PATH.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in DATASET_PATH.read_text().splitlines()
+        if line.strip()
+    ]
+
+
+def generate_data(*, force: bool) -> None:
+    rows = _rows()
+    if rows and not force:
+        print(
+            f"data: {DATASET_PATH.name} present ({len(rows)} examples, curriculum order) — skipping"
+        )
+        return
+    raise SystemExit(
+        "data: the committed telestich_dataset.jsonl is the source of truth; "
+        "regeneration is a deliberate manual step via telestich_datagen.py"
+    )
+
+
+def _split_rows() -> tuple[list[dict], list[dict]]:
+    """Hold out ~10% eval at random; TRAIN keeps curriculum order (simpler first)."""
+
+    examples = _rows()
+    if len(examples) < 2:
+        raise SystemExit(f"Need >=2 examples, got {len(examples)}.")
+    n_eval = max(1, len(examples) // 10)
+    eval_idx = set(random.sample(range(len(examples)), n_eval))
+    eval_rows = [e for i, e in enumerate(examples) if i in eval_idx]
+    train_rows = [e for i, e in enumerate(examples) if i not in eval_idx]
+    return train_rows, eval_rows
+
+
+def confirm_gpu_launch(run_name: str) -> bool:
+    """Require an explicit acknowledgement before uploading and spending credits."""
+
+    reply = (
+        input(f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] ")
+        .strip()
+        .lower()
+    )
+    return reply in ("y", "yes")
+
+
+def build_training_bundle(constructor_args: dict[str, str]):
+    from benchmax.bundle import dump_bundle
+
+    return dump_bundle(
+        TelestichEnv,
+        constructor_args=constructor_args,
+        pip_dependencies=RUNTIME_DEPENDENCIES,
+    )
+
+
+def validate() -> Any:
+    from castform import config, validate_environment
+
+    train_rows, _ = _split_rows()
+    constructor_args = {
+        "judge_base_url": config.llm_url(),
+        "train_dataset_path": "datasets/validate/train.jsonl",
+        "eval_dataset_path": "datasets/validate/eval.jsonl",
+    }
+    env = TelestichEnv(**constructor_args)
+    report = asyncio.run(
+        validate_environment(
+            env,
+            example=env._example_from_row(train_rows[0]),
+            model=VALIDATE_MODEL,
+            base_url=config.llm_url(),
+        )
+    )
+    for rollout_id, outcome in report.local.items():
+        print(
+            f"  {rollout_id}: total={sum(outcome.rewards.values()):.3f} "
+            f"{dict(outcome.rewards)}"
+        )
+    return report
+
+
+def launch(*, assume_yes: bool) -> str | None:
+    from castform import config
+    from castform.platform.client import TrainerClient
+    from castform.platform.training_run import upload_training_run
+
+    train_rows, eval_rows = _split_rows()
+    print(f"{len(train_rows)} train (curriculum order) / {len(eval_rows)} eval.")
+    run_name = RUN_NAME or f"telestich-{uuid.uuid4().hex[:8]}"
+    if not assume_yes and not confirm_gpu_launch(run_name):
+        print("Launch aborted.")
+        return None
+
+    # Dataset locations must be known before the bundle is built (constructor
+    # args travel inside the pickle), so pin the upload prefix.
+    dataset_prefix = f"datasets/{run_name}"
+    constructor_args = {
+        "judge_base_url": config.llm_url(),
+        "train_dataset_path": f"{dataset_prefix}/train.jsonl",
+        "eval_dataset_path": f"{dataset_prefix}/eval.jsonl",
+    }
+    uploaded = upload_training_run(
+        bundle=build_training_bundle(constructor_args),
+        train_dataset=train_rows,
+        eval_dataset=eval_rows,
+        run_name=run_name,
+        dataset_prefix=dataset_prefix,
+    )
+    with TrainerClient() as trainer:
+        run_id = trainer.launch_training_run(
+            env_cls_path=uploaded.env_cls_path,
+            env_metadata_path=uploaded.env_metadata_path,
+            train_dataset_path=uploaded.train_dataset_path,
+            eval_dataset_path=uploaded.eval_dataset_path,
+            name=run_name,
+            launcher_args={"model": MODEL},
+        )
+    print(f"✓ Launched run_id={run_id}")
+    print(f"  View / cancel at: {config.web_app_url()}/train/{run_id}")
+    return run_id
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="Run the castform loop for this env: data → validate → launch.",
+    )
+    parser.add_argument(
+        "stage",
+        nargs="?",
+        default="all",
+        choices=["data", "validate", "launch", "all"],
+        help="Stage to run (default: all = data → validate, then STOP).",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Regenerate datasets even if present."
+    )
+    parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the launch confirmation (it spends GPU credits).",
+    )
+    args = parser.parse_args(argv)
+
+    from castform.platform import ensure_session
+
+    ok = True
+    if args.stage in ("data", "all"):
+        generate_data(force=args.force)
+    if args.stage in ("validate", "all"):
+        ensure_session()
+        report = validate()
+        ok = report is not None and report.ok
+    if args.stage == "launch":
+        ensure_session()
+        ok = launch(assume_yes=args.yes) is not None
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

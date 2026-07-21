@@ -12,7 +12,7 @@ import pytest
 from benchmax.envs import BaseRollout, StaticBearerAuth
 from benchmax.rewards import Judge, RubricEvaluation
 from castform.rag.corpus.search_client import SearchClient
-from postgres_search_env import SearchEnv, _extract_answer_block
+from main import SearchEnv, _extract_answer_block
 
 JUDGE_ARGS = {
     "judge_base_url": "http://judge.test/v1",
@@ -250,7 +250,7 @@ async def _compute_reward(env, rollout_id, messages, example_args):
 
 class TestComputeReward:
     @patch(
-        "postgres_search_env.evaluate_single_rubric",
+        "main.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_all_components_returned(self, mock_eval):
@@ -280,7 +280,7 @@ class TestComputeReward:
         }
 
     @patch(
-        "postgres_search_env.evaluate_single_rubric",
+        "main.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_correctness_score(self, mock_eval):
@@ -297,7 +297,7 @@ class TestComputeReward:
         assert result["answer_correctness"] == pytest.approx(1.0)  # 0.5 * 2.0
 
     @patch(
-        "postgres_search_env.evaluate_single_rubric",
+        "main.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_answer_length_gated_on_correctness(self, mock_eval):
@@ -315,7 +315,7 @@ class TestComputeReward:
         assert result["answer_length"] == 0.0
 
     @patch(
-        "postgres_search_env.evaluate_single_rubric",
+        "main.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_answer_length_is_deterministic_brevity(self, mock_eval):
@@ -347,7 +347,7 @@ class TestComputeReward:
         assert result["answer_length"] == 0.0
 
     @patch(
-        "postgres_search_env.evaluate_single_rubric",
+        "main.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_no_answer_tag_short_circuits_before_judge(self, mock_eval):
@@ -365,7 +365,7 @@ class TestComputeReward:
         mock_eval.assert_not_awaited()
 
     @patch(
-        "postgres_search_env.evaluate_single_rubric",
+        "main.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_citation_exact_match(self, mock_eval):
@@ -392,7 +392,7 @@ class TestComputeReward:
         assert result["citation_precision"] == pytest.approx(1.0)
 
     @patch(
-        "postgres_search_env.evaluate_single_rubric",
+        "main.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_citation_matches_title_path_variant_by_default(self, mock_eval):
@@ -418,7 +418,7 @@ class TestComputeReward:
         assert result["citation_precision"] == pytest.approx(1.0)
 
     @patch(
-        "postgres_search_env.evaluate_single_rubric",
+        "main.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_citation_partial_recall(self, mock_eval):
@@ -443,7 +443,7 @@ class TestComputeReward:
         assert result["citation_precision"] == pytest.approx(1.0)
 
     @patch(
-        "postgres_search_env.evaluate_single_rubric",
+        "main.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_gated_rewards_scaled_by_partial_correctness(self, mock_eval):
@@ -477,7 +477,7 @@ class TestComputeReward:
         assert result["answer_length"] == pytest.approx((1.0 - len(answer) / 600) * 0.5)
 
     @patch(
-        "postgres_search_env.evaluate_single_rubric",
+        "main.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_retrieval_hit_survives_wrong_answer(self, mock_eval):
@@ -504,7 +504,7 @@ class TestComputeReward:
         assert result["citation_precision"] == 0.0  # gated → 0
 
     @patch(
-        "postgres_search_env.evaluate_single_rubric",
+        "main.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_judge_failure_is_infrastructure_failure(self, mock_eval):
@@ -693,7 +693,7 @@ class TestPickle:
 
 # --- free reward helpers (imported by a scaffold main.py) --------------------
 
-from postgres_search_env import (  # noqa: E402
+from main import (  # noqa: E402
     canonicalize_source_id,
     canonicalize_source_id_loose,
     extract_answer_block,
@@ -786,7 +786,7 @@ class TestFreeRewardHelpers:
 
     def test_judge_answer_quality_free_helper(self):
         with patch(
-            "postgres_search_env.evaluate_single_rubric",
+            "main.evaluate_single_rubric",
             new_callable=AsyncMock,
         ) as mock_eval:
             mock_eval.return_value = RubricEvaluation(0.5, "", "")

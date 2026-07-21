@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import example
+import main as example
 from benchmax.bundle import load_bundle
 from benchmax.envs import Environment
 
@@ -14,7 +14,9 @@ def test_bundle_inputs_are_explicit_and_local_capture_is_automatic(monkeypatch):
         captured.update(kwargs)
         return sentinel
 
-    monkeypatch.setattr(example, "dump_bundle", fake_dump_bundle)
+    import benchmax.bundle
+
+    monkeypatch.setattr(benchmax.bundle, "dump_bundle", fake_dump_bundle)
 
     constructor_args = {"judge_base_url": "https://judge.example/v1"}
     assert example.build_training_bundle(constructor_args) is sentinel

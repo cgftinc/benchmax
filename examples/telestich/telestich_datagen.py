@@ -1,26 +1,12 @@
+"""Offline dataset generation for the Telestich example.
+
+The committed ``telestich_dataset.jsonl`` is the source of truth (English-only,
+ordered as a curriculum, simpler examples first). This module holds the
+machinery that generated it — diversity axes, samplers, and the LLM-backed
+generation/validation helpers — for deliberate, manual regeneration only.
 """
-Example: TelestichEnv — a poem-writing env.
 
-Train a model to write telestich poems — poems where the last letter
-(or character, for Chinese) of each line spells out a hidden word.
-
-The script doubles as a demo of ``benchmax.bundle``: running it bundles
-``TelestichEnv`` and prints the captured plaintext source — the same
-JSON a frontend would render as "what code is in this env."
-
-Run it from the Telestich example project:
-
-    cd examples/telestich
-    uv run python example.py
-
-Auth is the device-auth session (``ensure_session()`` opens a browser login if
-``~/.castform`` has no valid session) — no API key needed. ``CASTFORM_API_KEY``
-/ ``CASTFORM_LLM_API_KEY`` are only consulted by the offline dataset-generation
-helpers, not the launch path.
-
-This launches a real training run on the full committed seed dataset
-(~90/10 train/eval split).
-"""
+from __future__ import annotations
 
 import asyncio
 import json
@@ -31,51 +17,17 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-from benchmax.bundle import Bundle, dump_bundle
-from telestich_env import TelestichEnv
+from castform import config
 
-# ══════════════════════════════════════════════════════════════════════
-# CONFIGURATION
-# ══════════════════════════════════════════════════════════════════════
-# Fill these in before running a real training job. Keep them empty in the
-# committed file — the notebooks guidelines forbid checking in API keys.
-#
-# Defaults route through ``castform.config``: the prod LLM endpoint is
-# ``https://llm.castform.com/v1`` and the platform control plane is
-# ``https://api.castform.com``. Point at a different environment by setting
-# ``CASTFORM_BASE_DOMAIN`` (or override URLs individually via
-# ``CASTFORM_PLATFORM_URL`` / ``CASTFORM_LLM_URL``).
-from castform import config, validate_environment
-
-API_KEY = os.environ.get("CASTFORM_API_KEY", "")
-# Local dataset generation only — NOT passed to the env's judge (it resolves its
-# bearer via the platform act-as seam; see constructor_args below).
-LLM_API_KEY = os.environ.get("CASTFORM_LLM_API_KEY") or API_KEY
 LLM_BASE_URL = config.llm_url()
-BASE_URL = config.platform_url()
-EXPERIMENT_NAME = "telestich-2026-04-25"
-EXPERIMENT_PREFIX = "telestich"
-# Dataset sits next to this script so the example runs from any cwd.
+LLM_API_KEY = os.environ.get("CASTFORM_LLM_API_KEY") or os.environ.get(
+    "CASTFORM_API_KEY", ""
+)
 DATASET_PATH = str(Path(__file__).parent / "telestich_dataset.jsonl")
 NUM_EXAMPLES = 400
 CONCURRENCY = 15
-# Trainer model — the launch `model` arg selects the trainer YAML (and thus the GPU
-# pool) server-side. Supported: "Qwen/Qwen3.5-4B" (gpu4) or "Qwen/Qwen3.5-35B-A3B"
-# (gpu8). Override via TELESTICH_MODEL.
-MODEL = os.environ.get("TELESTICH_MODEL", "Qwen/Qwen3.5-4B")
-# Validation uses an inference model to exercise the environment before launch.
-VALIDATE_MODEL = os.environ.get("TELESTICH_VALIDATE_MODEL", "gpt-5.4-mini")
-# Run name — defaults to a unique telestich-full-<uuid>. Override via TELESTICH_RUN_NAME.
-RUN_NAME = os.environ.get("TELESTICH_RUN_NAME", "")
 
-# Remote-rollout imports, declared explicitly at the script boundary. Local
-# ``telestich_env`` source is captured automatically by BenchMax.
-RUNTIME_DEPENDENCIES = ["english_words", "openai", "pronouncing", "wordfreq"]
-
-# (model, weight). Weights reflect observed reliability on our checks:
-# - Both grok models leak banned example words and rubber-stamp the CoT self-check.
-# - gpt-5.4-nano fails the exclusive-bullet and banned-list rules more than the
-#   other gpt-5.4 variants, so it's downweighted too.
+# Generation model mix (name, sampling weight)
 MODELS = [
     ("grok-4-1-fast-non-reasoning", 0.20),
     ("gpt-5.4", 0.35),
@@ -89,11 +41,6 @@ MANDARIN_MODELS = [
     "gpt-5.4-mini",
     "gpt-5.4-nano",
 ]
-
-# ══════════════════════════════════════════════════════════════════════
-# DATASET GENERATION
-# Sampling axes and prompt construction for creating new training examples.
-# ══════════════════════════════════════════════════════════════════════
 
 # ── Diversity axes ──
 # Abstract concept descriptions only. No illustrative example words — the
@@ -543,152 +490,3 @@ def load_dataset(path):
     with open(path) as f:
         examples = [json.loads(line) for line in f if line.strip()]
     return examples
-
-
-# ── Dataset loading for the trainer ──
-def get_dataset():
-    """Load the curated English dataset IN ORDER. The file is already English-only
-    (no Mandarin filter needed) and ordered to favor simpler examples first, so we
-    do NOT shuffle — the order IS the curriculum — and do NOT generate; the
-    committed file is the source of truth."""
-    existing = load_dataset(DATASET_PATH)
-    print(f"Dataset: {len(existing)} examples (curriculum order preserved)")
-    return existing
-
-
-def confirm_gpu_launch(run_name: str) -> bool:
-    """Require an explicit acknowledgement before uploading and spending credits."""
-
-    reply = (
-        input(f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] ")
-        .strip()
-        .lower()
-    )
-    return reply in ("y", "yes")
-
-
-def build_training_bundle(constructor_args: dict[str, str]) -> Bundle:
-    return dump_bundle(
-        TelestichEnv,
-        constructor_args=constructor_args,
-        pip_dependencies=RUNTIME_DEPENDENCIES,
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════
-# DEMO: BUNDLE + VIEW
-# ══════════════════════════════════════════════════════════════════════
-# Demonstrates how ``benchmax.bundle`` packages this env class into a
-# ``.pkl`` + ``.json`` pair, and how the captured plaintext source travels
-# alongside the pickle so a UI can show "what code is in this env" without
-# unpickling.
-if __name__ == "__main__":
-    import uuid
-
-    from castform.platform import ensure_session
-    from castform.platform.client import TrainerClient
-    from castform.platform.training_run import upload_training_run
-
-    # Device-auth session bootstrap: browser login if no credential resolves.
-    # After this the platform bearer comes from ~/.castform and resolves per request.
-    ensure_session()
-
-    print(f"Platform URL: {BASE_URL}")
-    print(f"LLM URL:      {LLM_BASE_URL}\n")
-
-    # 1. Build the dataset from the committed seed file (curriculum order). Hold out a
-    #    representative eval set at random; keep TRAIN in curriculum order (simpler first)
-    #    so the difficulty ramp is preserved.
-    examples = get_dataset()
-    if len(examples) < 2:
-        raise SystemExit(f"Need >=2 examples, got {len(examples)}.")
-    n_eval = max(1, len(examples) // 10)
-    eval_idx = set(random.sample(range(len(examples)), n_eval))
-    eval_data = [e for i, e in enumerate(examples) if i in eval_idx]
-    train_data = [e for i, e in enumerate(examples) if i not in eval_idx]
-    print(f"{len(train_data)} train (curriculum order) / {len(eval_data)} eval.\n")
-
-    # Bundle inputs are explicit and script-owned. The local Telestich module is
-    # captured automatically; BenchMax remains an installed runtime dependency
-    # and is never registered for by-value pickling.
-    #
-    # Dataset locations must be known before the bundle is built (constructor
-    # args travel inside the pickle), so pin the upload prefix instead of using
-    # the default content-hashed one.
-    run_name = RUN_NAME or f"telestich-full-{uuid.uuid4().hex[:8]}"
-    dataset_prefix = f"datasets/{run_name}"
-    constructor_args = {
-        "judge_base_url": LLM_BASE_URL,
-        "train_dataset_path": f"{dataset_prefix}/train.jsonl",
-        "eval_dataset_path": f"{dataset_prefix}/eval.jsonl",
-    }
-
-    # 2. Pre-flight: exercise the real group-native environment contract with two
-    #    local sibling rollouts. Hosted validation remains disabled until the
-    #    rollout service supports Environment.run_group.
-    print("\nValidating env (local two-rollout group) ...")
-    validation_env = TelestichEnv(**constructor_args)
-    validation_example = validation_env._example_from_row(train_data[0])
-    validation_report = asyncio.run(
-        validate_environment(
-            validation_env,
-            example=validation_example,
-            model=VALIDATE_MODEL,
-            base_url=LLM_BASE_URL,
-            include_remote=False,
-        )
-    )
-    for rollout_id, outcome in validation_report.local.items():
-        print(
-            f"  {rollout_id}: total={sum(outcome.rewards.values()):.3f} "
-            f"{dict(outcome.rewards)}"
-        )
-    if not validation_report.ok:
-        raise SystemExit(
-            "Env validation failed — aborting before launch (see output above)."
-        )
-
-    # 3. Confirm before uploading or launching. The launch never happens as an
-    #    implicit consequence of data preparation or validation.
-    if not confirm_gpu_launch(run_name):
-        raise SystemExit("Launch aborted.")
-
-    # 4. Build the artifact explicitly in BenchMax, then ask Castform to upload
-    #    that exact bundle alongside this example's datasets.
-    bundle = build_training_bundle(constructor_args)
-    print(f"\nUploading bundle + datasets as {run_name!r} ...")
-    uploaded = upload_training_run(
-        bundle=bundle,
-        train_dataset=train_data,
-        eval_dataset=eval_data,
-        run_name=run_name,
-        base_url=BASE_URL,
-        dataset_prefix=dataset_prefix,
-    )
-    for label, path in (
-        ("env_cls", uploaded.env_cls_path),
-        ("env_metadata", uploaded.env_metadata_path),
-        ("train_dataset", uploaded.train_dataset_path),
-        ("eval_dataset", uploaded.eval_dataset_path),
-    ):
-        print(f"  {label:<14}: {path}")
-
-    # 5. Launch the training run. The model arg selects the trainer YAML/pool
-    #    server-side (Qwen3.5-4B→gpu4, Qwen3.5-35B-A3B→gpu8).
-    print(f"\nLaunching training run (model={MODEL}) ...")
-    with TrainerClient(base_url=BASE_URL) as trainer:
-        run_id = trainer.launch_training_run(
-            env_cls_path=uploaded.env_cls_path,
-            env_metadata_path=uploaded.env_metadata_path,
-            train_dataset_path=uploaded.train_dataset_path,
-            eval_dataset_path=uploaded.eval_dataset_path,
-            name=run_name,
-            # num_epochs: passes over the train set (platform default is 5).
-            # max_rollout_len 3000: a brief reason + 1-2 tool rounds + poem fits well
-            # under this; lowered from 4000 to cut off in-head enumeration rambles
-            # sooner (they truncate to a 0-reward anyway).
-            launcher_args={"model": MODEL, "max_rollout_len": 3000, "num_epochs": 10},
-        )
-
-    print(f"\n✓ Launched run_id={run_id}")
-    print(f"  View / cancel at: {config.web_app_url()}/train/{run_id}")
