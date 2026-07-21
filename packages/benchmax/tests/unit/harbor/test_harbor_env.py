@@ -305,7 +305,7 @@ def test_harbor_can_use_a_private_model_endpoint(tmp_path: Path) -> None:
         ),
         (
             AgentConfig(
-                import_path="tests.new.harbor.test_harbor_env:_UserHarness",
+                import_path="tests.unit.harbor.test_harbor_env:_UserHarness",
                 kwargs={"marker": "custom"},
             ),
             _UserHarness,

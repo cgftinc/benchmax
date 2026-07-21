@@ -19,7 +19,7 @@ from benchmax.envs import (
 )
 from benchmax.envs.base.openai_types import Messages
 from benchmax.rewards import JudgeError
-from tests.new.fakes.model_server import LocalModelServer, completion_response
+from tests.unit.fakes.model_server import LocalModelServer, completion_response
 
 
 class _MathEnv(BaseEnv):

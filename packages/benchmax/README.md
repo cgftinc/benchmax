@@ -83,6 +83,23 @@ rewards = await score_rubrics(
 )
 ```
 
+`InjectedAuth("judge")` is a named reference; the runtime that executes the
+environment binds the real credential for that name with `bind_model_auth`.
+For an external judge endpoint with its own API key, bind `StaticBearerAuth`
+in the runner:
+
+```python
+from benchmax.auth import StaticBearerAuth, bind_model_auth
+
+with bind_model_auth({"judge": StaticBearerAuth(os.environ["JUDGE_API_KEY"])}):
+    outcomes = await env.run_group(requests)
+```
+
+Do not construct `StaticBearerAuth` inside environment code: environment code
+is pickled into the bundle, so the literal token would be written to storage.
+Keep `InjectedAuth` in the environment and choose the provider where the
+environment runs.
+
 `evaluate_single_rubric` and `evaluate_rubric_ranking` return typed results.
 `score_rubrics`, `score_group_rubrics`, and `rank_group_rubrics` turn those
 results into reward maps. Empty completions keep the declared rubric reward

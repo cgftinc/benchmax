@@ -1,35 +1,40 @@
-# BenchMax workspace
+# BenchMax
 
-This workspace contains two independently installable Python distributions:
+BenchMax is a Python SDK for defining and training reinforcement-learning
+environments: tools, rewards and datasets as code. The `castform` package adds
+the Castform platform on top: login, validation, uploads and GPU launches.
 
-- `packages/benchmax`: the platform-independent environment runtime.
-- `packages/castform`: the Castform SDK and CLI, which depends on BenchMax.
+Python 3.12 is required.
 
-Standalone environment projects live under `examples/`.
+## Install
 
-```text
-examples ──> benchmax
-    │
-    └──────> castform        # only when platform features are used
-
-castform ──> benchmax
-benchmax -X-> castform
+```bash
+uv add castform        # or: pip install castform
 ```
 
-BenchMax owns only the portable runtime: environment execution, ordered dataset
-types, rewards, stable identities and bundle construction. Castform owns login,
-platform clients, validation, uploads, launches, hosted corpus/RAG workflows and
-project scaffolding. Each example is a standalone Python 3.12 project with its
-dependencies declared in its own `pyproject.toml`.
+Installing `castform` pulls in `benchmax`. Install `benchmax` alone when you
+only need the environment runtime without any platform integration.
 
-Start a new Castform project with `castform setup`; the generated `main.py` is
-the executable workflow for data preparation, local validation, bundling, upload
-and an explicitly confirmed launch.
+## Get started
 
-## Tests
+```bash
+castform setup
+```
 
-Run each distribution independently so their same-named test packages do not
-collide during collection:
+This signs you in and scaffolds a project whose `main.py` owns the whole
+workflow: bare `python main.py` prepares data and validates the environment
+locally (no GPU), and `python main.py launch` bundles, uploads and starts a
+training run after an explicit confirmation.
+
+Working examples live under [`examples/`](examples/), from a single-turn math
+env to multimodal tool use and third-party Harbor harnesses. For the API,
+see the [BenchMax guide](packages/benchmax/README.md) and the
+[Castform guide](packages/castform/README.md).
+
+## Development
+
+Run each distribution's tests independently so their same-named test packages
+do not collide during collection:
 
 ```bash
 uv run --project packages/benchmax pytest -c packages/benchmax/pytest.ini packages/benchmax/tests
