@@ -1,0 +1,8 @@
+/.env
+/artifacts/
+/eval_dataset.jsonl
+/generated/
+/gitlab_bm25_manifest.json
+/run.py
+/train_dataset.jsonl
+/work/
