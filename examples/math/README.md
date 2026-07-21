@@ -16,6 +16,6 @@ failure-path fixtures. The trainer's pipeline e2e tests build on this example.
 ```bash
 uv sync            # from the benchmax workspace root
 cd examples/math
-uv run python main.py             # data (HF download) → validate (no GPU)
+uv run python main.py             # data (HF download) → validate (no launch)
 uv run python main.py launch      # train on GPUs (asks first; spends credits)
 ```

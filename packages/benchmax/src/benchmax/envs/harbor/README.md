@@ -24,10 +24,7 @@ env = HarborEnv(
     reward_keys=("reward", "partial_credit"),
     eval_ratio=0.1,
     trial=HarborTrialTemplate(
-        agent=TrialAgentConfig(
-            name="mini-swe-agent",
-            model_name="openai/default",
-        ),
+        agent=TrialAgentConfig(name="mini-swe-agent"),
         environment=TrialEnvironmentConfig(type=EnvironmentType.MODAL),
         verifier=TrialVerifierConfig(
             # Use the variable expected by this dataset's verifier.
@@ -75,10 +72,13 @@ either an API key or a JWT plus organization ID, with an optional named target.
 `ModalCredentials` lets the Modal client wait up to 60 seconds for API
 throttling by default; set `max_throttle_wait_seconds=0` to disable that retry.
 
-The rollout request supplies the per-attempt TITO URL and key. `HarborEnv`
-injects them only into the agent configuration and leaves verifier/judge
-configuration untouched. An explicit `agent.model_name` is preserved; when it
-is absent, the request model becomes an OpenAI-qualified Harbor model name.
+The rollout request supplies the per-attempt TITO URL, key, and model.
+`HarborEnv` injects them only into the agent configuration and leaves
+verifier/judge configuration untouched. The request's model is the single
+source of the served model: it becomes an OpenAI-qualified Harbor model name
+(LiteLLM reads the `openai/` prefix as "use the OpenAI adapter against
+`OPENAI_BASE_URL`"), and the constructor rejects a preset `agent.model_name`.
+A harness that needs its own model alias implements that override itself.
 Because agents run inside remote sandboxes, `HarborEnv` declares
 `requires_public_model_endpoint=True` by default so the trainer routes model
 calls through a publicly reachable endpoint; pass `False` only when every

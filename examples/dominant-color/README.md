@@ -16,6 +16,6 @@ responses, with no network or external dataset.
 ```bash
 uv sync            # from the benchmax workspace root
 cd examples/dominant-color
-uv run python main.py             # data → validate (no GPU)
+uv run python main.py             # data → validate (no launch)
 uv run python main.py launch      # train on GPUs (asks first; spends credits)
 ```

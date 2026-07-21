@@ -14,6 +14,6 @@ mid-rollout tool images.
 ```bash
 uv sync            # from the benchmax workspace root
 cd examples/geo3k
-uv run python main.py             # data (HF prefetch) → validate (no GPU)
+uv run python main.py             # data (HF prefetch) → validate (no launch)
 uv run python main.py launch      # train on GPUs (asks first; spends credits)
 ```

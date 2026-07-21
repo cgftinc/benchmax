@@ -199,8 +199,9 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
 
             # Harbor calls the in-sandbox harness an "agent"; this block adapts
             # a private copy of the shared harness template to this attempt:
-            # inject the per-rollout model endpoint and credentials, then
-            # default the model route when the author left model_name unset.
+            # inject the per-rollout model endpoint and credentials, and stamp
+            # the model route from the request (the constructor rejects preset
+            # model_name values, so the request is the single source of truth).
             agent = _prepare_agent_config(self._trial.agent).model_copy(deep=True)
             agent_env = dict(agent.env)
             auth_headers = await request.model_auth.headers_for_request(
@@ -221,7 +222,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                     "OPENAI_API_BASE": request.base_url,
                 }
             )
-            model_name = agent.model_name or _openai_model_name(request.model)
+            model_name = _openai_model_name(request.model)
             agent = agent.model_copy(
                 deep=True,
                 update={"model_name": model_name, "env": agent_env},
@@ -451,8 +452,9 @@ def _openai_model_name(model: str) -> str:
     reads the ``provider/`` prefix to pick an API adapter; a bare HF id such
     as ``Qwen/Qwen3.5-4B`` parses as an unknown provider and fails. Every
     trial talks to the OpenAI-compatible endpoint this env injects as
-    ``OPENAI_BASE_URL``, so ``openai/`` is always the correct route. An
-    explicit ``agent.model_name`` bypasses this default entirely.
+    ``OPENAI_BASE_URL``, so ``openai/`` is always the correct route. The
+    constructor rejects preset ``agent.model_name`` values, so the request
+    is the only source of the served model.
     """
 
     return model if model.startswith("openai/") else f"openai/{model}"
@@ -527,6 +529,16 @@ def _validate_configuration(
         )
     if not isinstance(trial.agent, (AgentConfig, BundledHarborAgent)):
         raise TypeError("trial.agent must be Harbor AgentConfig or BundledHarborAgent")
+    agent_config = (
+        trial.agent.config if isinstance(trial.agent, BundledHarborAgent) else trial.agent
+    )
+    if getattr(agent_config, "model_name", None):
+        raise ValueError(
+            "trial.agent.model_name must be unset: every rollout serves exactly "
+            "the requested model, which HarborEnv routes as openai/<request "
+            "model>. A harness that needs its own alias must implement that "
+            "override itself."
+        )
     if not isinstance(trial.environment, EnvironmentConfig):
         raise TypeError("trial.environment must be Harbor EnvironmentConfig")
     if not isinstance(trial.verifier, VerifierConfig):

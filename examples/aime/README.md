@@ -15,7 +15,7 @@ per-rollout failure settlement.
 uv sync            # from the benchmax workspace root
 cd examples/aime
 # credentials: Modal from ~/.modal.toml
-uv run python main.py             # data (Harbor resolve) → validate: two real Modal trials (no GPU)
+uv run python main.py             # data (Harbor resolve) → validate: two real Modal trials (no launch)
 uv run python main.py launch      # train on GPUs (asks first; spends credits)
 ```
 

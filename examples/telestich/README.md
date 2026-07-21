@@ -13,7 +13,7 @@ curriculum-ordered dataset (`telestich_dataset.jsonl`) and an LLM judge.
 ```bash
 uv sync            # from the benchmax workspace root
 cd examples/telestich
-uv run python main.py             # data (committed jsonl) → validate (no GPU)
+uv run python main.py             # data (committed jsonl) → validate (no launch)
 uv run python main.py launch      # train on GPUs (asks first; spends credits)
 ```
 

@@ -68,7 +68,6 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
     template = HarborTrialTemplate(
         agent=AgentConfig(
             name="mini-swe-agent",
-            model_name="openai/configured-rollout-model",
             env={"AGENT_SETTING": "kept"},
         ),
         environment=EnvironmentConfig(
@@ -140,7 +139,8 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
     for index in (1, 2):
         config = configs[f"rollout-{index}"]
         assert config.environment.kwargs["app_name"] == "benchmax-test"
-        assert config.agent.model_name == "openai/configured-rollout-model"
+        # The request's model is the only source of the served model.
+        assert config.agent.model_name == "openai/trainer-model"
         assert config.agent.env == {
             "AGENT_SETTING": "kept",
             "OPENAI_API_KEY": f"session-key-{index}",
@@ -628,7 +628,7 @@ async def test_harbor_malformed_verifier_result_stays_loud_after_sibling_settles
 
 
 @pytest.mark.asyncio
-async def test_harbor_uses_request_model_when_template_omits_one(
+async def test_harbor_routes_the_request_model_through_the_openai_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -780,6 +780,19 @@ def test_harbor_env_rejects_configuration_it_cannot_honor(tmp_path: Path) -> Non
             reward_keys=_REWARD_KEYS,
             trial=HarborTrialTemplate(
                 agent=AgentConfig(name="mini-swe-agent", n_concurrent=1),
+                environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
+                verifier=verifier,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="model_name must be unset"):
+        HarborEnv(
+            dataset=dataset,
+            reward_keys=_REWARD_KEYS,
+            trial=HarborTrialTemplate(
+                agent=AgentConfig(
+                    name="mini-swe-agent", model_name="openai/pinned-model"
+                ),
                 environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
                 verifier=verifier,
             ),

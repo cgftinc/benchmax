@@ -16,6 +16,6 @@ contract the base model cannot satisfy without learning.
 ```bash
 uv sync            # from the benchmax workspace root
 cd examples/qwen3-ocr-reverse
-uv run python main.py             # data (synthetic pages) → validate (no GPU)
+uv run python main.py             # data (synthetic pages) → validate (no launch)
 uv run python main.py launch      # train on GPUs (asks first; spends credits)
 ```
