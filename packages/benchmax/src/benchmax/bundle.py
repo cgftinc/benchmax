@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dis
 import hashlib
 import importlib
 import inspect
@@ -7,6 +8,7 @@ import io
 import json
 import logging
 import pickle
+import re
 import site
 import sys
 import threading
@@ -14,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from types import ModuleType
+from types import CodeType, ModuleType
 from typing import Any
 
 import cloudpickle
@@ -222,6 +224,7 @@ def dump_bundle(
             "a versioned package before creating a bundle"
         )
     local_modules = local_modules or []
+    captured_modules = list(local_modules)
     project_roots = _bundle_project_roots(env_class, local_modules)
 
     with _BUNDLE_LOCK:
@@ -285,6 +288,7 @@ def dump_bundle(
                     for mod in new_mods:
                         cloudpickle.register_pickle_by_value(mod)
                         registered.append(mod)
+                        captured_modules.append(mod)
                     pickled = cloudpickle.dumps((env_class, constructor_args))
             finally:
                 for mod in reversed(registered):
@@ -312,6 +316,22 @@ def dump_bundle(
             f"project: {', '.join(undeclared)}. Pass the module object in "
             "local_modules to capture it, or declare its distribution in "
             "pip_dependencies to keep it as a remote dependency."
+        )
+
+    delayed_source_imports = _unsafe_delayed_source_imports(
+        env_class,
+        captured_modules,
+        project_roots,
+        normalized_pip_dependencies,
+    )
+    if delayed_source_imports:
+        raise BundlingError(
+            f"{env_class.__name__}: delayed import of local source cannot be "
+            f"captured safely: {', '.join(delayed_source_imports)}. Move the "
+            "import to module scope so cloudpickle can capture the reference, "
+            "or install the module remotely and declare its distribution in "
+            "pip_dependencies. Passing it in local_modules does not satisfy a "
+            "later import statement."
         )
 
     metadata = BundleMetadata(
@@ -481,6 +501,223 @@ def _undeclared_external_source_refs(
             declared_distributions,
         )
     )
+
+
+def _unsafe_delayed_source_imports(
+    env_class: type[Environment[Any, RolloutAttempt]],
+    captured_modules: Sequence[ModuleType],
+    project_roots: tuple[Path, ...],
+    pip_dependencies: Sequence[str],
+) -> list[str]:
+    """Find ordinary import statements that source capture cannot satisfy.
+
+    Cloudpickle can serialize an eagerly referenced module by value, but it
+    does not register that reconstructed module in ``sys.modules``. An import
+    executed later inside an environment method therefore still asks the
+    remote interpreter for an installed module. Reject local source here
+    instead of producing an artifact that fails only when that method runs.
+
+    Literal calls to ``importlib.import_module`` and ``__import__`` are checked
+    too. Dynamic names assembled at runtime are outside static inspection; they
+    are runtime dependencies and must be declared in ``pip_dependencies``.
+    """
+
+    declared_distributions = _declared_distribution_names(pip_dependencies)
+    imported_names = _delayed_import_names(env_class, captured_modules)
+    unsafe: list[str] = []
+    for module_name in imported_names:
+        is_local_source = _module_is_project_local(module_name, project_roots)
+        is_external_source = _module_is_external_source(module_name, project_roots)
+        if not (is_local_source or is_external_source):
+            continue
+        if _module_has_declared_distribution(module_name, declared_distributions):
+            continue
+        unsafe.append(module_name)
+    return sorted(set(unsafe))
+
+
+def _delayed_import_names(
+    env_class: type[Environment[Any, RolloutAttempt]],
+    captured_modules: Sequence[ModuleType],
+) -> set[str]:
+    names: set[str] = set()
+    seen_code: set[int] = set()
+    seen_values: set[int] = set()
+    captured_names = {module.__name__ for module in captured_modules}
+    source_modules = {env_class.__module__, *captured_names}
+
+    def inspect_value(value: object) -> None:
+        if isinstance(value, (staticmethod, classmethod)):
+            inspect_value(value.__func__)
+            return
+        if isinstance(value, property):
+            for accessor in (value.fget, value.fset, value.fdel):
+                if accessor is not None:
+                    inspect_value(accessor)
+            return
+        value_id = id(value)
+        if value_id in seen_values:
+            return
+        seen_values.add(value_id)
+        if isinstance(value, ModuleType):
+            if value.__name__ not in captured_names:
+                return
+            for member in vars(value).values():
+                if getattr(member, "__module__", None) == value.__name__:
+                    inspect_value(member)
+            return
+        if isinstance(value, type):
+            if value.__module__ not in source_modules:
+                return
+            for member in vars(value).values():
+                inspect_value(member)
+            return
+        code = getattr(value, "__code__", None)
+        owner_module = getattr(value, "__module__", None)
+        if not isinstance(code, CodeType) or owner_module not in source_modules:
+            return
+
+        globals_by_name = getattr(value, "__globals__", {})
+        names.update(
+            _imports_from_code(
+                code,
+                owner_module,
+                seen_code,
+            )
+        )
+        for global_name in _code_names(code):
+            if global_name in globals_by_name:
+                inspect_value(globals_by_name[global_name])
+        for default in getattr(value, "__defaults__", ()) or ():
+            inspect_value(default)
+        for default in (getattr(value, "__kwdefaults__", None) or {}).values():
+            inspect_value(default)
+        for cell in getattr(value, "__closure__", ()) or ():
+            try:
+                inspect_value(cell.cell_contents)
+            except ValueError:
+                pass
+
+    inspect_value(env_class)
+    return names
+
+
+def _imports_from_code(
+    code: CodeType,
+    owner_module: str,
+    seen_code: set[int],
+) -> set[str]:
+    if id(code) in seen_code:
+        return set()
+    seen_code.add(id(code))
+
+    names: set[str] = set()
+    instructions = tuple(dis.get_instructions(code))
+    names.update(_literal_dynamic_imports(instructions))
+    for index, instruction in enumerate(instructions):
+        if instruction.opname != "IMPORT_NAME" or not isinstance(
+            instruction.argval, str
+        ):
+            continue
+        level = 0
+        fromlist: object = None
+        if index >= 2:
+            level_instruction = instructions[index - 2]
+            fromlist_instruction = instructions[index - 1]
+            if level_instruction.opname == "LOAD_CONST" and isinstance(
+                level_instruction.argval, int
+            ):
+                level = level_instruction.argval
+            if fromlist_instruction.opname == "LOAD_CONST":
+                fromlist = fromlist_instruction.argval
+        resolved = _resolve_import_name(
+            instruction.argval,
+            owner_module=owner_module,
+            level=level,
+        )
+        if resolved:
+            names.add(resolved)
+            if not instruction.argval and isinstance(fromlist, tuple):
+                names.update(
+                    f"{resolved}.{item}"
+                    for item in fromlist
+                    if isinstance(item, str) and item != "*"
+                )
+
+    for constant in code.co_consts:
+        if isinstance(constant, CodeType):
+            names.update(_imports_from_code(constant, owner_module, seen_code))
+    return names
+
+
+def _code_names(code: CodeType) -> set[str]:
+    names = set(code.co_names)
+    for constant in code.co_consts:
+        if isinstance(constant, CodeType):
+            names.update(_code_names(constant))
+    return names
+
+
+def _literal_dynamic_imports(
+    instructions: Sequence[dis.Instruction],
+) -> set[str]:
+    """Recognize literal dynamic imports without pretending to solve inference."""
+
+    imports: set[str] = set()
+    boundary_opnames = {"CALL", "RETURN_VALUE", "YIELD_VALUE"}
+    for call_index, instruction in enumerate(instructions):
+        if instruction.opname != "CALL":
+            continue
+        start = call_index - 1
+        while start >= 0 and instructions[start].opname not in boundary_opnames:
+            start -= 1
+        call_setup = instructions[start + 1 : call_index]
+        uses_import_callable = any(
+            (
+                item.opname == "LOAD_GLOBAL"
+                and item.argval in {"__import__", "import_module"}
+            )
+            or (
+                item.opname in {"LOAD_ATTR", "LOAD_METHOD"}
+                and item.argval == "import_module"
+            )
+            for item in call_setup
+        )
+        if not uses_import_callable:
+            continue
+        module_name = next(
+            (
+                item.argval
+                for item in call_setup
+                if item.opname == "LOAD_CONST"
+                and isinstance(item.argval, str)
+                and item.argval
+            ),
+            None,
+        )
+        if module_name is not None:
+            imports.add(module_name)
+    return imports
+
+
+def _resolve_import_name(
+    name: str,
+    *,
+    owner_module: str,
+    level: int,
+) -> str | None:
+    if level == 0:
+        return name or None
+    owner = sys.modules.get(owner_module)
+    package = getattr(owner, "__package__", None) if owner is not None else None
+    if not package:
+        package = owner_module.rpartition(".")[0]
+    if not package:
+        return None
+    try:
+        return importlib.util.resolve_name(f"{'.' * level}{name}", package)
+    except (ImportError, ValueError):
+        return None
 
 
 def _declared_distribution_names(pip_dependencies: Sequence[str]) -> set[str]:

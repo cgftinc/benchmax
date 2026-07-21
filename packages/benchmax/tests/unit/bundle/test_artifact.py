@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import sys
 from importlib.metadata import version
 
@@ -81,30 +80,30 @@ def test_metadata_rejects_repeated_distribution_targets(
         _metadata(pip_dependencies=dependencies)
 
 
-def test_metadata_json_is_canonical_and_reads_legacy_json() -> None:
+def test_metadata_json_is_canonical() -> None:
     metadata = _metadata(pip_dependencies=["Requests >= 2"])
 
     assert metadata.to_json_bytes() == (
-        b'{"benchmax_version":"0.1.0","env_class_source":'
-        b'"class ExampleEnv: ...\\n","pip_dependencies":["requests>=2"],'
+        b'{"benchmax_version":"0.1.0",'
+        b'"env_class_source":'
+        b'"class ExampleEnv: ...\\n",'
+        b'"pip_dependencies":["requests>=2"],'
         b'"python_version":"3.12"}'
     )
-
-    legacy = json.dumps(
-        {
-            "pip_dependencies": ["Requests >= 2"],
-            "python_version": "3.12",
-            "benchmax_version": "0.1.0",
-            "env_class_source": "class ExampleEnv: ...\n",
-        }
-    ).encode()
+    # Round-trips, and tolerates unknown legacy keys (old bundles carried
+    # runtime digests and pickle checksums).
+    legacy = (
+        b'{"benchmax_runtime_digest":"legacy","pickled_sha256":"abc",'
+        + metadata.to_json_bytes()[1:]
+    )
     assert BundleMetadata.from_json_bytes(legacy) == metadata
+    assert BundleMetadata.from_json_bytes(metadata.to_json_bytes()) == metadata
 
 
 def test_bundle_digest_covers_pickle_and_canonical_metadata() -> None:
     baseline = Bundle(b"pickle", _metadata(pip_dependencies=["requests>=2"]))
     equivalent = Bundle(b"pickle", _metadata(pip_dependencies=["Requests >= 2"]))
-    changed_pickle = Bundle(b"pickle-2", baseline.metadata)
+    changed_pickle = Bundle(b"pickle-2", _metadata())
     changed_metadata = Bundle(
         b"pickle",
         _metadata(pip_dependencies=["requests>=2"], benchmax_version="0.2.0"),
