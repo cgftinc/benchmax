@@ -54,6 +54,7 @@ _TEMPLATE_SEEDS = {
         "main": "generic_main.py",
         "train": "generic_train_dataset.jsonl",
         "eval": "generic_eval_dataset.jsonl",
+        "tests": "generic_env_tests.py",
     },
     "rag": {
         "main": "rag_main.py",
@@ -307,6 +308,25 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 log=log,
             )
         )
+        # tests/ mirrors the examples' layout: conftest pins the import path,
+        # and templates with a deterministic reward seed a reward test to grow.
+        env_writes.append(
+            _write(
+                target / "tests" / "conftest.py",
+                (root / "tests_conftest.py").read_text("utf-8"),
+                force=False,
+                log=log,
+            )
+        )
+        if "tests" in seed:
+            env_writes.append(
+                _write(
+                    target / "tests" / "test_env.py",
+                    (root / seed["tests"]).read_text("utf-8"),
+                    force=False,
+                    log=log,
+                )
+            )
         env_writes.append(
             _write(
                 target / "eval.jsonl",
@@ -333,7 +353,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 (
                     "env template",
                     env_writes,
-                    f"pyproject + main.py + datasets ({args.template})",
+                    f"pyproject + main.py + datasets + tests ({args.template})",
                 )
             )
         label_w = max(len(label) for label, _, _ in groups)

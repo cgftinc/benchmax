@@ -17,28 +17,16 @@ uv run python main.py             # data (committed jsonl) → validate (no GPU)
 uv run python main.py launch      # train on GPUs (asks first; spends credits)
 ```
 
-`TelestichEnv` rewards a model for writing **telestich** poems — poems where the
-last letter of each line, read top to bottom, spells out a hidden target word
-given in the prompt. English-only.
+Dependencies pulled in by `uv sync`: `english_words` and `wordfreq` for
+real-word validity checks, `pronouncing` for CMU rhyme scoring. The judge uses
+an OpenAI-compatible endpoint; the `feedback` tool is fully deterministic — no
+LLM.
 
-## Installation
-
-```bash
-uv sync
-```
-
-Includes:
-- `english_words`, `wordfreq` — real-word validity checks
-- `pronouncing` — CMU rhyme scoring for the rhyme bonus
-
-The judge uses an OpenAI-compatible endpoint (`openai`). The `feedback` tool is
-fully deterministic — no LLM.
-
-## Usage
+Constructing the environment directly:
 
 ```python
 from benchmax.envs import InjectedAuth
-from telestich_env import TelestichEnv
+from main import TelestichEnv
 
 env = TelestichEnv(
     judge_base_url=...,
@@ -53,7 +41,8 @@ explicitly.
 Each dataset example is
 `{"prompt": str, "ground_truth": <hidden word>, "acceptable_refs": [poem, ...],
 "great_refs": [poem, ...]}`. The two reference sets are the quality **anchors**
-the judge ranks against (generated offline).
+the judge ranks against (generated offline by `telestich_datagen.py`; the
+committed `telestich_dataset.jsonl` is the source of truth).
 
 ## Tools
 
@@ -116,20 +105,3 @@ The `acceptable` (competent-but-plain) and `great` (excellent) references are
 generated offline and cached per example; missing anchors degrade gracefully
 (against none it's pure relative ranking). Every rollout logs one path-revealing
 line, and correct poems get a full per-component breakdown.
-
-## Example
-
-[`example.py`](example.py) generates a dataset, bundles this env, and launches a
-training run. Run it from this example project:
-
-```bash
-uv run python example.py
-```
-
-Auth uses the device-auth session (a browser login is opened automatically if
-`~/.castform` has no valid session) — no API key needed.
-
-`telestich_dataset.jsonl` (next to the script) is the curated English seed dataset
-(curriculum-ordered). Set `TELESTICH_FULL_RUN=1` for a real run on the full set;
-the default is a 2-example smoke that exercises generate → bundle → upload →
-launch.

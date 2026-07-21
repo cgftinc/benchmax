@@ -41,7 +41,9 @@ Do not call the baseline green when:
 
 ## Targeted checks
 
-Before launch, add unit tests for empty, wrong, partial and correct answers. Exercise
+Before launch, add unit tests for empty, wrong, partial and correct answers. Put
+them in `tests/` next to `main.py` (its `conftest.py` pins the import path so
+`from main import ...` resolves) and run `uv run pytest tests`. Exercise
 tool exceptions and judge exceptions and assert the failure termination reason,
 zeroed declared shape and log message. For a group-relative reward, verify that one
 failed sibling does not alter successful siblings' scoring inputs.

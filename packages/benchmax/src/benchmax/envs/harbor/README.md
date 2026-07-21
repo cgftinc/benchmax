@@ -79,26 +79,19 @@ The rollout request supplies the per-attempt TITO URL and key. `HarborEnv`
 injects them only into the agent configuration and leaves verifier/judge
 configuration untouched. An explicit `agent.model_name` is preserved; when it
 is absent, the request model becomes an OpenAI-qualified Harbor model name.
+Because agents run inside remote sandboxes, `HarborEnv` declares
+`requires_public_model_endpoint=True` by default so the trainer routes model
+calls through a publicly reachable endpoint; pass `False` only when every
+sandbox can reach the trainer network directly.
 `reward_keys` must name the complete shape produced by this verifier. Harbor
 does not expose that schema itself, so BenchMax requires it explicitly instead
 of guessing from another rollout.
 
-Some Harbor verifiers accept credentials only as static environment variables.
-For local execution, keep such a config out of serialized bundles explicitly:
-
-```python
-from benchmax.envs.harbor import RuntimeOnlyHarborVerifier
-
-verifier = RuntimeOnlyHarborVerifier(
-    TrialVerifierConfig(env={"JUDGE_API_KEY": runtime_judge_key})
-)
-```
-
-`RuntimeOnlyHarborVerifier` deep-copies the config, redacts its representation,
-and refuses serialization. `HarborEnv` retains the wrapper and creates an
-ordinary verifier config only when constructing each concrete local trial. It
-does not provide credential injection or rotation; use a runtime-owned proxy or
-session credential before enabling remote bundles for these verifiers.
+Harbor verifiers accept credentials only as static environment variables, so a
+verifier credential such as a judge API key is a fixed per-bundle value in
+`TrialVerifierConfig(env=...)`, exactly like the sandbox credential pair. Use a
+dedicated, revocable key rather than a personal one. Per-request rotation would
+require Harbor-side support for runtime verifier credentials.
 
 Agent timeouts, context/output limits, nonzero harness exits, and sandbox,
 verifier, transport, or provider failures are logged and returned with the
@@ -118,7 +111,9 @@ or `harbor[daytona]>=0.18,<0.19`.
 BenchMax owns rollout-group concurrency. A caller or trainer may add retry policy
 around that contract; BenchMax itself does not retry a group. Harbor's job-queue-
 only `agent.n_concurrent` and `agent.concurrency_group` settings are rejected
-rather than silently ignored.
+rather than silently ignored. `max_concurrent_trials` caps how many sandbox
+trials this environment runs at once (unbounded by default); use it when the
+sandbox provider throttles concurrent sessions.
 
 ## Bundled custom agents
 

@@ -10,8 +10,15 @@ uv run python main.py validate   # one local group with two siblings; no GPU
 uv run python main.py launch     # validate, confirm cost, upload and launch
 ```
 
-Bare `uv run python main.py` runs data preparation followed by validation and
-then stops. A launch is always a separate, confirmed action.
+Bare `uv run python main.py` (the `all` stage) runs data preparation followed by
+validation and then stops. A launch is always a separate, confirmed action.
+`--force` regenerates data that already exists; `-y`/`--yes` skips launch
+confirmation prompts.
+
+Unit tests live in `tests/` next to `main.py` (a `conftest.py` there pins the
+import path so `from main import ...` works). Run them with
+`uv run pytest tests`, and grow them alongside the reward: cover empty, wrong,
+partial and correct answers.
 
 ## Work with your agent
 

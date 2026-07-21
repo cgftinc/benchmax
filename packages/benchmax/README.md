@@ -36,6 +36,10 @@ class AnswerEnv(BaseEnv):
 `Example` objects and may keep lightweight references in each payload instead of
 materializing large data in memory.
 
+Each `RolloutRequest` carries a `split` (`"train"` by default) so custom
+`run_rollout`/`run_group` implementations can tell training traffic from
+evaluation traffic without out-of-band state.
+
 `reward_keys` is authoritative. A successful rollout must return exactly those
 keys. Operational failures keep the same shape with every value set to zero,
 record the reason in `termination_reason`, and are logged without cancelling
@@ -138,10 +142,9 @@ BenchMax only prepares the bundle. Uploading it and launching a hosted run belon
 to the platform integration chosen by the caller. `bundle_digest` is the
 artifact identity for storage and caching; it covers both the exact pickle and
 canonical metadata. Execution runtimes can call `validate_bundle_compatibility`
-on metadata before installing dependencies or unpickling. Python and BenchMax
-versions must both match exactly, and a source digest distinguishes runtime
-revisions that share a development version. Metadata also checksums the pickle,
-so mixing the two files from different bundles fails before unpickling.
+on metadata before installing dependencies or unpickling. The Python version
+must match exactly and the BenchMax version must share the runtime's
+major.minor series; patch releases load each other's bundles.
 
 ## Breaking-version policy
 

@@ -1,7 +1,3 @@
-<picture>
-  <img alt="BenchMax" src="./packages/benchmax/static/benchmax.png" width="100%">
-</picture>
-
 # BenchMax workspace
 
 This workspace contains two independently installable Python distributions:

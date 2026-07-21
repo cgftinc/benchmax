@@ -15,7 +15,7 @@ the agent loop, and the trainer only sees rollouts.
 uv sync            # from the benchmax workspace root
 cd examples/harvey
 # credentials: Modal from ~/.modal.toml, judge key from HARVEY_JUDGE_API_KEY
-uv run python main.py             # validate: two real Modal trials (no GPU)
+uv run python main.py             # data (Harbor resolve) → validate: two real Modal trials (no GPU)
 uv run python main.py launch      # train on GPUs (asks first; spends credits)
 ```
 
@@ -35,7 +35,7 @@ key rather than a personal one:
 
 ```python
 from benchmax.envs.harbor import ModalCredentials
-from harvey_env import HarveyLabHarborEnv
+from main import HarveyLabHarborEnv
 
 env_args = {
     "sandbox_credentials": ModalCredentials(
