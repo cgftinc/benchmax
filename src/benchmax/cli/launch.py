@@ -297,7 +297,8 @@ def _cmd_launch_sft(
     }
     # --model wins over LAUNCH_CONFIG and --set: the training model is a real
     # launcher arg, and the CLI flag is the highest-precedence override (as in rl).
-    if args.model:
+    # `is not None` so an explicit empty --model still overrides, not just truthy ones.
+    if args.model is not None:
         launcher_args["model"] = args.model
     run_name = args.name or lc.get("name") or "sft-run"
 

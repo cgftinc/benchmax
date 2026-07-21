@@ -84,6 +84,25 @@ class TestMessageText:
         }
         assert message_text(message) == "kept"
 
+    def test_explicit_null_type_skipped(self):
+        # an explicit null type is a declared (non-text) type, not an absent key
+        message = {
+            "role": "user",
+            "content": [
+                {"type": None, "text": "x"},
+                {"type": "text", "text": "kept"},
+            ],
+        }
+        assert message_text(message) == "kept"
+
+    def test_type_absent_text_part_still_read(self):
+        # regression: a part with no "type" key keeps the lenient text/content read
+        message = {
+            "role": "user",
+            "content": [{"text": "first"}, {"content": "second"}],
+        }
+        assert message_text(message) == "first\nsecond"
+
 
 class TestContentPreview:
     def test_normal_truncation(self):

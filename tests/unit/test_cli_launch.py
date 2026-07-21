@@ -803,6 +803,26 @@ def test_launch_sft_cli_model_wins_over_config_and_set(monkeypatch, tmp_path):
     assert _SftCapturingClient.captured_launch["launcher_args"]["model"] == "qwen-4b"
 
 
+def test_launch_sft_cli_empty_model_still_overrides(monkeypatch, tmp_path):
+    """An explicitly-supplied empty --model ("") is a supplied value, not an
+    absent flag — it must still win over LAUNCH_CONFIG/--set (guard is
+    `is not None`, not truthiness)."""
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nLAUNCH_CONFIG = {"model": "qwen-35b"}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_SFT_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_SFT_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
+
+    assert (
+        launch._cmd_launch(
+            _sft_launch_ns(tmp_path, model="", set=["model=qwen-35b"])
+        )
+        == 0
+    )
+    assert _SftCapturingClient.captured_launch["launcher_args"]["model"] == ""
+
+
 def test_launch_sft_json_output(monkeypatch, tmp_path, capsys):
     # Progress lines ("Validating…", "Uploading…") share stdout with the JSON
     # payload (same pre-existing convention as the rl launch path) — check the

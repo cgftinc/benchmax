@@ -57,18 +57,18 @@ _KNOWN_TEXT_PART_TYPES = frozenset({"text"})
 def _text_bearing_value(item: dict) -> str | None:
     """Return the ``text``/``content`` string value of a part, or ``None``.
 
-    A part with an explicit ``type`` outside the known text types is not
-    text-bearing (its ``text`` key belongs to that other modality). Otherwise
-    only string values count — a non-string ``text``/``content`` (or neither
-    key present) means the part isn't text-bearing.
+    A part that declares a ``type`` (key present) is text-bearing only when
+    that type is a known text type — a null/non-str/other-modality type means
+    its ``text`` key belongs elsewhere and the part is skipped. A part with no
+    ``type`` key falls back to the lenient text/content read. Only string
+    values count — a non-string ``text``/``content`` isn't text-bearing.
     """
-    part_type = item.get("type")
-    # a present type outside the known text types (incl. a malformed non-str
-    # type) means this part isn't text — never hash an unhashable type value
-    if part_type is not None and (
-        not isinstance(part_type, str) or part_type not in _KNOWN_TEXT_PART_TYPES
-    ):
-        return None
+    # key presence distinguishes an explicit null type (declared, so strict)
+    # from an absent type (lenient fallback); never hash an unhashable value
+    if "type" in item:
+        part_type = item["type"]
+        if not isinstance(part_type, str) or part_type not in _KNOWN_TEXT_PART_TYPES:
+            return None
     text = item.get("text")
     if isinstance(text, str):
         return text
