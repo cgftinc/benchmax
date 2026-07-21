@@ -64,8 +64,9 @@ The launch stage must remain visibly ordered:
 BenchMax captures project-local Python modules automatically. For source from a
 different project, either pass the module through `local_modules=` to capture it
 or name its installed distribution in `pip_dependencies` to keep it remote.
-Undeclared cross-project source fails bundling. Do not bundle raw model tokens;
-use `InjectedAuth` for call-time model or judge credentials. Harbor sandbox
+Undeclared cross-project source fails bundling. For Castform model endpoints
+use `InjectedAuth`; only an external endpoint of your own warrants a direct
+`StaticBearerAuth`, whose key is pickled into the bundle. Harbor sandbox
 credentials are currently explicit constructor inputs and deserve extra care when
 reviewing a bundle.
 
