@@ -295,6 +295,10 @@ def _cmd_launch_sft(
         **_launcher_args_from_config(specs, lc),
         **_build_launcher_args(specs, args.set),
     }
+    # --model wins over LAUNCH_CONFIG and --set: the training model is a real
+    # launcher arg, and the CLI flag is the highest-precedence override (as in rl).
+    if args.model:
+        launcher_args["model"] = args.model
     run_name = args.name or lc.get("name") or "sft-run"
 
     # keep the capability check before creating upload artifacts

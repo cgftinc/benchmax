@@ -24,7 +24,6 @@ class ProjectError(Exception):
     """A project couldn't be loaded (missing main.py/dataset, or no/ambiguous env)."""
 
 
-# Allowed values for the TRAINING_MODE module attribute (see _read_training_mode).
 TRAINING_MODES = frozenset({"rl", "sft"})
 
 

@@ -85,7 +85,7 @@ class SftValidationReport:
     Bool-castable so gate code reads identically to ``ValidationReport``::
 
         if not validate_sft_dataset(train, eval_dataset):
-            raise SystemExit("Fix the dataset before launching.")
+            raise SystemExit("fix the dataset before launching.")
     """
 
     issues: list[SftIssue] = field(default_factory=list)

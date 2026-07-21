@@ -354,6 +354,24 @@ class TestToolCallErrors:
         errors = validate_row(row)
         assert any("must be valid JSON" in e for e in errors)
 
+    def test_tool_call_arguments_deeply_nested_json_is_reported_not_raised(self):
+        # deeply nested arguments overflow json's parser stack (RecursionError);
+        # validation must report it as invalid JSON, never crash with a traceback
+        deep = "[" * 20000 + "]" * 20000
+        row = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "1", "type": "function", "function": {"name": "f", "arguments": deep}}
+                    ],
+                }
+            ]
+        }
+        errors = validate_row(row)  # must not raise RecursionError
+        assert any("must be valid JSON" in e for e in errors)
+
     def test_tool_calls_not_a_list(self):
         row = {"messages": [{"role": "assistant", "content": None, "tool_calls": "oops"}]}
         errors = validate_row(row)

@@ -1217,6 +1217,23 @@ def test_launch_sft_run_propagates_401_as_authentication_error():
     assert exc_info.value.status_code == 401
 
 
+def test_launch_sft_run_propagates_403_untranslated():
+    """A 403 (forbidden) is a real launch failure, not the unknown-arg
+    rejection — it must propagate as JobLaunchError, never translated to the
+    env-less-SFT error (which is reserved for the training_mode-arg 4xx)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": "forbidden"})
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(JobLaunchError) as exc_info:
+        trainer.launch_sft_run("r", train_dataset_path="a")
+
+    assert type(exc_info.value) is JobLaunchError
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.message == "forbidden"
+
+
 def test_launch_sft_run_unsupported_message_is_lowercase_display_copy():
     """Regression: user-facing display copy stays lowercase (house rule) —
     sentence starts must not be capitalized. Proper nouns / machine codes

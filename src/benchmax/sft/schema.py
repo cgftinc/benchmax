@@ -218,7 +218,9 @@ def _validate_tool_calls(tool_calls: Any, index: int) -> list[str]:
         else:
             try:
                 json.loads(arguments, parse_constant=_reject_non_finite_constant)
-            except ValueError:
+            except (ValueError, RecursionError):
+                # deeply nested arguments overflow the parser stack (RecursionError,
+                # not a ValueError) — report as invalid JSON, never crash validation
                 errors.append(
                     f"messages[{index}].tool_calls[{j}].function.arguments must be valid JSON"
                 )

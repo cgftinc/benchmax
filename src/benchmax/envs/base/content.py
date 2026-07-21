@@ -31,8 +31,9 @@ def message_text(message: Mapping[str, Any]) -> str:
 
     Str content is returned unchanged. List content is the string values of
     text-bearing parts (a dict with a ``text`` or ``content`` key), joined
-    with ``"\\n"`` in part order. Image and other non-text parts contribute
-    nothing. ``None``/missing content returns ``""``.
+    with ``"\\n"`` in part order. A part carrying an explicit ``type`` that
+    isn't a known text type (image, audio, etc.) contributes nothing, even
+    if it also has a ``text`` key. ``None``/missing content returns ``""``.
     """
     content = message.get("content")
     if isinstance(content, str):
@@ -50,12 +51,24 @@ def message_text(message: Mapping[str, Any]) -> str:
     return "\n".join(parts)
 
 
+_KNOWN_TEXT_PART_TYPES = frozenset({"text"})
+
+
 def _text_bearing_value(item: dict) -> str | None:
     """Return the ``text``/``content`` string value of a part, or ``None``.
 
-    Only string values count — a non-string ``text``/``content`` (or neither
+    A part with an explicit ``type`` outside the known text types is not
+    text-bearing (its ``text`` key belongs to that other modality). Otherwise
+    only string values count — a non-string ``text``/``content`` (or neither
     key present) means the part isn't text-bearing.
     """
+    part_type = item.get("type")
+    # a present type outside the known text types (incl. a malformed non-str
+    # type) means this part isn't text — never hash an unhashable type value
+    if part_type is not None and (
+        not isinstance(part_type, str) or part_type not in _KNOWN_TEXT_PART_TYPES
+    ):
+        return None
     text = item.get("text")
     if isinstance(text, str):
         return text

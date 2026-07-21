@@ -73,6 +73,17 @@ class TestMessageText:
         message = {"role": "assistant", "content": [{"text": ""}, {"text": "kept"}]}
         assert message_text(message) == "\nkept"
 
+    def test_unknown_part_type_skipped(self):
+        # a non-text modality part must not leak its "text" key into the text
+        message = {
+            "role": "user",
+            "content": [
+                {"type": "audio", "text": "transcript"},
+                {"type": "text", "text": "kept"},
+            ],
+        }
+        assert message_text(message) == "kept"
+
 
 class TestContentPreview:
     def test_normal_truncation(self):

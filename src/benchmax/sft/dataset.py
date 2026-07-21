@@ -90,7 +90,9 @@ def load_sft_dataset(path: str | Path) -> SftDataset:
             continue
         try:
             parsed = json.loads(line, parse_constant=_reject_non_finite)
-        except ValueError as exc:
+        except (ValueError, RecursionError) as exc:
+            # deeply nested JSON overflows the parser stack (RecursionError, not a
+            # ValueError) — surface it on the per-line issue path, never as a crash
             load_issues.append(SftIssue(source_path, physical_line, "error", f"invalid JSON: {exc}"))
             continue
         if not isinstance(parsed, dict):

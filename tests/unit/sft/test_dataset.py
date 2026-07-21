@@ -76,6 +76,23 @@ class TestPhysicalLineNumbers:
         assert issue.severity == "error"
         assert "invalid JSON" in issue.message
 
+    def test_deeply_nested_json_line_becomes_issue_not_exception(self, tmp_path):
+        # deeply nested JSON overflows json's parser stack (RecursionError, not a
+        # ValueError); the loader must surface it on the per-line issue path
+        deep = "[" * 20000 + "]" * 20000
+        path = _write(
+            tmp_path,
+            "train.jsonl",
+            deep + "\n"
+            '{"messages": [{"role": "assistant", "content": "b"}]}\n',
+        )
+        dataset = load_sft_dataset(path)  # must not raise RecursionError
+        assert [r.physical_line for r in dataset.rows] == [2]
+        assert len(dataset.load_issues) == 1
+        assert dataset.load_issues[0].physical_line == 1
+        assert dataset.load_issues[0].severity == "error"
+        assert "invalid JSON" in dataset.load_issues[0].message
+
     def test_non_object_json_line_becomes_issue(self, tmp_path):
         path = _write(
             tmp_path,

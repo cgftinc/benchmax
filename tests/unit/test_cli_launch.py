@@ -784,6 +784,25 @@ def test_launch_sft_launcher_args_flow_through(monkeypatch, tmp_path):
     assert _SftCapturingClient.captured_launch["launcher_args"]["max_turns"] == 11
 
 
+def test_launch_sft_cli_model_wins_over_config_and_set(monkeypatch, tmp_path):
+    """`castform launch --model X` (sft) must set the training model at the
+    highest precedence — over LAUNCH_CONFIG['model'] and --set model=..."""
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nLAUNCH_CONFIG = {"model": "qwen-35b"}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_SFT_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_SFT_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
+
+    assert (
+        launch._cmd_launch(
+            _sft_launch_ns(tmp_path, model="qwen-4b", set=["model=qwen-35b"])
+        )
+        == 0
+    )
+    assert _SftCapturingClient.captured_launch["launcher_args"]["model"] == "qwen-4b"
+
+
 def test_launch_sft_json_output(monkeypatch, tmp_path, capsys):
     # Progress lines ("Validating…", "Uploading…") share stdout with the JSON
     # payload (same pre-existing convention as the rl launch path) — check the
