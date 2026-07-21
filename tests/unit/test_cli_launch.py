@@ -79,6 +79,7 @@ class _SlotEnv:
 
 
 class _FakeProject:
+    training_mode = "rl"
     env_class = _SlotEnv
     train_dataset = [{"prompt": "x"}]
     eval_dataset = [{"prompt": "y"}]
@@ -119,6 +120,7 @@ def _launch_ns(**over):
         pip=["mydep"],
         provider="chroma",
         model=None,
+        allow_experimental_weights=False,
         json=True,
     )
     base.update(over)
@@ -508,3 +510,326 @@ def test_launch_rejects_trainer_ref_arg():
 
     with pytest.raises(SystemExit):
         parser.parse_args(["launch", "--trainer-ref", "main"])
+
+
+# --- sft mode (slice 5) -----------------------------------------------------
+
+_SFT_ROW = (
+    '{"messages": [{"role": "user", "content": "hi"}, '
+    '{"role": "assistant", "content": "yo"}]}\n'
+)
+_WEIGHTED_ROW = (
+    '{"messages": [{"role": "user", "content": "hi"}, '
+    '{"role": "assistant", "content": "yo", "weight": 1}]}\n'
+)
+
+
+def _write_sft_project(tmp_path, *, train=_SFT_ROW, eval=_SFT_ROW):
+    (tmp_path / "main.py").write_text('TRAINING_MODE = "sft"\n')
+    (tmp_path / "train_dataset.jsonl").write_text(train)
+    (tmp_path / "eval_dataset.jsonl").write_text(eval)
+    return tmp_path
+
+
+def _sft_launch_ns(tmp_path, **over):
+    base = dict(
+        list_args=False,
+        dir=str(tmp_path),
+        run_file="main.py",
+        module=None,
+        env_class=None,
+        train="train_dataset.jsonl",
+        eval="eval_dataset.jsonl",
+        env_arg=None,
+        set=None,
+        name=None,
+        yes=True,
+        skip_validate=False,
+        pip=None,
+        provider=None,
+        model=None,
+        allow_experimental_weights=False,
+        json=True,
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def _fake_uploaded_sft_run(**kw):
+    from benchmax.platform.training_run import UploadedSftRun
+
+    return UploadedSftRun(
+        train_dataset_path="blob://train", eval_dataset_path="blob://eval"
+    )
+
+
+class _SftCapturingClient:
+    captured_launch: dict = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def list_launch_args(self):
+        return SPECS
+
+    def launch_sft_run(self, **kw):
+        _SftCapturingClient.captured_launch = kw
+        return "sft-run-1"
+
+
+def _patch_sft_launch(monkeypatch, *, upload, launch_supported):
+    monkeypatch.setattr(launch, "TrainerClient", _SftCapturingClient)
+    monkeypatch.setattr("benchmax.platform.training_run.upload_sft_run", upload)
+    monkeypatch.setattr(
+        "benchmax.platform.client.SFT_LAUNCH_SUPPORTED", launch_supported
+    )
+    monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+
+
+def test_launch_sft_not_supported_blocks_before_upload(monkeypatch, tmp_path, capsys):
+    upload_calls: list = []
+
+    def _fake_upload(**kw):
+        upload_calls.append(kw)
+        return _fake_uploaded_sft_run(**kw)
+
+    _write_sft_project(tmp_path)
+    _patch_sft_launch(monkeypatch, upload=_fake_upload, launch_supported=False)
+
+    assert launch._cmd_launch(_sft_launch_ns(tmp_path)) == 1
+    assert upload_calls == []  # no orphaned storage artifacts
+    err = capsys.readouterr().err
+    assert "does not accept env-less sft runs yet" in err
+
+
+def test_launch_sft_supported_uploads_then_launches_in_order(monkeypatch, tmp_path):
+    order: list[str] = []
+
+    def _fake_upload(**kw):
+        order.append("upload")
+        return _fake_uploaded_sft_run(**kw)
+
+    class _OrderedClient(_SftCapturingClient):
+        def launch_sft_run(self, **kw):
+            order.append("launch")
+            return super().launch_sft_run(**kw)
+
+    _write_sft_project(tmp_path)
+    monkeypatch.setattr(launch, "TrainerClient", _OrderedClient)
+    monkeypatch.setattr("benchmax.platform.training_run.upload_sft_run", _fake_upload)
+    monkeypatch.setattr("benchmax.platform.client.SFT_LAUNCH_SUPPORTED", True)
+    monkeypatch.setattr(launch.config, "web_app_url", lambda: "http://x")
+
+    assert launch._cmd_launch(_sft_launch_ns(tmp_path)) == 0
+    assert order == ["upload", "launch"]
+    assert _OrderedClient.captured_launch["train_dataset_path"] == "blob://train"
+    assert _OrderedClient.captured_launch["eval_dataset_path"] == "blob://eval"
+
+
+def test_launch_sft_weight_bearing_blocks_before_upload_without_override(
+    monkeypatch, tmp_path, capsys
+):
+    upload_calls: list = []
+
+    def _fake_upload(**kw):
+        upload_calls.append(kw)
+        return _fake_uploaded_sft_run(**kw)
+
+    _write_sft_project(tmp_path, train=_WEIGHTED_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_upload, launch_supported=True)
+
+    assert (
+        launch._cmd_launch(_sft_launch_ns(tmp_path, allow_experimental_weights=False))
+        == 1
+    )
+    assert upload_calls == []
+    err = capsys.readouterr().err
+    assert "masking" in err
+    assert "--allow-experimental-weights" in err
+
+
+def test_launch_sft_weight_bearing_proceeds_with_override(monkeypatch, tmp_path):
+    upload_calls: list = []
+
+    def _fake_upload(**kw):
+        upload_calls.append(kw)
+        return _fake_uploaded_sft_run(**kw)
+
+    _write_sft_project(tmp_path, train=_WEIGHTED_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_upload, launch_supported=True)
+
+    assert (
+        launch._cmd_launch(_sft_launch_ns(tmp_path, allow_experimental_weights=True))
+        == 0
+    )
+    assert len(upload_calls) == 1
+
+
+def test_launch_sft_invalid_dataset_blocks_before_upload(monkeypatch, tmp_path):
+    upload_calls: list = []
+
+    def _fake_upload(**kw):
+        upload_calls.append(kw)
+        return _fake_uploaded_sft_run(**kw)
+
+    _write_sft_project(tmp_path, train="\n")  # empty train -> not ok
+    _patch_sft_launch(monkeypatch, upload=_fake_upload, launch_supported=True)
+
+    assert launch._cmd_launch(_sft_launch_ns(tmp_path)) == 1
+    assert upload_calls == []
+
+
+def test_launch_sft_weight_bearing_proceeds_with_launch_config_override(
+    monkeypatch, tmp_path
+):
+    """LAUNCH_CONFIG['allow_experimental_weights'] must clear the weight gate the
+    same way --allow-experimental-weights does -- the CLI flag and the config key
+    are equivalent overrides (mirrors sft_main.py's own launch(), which already
+    checks LAUNCH_CONFIG.get("allow_experimental_weights")). Regression:
+    `_cmd_launch_sft` used to check only `args.allow_experimental_weights`."""
+    upload_calls: list = []
+
+    def _fake_upload(**kw):
+        upload_calls.append(kw)
+        return _fake_uploaded_sft_run(**kw)
+
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nLAUNCH_CONFIG = {"allow_experimental_weights": True}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_WEIGHTED_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_WEIGHTED_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_upload, launch_supported=True)
+
+    # the CLI flag is left at its default False -- only the project config opts in
+    assert (
+        launch._cmd_launch(_sft_launch_ns(tmp_path, allow_experimental_weights=False))
+        == 0
+    )
+    assert len(upload_calls) == 1
+    # the key is consumed client-side by the weight gate; it must never reach the
+    # server as a launcher arg (regression: _LAUNCH_CONFIG_RESERVED omitted it)
+    assert _SftCapturingClient.captured_launch["launcher_args"] is None
+
+
+def test_launch_sft_uses_project_validate_config(monkeypatch, tmp_path):
+    """`castform launch` (sft mode) must resolve max_seq_len/max_row_bytes from
+    the project's VALIDATE_CONFIG, same as `castform validate` -- regression:
+    `_cmd_launch_sft` called `validate_sft_dataset` with no kwargs at all, so
+    launch never honored the project's declared budget."""
+    from benchmax.sft.validate import validate_sft_dataset as real_validate_sft_dataset
+
+    captured: dict = {}
+
+    def _spy(*a, **kw):
+        captured.update(kw)
+        return real_validate_sft_dataset(*a, **kw)
+
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nVALIDATE_CONFIG = {"max_seq_len": 5}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_SFT_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_SFT_ROW)
+    monkeypatch.setattr("benchmax.sft.validate_sft_dataset", _spy)
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
+
+    assert launch._cmd_launch(_sft_launch_ns(tmp_path)) == 0
+    assert captured["max_seq_len"] == 5
+
+
+def test_launch_sft_validate_config_max_seq_len_rejects_non_int(monkeypatch, tmp_path):
+    """A malformed VALIDATE_CONFIG value (a string instead of an int) must raise a
+    clean configuration error -- not a raw TypeError deep inside validation."""
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nVALIDATE_CONFIG = {"max_seq_len": "100"}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_SFT_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_SFT_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
+
+    assert launch._cmd_launch(_sft_launch_ns(tmp_path)) == 1
+
+
+def test_launch_sft_allow_experimental_weights_rejects_non_bool_string(
+    monkeypatch, tmp_path
+):
+    """`LAUNCH_CONFIG["allow_experimental_weights"] = "false"` must be rejected
+    outright -- the string "false" is truthy in Python, so resolving it by
+    truthiness would silently CLEAR the experimental-weight safety gate (the
+    opposite of what the user almost certainly meant)."""
+    upload_calls: list = []
+
+    def _fake_upload(**kw):
+        upload_calls.append(kw)
+        return _fake_uploaded_sft_run(**kw)
+
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nLAUNCH_CONFIG = {"allow_experimental_weights": "false"}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_WEIGHTED_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_WEIGHTED_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_upload, launch_supported=True)
+
+    assert launch._cmd_launch(_sft_launch_ns(tmp_path)) == 1
+    assert not upload_calls  # rejected before upload, not silently treated as False
+
+
+def test_launch_sft_launcher_args_flow_through(monkeypatch, tmp_path):
+    _write_sft_project(tmp_path)
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
+
+    assert launch._cmd_launch(_sft_launch_ns(tmp_path, set=["max_turns=11"])) == 0
+    assert _SftCapturingClient.captured_launch["launcher_args"]["max_turns"] == 11
+
+
+def test_launch_sft_cli_model_wins_over_config_and_set(monkeypatch, tmp_path):
+    """`castform launch --model X` (sft) must set the training model at the
+    highest precedence — over LAUNCH_CONFIG['model'] and --set model=..."""
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nLAUNCH_CONFIG = {"model": "qwen-35b"}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_SFT_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_SFT_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
+
+    assert (
+        launch._cmd_launch(
+            _sft_launch_ns(tmp_path, model="qwen-4b", set=["model=qwen-35b"])
+        )
+        == 0
+    )
+    assert _SftCapturingClient.captured_launch["launcher_args"]["model"] == "qwen-4b"
+
+
+def test_launch_sft_cli_empty_model_still_overrides(monkeypatch, tmp_path):
+    """An explicitly-supplied empty --model ("") is a supplied value, not an
+    absent flag — it must still win over LAUNCH_CONFIG/--set (guard is
+    `is not None`, not truthiness)."""
+    (tmp_path / "main.py").write_text(
+        'TRAINING_MODE = "sft"\nLAUNCH_CONFIG = {"model": "qwen-35b"}\n'
+    )
+    (tmp_path / "train_dataset.jsonl").write_text(_SFT_ROW)
+    (tmp_path / "eval_dataset.jsonl").write_text(_SFT_ROW)
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
+
+    assert (
+        launch._cmd_launch(
+            _sft_launch_ns(tmp_path, model="", set=["model=qwen-35b"])
+        )
+        == 0
+    )
+    assert _SftCapturingClient.captured_launch["launcher_args"]["model"] == ""
+
+
+def test_launch_sft_json_output(monkeypatch, tmp_path, capsys):
+    # Progress lines ("Validating…", "Uploading…") share stdout with the JSON
+    # payload (same pre-existing convention as the rl launch path) — check the
+    # payload landed rather than parsing the whole stream as one JSON document.
+    _write_sft_project(tmp_path)
+    _patch_sft_launch(monkeypatch, upload=_fake_uploaded_sft_run, launch_supported=True)
+
+    assert launch._cmd_launch(_sft_launch_ns(tmp_path, json=True)) == 0
+    out = capsys.readouterr().out
+    assert '"run_id": "sft-run-1"' in out

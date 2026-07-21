@@ -212,6 +212,58 @@ def test_setup_template_rag_force_overwrites(tmp_path):
     assert "CustomSearchEnv" in main_py and main_py != "MINE"
 
 
+def test_setup_template_sft_writes_seed(tmp_path):
+    """--template sft writes a main.py the loader discovers as an sft-mode project
+    (TRAINING_MODE = 'sft', no BaseEnv subclass)."""
+    from benchmax.cli._project import _load_module_from_file
+
+    assert setup._cmd_setup(_ns(tmp_path, template="sft")) == 0
+    main_py = (tmp_path / "main.py").read_text()
+    assert 'TRAINING_MODE = "sft"' in main_py
+    assert "VALIDATE_CONFIG = {" in main_py
+    assert "LAUNCH_CONFIG = {" in main_py
+    mod = _load_module_from_file(tmp_path / "main.py")
+    assert mod.TRAINING_MODE == "sft"
+
+
+def test_setup_template_sft_writes_seed_and_datasets(tmp_path):
+    """--template sft ships a runnable main.py + tiny seed datasets (OpenAI
+    fine-tuning `messages` shape) — `load_project` surfaces it as sft-mode with no
+    env class and the on-disk dataset paths (never parsed by `load_project` itself)."""
+    from benchmax.cli._project import load_project
+    from benchmax.sft import load_sft_dataset
+
+    assert setup._cmd_setup(_ns(tmp_path, template="sft")) == 0
+    assert (tmp_path / "main.py").exists()
+    assert (tmp_path / "train_dataset.jsonl").exists()
+    assert (tmp_path / "eval_dataset.jsonl").exists()
+
+    project = load_project(directory=str(tmp_path))
+    assert project.training_mode == "sft"
+    assert project.env_class is None
+    assert project.sft_train_path == tmp_path / "train_dataset.jsonl"
+    assert project.sft_eval_path == tmp_path / "eval_dataset.jsonl"
+
+    train = load_sft_dataset(project.sft_train_path)
+    assert train.rows and "messages" in train.rows[0].data
+
+
+def test_setup_template_sft_refuses_existing_main_py(tmp_path, capsys):
+    """Same hollow-pass guard as generic/rag: existing main.py + no --force must
+    fail loudly and leave the file untouched."""
+    (tmp_path / "main.py").write_text("MINE")
+    assert setup._cmd_setup(_ns(tmp_path, template="sft")) == 1
+    assert (tmp_path / "main.py").read_text() == "MINE"  # untouched
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_setup_template_sft_force_overwrites(tmp_path):
+    (tmp_path / "main.py").write_text("MINE")
+    assert setup._cmd_setup(_ns(tmp_path, template="sft", force=True)) == 0
+    main_py = (tmp_path / "main.py").read_text()
+    assert 'TRAINING_MODE = "sft"' in main_py and main_py != "MINE"
+
+
 def test_setup_force_replaces_main_py_but_keeps_datasets(tmp_path):
     """--force clears the main.py overwrite guard but must NOT clobber datasets —
     real `castform data qa-gen` output is never overwritten by the placeholder seed."""

@@ -1,8 +1,32 @@
 # Castform training project
 
-You are driving a reinforcement-learning run with the `castform` CLI. Keep the
-loop simple: tailor the seed env, make data, validate a cheap baseline on real
-rollouts, then decide whether to iterate or spend GPU on launch.
+You are driving a training run with the `castform` CLI — either a
+reinforcement-learning env or an env-less SFT dataset, see the mode check
+below. Keep the loop simple: tailor the seed, make data, validate a cheap
+baseline, then decide whether to iterate or spend GPU on launch.
+
+## RL project, or SFT project?
+
+Before following the workflow below, check `main.py`'s top for the mode marker
+— don't assume every scaffolded project is a reinforcement-learning env:
+
+- **`TRAINING_MODE = "sft"`** at module level, no `BaseEnv` subclass →
+  an env-less supervised fine-tuning project (`castform setup --template sft`).
+  Skip env design entirely: there is no reward function, no rollout-time tool
+  execution, and no rollout budget to tune (dataset rows may still carry a
+  `tools` list and tool-call demonstrations as static training examples — see
+  generate-data's SFT section). Data is `{"messages": [...]}` rows,
+  `castform validate` is a local, no-rollout dataset check (see
+  verify-environment's SFT section), and `castform launch` currently fails
+  before upload — `benchmax.platform.client.SFT_LAUNCH_SUPPORTED` is `False`
+  (see launch-run's SFT section).
+- **No `TRAINING_MODE` marker, a `BaseEnv` subclass present** → a
+  reinforcement-learning project. The rest of this file, and the workflow
+  below, describes that path.
+
+A `main.py` with neither — no marker and no `BaseEnv` subclass — is not a valid
+`castform` project; `castform validate`/`launch` raise loudly instead of
+guessing which mode was intended.
 
 ## Required workflow
 
@@ -46,18 +70,18 @@ instead of `castform login`.
 
 ## Project files (the convention `castform validate` / `launch` expect)
 
-- `main.py` — defines your environment: a single `BaseEnv` subclass.
+- `main.py` — defines your environment: normally a single `BaseEnv` subclass.
 - `train_dataset.jsonl` / `eval_dataset.jsonl` — one JSON object per line; each
   needs at least a `prompt` (and usually a `ground_truth`).
 
-`castform validate`/`launch` import the one `BaseEnv` subclass from `main.py` and
+`castform validate`/`launch` import the one env subclass from `main.py` and
 load those two files. Keep that layout.
 
 ## The loop
 
 1. **Design the environment** with `design-environment`. `main.py` should expose one
-   `BaseEnv` subclass with `list_tools`, `run_tool`, and `compute_reward` (plus
-   optional `compute_group_reward`). No tools needed? Return `[]`.
+   `BaseEnv` subclass with `list_tools`, `run_tool`, and `compute_reward`.
+   No tools needed? Return `[]`.
 2. **Make the data** with `generate-data`. Keep `train_dataset.jsonl` and
    `eval_dataset.jsonl` disjoint; each row needs the fields your reward reads from
    `task`.
@@ -90,12 +114,9 @@ Rewards are the training signal; robust rewards matter more than anything else.
   missing, citation/style/brevity/tool-use rewards should usually pay `0` (or be
   multiplied by correctness). Otherwise the model can learn to bank bonuses while
   failing the task.
-- **Prefer comparative rewards** for qualitative/LLM-judge scoring: compare the
-  completion against `ground_truth`, or use `compute_group_reward` to *rank*
-  completions within a group rather than score them absolutely. Ranking is far
-  more stable than an absolute 1–10 judge score. A "finer" absolute LLM judge often
-  collapses back to the same 0/1 decisions; use pairwise/listwise ranking when you
-  need tie-breaking resolution.
+- **Use fixed task references** for qualitative/LLM-judge scoring: compare the
+  completion against task-owned `ground_truth`. Group-relative scoring is not
+  part of the current BaseEnv contract.
 <!-- rag:start -->
 - **For RAG, audit the reward before launch** (`castform validate --reward-audit`).
   The `SearchEnv` default already implements the audited shape: it extracts only a
@@ -125,9 +146,8 @@ you call the SDK directly, pass them to `upload_training_run`.
   rollout needs (clients, resolved config, budgets) must be set in `__init__` or it
   won't exist at rollout time.
 - **`max_turns` defaults to 4, `max_tool_calls` to 8.** A multi-turn env that
-  needs more is silently truncated, and the trainer does **not** consult an env's
-  `recommended_max_*` (it never passes the env class to the limit resolver). Set the
-  budget explicitly: `castform validate --max-turns N --max-tool-calls N` (both
+  needs more is silently truncated. Keep executor limits aligned with the env's
+  own enforced limits: `castform validate --max-turns N --max-tool-calls N` (both
   settable) and `castform launch --set max_turns=N`. ⚠ At launch `max_tool_calls` is
   **not** a `--set` knob (stays 8), so a tool-heavy env that makes more than 8 tool
   calls is capped in training — keep its per-rollout tool-call count ≤ 8 unless

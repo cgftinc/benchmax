@@ -65,6 +65,55 @@ signal. (Swap `correct` for your reward component.) Mix in some it gets right so
 the reward **varies** across rollouts — a green baseline needs both. A good mix is
 easy rows plus genuinely hard ones the cheap model reliably misses.
 
+### SFT — the `messages` row format
+
+For an env-less SFT project (`TRAINING_MODE = "sft"`, see design-environment),
+each row is the OpenAI fine-tuning chat format, not `prompt`/`ground_truth`:
+
+```jsonl
+{"messages": [{"role": "user", "content": "Translate 'hello' to French."}, {"role": "assistant", "content": "Bonjour."}]}
+```
+
+`messages` is required (per `benchmax.sft.schema`'s row contract) and every row
+needs at least one trained assistant turn. Two fields are optional: a top-level
+`tools` list (OpenAI tool-call format) and a per-assistant-message `weight` (`0`
+or `1`) to exclude that turn from the loss. `weight` is **experimental** —
+trainer support for it is unconfirmed, so `castform launch` blocks a
+weight-bearing dataset unless you pass `--allow-experimental-weights` (see
+launch-run). Load and validate rows with `benchmax.sft`:
+
+```python
+from benchmax.sft import load_sft_dataset, validate_sft_dataset
+
+train = load_sft_dataset("train_dataset.jsonl")
+report = validate_sft_dataset(train)
+```
+
+`load_sft_dataset` is the only reader for SFT data — it normalizes legacy shapes
+on load (a bare `prompt`/`completion` string, a `prompt_messages`/
+`completion_messages` split, flat tool-call entries), so those are also
+accepted as input and canonicalized into `messages` rows.
+
+A user message's `content` can be a list of parts instead of a plain string —
+e.g. a `text` part plus an `image_url` part — for a vision base model. Build the
+`image_url` value with `benchmax.envs.base.content.image_to_data_uri`, which
+turns a local path or raw bytes into a `data:` URI (an existing `data:`/
+`https:` string passes through unchanged):
+
+```python
+from benchmax.envs.base.content import image_to_data_uri
+
+image_url = image_to_data_uri("figure.png")  # -> "data:image/png;base64,..."
+```
+
+**Deriving SFT rows from traces**: `castform data traces` (below) writes
+RL-shaped `{prompt_messages, ground_truth, rollout_args}` rows, discarding the
+model's actual completion. For SFT, use the same `--dry-run` detected system
+prompt/tools, but keep the completion: append it as a trained
+`{"role": "assistant", ...}` message onto the detected `prompt_messages` to get
+a canonical `messages` row. There is no dedicated traces→SFT command yet — treat
+the detected prompt/tools as the starting point and assemble rows by hand.
+
 <!-- rag:start -->
 ### RAG — generate QA pairs from a corpus
 
@@ -182,11 +231,11 @@ castform data traces --project my-agent            # → train_dataset.jsonl + e
 ```
 
 It fetches the project's traces, detects the **system prompt + tools**, and writes
-`{prompt_messages, ground_truth, init_rollout_args}` rows. **Confirm the detection
+`{prompt_messages, ground_truth, rollout_args}` rows. **Confirm the detection
 first:** `--dry-run` prints the full detected system prompt + tools and writes nothing —
 check they match the agent before generating. Pass `--project-id` (or `BT_PROJECT_ID`)
 instead of `--project` if you have the id, and `--limit N` to cap the fetch. Then author
-the env's `dataset_preprocess` to match those rows — see **design-environment**'s traces
+the env's dataset `row_to_example` callback to match those rows — see **design-environment**'s traces
 note.
 
 > Generated trace rows skew **text-reply heavy**, with action/tool rows landing late in

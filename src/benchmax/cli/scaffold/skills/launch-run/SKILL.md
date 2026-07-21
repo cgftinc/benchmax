@@ -25,6 +25,30 @@ Defaults are fine for a smoke run. For a serious run, set the rollout budget and
 epochs deliberately. If eval falls while train rises, the best checkpoint may be
 before the final step.
 
+## SFT launch (and why it doesn't work yet)
+
+For an env-less SFT project (`TRAINING_MODE = "sft"`, see design-environment),
+`castform launch` follows the same shape — validate gate, then upload, then
+launch — but posts `training_mode: "sft"` instead of bundling an env:
+
+```bash
+castform launch --name my-sft-run
+```
+
+Before that: **the live platform does not accept `training_mode` as a launch
+arg yet.** `benchmax.platform.client.SFT_LAUNCH_SUPPORTED` is `False` as of
+writing, and the CLI checks it *before* uploading anything, so `castform
+launch` on an SFT project fails immediately with a clear error instead of
+orphaning uploaded datasets behind a launch that can't succeed. Don't tell a
+user an SFT project is launch-ready today — the upload→launch path is fully
+implemented and tested, it just has nowhere to land until platform support
+ships. Track `SFT_LAUNCH_SUPPORTED` for when that flips.
+
+A weight-bearing dataset (see generate-data's `weight` field — still
+experimental, unconfirmed trainer support) is separately launch-blocked with
+its own error until you pass `--allow-experimental-weights`, independent of the
+`SFT_LAUNCH_SUPPORTED` gate above.
+
 ## Going deeper
 
 ### Discover the accepted args (don't guess)
@@ -56,7 +80,7 @@ authoritative at runtime):
 | `lora_rank` | `128` | LoRA adapter rank (trainable-parameter count). |
 | `lora_alpha` | `256` | LoRA scaling factor; convention is `2 × lora_rank`. |
 | `max_rollout_len` | model-derived | total tokens across the WHOLE rollout (all turns), not a per-response cap; `> 16384` risks OOM. **`max_response_len` is not a thing** — the server rejects it. Over-budget rollouts are truncated and dropped from the loss, so set it generously while keeping search output compact. |
-| `max_turns` | `4` (trainer default) | max turns per rollout; set it explicitly if your env is multi-turn (the trainer ignores the env's `recommended_max_turns`). |
+| `max_turns` | `4` (trainer default) | max turns per rollout; keep it aligned with the environment's enforced `max_turns`. |
 
 **Tool calls cap at 8 at launch — and you can't raise them.** Unlike `castform validate`
 (which takes `--max-tool-calls`), launch exposes only `max_turns` as a `--set` knob;
@@ -84,7 +108,7 @@ overrides per invocation:
 
 ```python
 LAUNCH_CONFIG = {
-    "max_turns": 7,             # trainer ignores recommended_max_*; bake it here
+    "max_turns": 7,             # keep aligned with the environment limit
     "max_rollout_len": 16384,   # whole-rollout token budget
     "num_epochs": 3,
     # "type": "simple",         # gpu pool; "simple-cpu" for a smoke run

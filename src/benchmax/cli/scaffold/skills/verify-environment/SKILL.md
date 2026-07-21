@@ -74,6 +74,32 @@ wrong source identifier — audit the citation matcher before you trust it.
 > vary: that's fine — verify the reward discriminates via the injected-error check
 > below, try a tougher `--model`, and treat a constant-but-verified reward as launchable.
 
+## SFT validate: local, no rollouts
+
+For an env-less SFT project (`TRAINING_MODE = "sft"`, see design-environment),
+`castform validate` takes a different path entirely: it loads and validates the
+dataset **locally** — no remote rollouts, no LLM calls, no GPU — so it's
+typically fast even on a large file. There is no reward table and no
+`rewards vary` check; row and schema correctness is the whole gate.
+
+```bash
+castform validate                 # loads train_dataset.jsonl (+ eval_dataset.jsonl), validates, exits
+castform validate --json          # machine-readable report
+```
+
+The scorecard reports row counts (train/eval), a char/4-heuristic token-length
+summary (min/max/mean, plus a count of rows over `max_seq_len`), a masking
+summary (`weight` usage — see generate-data, still experimental), and any
+issues as `path:line  message`, each tagged `✗` (error, gate-failing) or `⚠`
+(notice, informational — e.g. `weight` present, or a row near the size limit).
+Exit is `0` iff the report is `ok`: no error-severity issues, and at least one
+train row (an empty/missing train dataset is itself an error; an empty eval
+dataset is only a notice). `--json` emits the same report shape, plus the `ok`
+verdict.
+
+Because nothing rolls out, this validate is safe and cheap to run on every data
+edit — no GPU cost, no waiting on remote infra.
+
 ## Going deeper
 
 ### Read the scorecard, not just the exit code
@@ -94,7 +120,7 @@ Read the card top-down:
   checks
   ✓  no reward errors             2/2 rollouts ok
   ✓  rewards vary across rollouts
-  ·  group reward                 not run (no compute_group_reward)
+  ·  group reward                 legacy check only
 
   ✓ validate passed
   → GREEN baseline — iterate (improve reward/data) or launch.
@@ -110,7 +136,8 @@ Read the card top-down:
   - `rewards vary across rollouts` / `⚠ rewards DON'T vary` (every component
     constant) / `⚠ some components constant` (lists which). Constant = the reward
     isn't discriminating, or the rows are all too easy/hard.
-  - `group reward` — `mean …` (ran), `not run` (no `compute_group_reward`, or the
+  - `group reward` — legacy rollout-service check; it is not part of the clean
+    BaseEnv contract. `mean …` (ran), `not run` (no legacy hook, or the
     server skipped it — expected, not an error), or `⚠ FAILED — …` (it raised or
     broke its contract).
     If a group-only component looks constant in an ungrouped per-example view, verify

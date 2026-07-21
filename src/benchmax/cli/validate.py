@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import json
 import sys
 
@@ -553,10 +554,87 @@ def _print_report(
         )
 
 
+# --- sft scorecard (castform validate on an sft-mode project) --------------
+
+
+def _sft_report_to_dict(report) -> dict:
+    """``report`` (a frozen-dataclass tree) as plain JSON, plus the ``ok`` verdict
+    (a property, not a field)."""
+    out = dataclasses.asdict(report)
+    out["ok"] = report.ok
+    return out
+
+
+def _print_sft_scorecard(report, *, train_label: str, eval_label: str | None) -> None:
+    print(_rule("castform validate — sft"))
+    print(f"  train      {train_label}")
+    print(f"  eval       {eval_label or '(none)'}")
+    print(f"  rows       train {report.train_row_count} · eval {report.eval_row_count}")
+    print()
+
+    stats = report.token_length_stats
+    print("  token length (char/4 heuristic)")
+    print(
+        f"    min {stats.min_tokens}  max {stats.max_tokens}  "
+        f"mean {stats.mean_tokens:.1f}"
+    )
+    if stats.rows_over_max_seq_len:
+        print(f"    ⚠ {stats.rows_over_max_seq_len} row(s) exceed max_seq_len")
+    print()
+
+    masking = report.masking_summary
+    print("  masking")
+    print(f"    rows with weight         {masking.rows_with_weight}")
+    print(f"    trained assistant turns  {masking.trained_assistant_messages}")
+    print(f"    masked assistant turns   {masking.masked_assistant_messages}")
+    print()
+
+    if report.issues:
+        print("  issues")
+        for issue in report.issues:
+            loc = (
+                f"{issue.source_path}:{issue.physical_line}"
+                if issue.source_path
+                else "(dataset)"
+            )
+            symbol = "✗" if issue.severity == "error" else "⚠"
+            print(f"    {symbol} {loc}  {issue.message}")
+        print()
+
+    print("  ✓ validate passed" if report.ok else "  ✗ validate failed")
+
+
+def _cmd_validate_sft(args: argparse.Namespace, project) -> int:
+    from benchmax.sft import load_sft_dataset, sft_validate_kwargs, validate_sft_dataset
+
+    train = load_sft_dataset(project.sft_train_path)
+    eval_dataset = (
+        load_sft_dataset(project.sft_eval_path)
+        if project.sft_eval_path is not None
+        else None
+    )
+    # Same resolution as the scaffold's own validate(): main.py's VALIDATE_CONFIG
+    # bakes in max_seq_len/max_row_bytes so `castform validate` reproduces the
+    # run the project intends without extra flags.
+    report = validate_sft_dataset(
+        train, eval_dataset, **sft_validate_kwargs(project.validate_config)
+    )
+
+    if args.json:
+        print_json(_sft_report_to_dict(report))
+        return 0 if report.ok else 1
+
+    print()
+    _print_sft_scorecard(
+        report,
+        train_label=str(project.sft_train_path),
+        eval_label=str(project.sft_eval_path) if project.sft_eval_path else None,
+    )
+    return 0 if report.ok else 1
+
+
 @handle_errors
 def _cmd_validate(args: argparse.Namespace) -> int:
-    from benchmax.platform.validation import run_validate_probe, validate_env
-
     try:
         project = load_project(
             directory=args.dir,
@@ -569,6 +647,11 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     except ProjectError as exc:
         print_project_error(exc)
         return 1
+
+    if project.training_mode == "sft":
+        return _cmd_validate_sft(args, project)
+
+    from benchmax.platform.validation import run_validate_probe, validate_env
 
     reward_audit = args.reward_audit
     # The audit shows real transcripts (needs message capture) and a clean report,
