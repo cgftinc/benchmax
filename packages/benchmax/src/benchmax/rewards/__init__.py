@@ -6,7 +6,6 @@ from .adaptive import (
 )
 from .cache import AdaptiveRubrics, RubricCache
 from .diversity import (
-    DEFAULT_CLUSTER_PROMPT,
     ClusterResult,
     DiversityConfig,
     LLMDiversityConfig,
@@ -14,7 +13,7 @@ from .diversity import (
     cluster_texts,
     scale_by_diversity,
 )
-from .helpers import (
+from .deterministic import (
     Completion,
     citation_score,
     clip01,
@@ -28,6 +27,7 @@ from .helpers import (
 )
 from .judge import Judge, JudgeError
 from .rubric import (
+    RankingAnchor,
     Rubric,
     RubricEvaluation,
     RubricPolarity,
@@ -43,7 +43,6 @@ from .scoring import (
 )
 
 __all__ = [
-    "DEFAULT_CLUSTER_PROMPT",
     "AdaptiveRubrics",
     "ClusterResult",
     "Completion",
@@ -52,6 +51,7 @@ __all__ = [
     "JudgeError",
     "LLMDiversityConfig",
     "NgramDiversityConfig",
+    "RankingAnchor",
     "Rubric",
     "RubricCache",
     "RubricEvaluation",

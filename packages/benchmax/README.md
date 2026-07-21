@@ -91,6 +91,17 @@ Diversity backends are explicit as well: use `NgramDiversityConfig` for local
 single-linkage clustering or `LLMDiversityConfig(judge=judge)` for semantic
 clustering.
 
+The rewards package follows a deep-module design:
+
+- Callers provide domain intent; modules own prompt structure, authentication
+  retries, parsing, score normalization, clustering, and cache keys.
+- Related values use validated types such as `Judge`, `Rubric`, and
+  `RankingAnchor` instead of parallel parameters or loose dictionaries.
+- Module names describe capabilities (`prompts`, `scoring`, `deterministic`),
+  not visibility or generic “helper” status.
+- A new public abstraction should hide substantially more complexity than it
+  adds to the interface.
+
 ## Bundle an environment
 
 Declare remote runtime dependencies at the script boundary:

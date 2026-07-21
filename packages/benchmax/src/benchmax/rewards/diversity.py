@@ -10,25 +10,9 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 from .judge import Judge, JudgeError
+from .prompts import DEFAULT_DIVERSITY_INSTRUCTIONS, build_diversity_prompt
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_CLUSTER_PROMPT = """\
-You are clustering text entries for a diversity reward.
-
-Context:
-{context}
-
-Cluster the {count} entries below by underlying tactic or approach, rather
-than exact wording. Empty entries and refusals belong to one null cluster.
-Every index from 0 to {last_index} must appear exactly once.
-
-{items}
-
-Return only valid JSON in this shape:
-{{"assignments": [{{"index": 0, "cluster_id": "tactic", "label": "description"}}]}}
-"""
-
 
 @dataclass(frozen=True, slots=True)
 class NgramDiversityConfig:
@@ -49,13 +33,13 @@ class LLMDiversityConfig:
     """Judge-backed semantic clustering configuration."""
 
     judge: Judge
-    prompt_template: str = DEFAULT_CLUSTER_PROMPT
+    instructions: str = DEFAULT_DIVERSITY_INSTRUCTIONS
     max_tokens: int = 512
     temperature: float = 0.0
 
     def __post_init__(self) -> None:
-        if not self.prompt_template.strip():
-            raise ValueError("prompt_template must be non-empty")
+        if not isinstance(self.instructions, str) or not self.instructions.strip():
+            raise ValueError("instructions must be non-empty")
         if self.max_tokens < 1:
             raise ValueError("max_tokens must be positive")
 
@@ -149,16 +133,11 @@ def _cluster_by_ngram(
 async def _cluster_by_llm(
     texts: tuple[str, ...], config: LLMDiversityConfig, context: str
 ) -> ClusterResult:
-    items = "\n\n".join(f"[{index}]\n{text}" for index, text in enumerate(texts))
-    try:
-        prompt = config.prompt_template.format(
-            context=context or "(none)",
-            count=len(texts),
-            last_index=len(texts) - 1,
-            items=items,
-        )
-    except (IndexError, KeyError, ValueError) as error:
-        raise ValueError(f"invalid diversity prompt template: {error}") from error
+    prompt = build_diversity_prompt(
+        texts,
+        context=context,
+        instructions=config.instructions,
+    )
 
     try:
         payload, raw = await config.judge.request_json(

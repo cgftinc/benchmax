@@ -1,3 +1,26 @@
+"""Prompt construction for judge-backed rewards.
+
+This module owns the representation of judge prompts. Reward logic supplies
+domain objects and receives a complete prompt; it does not know template
+placeholders, response numbering, or how existing rubrics are rendered.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .rubric import Rubric
+
+__all__ = [
+    "build_adaptive_rubric_prompt",
+    "build_diversity_prompt",
+    "build_rubric_evaluation_prompt",
+    "build_rubric_ranking_prompt",
+]
+
+
 RUBRIC_EVALUATION_PROMPT = """You are evaluating a response against a specific quality criterion.
 
 **Criterion Type**: {rubric_type}
@@ -176,3 +199,146 @@ Never create positive/negative versions of same criterion:
 
 Generate only the most impactful, non-redundant rubrics revealing meaningful quality differences.
 """
+
+DEFAULT_DIVERSITY_INSTRUCTIONS = """\
+Cluster entries by underlying tactic or approach rather than exact wording.
+Paraphrases of the same tactic belong together. Empty entries and refusals
+belong to one null cluster."""
+
+DIVERSITY_PROMPT = """\
+You are clustering text entries for a diversity reward.
+
+Context:
+{context}
+
+Clustering instructions:
+{instructions}
+
+Every index from 0 to {last_index} must appear exactly once.
+
+{items}
+
+Return only valid JSON in this shape:
+{{"assignments": [{{"index": 0, "cluster_id": "tactic", "label": "description"}}]}}
+"""
+
+
+def build_rubric_evaluation_prompt(
+    rubric: Rubric,
+    *,
+    question: str,
+    response: str,
+    ground_truth: str | None,
+) -> str:
+    """Build a complete prompt for scoring one response."""
+
+    ground_truth_text = str(ground_truth or "").strip()
+    ground_truth_block = (
+        f"**Ground Truth (Optional)**: {ground_truth_text}\n"
+        if ground_truth_text
+        else ""
+    )
+    values = {
+        "rubric_type": rubric.polarity,
+        "title": rubric.title,
+        "description": rubric.description,
+        "question": question,
+        "ground_truth_block": ground_truth_block,
+        "response": response,
+    }
+    if rubric.score_map is None:
+        return RUBRIC_EVALUATION_PROMPT.format(**values)
+    return RUBRIC_RANGED_EVALUATION_PROMPT.format(
+        **values,
+        allowed_scores=", ".join(str(score) for score in rubric.allowed_scores),
+        score_rubric="\n".join(
+            f"- {score}: {rubric.score_map[score]}" for score in rubric.allowed_scores
+        ),
+    )
+
+
+def build_rubric_ranking_prompt(
+    rubric: Rubric,
+    *,
+    question: str,
+    responses: Sequence[str],
+) -> str:
+    """Build a complete prompt for ranking a group of responses."""
+
+    responses_block = "\n\n".join(
+        f"--- Response {index} ---\n{text}"
+        for index, text in enumerate(responses)
+    )
+    return RUBRIC_RANKING_PROMPT.format(
+        rubric_type=rubric.polarity,
+        title=rubric.title,
+        description=rubric.description,
+        question=question,
+        responses_block=responses_block,
+        n_minus_1=len(responses) - 1,
+    )
+
+
+def build_adaptive_rubric_prompt(
+    *,
+    question: str,
+    ground_truth: str,
+    responses: Sequence[str],
+    existing_rubrics: Sequence[Rubric] = (),
+) -> str:
+    """Build a complete prompt for generating discriminative rubrics."""
+
+    response_block = "\n\n".join(
+        f"Response {index}:\n{response}"
+        for index, response in enumerate(responses, start=1)
+    )
+    prompt = (
+        INSTANCE_WISE_RUBRIC_GENERATION_PROMPT
+        + f"\nQuestion: {question}\n"
+        + f"Ground Truth: {ground_truth}\n"
+        + f"Responses:\n{response_block}\n"
+    )
+    existing_text = format_rubrics(existing_rubrics)
+    if existing_text:
+        prompt += f"\nExisting Rubrics:\n{existing_text}\n"
+    return prompt
+
+
+def build_diversity_prompt(
+    texts: Sequence[str],
+    *,
+    context: str = "",
+    instructions: str = DEFAULT_DIVERSITY_INSTRUCTIONS,
+) -> str:
+    """Build a clustering prompt without exposing its formatting contract."""
+
+    if not texts:
+        raise ValueError("diversity prompt requires at least one text")
+    if not isinstance(instructions, str) or not instructions.strip():
+        raise ValueError("diversity instructions must be non-empty")
+    items = "\n\n".join(f"[{index}]\n{text}" for index, text in enumerate(texts))
+    return DIVERSITY_PROMPT.format(
+        context=context or "(none)",
+        instructions=instructions.strip(),
+        last_index=len(texts) - 1,
+        items=items,
+    )
+
+
+def format_rubrics(rubrics: Sequence[Rubric]) -> str | None:
+    """Render rubric definitions for inclusion in a generation prompt."""
+
+    sections: list[str] = []
+    for heading, polarity in (
+        ("Positive rubrics", "positive"),
+        ("Negative rubrics", "negative"),
+    ):
+        selected = tuple(
+            rubric for rubric in rubrics if rubric.polarity == polarity
+        )
+        if selected:
+            sections.append(heading + ":")
+            sections.extend(
+                f"- {rubric.title}: {rubric.description}" for rubric in selected
+            )
+    return "\n".join(sections) if sections else None

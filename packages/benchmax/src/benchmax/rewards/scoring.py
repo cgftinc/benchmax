@@ -10,7 +10,7 @@ from typing import Any
 
 from .adaptive import generate_and_cache_adaptive_rubrics
 from .cache import RubricCache
-from .helpers import Completion, extract_completion_text
+from .deterministic import Completion, extract_completion_text
 from .judge import Judge
 from .rubric import (
     Rubric,

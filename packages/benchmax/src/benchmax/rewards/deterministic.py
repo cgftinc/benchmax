@@ -1,4 +1,4 @@
-"""Small, judge-free reward helpers."""
+"""Deterministic reward primitives that require no model judge."""
 
 from __future__ import annotations
 

@@ -49,6 +49,7 @@ from benchmax.envs.base import resolve_dataset_path
 from benchmax.envs.logging import rollout_context as bind_rollout_context
 from benchmax.rewards import (
     Judge,
+    RankingAnchor,
     Rubric,
     evaluate_rubric_ranking,
     extract_completion_text,
@@ -628,7 +629,7 @@ def _bucket(q: float) -> str:
 
 def _map_correct_score(s: float) -> float:
     """Remap a CORRECT poem's raw rubric band score onto the reward ladder. With
-    band_edges=[ACCEPTABLE_EDGE, GREAT_EDGE] the rubric already returns
+    acceptable/great anchors scored at ACCEPTABLE_EDGE/GREAT_EDGE, the rubric returns
     normal..great as [0.4, 0.7] and above-great as (0.7, 1.0]; we only floor the
     below-normal band [0, 0.4) up to [MIN_CORRECT, 0.4) so the worst correct poem
     still scores MIN_CORRECT, not ~0."""
@@ -1068,9 +1069,7 @@ then stop."""
         self,
         prompt: str,
         poems: list[str],
-        anchors: list[str],
-        band_edges: list[float],
-        anchor_labels: list[str] | None = None,
+        anchors: list[RankingAnchor],
     ) -> list[float]:
         """Quality via the MULTI-ANCHOR rubric judge, returned in `poems` order. With
         ELO_JUDGE (default) each call ranks a small SLICE of poems against both anchors and
@@ -1078,11 +1077,11 @@ then stop."""
         calibrated score per poem — see _quality_elo. ELO_JUDGE=False restores the disjoint
         JUDGE_BATCH ranker: each call ranks ≤JUDGE_BATCH poems against the blind anchors
         (run 0ec8e2dc: full-group 15/36 false-better → batch-of-3 0/36), scores in `poems`
-        order; `anchor_labels` only name the anchors in the debug log."""
+        order."""
         if not poems:
             return []
         if ELO_JUDGE and anchors:
-            return await self._quality_elo(prompt, poems, anchors, band_edges)
+            return await self._quality_elo(prompt, poems, anchors)
 
         async def _score_batch(batch: list[str]) -> list[float]:
             res = await evaluate_rubric_ranking(
@@ -1090,9 +1089,7 @@ then stop."""
                 question=prompt,
                 responses=batch,
                 judge=self._judge,
-                anchors=anchors or None,
-                band_edges=band_edges or None,
-                anchor_labels=anchor_labels or None,
+                anchors=anchors,
             )
             return list(res.scores)
 
@@ -1106,8 +1103,7 @@ then stop."""
         self,
         prompt: str,
         poems: list[str],
-        anchors: list[str],
-        band_edges: list[float],
+        anchors: list[RankingAnchor],
     ) -> list[float]:
         """Slice-and-Bradley-Terry quality scorer (see ELO_JUDGE / _quality). Each judge
         call ranks an ELO_SLICE-sized slice of poems against BOTH anchors (in every call);
@@ -1121,15 +1117,16 @@ then stop."""
         # anchor band edge → fixed BT rating (acceptable edge → 0.0, great edge → GREAT_RATING)
         span = GREAT_EDGE - ACCEPTABLE_EDGE
         fixed = {
-            n + a: (band_edges[a] - ACCEPTABLE_EDGE) / span * ELO_GREAT_RATING
-            for a in range(n_anchors)
+            n + a: (anchor.score - ACCEPTABLE_EDGE) / span * ELO_GREAT_RATING
+            for a, anchor in enumerate(anchors)
         }
 
         async def _slice_pairs(sl: list[int]) -> list[tuple[int, int]]:
             res = await evaluate_rubric_ranking(
                 rubric=QUALITY_RUBRIC,
                 question=prompt,
-                responses=[poems[i] for i in sl] + list(anchors),
+                responses=[poems[i] for i in sl]
+                + [anchor.response for anchor in anchors],
                 judge=self._judge,
             )
             sc = res.scores
@@ -1157,18 +1154,12 @@ then stop."""
         """Rank the CORRECT poems against the acceptable + great anchors; write each
         record's quality (remapped onto the reward ladder), dup-adjusted `q`, and
         `bucket`. Partial poems are handled separately (graded partial_score), not here."""
-        anchors, edges, labels = [], [], []
+        anchors: list[RankingAnchor] = []
         if acceptable:
-            anchors.append(acceptable)
-            edges.append(ACCEPTABLE_EDGE)
-            labels.append("baseline")
+            anchors.append(RankingAnchor(acceptable, ACCEPTABLE_EDGE, "baseline"))
         if great:
-            anchors.append(great)
-            edges.append(GREAT_EDGE)
-            labels.append("great")
-        scores = await self._quality(
-            prompt, [r.poem for r in correct], anchors, edges, labels
-        )
+            anchors.append(RankingAnchor(great, GREAT_EDGE, "great"))
+        scores = await self._quality(prompt, [r.poem for r in correct], anchors)
         dup = duplicate_divisors([r.poem for r in correct])
         for local, r in enumerate(correct):
             ladder = _map_correct_score(scores[local])  # judged band → reward ladder

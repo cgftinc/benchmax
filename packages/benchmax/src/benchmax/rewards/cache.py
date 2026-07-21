@@ -21,24 +21,6 @@ class AdaptiveRubrics:
     def all(self) -> tuple[Rubric, ...]:
         return self.positive + self.negative
 
-    def format_for_prompt(self) -> str | None:
-        """Describe these rubrics for a subsequent generation request."""
-
-        if not self.all:
-            return None
-        sections: list[str] = []
-        for heading, rubrics in (
-            ("Positive rubrics", self.positive),
-            ("Negative rubrics", self.negative),
-        ):
-            if rubrics:
-                sections.append(heading + ":")
-                sections.extend(
-                    f"- {rubric.title}: {rubric.description}" for rubric in rubrics
-                )
-        return "\n".join(sections)
-
-
 @dataclass(frozen=True, slots=True)
 class _Candidate:
     rubric: Rubric
@@ -64,16 +46,10 @@ class RubricCache:
             str, dict[RubricPolarity, dict[str, _Candidate]]
         ] = {}
 
-    @staticmethod
-    def key_for_prompt(prompt: str) -> str:
-        """Return a stable key for a prompt."""
-
-        return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-
     def get(self, prompt: str) -> AdaptiveRubrics:
         """Return the selected rubrics for ``prompt``."""
 
-        entry = self._entries.get(self.key_for_prompt(prompt))
+        entry = self._entries.get(prompt_key(prompt))
         if entry is None:
             return AdaptiveRubrics()
         return AdaptiveRubrics(
@@ -99,7 +75,7 @@ class RubricCache:
         if len(numeric_scores) < 2 or len(set(numeric_scores)) < 2:
             return False
         deviation = float(statistics.pstdev(numeric_scores))
-        key = self.key_for_prompt(prompt)
+        key = prompt_key(prompt)
         entry = self._entries.setdefault(
             key, {"positive": {}, "negative": {}}
         )
@@ -117,17 +93,6 @@ class RubricCache:
                 del candidates[title]
         return rubric.title in retained_titles
 
-    def snapshot(self) -> dict[str, AdaptiveRubrics]:
-        """Return an immutable view of all cache entries, keyed by prompt hash."""
-
-        return {
-            key: AdaptiveRubrics(
-                positive=self._selected(entry["positive"]),
-                negative=self._selected(entry["negative"]),
-            )
-            for key, entry in self._entries.items()
-        }
-
     @staticmethod
     def _selected(candidates: dict[str, _Candidate]) -> tuple[Rubric, ...]:
         return tuple(
@@ -137,3 +102,9 @@ class RubricCache:
                 key=lambda candidate: (-candidate.deviation, candidate.rubric.title),
             )
         )
+
+
+def prompt_key(prompt: str) -> str:
+    """Hash prompts so cache internals do not retain potentially sensitive text."""
+
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()

@@ -7,10 +7,9 @@ import math
 from dataclasses import dataclass
 from typing import Literal, Mapping, Sequence
 
-from ._prompts import (
-    RUBRIC_EVALUATION_PROMPT,
-    RUBRIC_RANGED_EVALUATION_PROMPT,
-    RUBRIC_RANKING_PROMPT,
+from .prompts import (
+    build_rubric_evaluation_prompt,
+    build_rubric_ranking_prompt,
 )
 from .judge import Judge, JudgeError
 
@@ -70,6 +69,30 @@ class Rubric:
 
 
 @dataclass(frozen=True, slots=True)
+class RankingAnchor:
+    """A reference response with a known score on the ranking scale."""
+
+    response: str
+    score: float
+    label: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.response, str) or not self.response.strip():
+            raise ValueError("ranking anchor response must be non-empty")
+        if (
+            isinstance(self.score, bool)
+            or not isinstance(self.score, (int, float))
+            or not math.isfinite(float(self.score))
+            or not 0 <= self.score <= 1
+        ):
+            raise ValueError("ranking anchor score must be within [0, 1]")
+        if self.label is not None and (
+            not isinstance(self.label, str) or not self.label.strip()
+        ):
+            raise ValueError("ranking anchor label must be non-empty or None")
+
+
+@dataclass(frozen=True, slots=True)
 class RubricEvaluation:
     score: float
     reasoning: str
@@ -95,7 +118,12 @@ async def evaluate_single_rubric(
 ) -> RubricEvaluation:
     """Evaluate one response against one rubric."""
 
-    prompt = _evaluation_prompt(rubric, question, response, ground_truth)
+    prompt = build_rubric_evaluation_prompt(
+        rubric,
+        question=question,
+        response=response,
+        ground_truth=ground_truth,
+    )
     try:
         payload, raw = await judge.request_json(
             prompt,
@@ -126,9 +154,7 @@ async def evaluate_rubric_ranking(
     responses: Sequence[str],
     judge: Judge,
     ground_truth: str | None = None,
-    anchors: Sequence[str] | None = None,
-    band_edges: Sequence[float] | None = None,
-    anchor_labels: Sequence[str] | None = None,
+    anchors: Sequence[RankingAnchor] = (),
     below_ground_truth_ceiling: float = 0.3,
     log_result: bool = True,
 ) -> RubricRanking:
@@ -136,10 +162,15 @@ async def evaluate_rubric_ranking(
 
     if not 0 <= below_ground_truth_ceiling <= 1:
         raise ValueError("below_ground_truth_ceiling must be within [0, 1]")
-    clean_anchors, clean_edges, clean_labels = _validate_anchors(
-        anchors, band_edges, anchor_labels
-    )
-    if clean_anchors and ground_truth and ground_truth.strip():
+    ranking_anchors = tuple(anchors)
+    if any(not isinstance(anchor, RankingAnchor) for anchor in ranking_anchors):
+        raise TypeError("anchors must contain RankingAnchor values")
+    if any(
+        left.score > right.score
+        for left, right in zip(ranking_anchors, ranking_anchors[1:])
+    ):
+        raise ValueError("ranking anchors must be ordered from worst to best score")
+    if ranking_anchors and ground_truth and ground_truth.strip():
         raise ValueError("pass ground_truth or anchors, not both")
 
     output_scores = [0.0] * len(responses)
@@ -157,7 +188,7 @@ async def evaluate_rubric_ranking(
         )
 
     use_ground_truth = bool(ground_truth and ground_truth.strip())
-    if len(nonempty) == 1 and not use_ground_truth and not clean_anchors:
+    if len(nonempty) == 1 and not use_ground_truth and not ranking_anchors:
         output_scores[nonempty[0][0]] = 1.0
         return RubricRanking(
             scores=tuple(output_scores),
@@ -173,11 +204,15 @@ async def evaluate_rubric_ranking(
         judged_items.append(str(ground_truth).strip())
 
     anchor_indices: list[int] = []
-    for anchor in clean_anchors:
+    for anchor in ranking_anchors:
         anchor_indices.append(len(judged_items))
-        judged_items.append(anchor)
+        judged_items.append(anchor.response.strip())
 
-    prompt = _ranking_prompt(rubric, question, judged_items)
+    prompt = build_rubric_ranking_prompt(
+        rubric,
+        question=question,
+        responses=judged_items,
+    )
     try:
         payload, raw = await judge.request_json(
             prompt,
@@ -187,12 +222,12 @@ async def evaluate_rubric_ranking(
         positions = _ranking_positions(ranking)
         max_position = float(len(judged_items) - 1)
 
-        if clean_anchors:
+        if ranking_anchors:
             seams = _monotonic_seams(
                 sorted(
                     zip(
                         (positions[index] for index in anchor_indices),
-                        clean_edges,
+                        (anchor.score for anchor in ranking_anchors),
                         strict=True,
                     )
                 )
@@ -241,55 +276,13 @@ async def evaluate_rubric_ranking(
             rubric.polarity,
             result.ranking,
             result.scores,
-            tuple(zip(clean_labels, clean_edges, strict=True)),
+            tuple(
+                (anchor.label or f"anchor@{anchor.score:g}", anchor.score)
+                for anchor in ranking_anchors
+            ),
             result.reasoning,
         )
     return result
-
-
-def _evaluation_prompt(
-    rubric: Rubric,
-    question: str,
-    response: str,
-    ground_truth: str | None,
-) -> str:
-    ground_truth_text = str(ground_truth or "").strip()
-    ground_truth_block = (
-        f"**Ground Truth (Optional)**: {ground_truth_text}\n"
-        if ground_truth_text
-        else ""
-    )
-    common = {
-        "rubric_type": rubric.polarity,
-        "title": rubric.title,
-        "description": rubric.description,
-        "question": question,
-        "ground_truth_block": ground_truth_block,
-        "response": response,
-    }
-    if rubric.score_map is None:
-        return RUBRIC_EVALUATION_PROMPT.format(**common)
-    return RUBRIC_RANGED_EVALUATION_PROMPT.format(
-        **common,
-        allowed_scores=", ".join(str(score) for score in rubric.allowed_scores),
-        score_rubric="\n".join(
-            f"- {score}: {rubric.score_map[score]}" for score in rubric.allowed_scores
-        ),
-    )
-
-
-def _ranking_prompt(rubric: Rubric, question: str, items: Sequence[str]) -> str:
-    responses_block = "\n\n".join(
-        f"--- Response {index} ---\n{text}" for index, text in enumerate(items)
-    )
-    return RUBRIC_RANKING_PROMPT.format(
-        rubric_type=rubric.polarity,
-        title=rubric.title,
-        description=rubric.description,
-        question=question,
-        responses_block=responses_block,
-        n_minus_1=len(items) - 1,
-    )
 
 
 def _required_allowed_score(payload: Mapping[str, object], rubric: Rubric) -> float:
@@ -353,36 +346,6 @@ def _ranking_positions(ranking: Sequence[Sequence[int]]) -> dict[int, float]:
         positions.update({index: midpoint for index in tier})
         offset += len(tier)
     return positions
-
-
-def _validate_anchors(
-    anchors: Sequence[str] | None,
-    band_edges: Sequence[float] | None,
-    labels: Sequence[str] | None,
-) -> tuple[tuple[str, ...], tuple[float, ...], tuple[str, ...]]:
-    if anchors is None and band_edges is None:
-        if labels:
-            raise ValueError("anchor_labels require anchors")
-        return (), (), ()
-    if anchors is None or band_edges is None:
-        raise ValueError("anchors and band_edges must be provided together")
-    if len(anchors) != len(band_edges) or not anchors:
-        raise ValueError("anchors and band_edges must have the same non-zero length")
-    clean_anchors = tuple(str(anchor).strip() for anchor in anchors)
-    if any(not anchor for anchor in clean_anchors):
-        raise ValueError("anchors must be non-empty strings")
-    clean_edges = tuple(float(edge) for edge in band_edges)
-    if any(not math.isfinite(edge) or not 0 <= edge <= 1 for edge in clean_edges):
-        raise ValueError("band_edges must be finite values within [0, 1]")
-    if any(left > right for left, right in zip(clean_edges, clean_edges[1:])):
-        raise ValueError("band_edges must be ordered from worst to best")
-    if labels is None:
-        clean_labels = tuple(f"anchor@{edge:g}" for edge in clean_edges)
-    else:
-        if len(labels) != len(anchors):
-            raise ValueError("anchor_labels must match anchors")
-        clean_labels = tuple(str(label) for label in labels)
-    return clean_anchors, clean_edges, clean_labels
 
 
 def _monotonic_seams(

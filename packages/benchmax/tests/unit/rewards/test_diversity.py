@@ -81,12 +81,18 @@ async def test_llm_clustering_uses_shared_judge_and_typed_result(judge_factory):
     )
     result = await cluster_texts(
         ["one", "two"],
-        LLMDiversityConfig(judge=stub.judge),
+        LLMDiversityConfig(
+            judge=stub.judge,
+            instructions="Cluster by solution strategy.",
+        ),
         context="context",
     )
     assert result.cluster_ids == ("same", "same")
     assert result.labels == ("shared", "shared")
     assert result.divisors == (2.0, 2.0)
+    prompt = stub.calls[0]["messages"][0]["content"]
+    assert "Cluster by solution strategy." in prompt
+    assert "[0]\none" in prompt and "[1]\ntwo" in prompt
 
 
 @pytest.mark.asyncio

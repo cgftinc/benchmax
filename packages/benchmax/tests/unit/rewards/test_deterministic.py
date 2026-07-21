@@ -1,3 +1,5 @@
+"""Tests for deterministic, judge-free reward primitives."""
+
 import math
 
 import pytest

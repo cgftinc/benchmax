@@ -4,6 +4,7 @@ import pytest
 
 from benchmax.rewards import (
     JudgeError,
+    RankingAnchor,
     Rubric,
     RubricEvaluation,
     RubricRanking,
@@ -116,9 +117,10 @@ async def test_ranking_multiple_anchors_interpolates_quality_bands(judge_factory
         Rubric("quality", "is good"),
         question="q",
         responses=["weak", "strong"],
-        anchors=["acceptable", "great"],
-        band_edges=[0.4, 0.7],
-        anchor_labels=["acceptable", "great"],
+        anchors=[
+            RankingAnchor("acceptable", 0.4, "acceptable"),
+            RankingAnchor("great", 0.7, "great"),
+        ],
         judge=stub.judge,
     )
     assert result.scores == pytest.approx((0.0, 0.55))
@@ -149,17 +151,11 @@ async def test_ranking_rejects_bare_integer_tiers(judge_factory):
         )
 
 
-@pytest.mark.asyncio
-async def test_ranking_rejects_partial_anchor_configuration(judge_factory):
-    stub = judge_factory([])
-    with pytest.raises(ValueError, match="provided together"):
-        await evaluate_rubric_ranking(
-            Rubric("quality", "is good"),
-            question="q",
-            responses=["a", "b"],
-            anchors=["anchor"],
-            judge=stub.judge,
-        )
+def test_ranking_anchor_validates_its_own_state():
+    with pytest.raises(ValueError, match="response"):
+        RankingAnchor("", 0.5)
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        RankingAnchor("anchor", 2)
 
 
 @pytest.mark.asyncio
@@ -171,7 +167,19 @@ async def test_ranking_rejects_ground_truth_and_anchors(judge_factory):
             question="q",
             responses=["a"],
             ground_truth="truth",
-            anchors=["anchor"],
-            band_edges=[0.5],
+            anchors=[RankingAnchor("anchor", 0.5)],
+            judge=stub.judge,
+        )
+
+
+@pytest.mark.asyncio
+async def test_ranking_rejects_anchors_in_reverse_score_order(judge_factory):
+    stub = judge_factory([])
+    with pytest.raises(ValueError, match="worst to best"):
+        await evaluate_rubric_ranking(
+            Rubric("quality", "is good"),
+            question="q",
+            responses=["a", "b"],
+            anchors=[RankingAnchor("great", 0.8), RankingAnchor("okay", 0.4)],
             judge=stub.judge,
         )

@@ -6,9 +6,9 @@ import asyncio
 import logging
 from collections.abc import Sequence
 
-from ._prompts import INSTANCE_WISE_RUBRIC_GENERATION_PROMPT
 from .cache import AdaptiveRubrics, RubricCache
 from .judge import Judge, JudgeError
+from .prompts import build_adaptive_rubric_prompt
 from .rubric import Rubric, RubricPolarity, evaluate_single_rubric
 
 logger = logging.getLogger(__name__)
@@ -24,19 +24,12 @@ async def generate_adaptive_rubrics(
 ) -> AdaptiveRubrics:
     """Generate discriminative rubrics for a question and its responses."""
 
-    response_block = "\n\n".join(
-        f"Response {index}:\n{response}"
-        for index, response in enumerate(responses, start=1)
+    prompt = build_adaptive_rubric_prompt(
+        question=question,
+        ground_truth=ground_truth,
+        responses=responses,
+        existing_rubrics=existing_rubrics,
     )
-    prompt = (
-        INSTANCE_WISE_RUBRIC_GENERATION_PROMPT
-        + f"\nQuestion: {question}\n"
-        + f"Ground Truth: {ground_truth}\n"
-        + f"Responses:\n{response_block}\n"
-    )
-    existing_text = _format_rubrics(existing_rubrics)
-    if existing_text:
-        prompt += f"\nExisting Rubrics:\n{existing_text}\n"
 
     try:
         payload, _ = await judge.request_json(
@@ -109,14 +102,6 @@ def _merge_rubrics(*groups: Sequence[Rubric]) -> tuple[Rubric, ...]:
         for rubric in group:
             merged[(rubric.polarity, rubric.title)] = rubric
     return tuple(merged.values())
-
-
-def _format_rubrics(rubrics: Sequence[Rubric]) -> str | None:
-    grouped = AdaptiveRubrics(
-        positive=tuple(rubric for rubric in rubrics if rubric.polarity == "positive"),
-        negative=tuple(rubric for rubric in rubrics if rubric.polarity == "negative"),
-    )
-    return grouped.format_for_prompt()
 
 
 def _parse_generated(
