@@ -23,7 +23,19 @@ _HAS_RAG_EXTRA = all(
     )
 )
 _HAS_CHROMA_EXTRA = _has_module("chromadb")
-_HAS_NEON_EXTRA = _has_module("psycopg") and _has_module("pydantic")
+_HAS_PYDANTIC = _has_module("pydantic")
+_HAS_PSYCOPG = _has_module("psycopg")
+# Neon test files that genuinely need a heavy dep. Pure-python contract tests
+# (naming, filter truth table, score formula) are NOT listed, so they collect
+# even without the neon extra installed.
+_NEON_DIR = Path("tests/unit/rag/corpus/neon")
+_NEON_PYDANTIC_TESTS = {
+    _NEON_DIR / "test_eval_schema.py",
+    _NEON_DIR / "test_search_related.py",
+}
+_NEON_PSYCOPG_TESTS = {
+    _NEON_DIR / "test_transaction_lifecycle.py",
+}
 _RAG_EXTRA_TESTS = {
     Path("tests/unit/rag/qa_generation"),
     Path("tests/unit/rag/test_auto_tune.py"),
@@ -57,13 +69,9 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
         "chroma",
     ):
         return True
-    if not _HAS_NEON_EXTRA and rel.parts[:5] == (
-        "tests",
-        "unit",
-        "rag",
-        "corpus",
-        "neon",
-    ):
+    if not _HAS_PYDANTIC and rel in _NEON_PYDANTIC_TESTS:
+        return True
+    if not _HAS_PSYCOPG and rel in _NEON_PSYCOPG_TESTS:
         return True
     return None
 

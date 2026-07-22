@@ -29,28 +29,43 @@ managed physical table (per version):
   owner-rights view (`security_invoker = false`) with an **explicit column list**
   (never `SELECT *`). each ingest builds `<logical>__v<N>` with its own indexes.
 - **per-version ledger** `neon_corpus_versions(logical_name, version, state,
-  created_at, ready_at, activated_at)` with state `building -> ready ->
-  activated -> retired`. this replaces the single-row pointer so concurrent
-  ingest / enumerate / prune / build-vs-ready are all well-defined.
-- **atomic activate**: one transaction under `pg_advisory_xact_lock(logical)`
-  upserts the ledger active row AND `create or replace view` — they commit or
-  roll back together (proven by `test_activation_rolls_back_atomically`).
-  **rollback**: re-point to any prior `ready`/`activated` version; old physical
-  tables retained until pruned → O(1), non-destructive.
-- **retention/pruning** (`RetentionPolicy`): keep >= 2 activated (rollback always
-  has a target) + >= 1 ready; older versions retired then pruned.
-- **RO grants** (`ReadGrantSpec`): the RO role gets schema `USAGE` + `SELECT` on
-  the stable view only, re-issued on FIRST view creation (`create or replace`
-  preserves an existing ACL but the first create has none). owner-rights view =>
-  RO never touches physical tables.
+  is_current, created_at, ready_at, activated_at, retired_at)`. `state` has a
+  **DB CHECK domain** `building -> ready -> activated -> retired`
+  (`VERSION_STATE_TRANSITIONS` frozen for Slice 2 enforcement).
+- **current-pointer invariant**: `state='activated'` is *historical* (published at
+  least once); `is_current` marks the SINGLE currently-published version. a
+  **partial unique index** `ON neon_corpus_versions (logical_name) WHERE
+  is_current` (`CREATE_CURRENT_POINTER_INDEX`) enforces exactly one current per
+  logical name. rollback flips `is_current` between two `activated` versions
+  without changing state.
+- **atomic activate** (`activate_version_sql(spec, grant)`): one transaction under
+  `pg_advisory_xact_lock(logical)` clears the prior `is_current`, sets this
+  version `activated`/`is_current`, `create or replace view`, AND issues the RO
+  grants from `grant` — commit or roll back together (proven by
+  `test_activation_rolls_back_atomically`). **rollback**: re-point `is_current` to
+  a prior `activated` version; old physical tables retained → O(1),
+  non-destructive.
+- **retention** (`RetentionPolicy`, self-validating): keep >= 2 activated
+  (rollback always has a target) + >= 1 ready. the **pruning seam** and full
+  concurrent allocation/prune race-safety are **deferred to Slice 2** (where the
+  real DDL/transactions land); the invariant + locking contract are frozen now.
+- **RO grants** (`ReadGrantSpec`): owner-rights view (`security_invoker = false`)
+  => RO gets schema `USAGE` + `SELECT` on the stable view only, never physical
+  tables. issued on FIRST view creation (`create or replace` preserves an existing
+  ACL but a first create has none), which is why activation carries `grant`.
+- **view identifier policy** (B4): the reader-facing view name is
+  `view_name(logical_name)` — validated printable-ASCII and length-fitted to 63
+  bytes (a long logical name is hash-fitted, same as physical names); readers
+  resolve it through `view_name`, never assume it equals the raw logical name.
 - indexes per version: `ann` (PROVISIONAL), `bm25` (lexical), `meta_gin`
   (`jsonb_path_ops`, serves `@>`), `scan` (btree `(source_file, chunk_index,
   id)`), `tsv_gin` (native fts fallback).
 - **injection-safe DDL** (B4): all identifiers via `psycopg.sql.Identifier`;
-  regconfig + options via allowlist + bound `sql.Literal`; version numbers
-  validated (`validate_version`, positive int, rejects bool); names length-safe
-  to 63 bytes via content-hash suffix (`_fit_identifier`); the execute seam
-  accepts `sql.Composable`, never `str`.
+  regconfig via allowlist + bound `sql.Literal`; version numbers validated
+  (`validate_version`, positive int, rejects bool); logical names validated
+  (`validate_logical_name`, printable ASCII); names **byte-safe** to 63 bytes with
+  a 64-bit content-hash suffix (`_fit_identifier` — collision-resistant, not a
+  uniqueness guarantee); the execute seam accepts `sql.Composable`, never `str`.
 
 ## 2. credential constructor signature
 
@@ -70,51 +85,62 @@ operators: `eq, ne, in, gt, gte, lt, lte, contains_any, contains_all` (shared si
 slice 4). metadata key + every value are **bound params** (`%(k)s`/`%(v)s`);
 `psycopg.sql.Identifier` is never used on caller keys.
 
-two safety properties are frozen (they drove the review REVISE):
+three safety properties are frozen (they drove the review):
 
 - **type-directed, never-throwing**: `eq/ne/in` and `contains_*` emit JSONB
-  **containment** (`metadata @> jsonb_build_object(...)`), which is type-aware and
-  needs no cast — a heterogeneous stored value can never abort the query. only
-  `gt/gte/lt/lte` cast, and they are **guarded** by `jsonb_typeof(metadata ->
-  key) = 'number'`.
-- **indexable**: containment is served by the `meta_gin` `jsonb_path_ops` GIN.
-  the old `?|`/`?&` forms are rejected — a whole-doc GIN cannot serve them (B3).
-  range predicates are not GIN-indexable (per-key expression btree is an
-  operational add-on).
+  **containment** (`metadata @> jsonb_build_object(...)`), type-aware, no cast. the
+  range ops are the only cast path, and the cast lives **inside a CASE** (`CASE
+  WHEN jsonb_typeof(...) = 'number' THEN (...)::numeric ... ELSE NULL END`) — NOT
+  behind `AND`, because Postgres does not guarantee `AND` short-circuits, whereas
+  a CASE only evaluates the matching branch, so `::numeric` never sees a
+  non-number.
+- **correct negation**: bare containment is two-valued (FALSE for missing/null/
+  wrong-type), so `not(false)` would wrongly INCLUDE those rows. every op therefore
+  also carries a **three-valued `negated_leaf_sql`** (`CASE WHEN NOT
+  jsonb_exists(metadata, key) THEN NULL WHEN jsonb_typeof(...) <> '<type>' THEN
+  NULL ELSE <containment> END`); `NotPredicate` wraps *that* in `not (...)`, so
+  `not(null) = null` keeps missing/null/wrong-type excluded. key existence uses
+  `jsonb_exists(metadata, %(k)s)` (function form; the `?` operator collides with
+  psycopg placeholders).
+- **indexable positives**: positive containment is served by the `meta_gin`
+  `jsonb_path_ops` GIN (the `?|`/`?&` forms are rejected — a whole-doc GIN cannot
+  serve them). negated CASE leaves and range CASEs are not GIN-eligible; neither is
+  empty-array `contains_all` (`@> '[]'` has no scalar token), so its
+  `empty_operand_indexable` is False (B3 caveat).
 
-canonical value-present sql (numeric value shown for eq/ne/in; text for contains):
+canonical POSITIVE sql (numeric value shown for eq/ne/in; text for contains; the
+cast token follows the value type — `CONTAINS_ATOM_BY_TYPE` freezes text/number/
+boolean shapes):
 
-| op | family | canonical sql | indexable |
+| op | family | positive sql | indexable |
 |---|---|---|---|
 | eq | containment | `metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))` | yes |
 | ne | negated containment | `(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))) IS NOT TRUE` | no |
 | in | containment OR | `(metadata @> …%(v0)s…) OR (metadata @> …%(v1)s…)` | yes |
-| gt/gte/lt/lte | range | `jsonb_typeof(metadata -> %(k)s) = 'number' AND (metadata ->> %(k)s)::numeric {op} %(v)s::numeric` | no |
+| gt/gte/lt/lte | range CASE | `CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' THEN (metadata ->> %(k)s)::numeric {op} %(v)s::numeric ELSE NULL END` | no |
 | contains_any | containment OR | `(metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text))) OR …%(v1)s…)` | yes |
-| contains_all | array containment | `metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text), to_jsonb(%(v1)s::text)))` | yes |
+| contains_all | array containment | `metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text), to_jsonb(%(v1)s::text)))` | yes (empty operand: no) |
 
-**five distinct edge outcomes** (include / exclude), per op:
+**five distinct edge outcomes** of the POSITIVE leaf (negation inverts via the
+three-valued `negated_leaf_sql`, so a negated leaf still excludes
+missing/null/wrong-type):
 
-| op | missing key | json null | wrong type | empty operand | negated |
-|---|---|---|---|---|---|
-| eq | exclude | exclude | exclude | — | `not (…)` 3-valued |
-| ne | **include** | **include** | **include** | — | `not (…)` |
-| in | exclude | exclude | exclude | exclude | `not (…)` |
-| gt/gte/lt/lte | exclude | exclude | exclude | — | `not (…)` |
-| contains_any | exclude | exclude | exclude | exclude | `not (…)` |
-| contains_all | exclude | exclude | exclude | **include** | `not (…)` |
+| op | missing key | json null | wrong type | empty operand |
+|---|---|---|---|---|
+| eq | exclude | exclude | exclude | — |
+| ne | **include** | **include** | **include** | — |
+| in | exclude | exclude | exclude | exclude |
+| gt/gte/lt/lte | exclude | exclude | exclude | — |
+| contains_any | exclude | exclude | exclude | exclude |
+| contains_all | exclude | exclude | exclude | **include** |
 
-- **ne is null-safe** via `IS NOT TRUE`: missing/null/wrong-type => included; only
-  an equal stored value is excluded.
+- **ne is null-safe** via `IS NOT TRUE` (null-INCLUSIVE); this differs from
+  `NotPredicate(eq)`, which is null-EXCLUSIVE via the three-valued leaf.
 - **`contains_all []`**: `@> '{"key": []}'` is true iff the field is a present
-  array (empty array is contained in any array); when the field is **missing** it
-  is **excluded** (not vacuously true).
-- **negation**: `NotPredicate` -> `not (<inner>)`, inheriting 3-valued logic
-  (`not(null)` is null → a negated leaf over a missing key still excludes).
-  null-inclusive negation would need `(<inner>) is not true`; the frozen contract
-  is plain `not (…)`.
-- **value validation** (raises `InvalidFilterError` in slice 4): range ops
-  require a numeric value (int/float, **not** bool); `in`/`contains_*` require a
+  array; when the field is **missing** it is **excluded** (not vacuously true).
+  the empty-array case is NOT index-accelerated.
+- **value validation** (raises `InvalidFilterError` in slice 4): range ops require
+  a numeric value (int/float, **not** bool); `in`/`contains_*` require a
   homogeneous list (mixed json types and bool-as-number rejected); `eq/ne` take a
   single text/number/boolean scalar.
 
@@ -131,7 +157,9 @@ surfaced_score(rank) = 1 / (SURFACED_RANK_K + rank)   # rank 0-based, K = 60
   negative/lower-better, vector distance lower-better, rrf higher-better).
 - **native score preserved separately (NB1)**: `QueryHit.native_score` and the
   `native_score` result key carry the raw backend number for diagnostics /
-  calibration — never overloaded onto `max_score`.
+  calibration — never overloaded onto `max_score`. after dedup, `native_score`
+  comes from the **same winning hit that supplied `max_score`** (the best-ranked
+  occurrence), not averaged or retained per-query.
 - **multi-query dedup + ordering** (in `NeonChunkSource.search_related`): a chunk
   hit by several queries keeps the **max** reciprocal rank as `max_score`;
   results sort by the FULL 3-tuple `(len(queries), not same_file, max_score)` all
@@ -186,6 +214,18 @@ lakebase DB and then freeze only the proven form (see
 - **meta_gin index EXPLAIN** (B3). the `@>`/`jsonb_path_ops` pairing is standard
   postgres and frozen, but slice 3 should confirm via `EXPLAIN` that the
   containment predicates actually hit the GIN on live data.
+
+## deferred to the implementing slice (contract frozen now, enforcement later)
+
+- **B5 pruning seam + concurrent allocation/prune race-safety -> Slice 2.** the
+  ledger schema, state CHECK domain, current-pointer unique index, advisory-lock
+  activation contract, and retention policy are frozen here; the prune executor
+  and the concurrent build-vs-prune race tests land in Slice 2 with the real DDL.
+- **B7 fully-seeded behavioral tests -> the slice that implements each behavior
+  (1/2/4).** round 2 ships correctly-structured strict xfails (fake-backed,
+  non-vacuous, typed) that raise `NotImplementedError`; the real behavior
+  assertions (filter SQL execution, paged scan rows, transaction rollback events)
+  are filled when each behavior is implemented.
 
 ## deviations from the brief (surfaced, not silently re-planned)
 

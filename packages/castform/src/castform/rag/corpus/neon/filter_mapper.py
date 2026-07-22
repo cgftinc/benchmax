@@ -1,34 +1,41 @@
 """Filter DSL -> parameterized, INDEXABLE SQL truth table for the Neon corpus.
 
 Contract-freeze artifact (Slice A). This module freezes, per operator: the
-type-directed SQL shape, its five distinct edge outcomes (missing key, JSON null,
-wrong stored type, empty operand, negated), whether the shape is index-eligible,
-and the value-validation rules. The translator that walks a ``FilterPredicate``
-tree and emits ``(sql, params)`` is Slice 4 — ``predicate_to_sql`` is a stub.
+type-directed positive SQL, the three-valued *negated-leaf* SQL, the five edge
+outcomes, index-eligibility, and the value-validation rules. The translator that
+walks a ``FilterPredicate`` tree and emits ``(sql, params)`` is Slice 4 —
+``predicate_to_sql`` is a stub.
 
-Two safety properties are frozen here (they drove the review REVISE):
+Three safety properties are frozen (they drove the review):
 
-1. **Type-directed, never-throwing.** ``eq/ne/in`` and the ``contains_*`` ops are
-   emitted as JSONB **containment** (``metadata @> jsonb_build_object(...)``),
-   which is *type-aware* (``'{"a":5}' @> '{"a":"5"}'`` is false) and therefore
-   needs no cast — a heterogeneous stored value can never abort the query. The
-   range ops (``gt/gte/lt/lte``) are the only cast path, and they are **guarded**
-   by ``jsonb_typeof(metadata -> key) = 'number'`` so ``::numeric`` is reached
-   only for numbers.
-2. **Indexable.** Containment is served by a ``jsonb_path_ops`` GIN (see
-   ``schema.CREATE_META_GIN_INDEX_SKELETON``). The earlier ``?|``/``?&`` forms are
-   NOT used: a whole-doc GIN cannot serve ``(metadata -> key) ?| values`` and
-   ``jsonb_path_ops`` does not index key-existence at all (B3). Range predicates
-   are not GIN-indexable; a per-key expression btree is an operational add-on.
+1. **Type-directed, never-throwing.** ``eq/ne/in`` and ``contains_*`` emit JSONB
+   **containment** (``metadata @> jsonb_build_object(...)``), which is type-aware
+   (``'{"a":5}' @> '{"a":"5"}'`` is false) and needs no cast. The range ops are
+   the only cast path, and the cast is placed **inside a CASE** (``CASE WHEN
+   jsonb_typeof(...) = 'number' THEN (...)::numeric ... ELSE NULL END``) — NOT
+   behind ``AND``. Postgres does not guarantee ``AND`` short-circuits, but a CASE
+   only evaluates the matching branch, so ``::numeric`` never sees a non-number.
+2. **Correct negation.** Bare containment is two-valued (FALSE for a
+   missing/null/wrong-type key), so ``NOT(FALSE)`` would wrongly INCLUDE those
+   rows. Every op therefore also exposes a **three-valued negated leaf**
+   (``negated_leaf_sql``) that yields SQL ``NULL`` for missing/null/wrong-type via
+   a guarding CASE; ``NotPredicate`` wraps *that* in ``NOT(...)``, so
+   ``NOT(NULL) = NULL`` keeps those rows excluded (matching the truth table).
+3. **Indexable positives.** The positive containment forms are served by the
+   ``meta_gin`` ``jsonb_path_ops`` GIN. Negated leaves (CASE) and range CASEs are
+   not GIN-eligible — and neither is empty-array ``contains_all`` (``@> '[]'`` has
+   no scalar token in ``jsonb_path_ops``), so its ``empty_operand_indexable`` is
+   False (B3 caveat).
 
 Bound-path discipline: the metadata key and every value are bound parameters
-(``%(k)s`` / ``%(v)s``); ``psycopg.sql.Identifier`` is reserved for trusted
-schema-owned names, never for caller JSON keys.
+(``%(k)s`` / ``%(v)s``); key existence uses ``jsonb_exists(metadata, %(k)s)`` (the
+function form, not the ``?`` operator, which collides with psycopg placeholder
+parsing). ``psycopg.sql.Identifier`` is never used on caller keys.
 
 Operator set: nine field ops. The shared enum carries six (``eq, in, gte, lte,
 contains_any, contains_all``); Neon adds ``ne, gt, lt`` in a local superset;
-promoting them into ``search_schema/search_types.py`` is a Slice 4 cross-cutting
-edit kept out of this slice.
+promoting them into ``search_schema/search_types.py`` is a Slice 4 edit kept out
+of this slice.
 """
 
 from __future__ import annotations
@@ -64,6 +71,21 @@ CAST_BY_SCALAR_TYPE: dict[ScalarJsonType, str] = {
     "number": "numeric",
     "boolean": "boolean",
 }
+# The ``jsonb_typeof`` token the CASE guard compares against, per value type.
+JSON_TYPEOF_BY_SCALAR_TYPE: dict[ScalarJsonType, str] = {
+    "text": "string",
+    "number": "number",
+    "boolean": "boolean",
+}
+
+# Explicit contains_* element shapes per type (freezes numeric/boolean, not just
+# text): the single-element containment atom Slice 4 ORs (contains_any) or
+# array-joins (contains_all).
+CONTAINS_ATOM_BY_TYPE: dict[ScalarJsonType, str] = {
+    "text": "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v)s::text)))",
+    "number": "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v)s::numeric)))",
+    "boolean": "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v)s::boolean)))",
+}
 
 # Per-condition outcome for a single leaf. ``depends`` = matches iff the stored
 # value satisfies the op; the other four are fixed regardless of value.
@@ -78,28 +100,32 @@ class FilterOpSpec:
     Args:
         op: The Neon field operator.
         family: ``containment`` (indexable ``@>``), ``negated_containment``
-            (``@> ... IS NOT TRUE``), or ``range`` (guarded numeric cast).
-        canonical_sql: The exact emitted SQL for a representative value-present
-            case. ``%(k)s`` binds the key; ``%(v)s`` / ``%(v0)s`` / ``%(v1)s`` bind
-            values. ``in``/``contains_any`` show the two-element OR expansion;
-            ``contains_all`` shows the two-element single-containment form.
-        value_types: Scalar JSON types this op accepts (element types for the
-            list ops).
-        indexable: Whether ``meta_gin`` (``jsonb_path_ops``) can serve it.
-        outcomes: Fixed include/exclude behavior per edge condition.
+            (``@> ... IS NOT TRUE``), or ``range`` (guarded CASE cast).
+        positive_sql: The WHERE form for a NON-negated leaf. Representative
+            value-present case; ``%(k)s`` binds the key, ``%(v)s``/``%(v0)s``/
+            ``%(v1)s`` bind values. Indexable iff ``indexable``.
+        negated_leaf_sql: The THREE-VALUED expression a ``NotPredicate`` wraps in
+            ``NOT(...)``. Yields NULL for missing/null/wrong-type so negation
+            still excludes them.
+        value_types: Scalar JSON types this op accepts (element types for lists).
+        indexable: Whether ``meta_gin`` can serve ``positive_sql`` (non-empty
+            operand).
+        empty_operand_indexable: For list ops, whether the empty-operand case is
+            index-accelerated (False for ``contains_all []``).
+        outcomes: Fixed include/exclude behavior of the POSITIVE leaf per edge
+            condition (negation inverts via ``negated_leaf_sql``).
     """
 
     op: NeonFieldOperator
     family: Literal["containment", "negated_containment", "range"]
-    canonical_sql: str
+    positive_sql: str
+    negated_leaf_sql: str
     value_types: tuple[ScalarJsonType, ...]
     indexable: bool
+    empty_operand_indexable: bool
     outcomes: dict[EdgeConditions, Outcome]
 
 
-# Every op excludes on missing key / JSON null / wrong stored type EXCEPT ``ne``
-# (null-safe: ``IS NOT TRUE`` flips NULL/false to true, so a missing/null/wrong
-# value is *included*).
 _SCALAR_EXCLUDING = {
     "missing_key": "exclude",
     "json_null": "exclude",
@@ -113,117 +139,181 @@ _NE_INCLUDING = {
     "empty_operand": "na",
 }
 
+# Guarding CASE that makes a containment leaf three-valued for negation. The
+# ``{inner}`` is the positive containment; the type guard also catches json-null
+# (its jsonb_typeof is 'null').
+_NEG_CASE = (
+    "CASE WHEN NOT jsonb_exists(metadata, %(k)s) THEN NULL "
+    "WHEN jsonb_typeof(metadata -> %(k)s) <> '{jtype}' THEN NULL "
+    "ELSE {inner} END"
+)
+
 
 # --- Contract #3: the frozen 9-op truth table ---------------------------------
 FILTER_TRUTH_TABLE: tuple[FilterOpSpec, ...] = (
     FilterOpSpec(
         op="eq",
         family="containment",
-        canonical_sql="metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))",
+        positive_sql="metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))",
+        negated_leaf_sql=_NEG_CASE.format(
+            jtype="number",
+            inner="metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))",
+        ),
         value_types=("text", "number", "boolean"),
         indexable=True,
+        empty_operand_indexable=False,
         outcomes=dict(_SCALAR_EXCLUDING),
     ),
     FilterOpSpec(
-        # Null-safe: missing/null/wrong-type rows are INCLUDED; only an equal
-        # stored value is excluded.
+        # ne is null-INCLUSIVE by design: (@>) IS NOT TRUE includes
+        # missing/null/wrong-type and excludes only an equal stored value. This
+        # differs from NotPredicate(eq), which is null-EXCLUSIVE.
         op="ne",
         family="negated_containment",
-        canonical_sql=(
+        positive_sql=(
+            "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))) "
+            "IS NOT TRUE"
+        ),
+        negated_leaf_sql=(
             "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))) "
             "IS NOT TRUE"
         ),
         value_types=("text", "number", "boolean"),
         indexable=False,
+        empty_operand_indexable=False,
         outcomes=dict(_NE_INCLUDING),
     ),
     FilterOpSpec(
         op="in",
         family="containment",
-        canonical_sql=(
+        positive_sql=(
             "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v0)s::numeric)) OR "
             "metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v1)s::numeric)))"
         ),
+        negated_leaf_sql=_NEG_CASE.format(
+            jtype="number",
+            inner=(
+                "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v0)s::numeric)) OR "
+                "metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v1)s::numeric)))"
+            ),
+        ),
         value_types=("text", "number", "boolean"),
         indexable=True,
+        empty_operand_indexable=True,  # empty in => constant FALSE, no scan
         outcomes={**_SCALAR_EXCLUDING, "empty_operand": "exclude"},
     ),
     FilterOpSpec(
         op="gt",
         family="range",
-        canonical_sql=(
-            "jsonb_typeof(metadata -> %(k)s) = 'number' "
-            "AND (metadata ->> %(k)s)::numeric > %(v)s::numeric"
+        positive_sql=(
+            "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "THEN (metadata ->> %(k)s)::numeric > %(v)s::numeric ELSE NULL END"
+        ),
+        negated_leaf_sql=(
+            "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "THEN (metadata ->> %(k)s)::numeric > %(v)s::numeric ELSE NULL END"
         ),
         value_types=("number",),
         indexable=False,
+        empty_operand_indexable=False,
         outcomes=dict(_SCALAR_EXCLUDING),
     ),
     FilterOpSpec(
         op="gte",
         family="range",
-        canonical_sql=(
-            "jsonb_typeof(metadata -> %(k)s) = 'number' "
-            "AND (metadata ->> %(k)s)::numeric >= %(v)s::numeric"
+        positive_sql=(
+            "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "THEN (metadata ->> %(k)s)::numeric >= %(v)s::numeric ELSE NULL END"
+        ),
+        negated_leaf_sql=(
+            "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "THEN (metadata ->> %(k)s)::numeric >= %(v)s::numeric ELSE NULL END"
         ),
         value_types=("number",),
         indexable=False,
+        empty_operand_indexable=False,
         outcomes=dict(_SCALAR_EXCLUDING),
     ),
     FilterOpSpec(
         op="lt",
         family="range",
-        canonical_sql=(
-            "jsonb_typeof(metadata -> %(k)s) = 'number' "
-            "AND (metadata ->> %(k)s)::numeric < %(v)s::numeric"
+        positive_sql=(
+            "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "THEN (metadata ->> %(k)s)::numeric < %(v)s::numeric ELSE NULL END"
+        ),
+        negated_leaf_sql=(
+            "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "THEN (metadata ->> %(k)s)::numeric < %(v)s::numeric ELSE NULL END"
         ),
         value_types=("number",),
         indexable=False,
+        empty_operand_indexable=False,
         outcomes=dict(_SCALAR_EXCLUDING),
     ),
     FilterOpSpec(
         op="lte",
         family="range",
-        canonical_sql=(
-            "jsonb_typeof(metadata -> %(k)s) = 'number' "
-            "AND (metadata ->> %(k)s)::numeric <= %(v)s::numeric"
+        positive_sql=(
+            "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "THEN (metadata ->> %(k)s)::numeric <= %(v)s::numeric ELSE NULL END"
+        ),
+        negated_leaf_sql=(
+            "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "THEN (metadata ->> %(k)s)::numeric <= %(v)s::numeric ELSE NULL END"
         ),
         value_types=("number",),
         indexable=False,
+        empty_operand_indexable=False,
         outcomes=dict(_SCALAR_EXCLUDING),
     ),
     FilterOpSpec(
         # Array membership via per-element containment OR. Empty operand => no
-        # atoms => FALSE => exclude.
+        # atoms => FALSE => exclude (constant, no scan).
         op="contains_any",
         family="containment",
-        canonical_sql=(
+        positive_sql=(
             "(metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text))) OR "
             "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v1)s::text))))"
         ),
+        negated_leaf_sql=_NEG_CASE.format(
+            jtype="array",
+            inner=(
+                "(metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text))) OR "
+                "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v1)s::text))))"
+            ),
+        ),
         value_types=("text", "number", "boolean"),
         indexable=True,
+        empty_operand_indexable=True,  # empty => constant FALSE
         outcomes={**_SCALAR_EXCLUDING, "empty_operand": "exclude"},
     ),
     FilterOpSpec(
         # Superset via single array containment. Empty operand => ``@> '[]'`` =>
-        # TRUE iff the field is present as an array (missing key still excludes).
+        # TRUE iff the field is a present array (missing key still excludes), and
+        # ``@> '[]'`` has no jsonb_path_ops scalar token => NOT index-accelerated.
         op="contains_all",
         family="containment",
-        canonical_sql=(
+        positive_sql=(
             "metadata @> jsonb_build_object(%(k)s, "
             "jsonb_build_array(to_jsonb(%(v0)s::text), to_jsonb(%(v1)s::text)))"
         ),
+        negated_leaf_sql=_NEG_CASE.format(
+            jtype="array",
+            inner=(
+                "metadata @> jsonb_build_object(%(k)s, "
+                "jsonb_build_array(to_jsonb(%(v0)s::text), to_jsonb(%(v1)s::text)))"
+            ),
+        ),
         value_types=("text", "number", "boolean"),
         indexable=True,
+        empty_operand_indexable=False,  # @> '[]' full-scans (B3 caveat)
         outcomes={**_SCALAR_EXCLUDING, "empty_operand": "include"},
     ),
 )
 
-# Negation contract: ``NotPredicate`` wraps inner SQL as ``NOT (<inner>)`` and
-# inherits SQL three-valued logic — ``NOT (NULL)`` is NULL, so negating a leaf
-# over a missing key still *excludes* that row. Null-inclusive negation would
-# need ``(<inner>) IS NOT TRUE``; the frozen contract is plain ``NOT (...)``.
+# ``NotPredicate`` wraps the op's THREE-VALUED ``negated_leaf_sql`` (never the
+# indexable positive), so ``NOT(NULL) = NULL`` keeps missing/null/wrong-type rows
+# excluded. Null-inclusive negation would need ``IS NOT TRUE`` (that is ``ne``).
 NEGATION_TEMPLATE = "NOT ({inner})"
 
 FILTER_TRUTH_TABLE_BY_OP: dict[NeonFieldOperator, FilterOpSpec] = {
@@ -248,8 +338,9 @@ def predicate_to_sql(
     """Translate a predicate tree to parameterized SQL + bound params.
 
     Enforces the value-validation rules above (rejecting mixed-type lists and
-    bool-as-number), emits the type-directed containment/range SQL, and
-    capability-gates unsupported ops via the search-schema exceptions.
+    bool-as-number), emits the type-directed containment/range SQL (positive
+    leaves for plain predicates, ``NOT(negated_leaf_sql)`` under ``NotPredicate``),
+    and capability-gates unsupported ops via the search-schema exceptions.
     Design-lock stub: the tree walk lands in Slice 4.
     """
     raise NotImplementedError("filter SQL emission is built in Slice 4")

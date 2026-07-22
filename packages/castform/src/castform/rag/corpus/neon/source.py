@@ -126,7 +126,8 @@ class NeonChunkSource:
         Returns dicts keyed ``{chunk, queries, same_file, max_score, native_score}``
         sorted by ``(len(queries), not same_file, max_score)`` descending, using
         the surfaced reciprocal-rank score for ``max_score``; ``native_score``
-        carries the raw backend score for diagnostics (NB1). Built in Slice 1.
+        carries the raw backend score from the SAME winning hit that supplied
+        ``max_score`` (NB1). Built in Slice 1.
         """
         raise NotImplementedError("Neon search is built in Slice 1")
 

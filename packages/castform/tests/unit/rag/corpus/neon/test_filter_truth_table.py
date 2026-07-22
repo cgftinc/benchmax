@@ -1,8 +1,8 @@
-"""Contract #3: type-directed, indexable 9-op filter truth table.
+"""Contract #3: type-directed, indexable, correctly-negating filter truth table.
 
-The frozen table (canonical SQL, edge outcomes, indexability) is asserted here
-and passes; the SQL emission via ``predicate_to_sql`` is an xfail skeleton that
-must raise NotImplementedError until Slice 4 fills it.
+The frozen table (positive SQL, three-valued negated leaves, edge outcomes,
+indexability, typed contains shapes) is asserted here and passes; SQL emission via
+``predicate_to_sql`` is an xfail skeleton that must raise NotImplementedError.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from castform.rag.corpus.neon.filter_mapper import (
+    CONTAINS_ATOM_BY_TYPE,
     FILTER_TRUTH_TABLE_BY_OP,
     LIST_OPS,
     NEGATION_TEMPLATE,
@@ -19,9 +20,7 @@ from castform.rag.corpus.neon.filter_mapper import (
 )
 from castform.rag.corpus.search_schema.search_types import FieldPredicate
 
-# Frozen canonical value-present SQL per op (containment for eq/ne/in/contains_*,
-# guarded numeric cast for ranges). Slice 4 must emit exactly these.
-EXPECTED_CANONICAL_SQL: dict[str, str] = {
+EXPECTED_POSITIVE_SQL: dict[str, str] = {
     "eq": "metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))",
     "ne": (
         "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))) IS NOT TRUE"
@@ -31,20 +30,20 @@ EXPECTED_CANONICAL_SQL: dict[str, str] = {
         "metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v1)s::numeric)))"
     ),
     "gt": (
-        "jsonb_typeof(metadata -> %(k)s) = 'number' "
-        "AND (metadata ->> %(k)s)::numeric > %(v)s::numeric"
+        "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+        "THEN (metadata ->> %(k)s)::numeric > %(v)s::numeric ELSE NULL END"
     ),
     "gte": (
-        "jsonb_typeof(metadata -> %(k)s) = 'number' "
-        "AND (metadata ->> %(k)s)::numeric >= %(v)s::numeric"
+        "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+        "THEN (metadata ->> %(k)s)::numeric >= %(v)s::numeric ELSE NULL END"
     ),
     "lt": (
-        "jsonb_typeof(metadata -> %(k)s) = 'number' "
-        "AND (metadata ->> %(k)s)::numeric < %(v)s::numeric"
+        "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+        "THEN (metadata ->> %(k)s)::numeric < %(v)s::numeric ELSE NULL END"
     ),
     "lte": (
-        "jsonb_typeof(metadata -> %(k)s) = 'number' "
-        "AND (metadata ->> %(k)s)::numeric <= %(v)s::numeric"
+        "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
+        "THEN (metadata ->> %(k)s)::numeric <= %(v)s::numeric ELSE NULL END"
     ),
     "contains_any": (
         "(metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text))) OR "
@@ -56,7 +55,7 @@ EXPECTED_CANONICAL_SQL: dict[str, str] = {
     ),
 }
 
-# op -> (missing_key, json_null, wrong_type, empty_operand) outcomes.
+# op -> (missing_key, json_null, wrong_type, empty_operand) POSITIVE-leaf outcomes.
 EXPECTED_EDGE_OUTCOMES: dict[str, tuple[str, str, str, str]] = {
     "eq": ("exclude", "exclude", "exclude", "na"),
     "ne": ("include", "include", "include", "na"),
@@ -69,7 +68,6 @@ EXPECTED_EDGE_OUTCOMES: dict[str, tuple[str, str, str, str]] = {
     "contains_all": ("exclude", "exclude", "exclude", "include"),
 }
 
-# Only containment forms are GIN-indexable; ne (negation) and ranges are not.
 EXPECTED_INDEXABLE = {
     "eq": True,
     "ne": False,
@@ -82,7 +80,6 @@ EXPECTED_INDEXABLE = {
     "contains_all": True,
 }
 
-# Valid per-op fixtures — list ops get lists, ranges get numbers, eq/ne a scalar.
 VALID_FIXTURES: dict[str, object] = {
     "eq": 2026,
     "ne": 2026,
@@ -97,22 +94,21 @@ VALID_FIXTURES: dict[str, object] = {
 
 
 def test_nine_operators_frozen() -> None:
-    assert set(NEON_FIELD_OPERATORS) == set(EXPECTED_CANONICAL_SQL)
+    assert set(NEON_FIELD_OPERATORS) == set(EXPECTED_POSITIVE_SQL)
     assert len(NEON_FIELD_OPERATORS) == 9
     assert {"ne", "gt", "lt"} <= set(NEON_FIELD_OPERATORS)
     assert RANGE_OPS == {"gt", "gte", "lt", "lte"}
     assert LIST_OPS == {"in", "contains_any", "contains_all"}
 
 
-@pytest.mark.parametrize("op", list(EXPECTED_CANONICAL_SQL))
-def test_canonical_sql_frozen(op: str) -> None:
-    assert FILTER_TRUTH_TABLE_BY_OP[op].canonical_sql == EXPECTED_CANONICAL_SQL[op]
+@pytest.mark.parametrize("op", list(EXPECTED_POSITIVE_SQL))
+def test_positive_sql_frozen(op: str) -> None:
+    assert FILTER_TRUTH_TABLE_BY_OP[op].positive_sql == EXPECTED_POSITIVE_SQL[op]
 
 
 @pytest.mark.parametrize("op", list(EXPECTED_EDGE_OUTCOMES))
 def test_edge_outcomes_frozen(op: str) -> None:
-    spec = FILTER_TRUTH_TABLE_BY_OP[op]
-    o = spec.outcomes
+    o = FILTER_TRUTH_TABLE_BY_OP[op].outcomes
     assert (
         o["missing_key"],
         o["json_null"],
@@ -126,14 +122,51 @@ def test_indexability_frozen(op: str) -> None:
     assert FILTER_TRUTH_TABLE_BY_OP[op].indexable == EXPECTED_INDEXABLE[op]
 
 
+@pytest.mark.parametrize("op", ["eq", "in", "contains_any", "contains_all"])
+def test_negated_leaf_is_three_valued(op: str) -> None:
+    # A NotPredicate wraps this; it must yield NULL (not FALSE) for
+    # missing/null/wrong-type so NOT(NULL)=NULL keeps them excluded.
+    neg = FILTER_TRUTH_TABLE_BY_OP[op].negated_leaf_sql
+    assert neg.startswith("CASE WHEN NOT jsonb_exists(metadata, %(k)s) THEN NULL")
+    assert "THEN NULL" in neg and neg.rstrip().endswith("END")
+    # and it is NOT just the bare (two-valued) positive containment.
+    assert neg != FILTER_TRUTH_TABLE_BY_OP[op].positive_sql
+
+
+@pytest.mark.parametrize("op", ["gt", "gte", "lt", "lte"])
+def test_range_cast_is_inside_case_not_bare_and(op: str) -> None:
+    spec = FILTER_TRUTH_TABLE_BY_OP[op]
+    assert spec.positive_sql.startswith(
+        "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number'"
+    )
+    assert "ELSE NULL END" in spec.positive_sql
+    # the unsafe `guard AND (...)::numeric` form must NOT appear.
+    assert "' AND (metadata ->>" not in spec.positive_sql
+
+
+def test_typed_contains_shapes_frozen() -> None:
+    # numeric and boolean contains shapes are frozen explicitly, not only text.
+    assert CONTAINS_ATOM_BY_TYPE["number"].endswith("to_jsonb(%(v)s::numeric)))")
+    assert CONTAINS_ATOM_BY_TYPE["boolean"].endswith("to_jsonb(%(v)s::boolean)))")
+    assert CONTAINS_ATOM_BY_TYPE["text"].endswith("to_jsonb(%(v)s::text)))")
+
+
+def test_empty_operand_indexability() -> None:
+    # contains_all [] is @> '[]' which jsonb_path_ops cannot accelerate.
+    assert FILTER_TRUTH_TABLE_BY_OP["contains_all"].empty_operand_indexable is False
+    # in [] / contains_any [] collapse to constant FALSE (no scan).
+    assert FILTER_TRUTH_TABLE_BY_OP["in"].empty_operand_indexable is True
+    assert FILTER_TRUTH_TABLE_BY_OP["contains_any"].empty_operand_indexable is True
+
+
 def test_negation_template_frozen() -> None:
     assert NEGATION_TEMPLATE == "NOT ({inner})"
 
 
 @pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 4")
-@pytest.mark.parametrize("op", list(EXPECTED_CANONICAL_SQL))
-def test_predicate_to_sql_emits_canonical(op: str) -> None:
+@pytest.mark.parametrize("op", list(EXPECTED_POSITIVE_SQL))
+def test_predicate_to_sql_emits_positive(op: str) -> None:
     pred = FieldPredicate(field="year", op=op, value=VALID_FIXTURES[op])  # type: ignore[arg-type]
     sql, params = predicate_to_sql(pred)
-    assert sql == EXPECTED_CANONICAL_SQL[op]
+    assert sql == EXPECTED_POSITIVE_SQL[op]
     assert params["k"] == "year"

@@ -89,7 +89,21 @@ PROVISIONAL_ANN_OPTIONS: tuple[dict[str, str], ...] = (
 
 
 VersionState = Literal["building", "ready", "activated", "retired"]
-"""Lifecycle states for one physical corpus version (B5)."""
+"""Lifecycle states for one physical corpus version (B5).
+
+``activated`` is *historical* — the version has been published at least once.
+Which single version is *currently* published is tracked separately by the
+``is_current`` flag (see the current-pointer invariant below), so a rollback flips
+``is_current`` between two ``activated`` versions without changing their state.
+"""
+
+# Frozen legal state transitions (enforced in Slice 2 alongside the DB CHECK).
+VERSION_STATE_TRANSITIONS: dict[VersionState, tuple[VersionState, ...]] = {
+    "building": ("ready",),
+    "ready": ("activated", "retired"),
+    "activated": ("retired",),
+    "retired": (),
+}
 
 
 @dataclass(frozen=True)
@@ -120,18 +134,23 @@ class NeonVersionRecord:
     Args:
         logical_name: Logical corpus this version belongs to.
         version: Physical version number.
-        state: Lifecycle state.
+        state: Lifecycle state (historical).
+        is_current: Whether this is the single currently-published version the
+            reader view points to (at most one true per logical name).
         created_at: When the physical table build started (epoch seconds).
         ready_at: When the build finished and indexes were valid, else None.
-        activated_at: When this version became the active pointer, else None.
+        activated_at: When this version was first published, else None.
+        retired_at: When this version was retired, else None.
     """
 
     logical_name: str
     version: int
     state: VersionState
-    created_at: float
+    is_current: bool = False
+    created_at: float = 0.0
     ready_at: float | None = None
     activated_at: float | None = None
+    retired_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +166,14 @@ class RetentionPolicy:
 
     keep_activated: int = 2
     keep_ready: int = 1
+
+    def __post_init__(self) -> None:
+        # Enforce the documented minimum, not just describe it: rollback needs a
+        # prior activated version to fall back to.
+        if self.keep_activated < 2:
+            raise ValueError("keep_activated must be >= 2 so rollback has a target")
+        if self.keep_ready < 1:
+            raise ValueError("keep_ready must be >= 1")
 
 
 DEFAULT_RETENTION = RetentionPolicy()
@@ -193,20 +220,54 @@ def validate_text_search_config(config: str) -> str:
     return config
 
 
+_HASH_WIDTH = 16  # 64-bit content-hash suffix
+
+
+def validate_logical_name(logical_name: str) -> str:
+    """Return *logical_name* if it is a non-empty printable-ASCII string.
+
+    Restricting to ASCII keeps byte-length == char-length for the stable
+    reader-facing view identifier and avoids surprising multibyte truncation
+    (B4). Raises ValueError otherwise.
+    """
+    if not logical_name or not logical_name.isascii() or not logical_name.isprintable():
+        raise ValueError(
+            f"logical_name must be non-empty printable ASCII, got {logical_name!r}"
+        )
+    return logical_name
+
+
 def _fit_identifier(base: str, reserved: int) -> str:
     """Fit *base* into MAX_IDENTIFIER_BYTES leaving *reserved* bytes for a suffix.
 
-    Long names are truncated and given a stable 8-char content hash so distinct
-    logical names never collide after truncation (B4).
+    Byte-safe: the budget and truncation are measured in UTF-8 bytes (not
+    characters) and a partial trailing codepoint is dropped, so a multibyte name
+    can never exceed the 63-byte limit. Over-budget names keep a 16-hex (64-bit)
+    content hash — post-truncation collisions are cryptographically improbable,
+    not impossible (this is collision-resistance, not a uniqueness guarantee).
     """
     budget = MAX_IDENTIFIER_BYTES - reserved
-    if budget < 9:
+    min_suffix = _HASH_WIDTH + 1  # hash chars + '_' separator
+    if budget < min_suffix + 1:
         raise ValueError(f"reserved={reserved} leaves no room for an identifier")
-    if len(base.encode()) <= budget:
+    raw = base.encode()
+    if len(raw) <= budget:
         return base
-    digest = hashlib.sha256(base.encode()).hexdigest()[:8]
-    keep = budget - 9  # 8 hash chars + one '_' separator
-    return f"{base[:keep]}_{digest}"
+    digest = hashlib.sha256(raw).hexdigest()[:_HASH_WIDTH]
+    keep = budget - min_suffix
+    truncated = raw[:keep].decode("utf-8", errors="ignore")
+    return f"{truncated}_{digest}"
+
+
+def view_name(logical_name: str) -> str:
+    """Return the stable reader-facing VIEW identifier for *logical_name* (B4).
+
+    The view carries no per-version suffix, so it uses the full 63-byte budget.
+    Readers MUST resolve the view through this function rather than assume it
+    equals ``logical_name`` (a long name is hash-fitted, same as physical names).
+    """
+    validate_logical_name(logical_name)
+    return _fit_identifier(logical_name, reserved=0)
 
 
 def physical_table_name(logical_name: str, version: int) -> str:
@@ -215,6 +276,7 @@ def physical_table_name(logical_name: str, version: int) -> str:
     Length-safe: the logical portion is hashed if the full name would exceed the
     63-byte identifier limit. The same fitted base backs all per-version indexes.
     """
+    validate_logical_name(logical_name)
     validate_version(version)
     suffix = f"__v{version}"
     # Reserve room for both the version suffix and the longest index suffix.
@@ -283,13 +345,22 @@ CREATE_LEDGER_SKELETON = """
 CREATE TABLE IF NOT EXISTS neon_corpus_versions (
     logical_name text NOT NULL,
     version integer NOT NULL,
-    state text NOT NULL,
+    state text NOT NULL
+        CHECK (state IN ('building', 'ready', 'activated', 'retired')),
+    is_current boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now(),
     ready_at timestamptz,
     activated_at timestamptz,
+    retired_at timestamptz,
     PRIMARY KEY (logical_name, version)
 )
 """.strip()
+
+# Current-pointer invariant (B5): at most one published version per logical name.
+CREATE_CURRENT_POINTER_INDEX = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS neon_corpus_current "
+    "ON neon_corpus_versions (logical_name) WHERE is_current"
+)
 
 # Owner-rights view (security_invoker = false) so the RO role never touches
 # physical tables. Explicit column list, never SELECT *.
@@ -309,14 +380,18 @@ def create_table_ddl(spec: NeonTableSpec) -> sql.Composed:
     raise NotImplementedError("schema DDL assembly is built in Slice 2")
 
 
-def activate_version_sql(spec: NeonTableSpec) -> list[sql.Composed]:
+def activate_version_sql(
+    spec: NeonTableSpec, grant: ReadGrantSpec
+) -> list[sql.Composed]:
     """Return the single-transaction composables that publish a version (B5).
 
-    Ordered: acquire ``pg_advisory_xact_lock`` on the logical name, upsert the
-    ledger active row, ``CREATE OR REPLACE VIEW`` (owner-rights, explicit
-    columns), and re-issue the RO grants on first create. All in one transaction
-    so the ledger update and view replacement commit or roll back together.
-    Design-lock stub: assembly lands in Slice 2.
+    Ordered, all under one ``pg_advisory_xact_lock`` on the logical name:
+    acquire the lock; clear the prior ``is_current`` row; set this version
+    ``state='activated'``, ``is_current=true``; ``CREATE OR REPLACE VIEW``
+    (owner-rights, explicit columns via ``view_name``/``VIEW_COLUMNS``); and issue
+    the RO grants from *grant* so a first-create view is readable atomically with
+    publication. The current-pointer unique index enforces the single-current
+    invariant. Design-lock stub: assembly lands in Slice 2.
     """
     raise NotImplementedError("version activation is built in Slice 2")
 

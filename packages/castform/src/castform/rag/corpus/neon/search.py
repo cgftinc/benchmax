@@ -31,7 +31,10 @@ monotonicity, and the dedup rule are frozen here.
 Multi-query dedup mirrors the Corpora path (``postgres/source.py``): a chunk hit
 by several queries keeps the **max** reciprocal rank across those queries as its
 ``max_score``, and results sort by the 3-tuple
-``(len(queries), not same_file, max_score)`` all descending.
+``(len(queries), not same_file, max_score)`` all descending. The surfaced
+``native_score`` is taken from **the same winning hit that supplied
+``max_score``** (the best-ranked occurrence), not averaged or retained per query,
+so the diagnostic score always corresponds to the surfaced rank.
 """
 
 from __future__ import annotations
