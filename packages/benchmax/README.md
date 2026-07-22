@@ -43,8 +43,11 @@ evaluation traffic without out-of-band state.
 `reward_keys` is authoritative. A successful rollout must return exactly those
 keys. Operational failures keep the same shape with every value set to zero,
 record the reason in `termination_reason`, and are logged without cancelling
-successful siblings. Configuration and programming errors still fail loudly after
-the sibling group settles.
+successful siblings. Reward hooks run user code, so their defects settle the
+same way under `reward_error` (per rollout) or `group_reward_error` (whole
+group) instead of crashing a run; execution-contract violations such as
+malformed requests or a broken reward schema still fail loudly after the
+sibling group settles.
 
 See the [BaseEnv guide](src/benchmax/envs/base/README.md) and
 [Harbor adapter guide](src/benchmax/envs/harbor/README.md).

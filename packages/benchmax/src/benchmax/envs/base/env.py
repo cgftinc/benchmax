@@ -97,7 +97,12 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
         self,
         rollout: BaseRollout,
     ) -> RewardMap | None:
-        """Optionally score one completed rollout."""
+        """Optionally score one completed rollout.
+
+        Raise :class:`RolloutFailure` for expected runtime failures to settle
+        this rollout under that reason. Any other exception settles it as
+        ``reward_error``; a hook defect never crashes the run.
+        """
 
         return None
 
@@ -270,6 +275,22 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     return replace(
                         rollout,
                         termination_reason=failure.termination_reason,
+                        rewards={key: 0.0 for key in self.reward_keys},
+                    )
+                except Exception as error:
+                    # compute_reward is user code: a defect settles this one
+                    # rollout with a labeled zero outcome instead of crashing
+                    # the run; siblings and the group hook are unaffected.
+                    logger.error(
+                        "base.rollout.reward_failed rollout_id=%s "
+                        "termination_reason=reward_error: %s",
+                        request.rollout_id,
+                        error,
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
+                    return replace(
+                        rollout,
+                        termination_reason="reward_error",
                         rewards={key: 0.0 for key in self.reward_keys},
                     )
                 return replace(rollout, rewards=rewards)

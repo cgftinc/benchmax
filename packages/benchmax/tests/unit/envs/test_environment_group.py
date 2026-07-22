@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -182,7 +183,9 @@ async def test_one_operational_failure_does_not_cancel_or_shape_from_siblings(
     assert "sandbox crashed" in caplog.text
 
 
-async def test_group_scorer_failure_propagates_after_all_rollouts_complete() -> None:
+async def test_group_scorer_defect_settles_the_group_without_crashing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     class FailingGroupScorer(_ScoredEnv):
         async def compute_group_rewards(self, rollouts):
             raise RuntimeError("group verifier crashed")
@@ -194,10 +197,15 @@ async def test_group_scorer_failure_propagates_after_all_rollouts_complete() -> 
     requests = [_request(f"rollout-{index}", example) for index in range(1, 3)]
     env = FailingGroupScorer(group_size=len(requests))
 
-    with pytest.raises(RuntimeError, match="group verifier crashed"):
-        await env.run_group(requests)
+    outcomes = await env.run_group(requests)
 
     assert set(env.seen_requests) == {"rollout-1", "rollout-2"}
+    assert all(outcome.rewards == {"reward": 0.0} for outcome in outcomes.values())
+    assert all(
+        outcome.termination_reason == "group_reward_error"
+        for outcome in outcomes.values()
+    )
+    assert "group verifier crashed" in caplog.text
 
 
 async def test_operational_group_judge_failure_zeroes_the_complete_group(
@@ -292,9 +300,10 @@ async def test_run_group_rejects_invalid_membership(
         ),
     ],
 )
-async def test_run_group_rejects_misaligned_reward_ids(
+async def test_misaligned_reward_ids_settle_as_group_reward_error(
     reward_ids: list[str],
     message: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     class MisalignedEnv(_ScoredEnv):
         async def compute_group_rewards(self, rollouts):
@@ -303,8 +312,11 @@ async def test_run_group_rejects_misaligned_reward_ids(
     example = Example(id="example-1", payload={"rollout-1": 0.0})
     request = _request("rollout-1", example)
 
-    with pytest.raises(ValueError, match=message):
-        await MisalignedEnv(group_size=1).run_group([request])
+    outcomes = await MisalignedEnv(group_size=1).run_group([request])
+
+    assert outcomes["rollout-1"].rewards == {"reward": 0.0}
+    assert outcomes["rollout-1"].termination_reason == "group_reward_error"
+    assert re.search(message, caplog.text)
 
 
 @pytest.mark.parametrize(
@@ -340,7 +352,7 @@ async def test_run_group_rejects_malformed_rollout_results(
         await MalformedEnv().run_group([request])
 
 
-async def test_run_group_rejects_a_rollout_with_no_reward_source() -> None:
+async def test_rollout_with_no_reward_source_settles_as_group_reward_error() -> None:
     class UnscoredEnv(Environment[dict[str, Any], RolloutAttempt]):
         reward_keys = ("reward",)
 
@@ -355,11 +367,13 @@ async def test_run_group_rejects_a_rollout_with_no_reward_source() -> None:
 
     request = _request("rollout-1", Example(id="example-1", payload={}))
 
-    with pytest.raises(ValueError, match="has no rewards"):
-        await UnscoredEnv().run_group([request])
+    outcomes = await UnscoredEnv().run_group([request])
+
+    assert outcomes["rollout-1"].rewards == {"reward": 0.0}
+    assert outcomes["rollout-1"].termination_reason == "group_reward_error"
 
 
-async def test_run_group_rejects_reward_shape_that_differs_from_declaration() -> None:
+async def test_undeclared_reward_shape_settles_as_group_reward_error() -> None:
     class WrongShapeEnv(Environment[dict[str, Any], RolloutAttempt]):
         reward_keys = ("declared",)
 
@@ -375,8 +389,10 @@ async def test_run_group_rejects_reward_shape_that_differs_from_declaration() ->
 
     request = _request("rollout-1", Example(id="example-1", payload={}))
 
-    with pytest.raises(ValueError, match="wrong reward shape"):
-        await WrongShapeEnv().run_group([request])
+    outcomes = await WrongShapeEnv().run_group([request])
+
+    assert outcomes["rollout-1"].rewards == {"declared": 0.0}
+    assert outcomes["rollout-1"].termination_reason == "group_reward_error"
 
 
 async def test_run_group_rejects_nonzero_reward_on_failed_attempt() -> None:

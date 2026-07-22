@@ -744,7 +744,9 @@ async def test_base_env_merges_individual_and_group_reward_dimensions() -> None:
     }
 
 
-async def test_base_env_rejects_duplicate_individual_and_group_reward_keys() -> None:
+async def test_duplicate_individual_and_group_reward_keys_settle_the_group(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     class ConflictingMathEnv(_MathEnv):
         async def compute_group_rewards(
             self,
@@ -767,8 +769,45 @@ async def test_base_env_rejects_duplicate_individual_and_group_reward_keys() -> 
             completion_response(content="42"),
         )
     ) as server:
-        with pytest.raises(ValueError, match="duplicate keys.*correctness"):
-            await env.run_group(_requests(server, example, ["rollout-1"]))
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
+
+    outcome = outcomes["rollout-1"]
+    assert outcome.termination_reason == "group_reward_error"
+    assert set(outcome.rewards) == set(env.reward_keys)
+    assert all(value == 0.0 for value in outcome.rewards.values())
+    assert "duplicate keys" in caplog.text
+
+
+async def test_compute_reward_defect_settles_the_rollout_as_reward_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class BrokenRewardEnv(_MathEnv):
+        async def compute_reward(self, rollout: BaseRollout) -> RewardMap:
+            raise KeyError("missing ground_truth column")
+
+    example = Example(
+        id="math-broken-reward",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "Answer"}],
+            "answer": "42",
+        },
+    )
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (
+            200,
+            completion_response(content="42"),
+        )
+    ) as server:
+        outcomes = await BrokenRewardEnv().run_group(
+            _requests(server, example, ["rollout-1"])
+        )
+
+    outcome = outcomes["rollout-1"]
+    assert outcome.termination_reason == "reward_error"
+    assert set(outcome.rewards) == set(BrokenRewardEnv.reward_keys)
+    assert all(value == 0.0 for value in outcome.rewards.values())
+    assert "missing ground_truth column" in caplog.text
 
 
 async def test_request_split_reaches_reward_hooks_and_must_be_uniform() -> None:

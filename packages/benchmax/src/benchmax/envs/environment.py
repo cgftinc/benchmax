@@ -60,7 +60,13 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
         self,
         rollouts: Sequence[Attempt],
     ) -> Mapping[str, RewardMap] | None:
-        """Optionally contribute group-relative rewards keyed by rollout ID."""
+        """Optionally contribute group-relative rewards keyed by rollout ID.
+
+        Raise :class:`RolloutFailure` for expected runtime failures (judge
+        outage, rate limit) to settle the group under that reason. Any other
+        exception, or a misaligned or misshapen result, settles the group as
+        ``group_reward_error``; a hook defect never crashes the run.
+        """
 
         return None
 
@@ -71,9 +77,10 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
         """Run, score, and validate one complete rollout group.
 
         All requests must target the same example. Execution is concurrent.
-        Operational failures become zero-valued terminal outcomes without
-        cancelling siblings. Contract and programming errors remain loud, but
-        only after every sibling has settled.
+        Operational failures and reward-hook defects become zero-valued
+        terminal outcomes without cancelling siblings. Execution-contract
+        violations (malformed requests, a broken reward schema, run_rollout
+        identity lies) remain loud, but only after every sibling has settled.
         """
 
         group, rollout_ids = _validate_group_requests(requests)
@@ -119,20 +126,19 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
         if contract_errors:
             _raise_contract_errors(contract_errors)
 
-        group_rewards: Mapping[str, RewardMap] | None = None
         if rollouts:
+            # Reward hooks run user code, so any defect settles the group with
+            # a labeled zero outcome instead of crashing training: a raised
+            # RolloutFailure keeps its own reason, and every other exception
+            # (including a misaligned or misshapen result) becomes
+            # "group_reward_error". A deterministic bug therefore surfaces
+            # through the run's failure telemetry, not a mid-run crash.
             try:
+                group_rewards: Mapping[str, RewardMap] | None = None
                 with group_context(tuple(rollout.rollout_id for rollout in rollouts)):
                     group_rewards = await self.compute_group_rewards(rollouts)
-            except RolloutFailure as failure:
-                _log_operational_failure("group", failure)
-                for rollout in rollouts:
-                    outcomes[rollout.rollout_id] = _failure_outcome(
-                        reward_keys,
-                        failure.termination_reason,
-                    )
-            else:
                 _validate_group_rewards(rollouts, group_rewards)
+                merged: dict[str, dict[str, float]] = {}
                 for rollout in rollouts:
                     rewards = _merge_individual_and_group_rewards(
                         rollout,
@@ -143,8 +149,25 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
                         rewards,
                         reward_keys,
                     )
+                    merged[rollout.rollout_id] = rewards
+            except RolloutFailure as failure:
+                _log_operational_failure("group", failure)
+                for rollout in rollouts:
+                    outcomes[rollout.rollout_id] = _failure_outcome(
+                        reward_keys,
+                        failure.termination_reason,
+                    )
+            except Exception as error:
+                _log_group_reward_defect(error)
+                for rollout in rollouts:
+                    outcomes[rollout.rollout_id] = _failure_outcome(
+                        reward_keys,
+                        "group_reward_error",
+                    )
+            else:
+                for rollout in rollouts:
                     outcomes[rollout.rollout_id] = RolloutOutcome(
-                        rewards=rewards,
+                        rewards=merged[rollout.rollout_id],
                         termination_reason=rollout.termination_reason,
                     )
 
@@ -267,6 +290,17 @@ def _log_operational_failure(rollout_id: str, failure: RolloutFailure) -> None:
         failure.termination_reason,
         failure,
         exc_info=(type(failure), failure, failure.__traceback__),
+    )
+
+
+def _log_group_reward_defect(error: BaseException) -> None:
+    """Log a group reward defect that settles the group instead of crashing."""
+
+    logger.error(
+        "benchmax.rollout.failed rollout_id=group "
+        "termination_reason=group_reward_error: %s",
+        error,
+        exc_info=(type(error), error, error.__traceback__),
     )
 
 
