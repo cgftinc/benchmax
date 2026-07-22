@@ -108,6 +108,16 @@ INSERT_COLUMNS: tuple[str, ...] = (
 )
 
 
+class VersionStateError(RuntimeError):
+    """A ledger state transition did not affect exactly one row (B5).
+
+    Raised when activation/rollback cannot find a single eligible row to
+    transition (wrong state, missing target, or a would-be multi-row update), so
+    the caller aborts the transaction BEFORE publishing the reader view rather
+    than committing an inconsistent ledger/view pair.
+    """
+
+
 class NeonClient:
     """Thin connection + SQL-execution wrapper over a resolved Neon DSN.
 
@@ -191,6 +201,30 @@ class NeonClient:
             return self._connect()
         return conn
 
+    @staticmethod
+    def _require_composable(query: object) -> None:
+        """Reject a raw ``str`` at the execute seam — composables only (B4).
+
+        Every statement must reach the driver as ``psycopg.sql.Composable`` so
+        identifiers are ``Identifier`` and values are bound params, never string
+        interpolation. A raw ``str`` would bypass that guarantee, so it is a
+        ``TypeError`` here, not something the driver silently accepts.
+        """
+        from psycopg import sql
+
+        if not isinstance(query, sql.Composable):
+            raise TypeError(
+                f"query must be a psycopg sql.Composable, got {type(query).__name__}"
+            )
+
+    @staticmethod
+    def _safe_rollback(conn: Any) -> None:
+        """Roll back, swallowing errors (a dead connection cannot roll back)."""
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
     def execute(
         self, query: sql.Composable, params: dict[str, Any] | None = None
     ) -> list[tuple[Any, ...]]:
@@ -199,7 +233,8 @@ class NeonClient:
         Single-statement autocommit-equivalent: each successful statement is
         committed so a read releases its snapshot and a DDL persists, leaving no
         open transaction to block the ``VACUUM`` autocommit toggle. Grouped atomic
-        work goes through :meth:`execute_in_transaction`, not here.
+        work goes through :meth:`execute_in_transaction` (or the lifecycle mutators),
+        not here. Rejects a raw ``str`` (B4).
 
         Bounded reconnect (B16): a cached connection killed by autosuspend raises
         an ``OperationalError``/``InterfaceError`` on first use; if the handle is
@@ -210,6 +245,7 @@ class NeonClient:
         """
         import psycopg
 
+        self._require_composable(query)
         for attempt in range(2):  # original attempt + one bounded reconnect
             conn = self._live_conn()
             try:
@@ -225,25 +261,57 @@ class NeonClient:
                 raise  # live-conn error, or a second dead-conn failure
         raise AssertionError("unreachable")  # the loop always returns or raises
 
+    def _in_bounded_txn(self, work: Any) -> Any:
+        """Run ``work(conn)`` as one transaction with a bounded dead-conn retry (B16).
+
+        ``work`` receives a live connection, performs the transaction body, and its
+        return value is passed through after commit. If any statement — INCLUDING
+        the first, when an apparently-live cached socket turns out to be dead —
+        raises an ``OperationalError``/``InterfaceError`` on a genuinely dead
+        connection, the transaction is rolled back, the handle dropped, and the
+        WHOLE transaction retried once on a freshly-resolved, pgvector-re-registered
+        connection. Nothing commits until ``work`` returns, and a dead connection's
+        server-side transaction is already rolled back, so a mid-transaction retry
+        never double-applies. A live-connection error, an application error (e.g.
+        :class:`VersionStateError`), or a second dead-connection failure propagates.
+        """
+        import psycopg
+
+        for attempt in range(2):  # original attempt + one bounded reconnect
+            conn = self._live_conn()
+            try:
+                result = work(conn)
+                conn.commit()
+                return result
+            except (psycopg.OperationalError, psycopg.InterfaceError):
+                dead = self._is_dead(conn)
+                self._safe_rollback(conn)
+                self._conn = None  # drop the handle; next _live_conn reconnects
+                if attempt == 0 and dead:
+                    continue  # autosuspend-killed conn: retry the whole txn once
+                raise  # live-conn error, or a second dead-conn failure
+            except Exception:
+                self._safe_rollback(conn)
+                raise  # application error: abort, no retry
+        raise AssertionError("unreachable")  # the loop always returns or raises
+
     def execute_in_transaction(self, statements: list[sql.Composable]) -> None:
         """Run *statements* as one all-or-nothing transaction (B5).
 
-        Used to publish (or roll back) a version so the ledger update, the ``CREATE
-        OR REPLACE VIEW``, and the RO grants commit or roll back together. The
-        connection is refreshed via :meth:`_live_conn` first so an autosuspend-
-        killed cached connection reconnects *before* the transaction opens (a
-        mid-transaction reconnect would silently drop the advisory lock). On the
-        first failing statement the whole transaction is rolled back and the error
-        re-raised, leaving no partial state.
+        Rejects raw strings (B4) and runs under :meth:`_in_bounded_txn`, so an
+        autosuspend-killed cached connection discovered dead on the first statement
+        reconnects and the whole transaction retries once. On any statement failure
+        the transaction is rolled back and the error re-raised, leaving no partial
+        state.
         """
-        conn = self._live_conn()
-        try:
+        for statement in statements:
+            self._require_composable(statement)
+
+        def work(conn: Any) -> None:
             for statement in statements:
                 conn.execute(statement)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+
+        self._in_bounded_txn(work)
 
     def vacuum(self, spec: NeonTableSpec) -> None:
         """``VACUUM ANALYZE`` a version's table in autocommit, outside any txn (B14).
@@ -402,134 +470,198 @@ class NeonClient:
 
     # --- ledger state machine + advisory lock (B5) ---------------------------
 
-    def _advisory_lock_sql(self, logical_name: str) -> sql.Composed:
+    def _advisory_lock_stmt(self) -> sql.Composed:
         """Return the per-logical ``pg_advisory_xact_lock`` acquisition (B5).
 
         Every allocation, activation, rollback, and prune acquires the SAME
-        transaction-scoped lock keyed on the logical name, so concurrent
-        build-vs-prune (and two concurrent builds) serialize and the lock releases
-        automatically at commit/rollback. ``hashtext`` maps the name to the lock's
-        bigint key.
+        transaction-scoped lock keyed on the logical name (passed as the bound
+        ``%(logical)s`` param), so concurrent build-vs-prune (and two concurrent
+        builds) serialize and the lock releases automatically at commit/rollback.
+        ``hashtext`` maps the name to the lock's bigint key.
         """
         from psycopg import sql
 
-        validate_logical_name(logical_name)
-        return sql.SQL("SELECT pg_advisory_xact_lock(hashtext({}))").format(
-            sql.Literal(logical_name)
+        return sql.SQL("SELECT pg_advisory_xact_lock(hashtext(%(logical)s))")
+
+    def _view_ddl(self, logical_name: str, version: int) -> sql.Composed:
+        """Return the owner-rights ``CREATE OR REPLACE VIEW`` for a version (B4/B5)."""
+        from psycopg import sql
+
+        return sql.SQL(
+            "CREATE OR REPLACE VIEW {view} WITH (security_invoker = false) AS "
+            "SELECT {columns} FROM {table}"
+        ).format(
+            view=sql.Identifier(view_name(logical_name)),
+            columns=sql.SQL(", ").join(sql.Identifier(c) for c in VIEW_COLUMNS),
+            table=sql.Identifier(physical_table_name(logical_name, version)),
         )
 
-    def allocate_version_sql(
-        self, logical_name: str, version: int
-    ) -> list[sql.Composed]:
-        """Return the txn that reserves *version* as ``building`` under the lock (B5).
+    def allocate_version(self, spec: NeonTableSpec) -> None:
+        """Reserve ``spec.version`` as ``building`` under the advisory lock (B5).
 
-        Acquires the advisory lock FIRST, then inserts the ``building`` ledger row.
-        Holding the lock across the insert is what makes concurrent allocation
-        race-safe: two builders cannot both reserve the same next version.
+        Acquires the advisory lock FIRST, then inserts the ``building`` ledger row —
+        holding the lock across the insert is what makes concurrent allocation
+        race-safe: two builders cannot both reserve the same version. Bounded-retry
+        wrapped (B16). Caller-supplied values are bound params (B4).
         """
         from psycopg import sql
 
-        validate_version(version)
-        return [
-            self._advisory_lock_sql(logical_name),
-            sql.SQL(
-                "INSERT INTO neon_corpus_versions (logical_name, version, state) "
-                "VALUES ({logical}, {version}, 'building')"
-            ).format(logical=sql.Literal(logical_name), version=sql.Literal(version)),
-        ]
+        validate_logical_name(spec.logical_name)
+        validate_version(spec.version)
+        params = {"logical": spec.logical_name, "version": spec.version}
+
+        def work(conn: Any) -> None:
+            conn.execute(self._advisory_lock_stmt(), params)
+            conn.execute(
+                sql.SQL(
+                    "INSERT INTO neon_corpus_versions (logical_name, version, state) "
+                    "VALUES (%(logical)s, %(version)s, 'building')"
+                ),
+                params,
+            )
+
+        self._in_bounded_txn(work)
 
     def mark_ready_sql(self, spec: NeonTableSpec) -> sql.Composed:
         """Return the ledger update transitioning ``building`` -> ``ready`` (B5).
 
         Guarded by ``state = 'building'`` so the frozen transition is enforced in
-        SQL alongside the DB CHECK domain.
+        SQL alongside the DB CHECK domain; caller values are bound ``%s`` params.
+        Run with params ``{"logical", "version"}``.
         """
         from psycopg import sql
 
         return sql.SQL(
             "UPDATE neon_corpus_versions SET state = 'ready', ready_at = now() "
-            "WHERE logical_name = {logical} AND version = {version} "
+            "WHERE logical_name = %(logical)s AND version = %(version)s "
             "AND state = 'building'"
-        ).format(
-            logical=sql.Literal(spec.logical_name),
-            version=sql.Literal(spec.version),
         )
 
-    def activate_version_sql(
-        self, spec: NeonTableSpec, grant: ReadGrantSpec
-    ) -> list[sql.Composed]:
-        """Return the single-transaction statements that publish a version (B5).
+    def activate(self, spec: NeonTableSpec, grant: ReadGrantSpec) -> None:
+        """Publish ``spec.version`` atomically, or abort before publishing (B5).
 
-        Ordered, all under one ``pg_advisory_xact_lock`` on the logical name:
-        acquire the lock; clear the prior ``is_current`` row; set this version
-        ``activated``/``is_current``; ``CREATE OR REPLACE VIEW`` (owner-rights,
-        explicit columns); and issue the RO grants so a first-create view is
-        readable atomically with publication. The partial unique index enforces
-        the single-current invariant. Runs via :meth:`execute_in_transaction`.
+        One transaction under the advisory lock: acquire the lock; clear the prior
+        ``is_current`` row; transition THIS version ``ready`` -> ``activated`` +
+        ``is_current`` **guarded by ``state = 'ready'`` and RETURNING**. If that
+        does not affect exactly one row (the version is not ``ready`` — e.g. still
+        ``building``, already ``retired``, or missing) the transaction is aborted
+        with :class:`VersionStateError` BEFORE the view is published, so a bad state
+        can never publish or rewrite ``activated_at``. Only on a confirmed single
+        transition do we ``CREATE OR REPLACE VIEW`` (owner-rights) and issue the RO
+        grants, all committing together. Clearing the old current before setting the
+        new one keeps the partial unique index satisfied at every statement
+        boundary. Bounded-retry wrapped (B16).
+
+        In-doubt-commit note: if the connection dies AFTER ``COMMIT`` is sent but
+        before its ack, the bounded retry re-runs and, finding the row already
+        ``activated``, raises :class:`VersionStateError` for an activation that in
+        fact succeeded. This never corrupts state (the retry's own work rolls back);
+        callers should treat an activation failure as "re-check the ledger", not
+        "the version is unpublished".
+
+        ``grant.view`` must equal :func:`view_name` of the logical name, or the RO
+        grant lands on a different identifier than the published view and search
+        fails with a permission error — checked here.
         """
         from psycopg import sql
 
+        validate_logical_name(spec.logical_name)
         validate_version(spec.version)
-        view = sql.Identifier(view_name(spec.logical_name))
-        table = sql.Identifier(physical_table_name(spec.logical_name, spec.version))
-        columns = sql.SQL(", ").join(sql.Identifier(c) for c in VIEW_COLUMNS)
-        return [
-            self._advisory_lock_sql(spec.logical_name),
-            sql.SQL(
-                "UPDATE neon_corpus_versions SET is_current = false "
-                "WHERE logical_name = {logical} AND is_current"
-            ).format(logical=sql.Literal(spec.logical_name)),
-            sql.SQL(
-                "UPDATE neon_corpus_versions "
-                "SET state = 'activated', is_current = true, activated_at = now() "
-                "WHERE logical_name = {logical} AND version = {version}"
-            ).format(
-                logical=sql.Literal(spec.logical_name),
-                version=sql.Literal(spec.version),
-            ),
-            sql.SQL(
-                "CREATE OR REPLACE VIEW {view} WITH (security_invoker = false) AS "
-                "SELECT {columns} FROM {table}"
-            ).format(view=view, columns=columns, table=table),
-            *self.read_grant_sql(grant),
-        ]
+        expected_view = view_name(spec.logical_name)
+        if grant.view != expected_view:
+            raise ValueError(
+                f"grant.view {grant.view!r} must equal view_name("
+                f"{spec.logical_name!r}) = {expected_view!r}"
+            )
+        params = {"logical": spec.logical_name, "version": spec.version}
 
-    def rollback_version_sql(
-        self, logical_name: str, target_version: int
-    ) -> list[sql.Composed]:
-        """Return the statements re-pointing ``is_current`` to a prior version (B5).
+        def work(conn: Any) -> None:
+            conn.execute(self._advisory_lock_stmt(), params)
+            conn.execute(
+                sql.SQL(
+                    "UPDATE neon_corpus_versions SET is_current = false "
+                    "WHERE logical_name = %(logical)s AND is_current"
+                ),
+                params,
+            )
+            transitioned = conn.execute(
+                sql.SQL(
+                    "UPDATE neon_corpus_versions "
+                    "SET state = 'activated', is_current = true, activated_at = now() "
+                    "WHERE logical_name = %(logical)s AND version = %(version)s "
+                    "AND state = 'ready' RETURNING version"
+                ),
+                params,
+            ).fetchall()
+            if len(transitioned) != 1:
+                raise VersionStateError(
+                    f"cannot activate {spec.logical_name} v{spec.version}: expected "
+                    f"exactly one 'ready' row to transition, got {len(transitioned)}"
+                )
+            conn.execute(self._view_ddl(spec.logical_name, spec.version))
+            for statement in self.read_grant_sql(grant):
+                conn.execute(statement)
+
+        self._in_bounded_txn(work)
+
+    def rollback(self, logical_name: str, target_version: int) -> None:
+        """Re-point ``is_current`` to a prior ``activated`` version, or abort (B5).
 
         Non-destructive and O(1): prior physical tables are retained, so rollback
-        only re-points the ledger + view under the advisory lock. The target must
-        be an already-``activated`` version (``WHERE state = 'activated'`` guards
-        it — you cannot roll forward onto something never published), and its state
-        is left unchanged (rollback flips ``is_current``, not ``state``).
+        only re-points the ledger + view under the advisory lock. The target is
+        **validated and row-locked FIRST** (``SELECT ... WHERE state = 'activated'
+        FOR UPDATE``); unless exactly one activated target exists the transaction
+        aborts with :class:`VersionStateError` BEFORE the current pointer or view is
+        touched — so a missing/non-activated target can never leave the view pointed
+        at a table with no current ledger row. Then clear the prior ``is_current``,
+        set the target ``is_current`` (RETURNING-guarded to exactly one row), and
+        re-point the view. ``state`` is unchanged (rollback flips ``is_current``,
+        not ``state``). Bounded-retry wrapped (B16).
         """
         from psycopg import sql
 
+        validate_logical_name(logical_name)
         validate_version(target_version)
-        view = sql.Identifier(view_name(logical_name))
-        table = sql.Identifier(physical_table_name(logical_name, target_version))
-        columns = sql.SQL(", ").join(sql.Identifier(c) for c in VIEW_COLUMNS)
-        return [
-            self._advisory_lock_sql(logical_name),
-            sql.SQL(
-                "UPDATE neon_corpus_versions SET is_current = false "
-                "WHERE logical_name = {logical} AND is_current"
-            ).format(logical=sql.Literal(logical_name)),
-            sql.SQL(
-                "UPDATE neon_corpus_versions SET is_current = true "
-                "WHERE logical_name = {logical} AND version = {version} "
-                "AND state = 'activated'"
-            ).format(
-                logical=sql.Literal(logical_name),
-                version=sql.Literal(target_version),
-            ),
-            sql.SQL(
-                "CREATE OR REPLACE VIEW {view} WITH (security_invoker = false) AS "
-                "SELECT {columns} FROM {table}"
-            ).format(view=view, columns=columns, table=table),
-        ]
+        params = {"logical": logical_name, "version": target_version}
+
+        def work(conn: Any) -> None:
+            conn.execute(self._advisory_lock_stmt(), params)
+            target = conn.execute(
+                sql.SQL(
+                    "SELECT version FROM neon_corpus_versions "
+                    "WHERE logical_name = %(logical)s AND version = %(version)s "
+                    "AND state = 'activated' FOR UPDATE"
+                ),
+                params,
+            ).fetchall()
+            if len(target) != 1:
+                raise VersionStateError(
+                    f"cannot roll back {logical_name} to v{target_version}: target "
+                    f"is not an activated version (found {len(target)})"
+                )
+            conn.execute(
+                sql.SQL(
+                    "UPDATE neon_corpus_versions SET is_current = false "
+                    "WHERE logical_name = %(logical)s AND is_current"
+                ),
+                params,
+            )
+            pointed = conn.execute(
+                sql.SQL(
+                    "UPDATE neon_corpus_versions SET is_current = true "
+                    "WHERE logical_name = %(logical)s AND version = %(version)s "
+                    "AND state = 'activated' RETURNING version"
+                ),
+                params,
+            ).fetchall()
+            if len(pointed) != 1:
+                raise VersionStateError(
+                    f"rollback of {logical_name} to v{target_version} updated "
+                    f"{len(pointed)} pointer rows, expected 1"
+                )
+            conn.execute(self._view_ddl(logical_name, target_version))
+
+        self._in_bounded_txn(work)
 
     def read_grant_sql(self, grant: ReadGrantSpec) -> list[sql.Composed]:
         """Return the ``GRANT USAGE``/``GRANT SELECT`` statements for the RO role (B5).
@@ -568,8 +700,10 @@ class NeonClient:
           ``ready`` versions;
         - everything older is retired and its physical table dropped.
 
-        This is the *decision*; :meth:`prune_versions_sql` emits the guarded DDL
-        that executes it under the advisory lock, which is what makes it race-safe.
+        This is the *decision* only; :meth:`prune` executes it under the advisory
+        lock against a ledger snapshot re-read UNDER that lock, and drops a table
+        only after the guarded retire UPDATE authoritatively confirms the row is
+        non-current — which is what makes it race-safe.
         """
         by_version = sorted(records, key=lambda r: r.version, reverse=True)
         kept_activated = 0
@@ -592,89 +726,44 @@ class NeonClient:
                 retire.append(rec.version)  # already retired: reclaim its table
         return retire, list(retire)
 
-    def read_ledger_sql(self, logical_name: str) -> sql.Composed:
+    def read_ledger_sql(self) -> sql.Composed:
         """Return the ledger read for one logical corpus (version/state/is_current).
 
-        Only the columns the prune decision needs. Ordered by version so the read
-        is deterministic; meant to be run UNDER the advisory lock so the snapshot
-        it returns is race-consistent with the prune that follows.
+        Only the columns the prune decision needs, keyed on the bound
+        ``%(logical)s`` param and ordered by version so the read is deterministic.
+        Run UNDER the advisory lock so the snapshot it returns is race-consistent
+        with the prune that follows.
         """
         from psycopg import sql
 
-        validate_logical_name(logical_name)
         return sql.SQL(
             "SELECT version, state, is_current FROM neon_corpus_versions "
-            "WHERE logical_name = {logical} ORDER BY version"
-        ).format(logical=sql.Literal(logical_name))
-
-    def _prune_body_sql(
-        self, logical_name: str, retire: list[int], drop_tables: list[int]
-    ) -> list[sql.Composed]:
-        """Return the DROP + guarded-retire statements (no lock; caller holds it).
-
-        Each retire is guarded by ``is_current = false`` — belt-and-suspenders so
-        that even if a snapshot were stale, the live version's ledger row is never
-        retired.
-        """
-        from psycopg import sql
-
-        statements: list[sql.Composed] = []
-        for version in drop_tables:
-            table = sql.Identifier(physical_table_name(logical_name, version))
-            statements.append(sql.SQL("DROP TABLE IF EXISTS {}").format(table))
-        for version in retire:
-            statements.append(
-                sql.SQL(
-                    "UPDATE neon_corpus_versions "
-                    "SET state = 'retired', retired_at = now() "
-                    "WHERE logical_name = {logical} AND version = {version} "
-                    "AND is_current = false"
-                ).format(
-                    logical=sql.Literal(logical_name),
-                    version=sql.Literal(version),
-                )
-            )
-        return statements
-
-    def prune_versions_sql(
-        self, logical_name: str, records: list[NeonVersionRecord]
-    ) -> list[sql.Composed]:
-        """Return the guarded prune transaction for a PRE-READ snapshot (B5).
-
-        Structure, all under ONE advisory lock (same key as allocation/activation,
-        so a concurrent build cannot interleave): acquire ``pg_advisory_xact_lock``,
-        then ``DROP TABLE IF EXISTS`` + mark ``retired`` (guarded by ``is_current =
-        false``) for each version :meth:`plan_prune` selected. Empty when nothing is
-        prunable.
-
-        This is the static form for a snapshot the caller already holds. For full
-        race-safety prefer :meth:`prune`, which re-reads the ledger UNDER the lock
-        so a version that races into ``is_current`` after the snapshot can never
-        have its table dropped.
-        """
-        retire, drop_tables = self.plan_prune(records)
-        if not retire:
-            return []
-        return [
-            self._advisory_lock_sql(logical_name),
-            *self._prune_body_sql(logical_name, retire, drop_tables),
-        ]
+            "WHERE logical_name = %(logical)s ORDER BY version"
+        )
 
     def prune(self, logical_name: str) -> list[int]:
         """Race-safely prune retired versions; return the versions dropped (B5).
 
-        The load-bearing ordering: **acquire the advisory lock FIRST, then re-read
-        the ledger under it**, so the prune decision sees any activation that raced
-        ahead of us — the freshly-published version is now ``is_current`` in the
-        snapshot and is excluded, so its physical table is never dropped. The lock,
-        read, drops, and retires all commit as one transaction (rolled back on any
-        error); the lock releases at commit. Concurrent allocation contends on the
-        same lock, so build-vs-prune fully serializes.
+        There is NO path that decides drops from a pre-lock snapshot. In one
+        bounded-retry transaction (B16): acquire the advisory lock FIRST; re-read
+        the ledger UNDER the lock (so any activation that raced ahead is reflected —
+        its version is now ``is_current`` and excluded by :meth:`plan_prune`); then
+        for each candidate run the guarded retire ``UPDATE ... WHERE is_current =
+        false AND state IN (...) RETURNING version`` and **drop the physical table
+        only if that UPDATE returned a row** — i.e. only after the ledger
+        authoritatively confirms the version is non-current. So a version that is
+        (or became) current is never dropped. Concurrent allocation contends on the
+        same lock, so build-vs-prune fully serializes; the lock releases at commit.
         """
-        conn = self._live_conn()
-        try:
-            conn.execute(self._advisory_lock_sql(logical_name))
-            rows = conn.execute(self.read_ledger_sql(logical_name)).fetchall()
+        from psycopg import sql
+
+        validate_logical_name(logical_name)
+
+        def work(conn: Any) -> list[int]:
+            conn.execute(self._advisory_lock_stmt(), {"logical": logical_name})
+            rows = conn.execute(
+                self.read_ledger_sql(), {"logical": logical_name}
+            ).fetchall()
             records = [
                 NeonVersionRecord(
                     logical_name=logical_name,
@@ -684,14 +773,31 @@ class NeonClient:
                 )
                 for version, state, is_current in rows
             ]
-            retire, drop_tables = self.plan_prune(records)
-            for statement in self._prune_body_sql(logical_name, retire, drop_tables):
-                conn.execute(statement)
-            conn.commit()
-            return drop_tables
-        except Exception:
-            conn.rollback()
-            raise
+            retire, _ = self.plan_prune(records)
+            dropped: list[int] = []
+            for version in retire:
+                params = {"logical": logical_name, "version": version}
+                confirmed = conn.execute(
+                    sql.SQL(
+                        "UPDATE neon_corpus_versions "
+                        "SET state = 'retired', retired_at = now() "
+                        "WHERE logical_name = %(logical)s AND version = %(version)s "
+                        "AND is_current = false "
+                        "AND state IN ('activated', 'ready', 'retired') "
+                        "RETURNING version"
+                    ),
+                    params,
+                ).fetchall()
+                if confirmed:  # authoritative: this row is non-current, safe to drop
+                    conn.execute(
+                        sql.SQL("DROP TABLE IF EXISTS {}").format(
+                            sql.Identifier(physical_table_name(logical_name, version))
+                        )
+                    )
+                    dropped.append(version)
+            return dropped
+
+        return self._in_bounded_txn(work)
 
     # --- candidate queries (B13): vector / bm25 / hybrid ---------------------
 
@@ -718,7 +824,11 @@ class NeonClient:
         )
 
     def bm25_candidates_sql(
-        self, spec: NeonTableSpec, where: sql.Composable | None = None
+        self,
+        spec: NeonTableSpec,
+        where: sql.Composable | None = None,
+        *,
+        schema: str,
     ) -> sql.Composed:
         """Return the BM25 candidate query (``<@> to_bm25query(...)`` ASC, B13).
 
@@ -727,8 +837,14 @@ class NeonClient:
         candidates are ordered ``ASC``. ``to_bm25query(query, index)`` takes the
         query FIRST as a ``tsvector`` (the ``%(text)s`` placeholder run through
         ``to_tsvector`` with the SAME baked ``regconfig`` as the column, or scores
-        would be tokenized inconsistently) and the BM25 index regclass SECOND. The
-        same expression drives both the projected ``native_score`` and the ordering.
+        would be tokenized inconsistently) and the BM25 index regclass SECOND.
+
+        The index regclass is **schema-qualified** (``schema`` = the schema the
+        corpus objects live in). Unlike the ``FROM`` view (read under the view
+        owner's rights), ``to_bm25query`` and the ``::regclass`` name lookup run in
+        the RO *invoker's* ``search_path`` — which need not include the corpus
+        schema — so an unqualified name would fail to resolve for the very RO caller
+        this enables. ``quote_ident`` on each part keeps the qualification safe.
         """
         from psycopg import sql
 
@@ -736,24 +852,35 @@ class NeonClient:
         tsconfig = validate_text_search_config(spec.text_search_config)
         score_expr = sql.SQL(
             "content_tsv <@> to_bm25query("
-            "to_tsvector({tsconfig}::regconfig, %(text)s), {index}::regclass)"
-        ).format(tsconfig=sql.Literal(tsconfig), index=sql.Literal(bm25_index))
+            "to_tsvector({tsconfig}::regconfig, %(text)s), "
+            "(quote_ident({schema}) || '.' || quote_ident({index}))::regclass)"
+        ).format(
+            tsconfig=sql.Literal(tsconfig),
+            schema=sql.Literal(schema),
+            index=sql.Literal(bm25_index),
+        )
         return self._candidate_query(
             spec, score_expr=score_expr, order=sql.SQL("ASC"), where=where
         )
 
     def hybrid_candidates_sql(
-        self, spec: NeonTableSpec, where: sql.Composable | None = None
+        self,
+        spec: NeonTableSpec,
+        where: sql.Composable | None = None,
+        *,
+        schema: str,
     ) -> tuple[sql.Composed, sql.Composed]:
         """Return the ``(vector, bm25)`` candidate queries for hybrid fusion (B13).
 
         Two independent ranked candidate lists; RRF fusion over them is owned by
         the query layer (Slice 1), not the client. The same optional ``where`` is
-        applied to both so the filtered candidate sets are consistent.
+        applied to both so the filtered candidate sets are consistent; ``schema``
+        qualifies the BM25 index regclass for the RO caller (see
+        :meth:`bm25_candidates_sql`).
         """
         return (
             self.vector_candidates_sql(spec, where=where),
-            self.bm25_candidates_sql(spec, where=where),
+            self.bm25_candidates_sql(spec, where=where, schema=schema),
         )
 
     def _candidate_query(
@@ -769,21 +896,28 @@ class NeonClient:
         Shared by the vector and BM25 paths: projects the view columns plus the
         score as ``native_score``, applies the optional filter, orders by the score,
         and bounds the row count with a ``%(top_k)s`` placeholder.
+
+        Reads the stable owner-rights **view** (never the physical table): the RO
+        search role has ``SELECT`` on the view only, and the ``security_invoker =
+        false`` view executes the underlying scan (including the ANN/BM25 index on
+        the current physical version) with owner rights, so RO search works without
+        any physical-table privilege (B5). The BM25 candidate still names the current
+        version's index regclass — resolved through the same view the caller targets.
         """
         from psycopg import sql
 
-        table = sql.Identifier(physical_table_name(spec.logical_name, spec.version))
+        view = sql.Identifier(view_name(spec.logical_name))
         columns = sql.SQL(", ").join(sql.Identifier(c) for c in VIEW_COLUMNS)
         where_clause = (
             sql.SQL(" WHERE {}").format(where) if where is not None else sql.SQL("")
         )
         return sql.SQL(
-            "SELECT {columns}, {score} AS native_score FROM {table}{where} "
+            "SELECT {columns}, {score} AS native_score FROM {view}{where} "
             "ORDER BY {score} {order} LIMIT %(top_k)s"
         ).format(
             columns=columns,
             score=score_expr,
-            table=table,
+            view=view,
             where=where_clause,
             order=order,
         )
@@ -914,18 +1048,16 @@ class NeonClient:
         build the ANN + BM25 + auxiliary indexes (after the load) -> ``VACUUM
         ANALYZE`` in autocommit outside any transaction -> mark ``ready``.
 
-        Activation is a separate, explicitly-triggered step (:meth:`activate_version_sql`
-        via :meth:`execute_in_transaction`) so a freshly-built ``ready`` version is
-        staged, then published atomically with its RO grants.
+        Activation is a separate, explicitly-triggered step (:meth:`activate`) so a
+        freshly-built ``ready`` version is staged, then published atomically with
+        its RO grants.
         """
         for statement in self.create_extensions_sql():
             self.execute(statement)
         self.register_vector_types()
         for statement in self.create_ledger_sql():
             self.execute(statement)
-        self.execute_in_transaction(
-            self.allocate_version_sql(spec.logical_name, spec.version)
-        )
+        self.allocate_version(spec)
         self.execute(self.create_table_sql(spec))
         if rows:
             self._insert_many(spec, rows)
@@ -934,7 +1066,10 @@ class NeonClient:
         for statement in self.create_aux_indexes_sql(spec):
             self.execute(statement)
         self.vacuum(spec)
-        self.execute(self.mark_ready_sql(spec))
+        self.execute(
+            self.mark_ready_sql(spec),
+            {"logical": spec.logical_name, "version": spec.version},
+        )
 
     def _insert_many(self, spec: NeonTableSpec, rows: list[tuple[Any, ...]]) -> None:
         """Bulk-insert *rows* via a single ``executemany``, committed as a unit."""

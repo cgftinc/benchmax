@@ -2,16 +2,18 @@
 
 These are the fully-seeded behavior tests deferred from Slice A (which shipped
 only strict xfail stubs). A faked psycopg connection records the composable SQL
-the client emits and returns canned rows, so we assert the *shapes* and *ordering*
-of the real statements without a live database:
+the client emits and returns canned rows, so we assert the *shapes*, *ordering*,
+and *failure/race paths* of the real statements without a live database:
 
 - the B14 build lifecycle order (extensions CASCADE -> register vector -> table ->
   populate -> ANN/BM25 indexes after load -> VACUUM in autocommit -> mark ready);
-- the ANN opclass/operator match and the BM25 ``to_bm25query`` + ``ASC`` polarity;
-- ``%s`` / named-placeholder binding everywhere (no interpolated values, B4);
-- the bounded scale-to-zero reconnect (B16);
-- the version-ledger prune seam + the concurrent allocation/prune advisory-lock
-  race invariant (frozen in Slice A, implemented + tested here).
+- the ANN opclass/operator match and the BM25 ``to_bm25query`` + ``ASC`` polarity,
+  read through the owner-rights VIEW with a schema-qualified index regclass;
+- ``%s`` / named-placeholder binding everywhere + a hard reject of raw ``str`` (B4);
+- the bounded scale-to-zero reconnect for single statements AND transactions (B16);
+- activation/rollback one-row transition guards (abort before publishing the view);
+- the version-ledger prune seam + the advisory-lock allocation/prune race
+  invariant (frozen in Slice A, implemented + tested here).
 
 Rendering: ``Composable.as_string(None)`` materializes a statement to its final
 SQL text so substring assertions are meaningful (``str()`` would show the repr).
@@ -26,15 +28,14 @@ import pytest
 from psycopg import sql
 
 from castform.rag.corpus.neon import client as client_mod
-from castform.rag.corpus.neon.client import NeonClient
+from castform.rag.corpus.neon.client import NeonClient, VersionStateError
 from castform.rag.corpus.neon.schema import (
+    VIEW_COLUMNS,
     NeonTableSpec,
     NeonVersionRecord,
     ReadGrantSpec,
     RetentionPolicy,
-    VIEW_COLUMNS,
     index_names,
-    physical_table_name,
 )
 
 SPEC = NeonTableSpec(logical_name="mycorpus", version=2)
@@ -71,7 +72,7 @@ class _FakeConn:
     """Records executed SQL (rendered) + autocommit-at-execute; returns canned rows.
 
     ``responses`` maps a rendered-SQL substring to ``(rows, description)`` so a read
-    can return seeded rows; everything else returns an empty result set.
+    or ``RETURNING`` write can return seeded rows; everything else returns empty.
     """
 
     def __init__(self, responses: dict[str, tuple[list, object]] | None = None) -> None:
@@ -105,6 +106,43 @@ class _FakeConn:
         self.rolled_back += 1
 
 
+class _PruneConn(_FakeConn):
+    """Ledger-aware fake: models the guarded retire ``RETURNING`` semantics.
+
+    The retire UPDATE returns the version row ONLY for a row that is authoritatively
+    non-current and in an eligible state — exactly the DB guard the client relies on
+    to decide whether to drop. ``raced_current`` marks versions whose retire returns
+    nothing (simulating a row that raced into ``is_current`` after planning), so the
+    client must NOT drop them.
+    """
+
+    def __init__(
+        self,
+        ledger: list[tuple[int, str, bool]],
+        raced_current: set[int] | None = None,
+    ) -> None:
+        super().__init__()
+        self._ledger_rows = list(ledger)
+        self._state = {v: (st, cur) for v, st, cur in ledger}
+        self._raced = raced_current or set()
+
+    def execute(self, query: sql.Composable, params: dict | None = None) -> _FakeCursor:
+        text = render(query)
+        self.executed.append(text)
+        self.exec_autocommit.append(self.autocommit)
+        if "SELECT version, state, is_current" in text:
+            desc = [("version",), ("state",), ("is_current",)]
+            return _FakeCursor(list(self._ledger_rows), desc)
+        if "SET state = 'retired'" in text:
+            version = params["version"]  # type: ignore[index]
+            st, cur = self._state.get(version, (None, None))
+            eligible = st in ("activated", "ready", "retired")
+            if version in self._raced or cur or not eligible:
+                return _FakeCursor([], None)  # guard blocks: no row -> no drop
+            return _FakeCursor([(version,)], [("version",)])
+        return _FakeCursor([], None)
+
+
 def _rendered(conn: _FakeConn) -> list[str]:
     """Executed entries as flat strings (EXECUTEMANY tuples flattened to their SQL)."""
     return [e[1] if isinstance(e, tuple) else e for e in conn.executed]
@@ -120,13 +158,26 @@ def _first_index(items: list[str], needle: str) -> int:
 # --- B4: composable-only execute seam -----------------------------------------
 
 
-def test_execute_rejects_nothing_but_binds_params_dict() -> None:
+def test_execute_binds_params_and_rejects_raw_str() -> None:
     conn = _FakeConn(responses={"count": ([(7,)], [("count",)])})
     c = NeonClient(lambda: "dsn")
     c._conn = conn
-    rows = c.execute(c.count_sql("mycorpus"))
+    rows = c.execute(c.count_sql("mycorpus"), {"unused": 1})
     assert rows == [(7,)]
     assert conn.committed == 1  # single-statement reads commit + release snapshot
+    with pytest.raises(TypeError):
+        c.execute("SELECT 1")  # a raw string bypasses the composable guarantee (B4)
+    with pytest.raises(TypeError):
+        c.execute_in_transaction(["SELECT 1"])  # type: ignore[list-item]
+
+
+def test_advisory_lock_stmt_is_shared_keyed_form() -> None:
+    """Allocation, activation, rollback, and prune contend on ONE lock key form."""
+    c = NeonClient(lambda: "dsn")
+    assert (
+        render(c._advisory_lock_stmt())
+        == "SELECT pg_advisory_xact_lock(hashtext(%(logical)s))"
+    )
 
 
 # --- B14: build lifecycle order -----------------------------------------------
@@ -144,7 +195,7 @@ def test_build_version_lifecycle_order(monkeypatch: pytest.MonkeyPatch) -> None:
     c.build_version(SPEC, rows=[("id0", "text", {}, [0.1], "a.md", 0)])
 
     order = _rendered(conn)
-    ext = _first_index(order, "CREATE EXTENSION")
+    ext_last = max(i for i, s in enumerate(order) if "CREATE EXTENSION" in s)
     reg = _first_index(order, "REGISTER_VECTOR")
     tbl = _first_index(order, 'CREATE TABLE "')  # the physical table, not the ledger
     load = _first_index(order, 'INSERT INTO "mycorpus__v2"')  # populate (executemany)
@@ -153,12 +204,14 @@ def test_build_version_lifecycle_order(monkeypatch: pytest.MonkeyPatch) -> None:
     vac = _first_index(order, "VACUUM")
     ready = _first_index(order, "state = 'ready'")
 
+    # BOTH extension statements precede pgvector registration.
+    assert ext_last < reg
     # extensions -> register vector -> table -> load -> ann/bm25 -> vacuum -> ready
-    assert ext < reg < tbl < load < ann
+    assert reg < tbl < load < ann
     assert load < bm25
     assert max(ann, bm25) < vac < ready
     # allocation (insert 'building' ledger row) happens before the table is created.
-    assert _first_index(order, "'mycorpus', 2, 'building'") < tbl
+    assert _first_index(order, "INSERT INTO neon_corpus_versions") < tbl
 
 
 def test_create_extensions_cascade() -> None:
@@ -204,7 +257,7 @@ def test_insert_uses_placeholders_only() -> None:
     assert '"mycorpus__v2"' in text
 
 
-# --- B14/B1: ANN opclass + operator match -------------------------------------
+# --- B14/B1: ANN opclass + operator match, read through the view --------------
 
 
 def test_ann_index_opclass() -> None:
@@ -215,18 +268,21 @@ def test_ann_index_opclass() -> None:
     assert index_names("mycorpus", 2)["ann"] in text.replace('"', "")
 
 
-def test_vector_candidate_operator_matches_cosine_opclass() -> None:
+def test_vector_candidate_operator_and_view() -> None:
     c = NeonClient(lambda: "dsn")
     text = render(c.vector_candidates_sql(SPEC))
     # cosine opclass binds <=>, NOT <-> (which is L2 and would skip the ANN index).
     assert "embedding <=> %(vector)s" in text
     assert "<->" not in text
+    # RO reads the stable owner-rights view, never the physical version table.
+    assert 'FROM "mycorpus"' in text
+    assert "mycorpus__v2" not in text
     assert "AS native_score" in text
-    assert text.rstrip().endswith("LIMIT %(top_k)s")
     assert "ORDER BY embedding <=> %(vector)s ASC" in text
+    assert text.rstrip().endswith("LIMIT %(top_k)s")
 
 
-# --- B13: BM25 index storage params + to_bm25query polarity -------------------
+# --- B13: BM25 index storage params + to_bm25query polarity + qualification ----
 
 
 def test_bm25_index_storage_params_not_gucs() -> None:
@@ -240,14 +296,19 @@ def test_bm25_index_storage_params_not_gucs() -> None:
     assert "%s" not in text
 
 
-def test_bm25_candidate_to_bm25query_asc_polarity() -> None:
+def test_bm25_candidate_asc_polarity_and_schema_qualified_regclass() -> None:
     c = NeonClient(lambda: "dsn")
-    text = render(c.bm25_candidates_sql(SPEC))
+    text = render(c.bm25_candidates_sql(SPEC, schema="corpora"))
     # scored column is the <@> LEFT operand; query text is a bound param through
     # to_tsvector with the same baked config; index is the SECOND arg (regclass).
     assert "content_tsv <@> to_bm25query(" in text
     assert "to_tsvector('pg_catalog.english'::regconfig, %(text)s)" in text
+    # index regclass is schema-qualified via quote_ident so it resolves under the
+    # RO invoker's search_path (which need not include the corpus schema).
+    assert "quote_ident('corpora')" in text
+    assert "quote_ident('mycorpus__v2_bm25')" in text
     assert "::regclass)" in text
+    assert 'FROM "mycorpus"' in text  # the view, not the physical table
     # negative-score polarity => best candidates come first under ASC.
     assert "ORDER BY content_tsv <@> to_bm25query(" in text
     assert text.rstrip().endswith("ASC LIMIT %(top_k)s")
@@ -255,9 +316,11 @@ def test_bm25_candidate_to_bm25query_asc_polarity() -> None:
 
 def test_hybrid_returns_two_independent_candidate_queries() -> None:
     c = NeonClient(lambda: "dsn")
-    vec, bm25 = c.hybrid_candidates_sql(SPEC)
+    vec, bm25 = c.hybrid_candidates_sql(SPEC, schema="corpora")
     assert "<=> %(vector)s" in render(vec)
-    assert "to_bm25query(" in render(bm25)
+    bm25_text = render(bm25)
+    assert "to_bm25query(" in bm25_text
+    assert "quote_ident('corpora')" in bm25_text
 
 
 def test_candidate_filter_is_spliced_not_built() -> None:
@@ -377,48 +440,125 @@ def test_vector_types_reregistered_on_reconnect(
     assert registered == [fresh]  # adapters re-applied on the fresh socket
 
 
-# --- B5: activation / rollback under the advisory lock ------------------------
+def test_transaction_reconnects_on_dead_first_statement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transaction (here activation) whose first statement finds the cached
+    socket dead reconnects and retries the whole txn once (B16)."""
+    live = _FakeConn(responses={"SET state = 'activated'": ([(2,)], [("version",)])})
+    _patch_connect(monkeypatch, [live])
 
-
-def test_activation_statement_shape() -> None:
-    c = NeonClient(lambda: "dsn")
-    stmts = [render(s) for s in c.activate_version_sql(SPEC, GRANT)]
-    assert "pg_advisory_xact_lock" in stmts[0]
-    assert any("is_current = false" in s for s in stmts)  # clear prior current
-    assert any("state = 'activated', is_current = true" in s for s in stmts)
-    assert any(
-        "CREATE OR REPLACE VIEW" in s and "security_invoker = false" in s for s in stmts
-    )
-    assert any("GRANT USAGE ON SCHEMA" in s for s in stmts)
-    assert any("GRANT SELECT ON" in s for s in stmts)
-
-
-def test_rollback_repoints_current_guarded_by_activated() -> None:
-    c = NeonClient(lambda: "dsn")
-    stmts = [render(s) for s in c.rollback_version_sql("mycorpus", 1)]
-    assert "pg_advisory_xact_lock" in stmts[0]
-    # rollback flips is_current, only onto an already-activated version.
-    assert any("is_current = true" in s and "state = 'activated'" in s for s in stmts)
-    assert any("CREATE OR REPLACE VIEW" in s and '"mycorpus__v1"' in s for s in stmts)
-
-
-def test_activation_rolls_back_atomically() -> None:
-    """The frozen atomicity contract still holds through the Slice 2 executor."""
-
-    class _FailSecond(_FakeConn):
+    class _DiesFirst(_FakeConn):
         def execute(self, query, params=None):  # type: ignore[override]
-            super().execute(query, params)
-            if len(self.executed) == 2:
-                raise RuntimeError("view swap failed")
-            return _FakeCursor()
+            self.broken = True
+            raise psycopg.OperationalError("dead on first use")
 
-    conn = _FailSecond()
+    c = NeonClient(lambda: "dsn")
+    c._conn = _DiesFirst()
+    c.activate(SPEC, GRANT)  # reconnects to the live conn and publishes
+    assert live.committed == 1
+
+
+# --- B5: activation one-row guard ---------------------------------------------
+
+
+def test_activate_publishes_with_ready_guard_and_returning() -> None:
+    conn = _FakeConn(responses={"SET state = 'activated'": ([(2,)], [("version",)])})
+    c = NeonClient(lambda: "dsn")
+    c._conn = conn
+    c.activate(SPEC, GRANT)
+    order = _rendered(conn)
+    assert "pg_advisory_xact_lock" in order[0]
+    clear = _first_index(order, "is_current = false")
+    trans = _first_index(order, "SET state = 'activated'")
+    view = _first_index(order, "CREATE OR REPLACE VIEW")
+    assert clear < trans < view  # clear prior current BEFORE the guarded transition
+    assert "AND state = 'ready'" in order[trans]  # only a ready row may publish
+    assert "RETURNING version" in order[trans]
+    assert "security_invoker = false" in order[view]  # owner-rights view
+    assert any("GRANT USAGE ON SCHEMA" in s for s in order)
+    assert any("GRANT SELECT ON" in s for s in order)
+    assert conn.committed == 1
+
+
+def test_activate_aborts_before_view_when_not_ready() -> None:
+    conn = _FakeConn()  # transition RETURNING yields no row -> version is not ready
+    c = NeonClient(lambda: "dsn")
+    c._conn = conn
+    with pytest.raises(VersionStateError):
+        c.activate(SPEC, GRANT)
+    order = _rendered(conn)
+    assert not any("CREATE OR REPLACE VIEW" in s for s in order)  # never published
+    assert conn.rolled_back == 1
+    assert conn.committed == 0
+
+
+def test_activate_rejects_mismatched_grant_view() -> None:
+    c = NeonClient(lambda: "dsn")
+    c._conn = _FakeConn()
+    bad = ReadGrantSpec(schema="corpora", view="not_the_view", ro_role="ro")
+    with pytest.raises(ValueError):
+        c.activate(SPEC, bad)
+
+
+def test_activate_rolls_back_on_view_failure() -> None:
+    """Uses the REAL activation flow: transition succeeds, view DDL fails, rollback."""
+
+    class _FailView(_FakeConn):
+        def execute(self, query, params=None):  # type: ignore[override]
+            cur = super().execute(query, params)
+            if "CREATE OR REPLACE VIEW" in render(query):
+                raise RuntimeError("view swap failed")
+            return cur
+
+    conn = _FailView(responses={"SET state = 'activated'": ([(2,)], [("version",)])})
     c = NeonClient(lambda: "dsn")
     c._conn = conn
     with pytest.raises(RuntimeError):
-        c.execute_in_transaction(
-            [sql.SQL("SELECT 1"), sql.SQL("SELECT 2"), sql.SQL("SELECT 3")]
-        )
+        c.activate(SPEC, GRANT)
+    assert conn.rolled_back == 1
+    assert conn.committed == 0
+
+
+# --- B5: rollback one-row guard -----------------------------------------------
+
+
+def test_rollback_validates_target_first_then_repoints() -> None:
+    conn = _FakeConn(
+        responses={
+            "FOR UPDATE": ([(1,)], [("version",)]),
+            "SET is_current = true": ([(1,)], [("version",)]),
+        }
+    )
+    c = NeonClient(lambda: "dsn")
+    c._conn = conn
+    c.rollback("mycorpus", 1)
+    order = _rendered(conn)
+    assert "pg_advisory_xact_lock" in order[0]
+    validate = _first_index(order, "FOR UPDATE")
+    clear = _first_index(order, "is_current = false")
+    setcur = _first_index(order, "SET is_current = true")
+    view = _first_index(order, "CREATE OR REPLACE VIEW")
+    # validate+lock the activated target BEFORE clearing the current pointer.
+    assert validate < clear < setcur < view
+    assert "state = 'activated'" in order[validate]
+    assert (
+        "state = 'activated'" in order[setcur] and "RETURNING version" in order[setcur]
+    )
+    assert '"mycorpus__v1"' in order[view]
+    assert conn.committed == 1
+
+
+def test_rollback_aborts_on_missing_or_nonactivated_target() -> None:
+    conn = _FakeConn()  # FOR UPDATE returns nothing -> target not activated/missing
+    c = NeonClient(lambda: "dsn")
+    c._conn = conn
+    with pytest.raises(VersionStateError):
+        c.rollback("mycorpus", 9)
+    order = _rendered(conn)
+    # the current pointer and the view are untouched (aborted before clearing).
+    assert not any("is_current = false" in s for s in order)
+    assert not any("CREATE OR REPLACE VIEW" in s for s in order)
     assert conn.rolled_back == 1
     assert conn.committed == 0
 
@@ -431,23 +571,6 @@ def _records(*rows: tuple[int, str, bool]) -> list[NeonVersionRecord]:
         NeonVersionRecord(logical_name="mycorpus", version=v, state=st, is_current=cur)
         for v, st, cur in rows
     ]
-
-
-def test_advisory_lock_key_identical_across_operations() -> None:
-    """Allocation, activation, rollback, and prune must contend on ONE lock key."""
-    c = NeonClient(lambda: "dsn")
-    keys = {
-        render(c.allocate_version_sql("mycorpus", 3)[0]),
-        render(c.activate_version_sql(SPEC, GRANT)[0]),
-        render(c.rollback_version_sql("mycorpus", 1)[0]),
-        render(
-            c.prune_versions_sql(
-                "mycorpus", _records((1, "activated", False), (2, "retired", False))
-            )[0]
-        ),
-    }
-    assert len(keys) == 1
-    assert "pg_advisory_xact_lock(hashtext('mycorpus'))" in keys.pop()
 
 
 def test_plan_prune_never_touches_current_or_building() -> None:
@@ -480,95 +603,78 @@ def test_plan_prune_respects_retention_minimums() -> None:
     assert 1 not in retire  # the single ready version is retained
 
 
-def test_prune_versions_sql_is_lock_first_and_guards_retire() -> None:
-    c = NeonClient(
-        lambda: "dsn", retention=RetentionPolicy(keep_activated=2, keep_ready=1)
-    )
-    records = _records(
-        (1, "activated", False),
-        (2, "activated", False),
-        (3, "activated", False),
-        (4, "activated", True),
-    )
-    stmts = [render(s) for s in c.prune_versions_sql("mycorpus", records)]
-    assert "pg_advisory_xact_lock" in stmts[0]  # serialize before any drop
-    assert any("DROP TABLE IF EXISTS" in s and '"mycorpus__v1"' in s for s in stmts)
-    # every retire is guarded so a raced-in current can never be retired.
-    for s in stmts:
-        if "SET state = 'retired'" in s:
-            assert "is_current = false" in s
-
-
-def test_prune_versions_sql_empty_when_nothing_prunable() -> None:
-    c = NeonClient(lambda: "dsn")
-    records = _records((1, "activated", True), (2, "activated", False))
-    assert c.prune_versions_sql("mycorpus", records) == []
-
-
-def test_live_prune_locks_before_reading_ledger_and_excludes_raced_current() -> None:
-    """The race invariant: acquire the lock, THEN read the ledger under it.
-
-    The under-lock snapshot reflects an activation that raced ahead — the version
-    that just became ``is_current`` (here v1, the oldest, which a stale pre-lock
-    planner might have targeted) is excluded, so its physical table is never
-    dropped. Concurrent allocation contends on the same lock, so it fully
-    serializes with the prune.
-    """
-    ledger_rows = [
+def test_prune_locks_before_read_and_drops_only_returned() -> None:
+    ledger = [
         (1, "activated", True),  # raced-in current: oldest, but now live
         (2, "activated", False),
         (3, "activated", False),
         (4, "activated", False),
         (5, "activated", False),
     ]
-    conn = _FakeConn(
-        responses={
-            "SELECT version, state, is_current": (
-                ledger_rows,
-                [("version",), ("state",), ("is_current",)],
-            )
-        }
-    )
+    conn = _PruneConn(ledger)
     c = NeonClient(
         lambda: "dsn", retention=RetentionPolicy(keep_activated=2, keep_ready=1)
     )
     c._conn = conn
-
-    dropped = c.prune(conn_logical := "mycorpus")
+    dropped = c.prune("mycorpus")
 
     order = _rendered(conn)
     lock_i = _first_index(order, "pg_advisory_xact_lock")
     read_i = _first_index(order, "SELECT version, state, is_current")
     assert lock_i < read_i  # lock acquired BEFORE the ledger snapshot is read
 
-    # v5,v4 kept (retention) + current-protected v1; v3,v2 retired.
+    # v5,v4 kept (retention) + current-protected v1; v3,v2 retired and dropped.
     assert set(dropped) == {2, 3}
-    v1_table = physical_table_name(conn_logical, 1)
-    assert not any(f'DROP TABLE IF EXISTS "{v1_table}"' in s for s in order)
+    assert not any('DROP TABLE IF EXISTS "mycorpus__v1"' in s for s in order)
     assert conn.committed == 1
 
 
-def test_live_prune_rolls_back_on_error() -> None:
-    class _FailOnDrop(_FakeConn):
+def test_prune_drop_gated_on_authoritative_retire_returning() -> None:
+    """A version that raced into current after planning returns no retire row, so
+    its table is NOT dropped even though plan_prune selected it."""
+    ledger = [
+        (1, "activated", True),
+        (2, "activated", False),
+        (3, "activated", False),
+        (4, "activated", False),
+        (5, "activated", False),
+    ]
+    conn = _PruneConn(ledger, raced_current={3})  # v3 retire returns nothing
+    c = NeonClient(
+        lambda: "dsn", retention=RetentionPolicy(keep_activated=2, keep_ready=1)
+    )
+    c._conn = conn
+    dropped = c.prune("mycorpus")
+    assert dropped == [2]  # only the authoritatively-non-current row is dropped
+    order = _rendered(conn)
+    assert any('DROP TABLE IF EXISTS "mycorpus__v2"' in s for s in order)
+    assert not any('DROP TABLE IF EXISTS "mycorpus__v3"' in s for s in order)
+
+
+def test_prune_no_op_when_nothing_prunable() -> None:
+    conn = _PruneConn([(1, "activated", True), (2, "activated", False)])
+    c = NeonClient(lambda: "dsn")  # default retention keep_activated=2
+    c._conn = conn
+    assert c.prune("mycorpus") == []
+    assert not any("DROP TABLE" in s for s in _rendered(conn))
+    assert conn.committed == 1
+
+
+def test_prune_rolls_back_on_error() -> None:
+    class _FailDrop(_PruneConn):
         def execute(self, query, params=None):  # type: ignore[override]
             cur = super().execute(query, params)
             if "DROP TABLE" in render(query):
                 raise RuntimeError("drop failed")
             return cur
 
-    conn = _FailOnDrop(
-        responses={
-            "SELECT version, state, is_current": (
-                [
-                    (1, "activated", False),  # retirable -> triggers a DROP
-                    (2, "activated", False),
-                    (3, "activated", False),
-                    (4, "activated", True),
-                ],
-                [("version",), ("state",), ("is_current",)],
-            )
-        }
-    )
+    ledger = [
+        (1, "activated", False),
+        (2, "activated", False),
+        (3, "activated", False),
+        (4, "activated", True),
+    ]
+    conn = _FailDrop(ledger)
     c = NeonClient(
         lambda: "dsn", retention=RetentionPolicy(keep_activated=2, keep_ready=1)
     )
