@@ -215,6 +215,33 @@ def test_empty_disjunction_is_false(operator: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("operator", "expected_sql"),
+    [
+        (
+            "in",
+            "NOT (CASE WHEN NOT jsonb_exists(metadata, %(k0)s) THEN NULL "
+            "WHEN jsonb_typeof(metadata -> %(k0)s) = 'null' THEN NULL "
+            "ELSE FALSE END)",
+        ),
+        (
+            "contains_any",
+            "NOT (CASE WHEN NOT jsonb_exists(metadata, %(k0)s) THEN NULL "
+            "WHEN jsonb_typeof(metadata -> %(k0)s) <> 'array' THEN NULL "
+            "ELSE FALSE END)",
+        ),
+    ],
+)
+def test_negated_empty_list_wrong_type_asymmetry(
+    operator: str,
+    expected_sql: str,
+) -> None:
+    # An empty `in` has no operand type; `contains_any` still requires an array.
+    predicate = not_(FieldPredicate(field="tags", op=operator, value=[]))
+
+    assert to_neon_filters(predicate) == (expected_sql, {"k0": "tags"})
+
+
+@pytest.mark.parametrize(
     "predicate",
     [
         f("year").gt(True),
