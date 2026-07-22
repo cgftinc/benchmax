@@ -1,0 +1,25 @@
+[project]
+name = "benchmax-example-harvey"
+version = "0.1.0"
+description = "Harvey LAB Harbor environment using Harvey's native harness"
+requires-python = "==3.12.*"
+dependencies = [
+    "benchmax",
+    "harbor[modal]>=0.18.0,<0.19",
+    "httpx>=0.27.0",
+    "openai>=2.15.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["harvey_agent", "harvey_runtime"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "ruff>=0.14.2",
+]
