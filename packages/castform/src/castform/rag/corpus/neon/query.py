@@ -8,8 +8,10 @@ ranked*, so no other component blends lexical and vector scores:
   vector rankings combine for hybrid mode,
 - the public surfaced-score formula (:func:`surfaced_score`) and its raw-native
   companion (:class:`QueryHit`), and
-- the executor (:func:`run_query`) that drives the frozen ``NeonClient`` candidate
-  SQL, pushes the metadata filter into BOTH retrieval legs (B15), and enables the
+- the executor (:func:`run_query`) that resolves the current version and runs every
+  leg of one query in a SINGLE read transaction under a shared advisory lock (so all
+  legs read one consistent version), drives the frozen ``NeonClient`` candidate SQL,
+  pushes the metadata filter into BOTH retrieval legs (B15), and enables the
   ``lakebase_bm25`` prefilter for any filtered lexical/hybrid query (F7).
 
 ``search.py`` re-exports :data:`SURFACED_RANK_K`, :class:`QueryHit`,
@@ -182,48 +184,66 @@ def _row_to_result(
     )
 
 
-def _run_bm25_leg(
-    client: NeonClient,
-    query: sql.Composed,
-    params: dict[str, Any],
-    *,
-    filtered: bool,
-) -> list[tuple[Any, ...]]:
-    """Run the BM25 candidate SELECT, enabling the prefilter iff filtered (F7).
+def _prefilter_setup(
+    mode: SearchMode, filtered: bool
+) -> list[sql.Composable] | None:
+    """``SET LOCAL`` list enabling the BM25 prefilter for a filtered lexical/hybrid query.
 
-    ``lakebase_bm25.prefilter = on`` must be set for a filtered lexical/hybrid
-    query: a plain ``WHERE`` runs AFTER the BM25 top-k scan, so a strict filter
-    would silently underfill the result set. The GUC is issued ``SET LOCAL`` in
-    the SAME transaction as the SELECT, so it is transaction-scoped and cannot
-    leak to a reused/pooled connection. The vector leg never needs it (its filter
-    is served by the ``meta_gin`` index).
+    ``lakebase_bm25.prefilter = on`` must be set when a filtered BM25 leg runs
+    (lexical or hybrid): a plain ``WHERE`` runs AFTER the BM25 top-k scan, so a
+    strict filter would silently underfill. It only affects the BM25 index scan, so
+    the vector-only path (and any unfiltered query) needs nothing — return ``None``.
     """
-    if not filtered:
-        return client.execute(query, params)
-
+    if not (filtered and mode in ("lexical", "hybrid")):
+        return None
     from psycopg import sql
 
-    return client.execute_read_txn(
-        query,
-        params,
-        session_setup=[sql.SQL("SET LOCAL lakebase_bm25.prefilter = on")],
-    )
+    return [sql.SQL("SET LOCAL lakebase_bm25.prefilter = on")]
+
+
+def _resolve_current_spec(
+    conn: Any,
+    client: NeonClient,
+    logical_name: str,
+    text_search_config: str,
+) -> NeonTableSpec:
+    """Resolve the current published version to a spec, ON the read txn's connection.
+
+    Read inside the same locked transaction as the legs (never via the committing
+    :meth:`NeonClient.execute`) so the version it returns is the one the legs then
+    query — an activation cannot swap it mid-read (see
+    :meth:`NeonClient.read_in_snapshot`).
+    """
+    from castform.rag.corpus.neon.schema import NeonTableSpec
+
+    cur = conn.execute(client.read_ledger_sql(), {"logical": logical_name})
+    for version, _state, is_current in cur.fetchall():
+        if is_current:
+            return NeonTableSpec(
+                logical_name, version, text_search_config=text_search_config
+            )
+    raise LookupError(f"neon corpus {logical_name!r} has no current published version")
 
 
 def run_query(
     client: NeonClient,
-    spec: NeonTableSpec,
     request: NeonQueryRequest,
     *,
+    logical_name: str,
     schema: str,
+    text_search_config: str,
 ) -> list[QueryRow]:
     """Execute one :class:`NeonQueryRequest` and return ranked :class:`QueryRow`s.
 
-    Drives the frozen ``NeonClient`` candidate SQL for the requested mode. The
-    metadata filter is rendered once and pushed into BOTH legs (B15). Vector
-    binds as a ``list`` (a tuple would adapt as a composite row and the
-    ``::vector`` cast would fail). Hybrid fuses the two legs with :func:`fuse_rrf`
-    over an oversampled candidate set, then truncates to ``top_k``.
+    Resolves the current version AND runs every leg in ONE read transaction under a
+    shared advisory lock (:meth:`NeonClient.read_in_snapshot`), so all legs read a
+    single consistent version even if an activation lands concurrently. Drives the
+    frozen ``NeonClient`` candidate SQL for the requested mode; the metadata filter
+    is rendered once and pushed into BOTH legs (B15); a filtered lexical/hybrid query
+    enables the ``lakebase_bm25`` prefilter (F7). Vector binds as a ``list`` (a tuple
+    would adapt as a composite row and the ``::vector`` cast would fail). Hybrid fuses
+    the two legs with :func:`fuse_rrf` over an oversampled candidate set, then
+    truncates to ``top_k``.
     """
     mode = request.mode
     if request.filter is None:
@@ -236,29 +256,46 @@ def run_query(
 
         where, filter_params = to_neon_where(request.filter)
 
-    if mode == "vector":
-        return _single_leg(
-            _vector_rows(client, spec, request, where, filter_params, request.top_k)
-        )
-    if mode == "lexical":
-        return _single_leg(
-            _bm25_rows(
-                client, spec, request, where, filter_params, request.top_k, schema
+    def work(conn: Any) -> list[QueryRow]:
+        spec = _resolve_current_spec(conn, client, logical_name, text_search_config)
+        if mode == "vector":
+            rows = _vector_rows(
+                conn, client, spec, request, where, filter_params, request.top_k
             )
-        )
-    if mode == "hybrid":
-        depth = _hybrid_depth(request.top_k)
-        vector_rows = _vector_rows(
-            client, spec, request, where, filter_params, depth
-        )
-        bm25_rows = _bm25_rows(
-            client, spec, request, where, filter_params, depth, schema
-        )
-        return _fuse(vector_rows, bm25_rows, request.top_k)
-    raise ValueError(f"unknown search mode {mode!r}")
+            return _single_leg(rows)
+        if mode == "lexical":
+            rows = _bm25_rows(
+                conn, client, spec, request, where, filter_params, request.top_k, schema
+            )
+            return _single_leg(rows)
+        if mode == "hybrid":
+            depth = _hybrid_depth(request.top_k)
+            vector_rows = _vector_rows(
+                conn, client, spec, request, where, filter_params, depth
+            )
+            bm25_rows = _bm25_rows(
+                conn, client, spec, request, where, filter_params, depth, schema
+            )
+            return _fuse(vector_rows, bm25_rows, request.top_k)
+        raise ValueError(f"unknown search mode {mode!r}")
+
+    return client.read_in_snapshot(
+        logical_name,
+        work,
+        session_setup=_prefilter_setup(mode, request.filter is not None),
+    )
+
+
+def _fetch(
+    conn: Any, query: sql.Composed, params: dict[str, Any]
+) -> list[tuple[Any, ...]]:
+    """Run one candidate SELECT on the txn connection and return its rows."""
+    cur = conn.execute(query, params)
+    return cur.fetchall() if cur.description is not None else []
 
 
 def _vector_rows(
+    conn: Any,
     client: NeonClient,
     spec: NeonTableSpec,
     request: NeonQueryRequest,
@@ -270,10 +307,11 @@ def _vector_rows(
         raise ValueError("vector/hybrid search requires a query embedding")
     query, params = client.vector_candidates_sql(spec, where=where)
     merged = {**filter_params, **params, "vector": list(request.vector), "top_k": depth}
-    return client.execute(query, merged)
+    return _fetch(conn, query, merged)
 
 
 def _bm25_rows(
+    conn: Any,
     client: NeonClient,
     spec: NeonTableSpec,
     request: NeonQueryRequest,
@@ -286,7 +324,7 @@ def _bm25_rows(
         raise ValueError("lexical/hybrid search requires query text")
     query, params = client.bm25_candidates_sql(spec, where=where, schema=schema)
     merged = {**filter_params, **params, "text": request.text, "top_k": depth}
-    return _run_bm25_leg(client, query, merged, filtered=request.filter is not None)
+    return _fetch(conn, query, merged)
 
 
 def _single_leg(rows: list[tuple[Any, ...]]) -> list[QueryRow]:

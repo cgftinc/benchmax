@@ -362,38 +362,60 @@ class NeonClient:
 
         self._in_bounded_txn(work)
 
-    def execute_read_txn(
+    def _advisory_lock_shared_stmt(self) -> sql.Composed:
+        """Return the SHARED (reader) per-logical advisory-lock acquisition (B5).
+
+        The reader counterpart to :meth:`_advisory_lock_stmt`: keyed identically
+        (``hashtext(%(logical)s)``) so a read contends on the same key as the
+        writers. Multiple readers share the lock (concurrent reads proceed), while
+        activation/rollback/prune take the EXCLUSIVE lock — so a version swap waits
+        for in-flight reads and blocks new reads only for the duration of its
+        transaction, never mid-read. Transaction-scoped: released at commit/rollback.
+        """
+        from psycopg import sql
+
+        return sql.SQL("SELECT pg_advisory_xact_lock_shared(hashtext(%(logical)s))")
+
+    def read_in_snapshot(
         self,
-        query: sql.Composable,
-        params: dict[str, Any] | None = None,
+        logical_name: str,
+        work: Any,
         *,
         session_setup: list[sql.Composable] | None = None,
-    ) -> list[tuple[Any, ...]]:
-        """Run optional ``SET LOCAL`` setup + one SELECT in ONE txn; fetch rows.
+    ) -> Any:
+        """Run ``work(conn)`` as ONE read transaction under the shared lock (B5/B16).
 
-        The read counterpart to :meth:`execute_in_transaction`: needed when a
-        session GUC must hold across the fetch. ``session_setup`` statements (e.g.
-        ``SET LOCAL lakebase_bm25.prefilter = on`` for a filtered BM25 query, F7)
-        run first in the same transaction; being ``SET LOCAL`` they are
-        transaction-scoped and auto-reset at commit, so they never leak to a
-        reused/pooled connection. Rejects raw strings (B4) and rides
-        :meth:`_in_bounded_txn`, so an autosuspend-killed cached connection
-        reconnects and the whole read retries once. A lost commit ack surfaces as
-        :class:`InDoubtTransactionError` (never retried) — over-conservative for a
-        read, but a read caller simply re-issues.
+        A single query must resolve the current version AND execute every leg
+        against THAT version consistently: a concurrent activation between the
+        version lookup and a leg (or between the two hybrid legs) could otherwise
+        pair an old BM25 index regclass with the new view, or fuse candidates from
+        two versions. So the whole read runs in one transaction holding the shared
+        per-logical advisory lock, which blocks a concurrent exclusive activation
+        from swapping mid-read.
+
+        ``work`` receives the live connection and issues the ledger read + leg
+        SELECTs on it (never :meth:`execute`, which would commit each statement and
+        drop the snapshot). Optional ``session_setup`` (e.g.
+        ``SET LOCAL lakebase_bm25.prefilter = on`` for a filtered lexical/hybrid
+        query, F7) runs first; ``SET LOCAL`` is transaction-scoped and auto-resets
+        at commit/rollback, so it never leaks to a reused connection. Rejects raw
+        strings (B4) and rides :meth:`_in_bounded_txn`: an autosuspend-killed
+        connection reconnects and the whole read — lock, setup, and ``work`` —
+        retries once on the fresh connection (idempotent for a read).
         """
-        self._require_composable(query)
+        validate_logical_name(logical_name)
         setup = session_setup or []
         for statement in setup:
             self._require_composable(statement)
+        params = {"logical": logical_name}
 
-        def work(conn: Any) -> list[tuple[Any, ...]]:
+        def _work(conn: Any) -> Any:
+            conn.execute(self._advisory_lock_shared_stmt(), params)
             for statement in setup:
-                conn.execute(statement, params or {})
-            cur = conn.execute(query, params or {})
-            return cur.fetchall() if cur.description is not None else []
+                conn.execute(statement)
+            return work(conn)
 
-        return self._in_bounded_txn(work)
+        return self._in_bounded_txn(_work)
 
     def vacuum(self, spec: NeonTableSpec) -> None:
         """``VACUUM ANALYZE`` a version's table in autocommit, outside any txn (B14).

@@ -46,7 +46,6 @@ from castform.rag.corpus.search_schema.search_types import SearchMode
 if TYPE_CHECKING:
     from castform.rag.corpus.neon.client import NeonClient
     from castform.rag.corpus.neon.query import QueryRow
-    from castform.rag.corpus.neon.schema import NeonTableSpec
 
 __all__ = [
     "SURFACED_RANK_K",
@@ -109,30 +108,17 @@ class NeonSearch:
             self._client = NeonClient(self._dsn_provider)
         return self._client
 
-    def _resolve_spec(self, client: NeonClient) -> NeonTableSpec:
-        """Resolve the current published version into a ``NeonTableSpec``.
-
-        Reads the ledger for the ``is_current`` row (the version the reader view
-        points to) so the BM25 leg can name that version's index regclass.
-        """
-        from castform.rag.corpus.neon.schema import NeonTableSpec
-
-        rows = client.execute(client.read_ledger_sql(), {"logical": self._table})
-        for version, _state, is_current in rows:
-            if is_current:
-                return NeonTableSpec(
-                    self._table,
-                    version,
-                    text_search_config=self._text_search_config,
-                )
-        raise LookupError(
-            f"neon corpus {self._table!r} has no current published version"
-        )
-
     def _run(self, request: NeonQueryRequest) -> list[QueryRow]:
-        client = self._get_client()
-        spec = self._resolve_spec(client)
-        return run_query(client, spec, request, schema=self._schema)
+        # Version resolution + every leg run in one read transaction inside
+        # run_query, so a concurrent activation cannot split the query across
+        # versions (see NeonClient.read_in_snapshot).
+        return run_query(
+            self._get_client(),
+            request,
+            logical_name=self._table,
+            schema=self._schema,
+            text_search_config=self._text_search_config,
+        )
 
     # --- SearchClient protocol -----------------------------------------------
 
@@ -203,12 +189,12 @@ class NeonSearch:
             return next(m for m in _AUTO_MODE_PREFERENCE if m in modes)
         if mode not in modes:
             hint = (
-                " Provide embed_fn for vector/hybrid."
+                " pass an embed_fn for vector/hybrid search."
                 if mode in ("vector", "hybrid")
                 else ""
             )
             raise ValueError(
-                f"NeonSearch: mode {mode!r} not available. Available: {modes}.{hint}"
+                f"search mode {mode!r} not available; available modes: {modes}.{hint}"
             )
         return mode  # type: ignore[return-value]
 

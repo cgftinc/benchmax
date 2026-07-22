@@ -1,10 +1,12 @@
 """Contract #1/#7 (B5): version-lifecycle transaction seam + retention.
 
-Retention validation is frozen here (pass). The transaction seam and RRF fusion
-are xfail skeletons that must raise NotImplementedError. The transaction test
-passes real ``Composable`` statements (not raw strings) and a fake connection
-that raises on the SECOND statement, encoding the atomicity contract: the ledger
-update and view replacement must roll back together, leaving no partial state.
+Retention validation and the atomic-activation rollback are covered here: the
+transaction test passes real ``Composable`` statements (not raw strings) and a
+fake connection that raises on the SECOND statement, so the ledger update and
+view replacement must roll back together, leaving no partial state. Slice 4 adds
+``read_in_snapshot`` (shared advisory lock + SET LOCAL + work in one read txn) and
+implements ``fuse_rrf`` (RRF with a deterministic chunk_id tie-break), both
+asserted below.
 """
 
 from __future__ import annotations
@@ -90,26 +92,33 @@ class _ReadConn:
         pass
 
 
-def test_execute_read_txn_runs_setup_then_fetches() -> None:
+def test_read_in_snapshot_locks_then_runs_work_in_one_txn() -> None:
     client = NeonClient(lambda: "postgresql://ro@host/db")
     conn = _ReadConn([("h1",), ("h2",)])
     client._conn = conn  # type: ignore[attr-defined]
-    rows = client.execute_read_txn(
-        sql.SQL("SELECT id FROM v"),
-        {"top_k": 5},
+
+    def work(c):
+        return c.execute(sql.SQL("SELECT id FROM v"), {"top_k": 5}).fetchall()
+
+    rows = client.read_in_snapshot(
+        "mycorpus",
+        work,
         session_setup=[sql.SQL("SET LOCAL lakebase_bm25.prefilter = on")],
     )
     assert rows == [("h1",), ("h2",)]
-    # SET LOCAL runs before the SELECT, in the same (committed) transaction.
-    assert "SET LOCAL lakebase_bm25.prefilter = on" in conn.statements[0]
-    assert "SELECT id FROM v" in conn.statements[1]
+    # Shared advisory lock FIRST, then the SET LOCAL, then work's SELECT — one txn.
+    assert "pg_advisory_xact_lock_shared" in conn.statements[0]
+    assert "SET LOCAL lakebase_bm25.prefilter = on" in conn.statements[1]
+    assert "SELECT id FROM v" in conn.statements[2]
     assert conn.committed is True
 
 
-def test_execute_read_txn_rejects_raw_string() -> None:
+def test_read_in_snapshot_rejects_raw_string_setup() -> None:
     client = NeonClient(lambda: "postgresql://ro@host/db")
     with pytest.raises(TypeError):
-        client.execute_read_txn("SELECT 1")  # type: ignore[arg-type]
+        client.read_in_snapshot(
+            "c", lambda conn: None, session_setup=["SET x"]  # type: ignore[list-item]
+        )
 
 
 def test_fuse_rrf_single_owner() -> None:

@@ -45,19 +45,19 @@ _CAPABILITIES: SearchCapabilities = {
     [
         (
             f("year").eq(2026),
-            "metadata @> jsonb_build_object(%(k0)s, to_jsonb(%(v0)s::numeric))",
+            "metadata @> jsonb_build_object(%(k0)s::text, to_jsonb(%(v0)s::numeric))",
             {"k0": "year", "v0": 2026},
         ),
         (
             f("year").ne(2026),
-            "(metadata @> jsonb_build_object(%(k0)s, to_jsonb(%(v0)s::numeric))) "
+            "(metadata @> jsonb_build_object(%(k0)s::text, to_jsonb(%(v0)s::numeric))) "
             "IS NOT TRUE",
             {"k0": "year", "v0": 2026},
         ),
         (
             f("year").in_([2025, 2026]),
-            "(metadata @> jsonb_build_object(%(k0)s, to_jsonb(%(v0)s::numeric)) OR "
-            "metadata @> jsonb_build_object(%(k0)s, to_jsonb(%(v1)s::numeric)))",
+            "(metadata @> jsonb_build_object(%(k0)s::text, to_jsonb(%(v0)s::numeric)) OR "
+            "metadata @> jsonb_build_object(%(k0)s::text, to_jsonb(%(v1)s::numeric)))",
             {"k0": "year", "v0": 2025, "v1": 2026},
         ),
         (
@@ -86,15 +86,15 @@ _CAPABILITIES: SearchCapabilities = {
         ),
         (
             f("tags").contains_any(["rag", "sql"]),
-            "(metadata @> jsonb_build_object(%(k0)s, "
+            "(metadata @> jsonb_build_object(%(k0)s::text, "
             "jsonb_build_array(to_jsonb(%(v0)s::text))) OR "
-            "metadata @> jsonb_build_object(%(k0)s, "
+            "metadata @> jsonb_build_object(%(k0)s::text, "
             "jsonb_build_array(to_jsonb(%(v1)s::text))))",
             {"k0": "tags", "v0": "rag", "v1": "sql"},
         ),
         (
             f("tags").contains_all(["rag", "sql"]),
-            "metadata @> jsonb_build_object(%(k0)s, "
+            "metadata @> jsonb_build_object(%(k0)s::text, "
             "jsonb_build_array(to_jsonb(%(v0)s::text), to_jsonb(%(v1)s::text)))",
             {"k0": "tags", "v0": "rag", "v1": "sql"},
         ),
@@ -204,7 +204,7 @@ def test_ensure_supported_rejects_unsupported_logical_operator() -> None:
 def test_contains_all_empty_requires_a_present_array() -> None:
     where_sql, params = to_neon_filters(f("tags").contains_all([]))
 
-    assert where_sql == ("metadata @> jsonb_build_object(%(k0)s, jsonb_build_array())")
+    assert where_sql == ("metadata @> jsonb_build_object(%(k0)s::text, jsonb_build_array())")
     assert params == {"k0": "tags"}
 
 

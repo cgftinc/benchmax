@@ -14,7 +14,6 @@ from benchmax.bundle import dump_bundle, load_bundle
 from benchmax.envs import BaseEnv
 from castform.rag.corpus.embed import platform_embed_fn
 from castform.rag.corpus.neon.provision import CORPUS_SCHEMA
-from castform.rag.corpus.neon.schema import NeonTableSpec
 from castform.rag.corpus.neon.search import NeonSearch, surfaced_score
 from castform.rag.corpus.pinecone.search import PineconeSearch
 from castform.rag.corpus.search_client import SearchClient
@@ -128,26 +127,56 @@ def _dummy_embed_fn():
     return lambda texts: [[0.0] * 8 for _ in texts]
 
 
-class _FakeNeonClient:
-    """Stands in for NeonClient: the candidate-SQL builders return dummies (they
-    are never executed) and the execute seam returns canned rows."""
+class _FakeCursor:
+    description = [("c",)]
 
     def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+
+class _FakeConn:
+    """Fake txn connection: ledger reads (params carry 'logical') yield version 1,
+    candidate reads yield the canned rows; other statements (lock / SET LOCAL) noop."""
+
+    def __init__(self, rows, *, ledger_version=1):
         self.rows = rows
-        self.bm25_setup = None
+        self.ledger_version = ledger_version
+
+    def execute(self, query, params=None):
+        params = params or {}
+        if "logical" in params:
+            return _FakeCursor([(self.ledger_version, "activated", True)])
+        return _FakeCursor(self.rows)
+
+
+class _FakeNeonClient:
+    """Stands in for NeonClient: read_in_snapshot runs work() on a fake conn; the
+    candidate-SQL builders return dummies (the fake conn ignores the query text) and
+    record the spec version each leg was built for."""
+
+    def __init__(self, rows, *, ledger_version=1):
+        self.rows = rows
+        self.ledger_version = ledger_version
+        self.session_setup = None
+        self.leg_versions = []
+
+    def read_ledger_sql(self):
+        return None
 
     def vector_candidates_sql(self, spec, where=None):
+        self.leg_versions.append(("vector", spec.version))
         return (None, {})
 
     def bm25_candidates_sql(self, spec, where=None, *, schema):
+        self.leg_versions.append(("bm25", spec.version))
         return (None, {})
 
-    def execute(self, query, params=None):
-        return self.rows
-
-    def execute_read_txn(self, query, params=None, *, session_setup=None):
-        self.bm25_setup = session_setup
-        return self.rows
+    def read_in_snapshot(self, logical_name, work, *, session_setup=None):
+        self.session_setup = session_setup
+        return work(_FakeConn(self.rows, ledger_version=self.ledger_version))
 
 
 class _SearchEnv(BaseEnv):
@@ -193,8 +222,9 @@ def _warm_patch(monkeypatch):
 
 
 def _stub_backend(monkeypatch, client, rows):
-    monkeypatch.setattr(client, "_get_client", lambda: _FakeNeonClient(rows))
-    monkeypatch.setattr(client, "_resolve_spec", lambda c: NeonTableSpec("corpus", 1))
+    fake = _FakeNeonClient(rows)
+    monkeypatch.setattr(client, "_get_client", lambda: fake)
+    return fake
 
 
 class TestNeonSearchConformance:
@@ -283,3 +313,36 @@ def test_neon_bundle_roundtrip_baked_path(monkeypatch, caplog):
 
     _stub_backend(monkeypatch, client, _CANNED_ROWS)
     assert client.search("hello", mode="lexical", top_k=1)[0]["content"] == "alpha content"
+
+
+def test_query_reads_single_consistent_version(monkeypatch):
+    # S4-SNAPSHOT-01: simulate an activation landing on every ledger read (the
+    # version advances each read). A correct single-transaction query resolves the
+    # version ONCE, so both hybrid legs must be built for that same version — a
+    # per-leg re-resolve would split the query across versions.
+    class _AdvancingConn:
+        def __init__(self, rows):
+            self.rows = rows
+            self.ledger_reads = 0
+
+        def execute(self, query, params=None):
+            params = params or {}
+            if "logical" in params:
+                self.ledger_reads += 1
+                return _FakeCursor([(self.ledger_reads, "activated", True)])
+            return _FakeCursor(self.rows)
+
+    class _AdvancingClient(_FakeNeonClient):
+        def read_in_snapshot(self, logical_name, work, *, session_setup=None):
+            self.conn = _AdvancingConn(self.rows)
+            return work(self.conn)
+
+    ns = NeonSearch("corpus", embed_fn=_dummy_embed_fn())
+    fake = _AdvancingClient(_CANNED_ROWS)
+    monkeypatch.setattr(ns, "_get_client", lambda: fake)
+
+    ns.search("q", mode="hybrid", top_k=2)
+
+    assert fake.conn.ledger_reads == 1  # resolved exactly once, not per leg
+    assert {v for _leg, v in fake.leg_versions} == {1}  # both legs, one version
+    assert [leg for leg, _v in fake.leg_versions] == ["vector", "bm25"]

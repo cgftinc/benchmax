@@ -32,7 +32,11 @@ Three safety properties are frozen (they drove the review):
 Bound-path discipline: the metadata key and every value are bound parameters
 (``%(k)s`` / ``%(v)s``); key existence uses ``jsonb_exists(metadata, %(k)s)`` (the
 function form, not the ``?`` operator, which collides with psycopg placeholder
-parsing). ``psycopg.sql.Identifier`` is never used on caller keys.
+parsing). ``psycopg.sql.Identifier`` is never used on caller keys. The key param is
+cast ``%(k)s::text`` inside every ``jsonb_build_object`` — that function is VARIADIC
+``"any"`` and cannot infer a bound param's type, so an uncast key raises
+``IndeterminateDatatype`` on live Postgres (the range ops' ``metadata -> %(k)s``
+resolves the param to text on its own, so it needs no explicit cast).
 
 Operator set: nine field ops. Neon was the first backend to require ``ne, gt,
 lt`` in addition to the shared six, so Slice 1 promotes all nine to the shared
@@ -96,9 +100,9 @@ JSON_TYPEOF_BY_SCALAR_TYPE: dict[ScalarJsonType, str] = {
 # text): the single-element containment atom Slice 4 ORs (contains_any) or
 # array-joins (contains_all).
 CONTAINS_ATOM_BY_TYPE: dict[ScalarJsonType, str] = {
-    "text": "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v)s::text)))",
-    "number": "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v)s::numeric)))",
-    "boolean": "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v)s::boolean)))",
+    "text": "metadata @> jsonb_build_object(%(k)s::text, jsonb_build_array(to_jsonb(%(v)s::text)))",
+    "number": "metadata @> jsonb_build_object(%(k)s::text, jsonb_build_array(to_jsonb(%(v)s::numeric)))",
+    "boolean": "metadata @> jsonb_build_object(%(k)s::text, jsonb_build_array(to_jsonb(%(v)s::boolean)))",
 }
 
 # Per-condition outcome for a single leaf. ``depends`` = matches iff the stored
@@ -168,10 +172,10 @@ FILTER_TRUTH_TABLE: tuple[FilterOpSpec, ...] = (
     FilterOpSpec(
         op="eq",
         family="containment",
-        positive_sql="metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))",
+        positive_sql="metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v)s::numeric))",
         negated_leaf_sql=_NEG_CASE.format(
             jtype="number",
-            inner="metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))",
+            inner="metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v)s::numeric))",
         ),
         value_types=("text", "number", "boolean"),
         indexable=True,
@@ -185,11 +189,11 @@ FILTER_TRUTH_TABLE: tuple[FilterOpSpec, ...] = (
         op="ne",
         family="negated_containment",
         positive_sql=(
-            "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))) "
+            "(metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v)s::numeric))) "
             "IS NOT TRUE"
         ),
         negated_leaf_sql=(
-            "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))) "
+            "(metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v)s::numeric))) "
             "IS NOT TRUE"
         ),
         value_types=("text", "number", "boolean"),
@@ -201,14 +205,14 @@ FILTER_TRUTH_TABLE: tuple[FilterOpSpec, ...] = (
         op="in",
         family="containment",
         positive_sql=(
-            "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v0)s::numeric)) OR "
-            "metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v1)s::numeric)))"
+            "(metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v0)s::numeric)) OR "
+            "metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v1)s::numeric)))"
         ),
         negated_leaf_sql=_NEG_CASE.format(
             jtype="number",
             inner=(
-                "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v0)s::numeric)) OR "
-                "metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v1)s::numeric)))"
+                "(metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v0)s::numeric)) OR "
+                "metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v1)s::numeric)))"
             ),
         ),
         value_types=("text", "number", "boolean"),
@@ -286,14 +290,14 @@ FILTER_TRUTH_TABLE: tuple[FilterOpSpec, ...] = (
         op="contains_any",
         family="containment",
         positive_sql=(
-            "(metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text))) OR "
-            "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v1)s::text))))"
+            "(metadata @> jsonb_build_object(%(k)s::text, jsonb_build_array(to_jsonb(%(v0)s::text))) OR "
+            "metadata @> jsonb_build_object(%(k)s::text, jsonb_build_array(to_jsonb(%(v1)s::text))))"
         ),
         negated_leaf_sql=_NEG_CASE.format(
             jtype="array",
             inner=(
-                "(metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text))) OR "
-                "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v1)s::text))))"
+                "(metadata @> jsonb_build_object(%(k)s::text, jsonb_build_array(to_jsonb(%(v0)s::text))) OR "
+                "metadata @> jsonb_build_object(%(k)s::text, jsonb_build_array(to_jsonb(%(v1)s::text))))"
             ),
         ),
         value_types=("text", "number", "boolean"),
@@ -308,13 +312,13 @@ FILTER_TRUTH_TABLE: tuple[FilterOpSpec, ...] = (
         op="contains_all",
         family="containment",
         positive_sql=(
-            "metadata @> jsonb_build_object(%(k)s, "
+            "metadata @> jsonb_build_object(%(k)s::text, "
             "jsonb_build_array(to_jsonb(%(v0)s::text), to_jsonb(%(v1)s::text)))"
         ),
         negated_leaf_sql=_NEG_CASE.format(
             jtype="array",
             inner=(
-                "metadata @> jsonb_build_object(%(k)s, "
+                "metadata @> jsonb_build_object(%(k)s::text, "
                 "jsonb_build_array(to_jsonb(%(v0)s::text), to_jsonb(%(v1)s::text)))"
             ),
         ),
@@ -562,7 +566,9 @@ class _PredicateRenderer:
     ) -> _RenderedPredicate:
         elements = [_to_jsonb(self._bind_value(value), scalar_type) for value in values]
         array = sql.SQL("jsonb_build_array({})").format(sql.SQL(", ").join(elements))
-        rendered = sql.SQL("metadata @> jsonb_build_object({}, {})").format(key, array)
+        rendered = sql.SQL("metadata @> jsonb_build_object({}::text, {})").format(
+            key, array
+        )
         return _RenderedPredicate(
             positive=rendered,
             negatable=_guarded_array_expression(key, rendered),
@@ -583,6 +589,37 @@ class _PredicateRenderer:
     @staticmethod
     def _join(parts: list[sql.Composable], separator: str) -> sql.Composable:
         return sql.SQL("({})").format(sql.SQL(separator).join(parts))
+
+
+class _SingleLeafRenderer(_PredicateRenderer):
+    """Render ONE field leaf with the frozen truth-table parameter naming.
+
+    Reuses the type- and arity-aware ``_render_field`` machinery unchanged, only
+    overriding the binder: the sole key binds as ``%(k)s`` and values as ``%(v)s``
+    (single-value ops) or ``%(v0)s``/``%(v1)s``… (list ops), which is the naming the
+    frozen positive-SQL forms use (Contract #3). And/Or/Not trees keep the indexed
+    naming via :class:`_PredicateRenderer`.
+
+    Args:
+        single_value: True for ops with one value (eq/ne/range), so it binds ``%(v)s``.
+    """
+
+    def __init__(self, *, single_value: bool) -> None:
+        super().__init__()
+        self._single_value = single_value
+
+    def _bind_key(self, key: str) -> sql.Placeholder:
+        self.params["k"] = key
+        return sql.Placeholder("k")
+
+    def _bind_value(self, value: object) -> sql.Placeholder:
+        if self._single_value:
+            self.params["v"] = value
+            return sql.Placeholder("v")
+        name = f"v{self._value_index}"
+        self._value_index += 1
+        self.params[name] = value
+        return sql.Placeholder(name)
 
 
 def _is_number(value: object) -> bool:
@@ -643,7 +680,9 @@ def _scalar_containment(
     value: sql.Placeholder,
     scalar_type: ScalarJsonType | None,
 ) -> sql.Composable:
-    return sql.SQL("metadata @> jsonb_build_object({}, {})").format(
+    # The key param is cast ``::text`` — jsonb_build_object is VARIADIC "any", which
+    # cannot infer a bound param's type, so an uncast key errors on live Postgres.
+    return sql.SQL("metadata @> jsonb_build_object({}::text, {})").format(
         key,
         _to_jsonb(value, scalar_type),
     )
@@ -654,9 +693,9 @@ def _array_atom(
     value: sql.Placeholder,
     scalar_type: ScalarJsonType | None,
 ) -> sql.Composable:
-    return sql.SQL("metadata @> jsonb_build_object({}, jsonb_build_array({}))").format(
-        key, _to_jsonb(value, scalar_type)
-    )
+    return sql.SQL(
+        "metadata @> jsonb_build_object({}::text, jsonb_build_array({}))"
+    ).format(key, _to_jsonb(value, scalar_type))
 
 
 def _guarded_containment(
@@ -732,15 +771,19 @@ def to_neon_filters(
 def predicate_to_sql(
     predicate: FilterPredicate | None,
 ) -> tuple[str, dict[str, object]]:
-    """Return one field leaf's canonical positive SQL + bound params.
+    """Return one field leaf's positive SQL + bound params (type- and arity-directed).
 
-    The frozen per-operator positive form (``FILTER_TRUTH_TABLE_BY_OP``), with
-    ``%(k)s`` bound to the field and ``%(v)s``/``%(v0)s``… to the value(s). Value
-    validation mirrors the tree path (range ops require a non-bool number; list
-    ops require a homogeneous list; ``eq``/``ne`` a single scalar), and the op is
-    capability-gated. This is the canonical single-leaf surface; the executable
-    tree path (And/Or/Not, arbitrary arity, three-valued negation) is
-    :func:`to_neon_where` / :func:`to_neon_filters`.
+    Rendered through the SAME :class:`_PredicateRenderer` machinery as
+    :func:`to_neon_where` (via :class:`_SingleLeafRenderer`), so the cast follows
+    the VALUE's JSON type (``eq("x")`` -> ``::text``, ``eq(5)`` -> ``::numeric``,
+    ``eq(True)`` -> ``::boolean``) and the list ops emit exactly one placeholder per
+    element (empty ``in``/``contains_any`` collapse to ``FALSE``). Only the binder
+    naming differs from the tree path — ``%(k)s`` for the field, ``%(v)s`` for a
+    single value, ``%(v0)s``/``%(v1)s``… for lists — matching the frozen 9-op
+    truth-table (Contract #3). Values and keys are bound params, never interpolated.
+    Validation (range->non-bool number, list->homogeneous, eq/ne->single scalar) and
+    the capability gate raise ``InvalidFilterError``/``UnsupportedFilterError``. For
+    And/Or/Not trees use :func:`to_neon_where` / :func:`to_neon_filters`.
     """
     if not isinstance(predicate, FieldPredicate):
         raise InvalidFilterError(
@@ -750,22 +793,6 @@ def predicate_to_sql(
             predicate=predicate,
         )
     _ensure_supported(_NEON_FILTER_CAPABILITIES, predicate)
-
-    op = predicate.op
-    params: dict[str, object] = {"k": predicate.field}
-    if op in RANGE_OPS:
-        if not _is_number(predicate.value):
-            raise InvalidFilterError(
-                backend="neon",
-                message=f"field operator '{op}' requires a numeric value",
-                predicate=predicate,
-            )
-        params["v"] = predicate.value
-    elif op in LIST_OPS:
-        values, _ = _homogeneous_list(predicate.value, predicate)
-        for index, value in enumerate(values):
-            params[f"v{index}"] = value
-    else:  # eq / ne — single scalar (validates text/number/boolean, rejects bool-as-num)
-        _scalar_json_type(predicate.value, predicate)
-        params["v"] = predicate.value
-    return FILTER_TRUTH_TABLE_BY_OP[op].positive_sql, params
+    renderer = _SingleLeafRenderer(single_value=predicate.op not in LIST_OPS)
+    rendered = renderer.render(predicate)
+    return rendered.positive.as_string(), renderer.params

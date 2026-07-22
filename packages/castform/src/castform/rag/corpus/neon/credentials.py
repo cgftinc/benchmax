@@ -1,7 +1,8 @@
 """Neon DSN credential seam — separate read and write provider surfaces.
 
-Contract-freeze artifact (Slice A). Signatures only; lazy resolution and the
-psycopg connection are wired in Slice 4.
+The lazy resolution is wired in Slice 4: each ``resolve_*`` returns a per-call
+provider via ``as_token_provider(dsn_provider, env_token(<VAR>))`` — the DSN is
+resolved on connect (or read from the env), never at construction.
 
 The Neon connection string (DSN) rides the same ``str | TokenProvider | None``
 seam turbopuffer uses for its API key (see ``rag/corpus/turbopuffer/search.py``

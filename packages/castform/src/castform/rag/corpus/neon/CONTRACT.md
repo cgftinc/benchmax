@@ -122,16 +122,19 @@ three safety properties are frozen (they drove the review):
 
 canonical POSITIVE sql (numeric value shown for eq/ne/in; text for contains; the
 cast token follows the value type — `CONTAINS_ATOM_BY_TYPE` freezes text/number/
-boolean shapes):
+boolean shapes). the metadata **key** param is cast `%(k)s::text` inside every
+`jsonb_build_object` (which is VARIADIC `"any"` and cannot infer a bound param's
+type — an uncast key raises `IndeterminateDatatype` on live Postgres, proven slice-4
+live; the range ops' `metadata -> %(k)s` resolves the param to text on its own):
 
 | op | family | positive sql | indexable |
 |---|---|---|---|
-| eq | containment | `metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))` | yes |
-| ne | negated containment | `(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))) IS NOT TRUE` | no |
+| eq | containment | `metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v)s::numeric))` | yes |
+| ne | negated containment | `(metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v)s::numeric))) IS NOT TRUE` | no |
 | in | containment OR | `(metadata @> …%(v0)s…) OR (metadata @> …%(v1)s…)` | yes |
 | gt/gte/lt/lte | range CASE | `CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' THEN (metadata ->> %(k)s)::numeric {op} %(v)s::numeric ELSE NULL END` | no |
-| contains_any | containment OR | `(metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text))) OR …%(v1)s…)` | yes |
-| contains_all | array containment | `metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text), to_jsonb(%(v1)s::text)))` | yes (empty operand: no) |
+| contains_any | containment OR | `(metadata @> jsonb_build_object(%(k)s::text, jsonb_build_array(to_jsonb(%(v0)s::text))) OR …%(v1)s…)` | yes |
+| contains_all | array containment | `metadata @> jsonb_build_object(%(k)s::text, jsonb_build_array(to_jsonb(%(v0)s::text), to_jsonb(%(v1)s::text)))` | yes (empty operand: no) |
 
 **five distinct edge outcomes** of the POSITIVE leaf (negation inverts via the
 three-valued `negated_leaf_sql`, so a negated leaf still excludes

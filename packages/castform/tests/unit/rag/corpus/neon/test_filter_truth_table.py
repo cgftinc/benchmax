@@ -1,8 +1,9 @@
 """Contract #3: type-directed, indexable, correctly-negating filter truth table.
 
 The frozen table (positive SQL, three-valued negated leaves, edge outcomes,
-indexability, typed contains shapes) is asserted here and passes; SQL emission via
-``predicate_to_sql`` is an xfail skeleton that must raise NotImplementedError.
+indexability, typed contains shapes) is asserted here. Slice 4 implements
+``predicate_to_sql``: single-leaf emission that dispatches the cast on the value's
+JSON type and one placeholder per list element, matching the frozen forms exactly.
 """
 
 from __future__ import annotations
@@ -18,16 +19,17 @@ from castform.rag.corpus.neon.filter_mapper import (
     RANGE_OPS,
     predicate_to_sql,
 )
+from castform.rag.corpus.search_schema.search_exceptions import InvalidFilterError
 from castform.rag.corpus.search_schema.search_types import FieldPredicate
 
 EXPECTED_POSITIVE_SQL: dict[str, str] = {
-    "eq": "metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))",
+    "eq": "metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v)s::numeric))",
     "ne": (
-        "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))) IS NOT TRUE"
+        "(metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v)s::numeric))) IS NOT TRUE"
     ),
     "in": (
-        "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v0)s::numeric)) OR "
-        "metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v1)s::numeric)))"
+        "(metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v0)s::numeric)) OR "
+        "metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v1)s::numeric)))"
     ),
     "gt": (
         "CASE WHEN jsonb_typeof(metadata -> %(k)s) = 'number' "
@@ -46,11 +48,11 @@ EXPECTED_POSITIVE_SQL: dict[str, str] = {
         "THEN (metadata ->> %(k)s)::numeric <= %(v)s::numeric ELSE NULL END"
     ),
     "contains_any": (
-        "(metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text))) OR "
-        "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v1)s::text))))"
+        "(metadata @> jsonb_build_object(%(k)s::text, jsonb_build_array(to_jsonb(%(v0)s::text))) OR "
+        "metadata @> jsonb_build_object(%(k)s::text, jsonb_build_array(to_jsonb(%(v1)s::text))))"
     ),
     "contains_all": (
-        "metadata @> jsonb_build_object(%(k)s, "
+        "metadata @> jsonb_build_object(%(k)s::text, "
         "jsonb_build_array(to_jsonb(%(v0)s::text), to_jsonb(%(v1)s::text)))"
     ),
 }
@@ -169,3 +171,51 @@ def test_predicate_to_sql_emits_positive(op: str) -> None:
     sql, params = predicate_to_sql(pred)
     assert sql == EXPECTED_POSITIVE_SQL[op]
     assert params["k"] == "year"
+
+
+@pytest.mark.parametrize(
+    "value, cast",
+    [("abc", "text"), (5, "numeric"), (3.5, "numeric"), (True, "boolean")],
+)
+def test_predicate_to_sql_eq_cast_follows_value_type(value, cast) -> None:
+    # The cast is directed by the VALUE's JSON type, not a fixed template.
+    sql, params = predicate_to_sql(FieldPredicate(field="f", op="eq", value=value))
+    assert sql == (
+        f"metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v)s::{cast}))"
+    )
+    assert params == {"k": "f", "v": value}
+
+
+@pytest.mark.parametrize("op", ["in", "contains_any", "contains_all"])
+def test_predicate_to_sql_list_arity(op: str) -> None:
+    # One placeholder per element — never a missing or extra %(vN)s.
+    sql, params = predicate_to_sql(
+        FieldPredicate(field="f", op=op, value=["a", "b", "c"])
+    )
+    assert params == {"k": "f", "v0": "a", "v1": "b", "v2": "c"}
+    for i in range(3):
+        assert f"%(v{i})s" in sql
+    assert "%(v3)s" not in sql
+
+
+def test_predicate_to_sql_one_item_list() -> None:
+    sql, params = predicate_to_sql(FieldPredicate(field="f", op="in", value=["a"]))
+    assert params == {"k": "f", "v0": "a"}
+    assert sql == "(metadata @> jsonb_build_object(%(k)s::text, to_jsonb(%(v0)s::text)))"
+
+
+@pytest.mark.parametrize("op", ["in", "contains_any"])
+def test_predicate_to_sql_empty_list_collapses_to_false(op: str) -> None:
+    sql, params = predicate_to_sql(FieldPredicate(field="f", op=op, value=[]))
+    assert sql == "FALSE"
+    assert params == {"k": "f"}  # no dangling value placeholder
+
+
+def test_predicate_to_sql_rejects_bool_as_number_in_list() -> None:
+    with pytest.raises(InvalidFilterError):
+        predicate_to_sql(FieldPredicate(field="f", op="in", value=[1, True]))
+
+
+def test_predicate_to_sql_rejects_range_non_number() -> None:
+    with pytest.raises(InvalidFilterError):
+        predicate_to_sql(FieldPredicate(field="f", op="gt", value="2026"))
