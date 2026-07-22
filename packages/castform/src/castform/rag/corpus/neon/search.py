@@ -1,141 +1,80 @@
-"""NeonSearch — pickle-safe search client + the surfaced-score contract.
+"""NeonSearch — the pickle-safe, env-facing SearchClient over a Neon corpus.
 
-Contract-freeze artifact (Slice A). The query execution, RRF fusion, and dedup
-are built in Slices 1/4 — the methods here are stubs. What *is* frozen: the
-internal query-request shape, the single-owner hybrid-fusion seam, and the exact
-public score formula.
+Structurally implements the ``SearchClient`` protocol (``search`` / ``embed`` /
+``available_modes`` / ``get_params``) without inheriting it, mirroring
+``TpufSearch``: no psycopg import at module load, the connection resolved per call
+via a read-only DSN provider, and the live client nulled across pickling so the
+env bundle never carries a socket.
 
-Surfaced-score contract (Contract #4)
--------------------------------------
-The three native scorers disagree on direction: bm25 ``<@>`` is negative /
-lower-better, vector cosine distance is lower-better, RRF is higher-better.
-Rather than surface three incomparable scales, the public score is a single
-**rank-based reciprocal rank**, uniform across all modes and always
-higher-better::
+Credential seam (Contract #2, moved to Slice 4 per B1)
+------------------------------------------------------
+The read-only DSN rides the ``str | TokenProvider | None`` seam (see
+``credentials.py``): ``None`` reads ``NEON_CORPUS_DSN_RO`` from the environment at
+query time (self-serve — the DSN stays OUT of the pickled artifact), a literal
+``str`` bakes the resolved DSN into the pickle (the platform-orchestrated path,
+where the trainer's Ray actor can't read the env at runtime — an accepted at-rest
+tradeoff, guarded by RO-scoping and never logging the DSN), and a callable is used
+as-is. The provider is resolved LAZILY in :meth:`_get_client`; search always uses
+the RO surface (SELECT only), never the RW ingest role.
 
-    surfaced_score(rank) = 1 / (SURFACED_RANK_K + rank)      # rank is 0-based
-
-where ``rank`` is the 0-based position of a chunk in a single query's result
-list ordered better-first in that mode's native scorer (bm25 ascending ``<@>``,
-vector ascending distance, hybrid the fused ordering). This is monotonically
-decreasing in rank by construction, so relevance-descending is guaranteed
-independent of the raw scorer's range.
-
-The raw native score is **preserved as a separate field** (``QueryHit.native_score``
-/ the ``native_score`` result key), never overloaded onto ``max_score`` (NB1): it
-carries the mode's real backend number (bm25 ``<@>``, vector distance, or fused
-RRF) for diagnostics and calibration. Empirical validation of the raw ``<@>``
-range is deferred to the Slice 3 live smoke; the surfaced formula, its
-monotonicity, and the dedup rule are frozen here.
-
-Multi-query dedup mirrors the Corpora path (``postgres/source.py``): a chunk hit
-by several queries keeps the **max** reciprocal rank across those queries as its
-``max_score``, and results sort by the 3-tuple
-``(len(queries), not same_file, max_score)`` all descending. The surfaced
-``native_score`` is taken from **the same winning hit that supplied
-``max_score``** (the best-ranked occurrence), not averaged or retained per query,
-so the diagnostic score always corresponds to the surfaced rank.
+The single hybrid-RRF fusion and the surfaced-score formula are owned by
+``query.py``; this module re-exports their frozen public names
+(:data:`SURFACED_RANK_K`, :class:`QueryHit`, :func:`surfaced_score`,
+:class:`NeonQueryRequest`, :func:`fuse_rrf`) so ``castform.rag.corpus.neon.search``
+stays a stable import path.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from castform.platform.credentials import TokenProvider
 from castform.rag.corpus.neon.credentials import resolve_read_dsn_provider
-from castform.rag.corpus.search_schema.search_types import (
-    FilterPredicate,
-    HybridOptions,
-    SearchMode,
+from castform.rag.corpus.neon.provision import CORPUS_SCHEMA
+from castform.rag.corpus.neon.query import (
+    SURFACED_RANK_K,
+    NeonQueryRequest,
+    QueryHit,
+    fuse_rrf,
+    run_query,
+    surfaced_score,
 )
+from castform.rag.corpus.neon.schema import DEFAULT_TEXT_SEARCH_CONFIG
+from castform.rag.corpus.search_schema.search_types import SearchMode
 
-SURFACED_RANK_K = 60
-"""Reciprocal-rank constant (the standard RRF ``k``). ``score = 1/(K + rank)``."""
+if TYPE_CHECKING:
+    from castform.rag.corpus.neon.client import NeonClient
+    from castform.rag.corpus.neon.query import QueryRow
+    from castform.rag.corpus.neon.schema import NeonTableSpec
 
+__all__ = [
+    "SURFACED_RANK_K",
+    "NeonQueryRequest",
+    "NeonSearch",
+    "QueryHit",
+    "fuse_rrf",
+    "surfaced_score",
+]
 
-@dataclass(frozen=True)
-class QueryHit:
-    """One per-query hit carrying both the surfaced and the raw native score.
-
-    Args:
-        chunk_id: The chunk hash.
-        surfaced_score: Ordinal ``1/(K + rank)`` — the public relevance number.
-        native_score: The mode's raw backend score (bm25 ``<@>``, vector
-            distance, or fused RRF), kept for diagnostics/calibration (NB1).
-        rank: 0-based rank in this query's native ordering.
-    """
-
-    chunk_id: str
-    surfaced_score: float
-    native_score: float
-    rank: int
-
-
-def surfaced_score(rank: int) -> float:
-    """Return the public relevance score for a 0-based result rank.
-
-    Uniform across lexical/vector/hybrid, always higher-better, strictly
-    decreasing in ``rank``. This *is* implemented (it is the frozen formula, not
-    backend logic) so tests can pin exact numeric values.
-    """
-    if rank < 0:
-        raise ValueError("rank must be non-negative")
-    return 1.0 / (SURFACED_RANK_K + rank)
-
-
-@dataclass(frozen=True)
-class NeonQueryRequest:
-    """Internal query request handed to the Neon query layer.
-
-    Filtering is orthogonal to mode: any of the three modes runs filtered or
-    unfiltered (3 modes x filtered/unfiltered), so ``filter`` is a field, not a
-    fourth mode. Hybrid RRF fusion has a single owner — this query layer — so no
-    other component blends lexical and vector scores.
-
-    Args:
-        mode: Retrieval mode.
-        top_k: Maximum results requested.
-        text: Query text; required for lexical/hybrid.
-        vector: Query embedding; required for vector/hybrid.
-        filter: Optional metadata predicate (orthogonal to mode).
-        hybrid: Optional hybrid blending knobs.
-    """
-
-    mode: SearchMode
-    top_k: int = 5
-    text: str | None = None
-    vector: tuple[float, ...] | None = None
-    filter: FilterPredicate | None = None
-    hybrid: HybridOptions | None = None
-
-
-def fuse_rrf(
-    ranked_lists: list[list[str]], k: int = SURFACED_RANK_K
-) -> list[tuple[str, float]]:
-    """Fuse multiple ranked id-lists into one RRF ordering (single owner).
-
-    The one place lexical and vector rankings are combined for hybrid mode.
-    Design-lock stub: fusion is built in Slice 1.
-    """
-    raise NotImplementedError("RRF fusion is built in Slice 1")
+# ``search(mode="auto")`` resolves to the richest available mode, best-first.
+_AUTO_MODE_PREFERENCE: tuple[SearchMode, ...] = ("hybrid", "vector", "lexical")
 
 
 class NeonSearch:
     """Pickle-safe Neon corpus search client for RL environments.
 
-    Mirrors ``TpufSearch``: no psycopg import at module load, connection resolved
-    per call via a read-only DSN provider, ``_conn`` nulled across pickling. The
-    DSN rides the ``str | TokenProvider | None`` seam and resolves to a
-    *read-only* grant (search never writes).
-
     Args:
-        table: Logical corpus name to query (the active-version view).
-        embed_fn: Embedding function for vector/hybrid modes. Same interface as
-            every provider: ``Callable[[list[str]], list[list[float]]]``.
+        table: Logical corpus name to query (resolved to the active-version view).
+        embed_fn: Embedding function for vector/hybrid modes. ``Callable[[list[str]],
+            list[list[float]]]`` — the shape every provider expects. When absent,
+            only lexical search is available.
         dsn_provider: Read-only DSN, a provider callable, or ``None`` to read
             ``NEON_CORPUS_DSN_RO`` from the environment at query time.
+        schema: Postgres schema the corpus objects live in (qualifies the BM25
+            index regclass for the RO invoker). Not a credential.
+        text_search_config: ``regconfig`` the corpus tsvector was built with; must
+            match the version's baked config or bm25 scores drift.
     """
 
     def __init__(
@@ -144,33 +83,147 @@ class NeonSearch:
         *,
         embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
         dsn_provider: str | TokenProvider | None = None,
+        schema: str = CORPUS_SCHEMA,
+        text_search_config: str = DEFAULT_TEXT_SEARCH_CONFIG,
     ) -> None:
         self._table = table
         self._embed_fn = embed_fn
-        self._dsn_provider = resolve_read_dsn_provider  # bound in Slice 4
-        self._dsn_provider_arg = dsn_provider
-        self._conn: Any = None
+        self._schema = schema
+        self._text_search_config = text_search_config
+        self._dsn_provider = resolve_read_dsn_provider(dsn_provider)
+        self._client: Any = None
+
+    # --- lazy client + version resolution ------------------------------------
+
+    def _get_client(self) -> NeonClient:
+        """Build the ``NeonClient`` lazily from the resolved RO provider.
+
+        Imports ``NeonClient`` here (not at module load) so this class stays
+        pickle-safe with the ``neon`` extra absent. The provider — not a resolved
+        DSN — is handed to the client, which re-resolves per connect so a rotated
+        RO DSN is always fresh.
+        """
+        if self._client is None:
+            from castform.rag.corpus.neon.client import NeonClient
+
+            self._client = NeonClient(self._dsn_provider)
+        return self._client
+
+    def _resolve_spec(self, client: NeonClient) -> NeonTableSpec:
+        """Resolve the current published version into a ``NeonTableSpec``.
+
+        Reads the ledger for the ``is_current`` row (the version the reader view
+        points to) so the BM25 leg can name that version's index regclass.
+        """
+        from castform.rag.corpus.neon.schema import NeonTableSpec
+
+        rows = client.execute(client.read_ledger_sql(), {"logical": self._table})
+        for version, _state, is_current in rows:
+            if is_current:
+                return NeonTableSpec(
+                    self._table,
+                    version,
+                    text_search_config=self._text_search_config,
+                )
+        raise LookupError(
+            f"neon corpus {self._table!r} has no current published version"
+        )
+
+    def _run(self, request: NeonQueryRequest) -> list[QueryRow]:
+        client = self._get_client()
+        spec = self._resolve_spec(client)
+        return run_query(client, spec, request, schema=self._schema)
+
+    # --- SearchClient protocol -----------------------------------------------
+
+    def search(
+        self,
+        query: str,
+        mode: str = "auto",
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Search and return structured results best-first.
+
+        Returns dicts keyed ``content`` / ``source`` / ``metadata`` / ``score``,
+        where ``score`` is the surfaced reciprocal-rank (higher-better, uniform
+        across modes — never the raw native score). ``mode="auto"`` picks the
+        richest available mode (hybrid > vector > lexical). Vector/hybrid embed
+        ``query`` via ``embed_fn``.
+        """
+        resolved = self._resolve_mode(mode)
+        request = NeonQueryRequest(
+            mode=resolved,
+            top_k=top_k,
+            text=query,
+            vector=self._embed(query) if resolved in ("vector", "hybrid") else None,
+        )
+        return [
+            {
+                "content": row.content,
+                "source": row.source_file,
+                "metadata": row.metadata,
+                "score": row.surfaced_score,
+            }
+            for row in self._run(request)
+        ]
+
+    def embed(self, text: str) -> list[float] | None:
+        """Return an embedding for *text*, or ``None`` if no embedder is set."""
+        if self._embed_fn is None:
+            return None
+        return self._embed_fn([text])[0]
+
+    @property
+    def available_modes(self) -> list[str]:
+        """Modes gated on ``embed_fn``: lexical-only without, +vector/+hybrid with."""
+        modes = ["lexical"]
+        if self._embed_fn is not None:
+            modes += ["vector", "hybrid"]
+        return sorted(modes)
+
+    def get_params(self) -> dict[str, Any]:
+        """Serializable connection params for inspection — NO credential."""
+        return {"backend": "neon", "table": self._table, "schema": self._schema}
+
+    # --- richer internal API (QueryRequest-driven) ---------------------------
+
+    def query(self, request: NeonQueryRequest) -> list[QueryHit]:
+        """Run one query, returning ``QueryHit`` rows best-first (id + scores)."""
+        return [row.to_hit() for row in self._run(request)]
+
+    def search_content(self, request: NeonQueryRequest) -> list[str]:
+        """Return content strings only (cloudpickle-safe rollout path)."""
+        return [row.content for row in self._run(request)]
+
+    # --- helpers -------------------------------------------------------------
+
+    def _resolve_mode(self, mode: str) -> SearchMode:
+        modes = self.available_modes
+        if mode == "auto":
+            return next(m for m in _AUTO_MODE_PREFERENCE if m in modes)
+        if mode not in modes:
+            hint = (
+                " Provide embed_fn for vector/hybrid."
+                if mode in ("vector", "hybrid")
+                else ""
+            )
+            raise ValueError(
+                f"NeonSearch: mode {mode!r} not available. Available: {modes}.{hint}"
+            )
+        return mode  # type: ignore[return-value]
+
+    def _embed(self, query: str) -> tuple[float, ...]:
+        if self._embed_fn is None:
+            raise ValueError("vector/hybrid search requires embed_fn")
+        return tuple(self._embed_fn([query])[0])
+
+    # --- pickle safety -------------------------------------------------------
 
     def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()
-        state["_conn"] = None
+        state["_client"] = None  # never pickle a live psycopg connection
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         self.__dict__.update(state)
-        self._conn = None
-
-    def query(self, request: NeonQueryRequest) -> list[QueryHit]:
-        """Run one query, returning ``QueryHit`` rows best-first.
-
-        Each hit carries both the surfaced ordinal score and the raw native
-        score (NB1). Design-lock stub: SQL execution is built in Slice 1.
-        """
-        raise NotImplementedError("Neon query execution is built in Slice 1")
-
-    def search_content(self, request: NeonQueryRequest) -> list[str]:
-        """Return content strings only (cloudpickle-safe rollout path).
-
-        Design-lock stub: built in Slice 1.
-        """
-        raise NotImplementedError("Neon query execution is built in Slice 1")
+        self._client = None

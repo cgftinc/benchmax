@@ -163,7 +163,6 @@ def test_negation_template_frozen() -> None:
     assert NEGATION_TEMPLATE == "NOT ({inner})"
 
 
-@pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 4")
 @pytest.mark.parametrize("op", list(EXPECTED_POSITIVE_SQL))
 def test_predicate_to_sql_emits_positive(op: str) -> None:
     pred = FieldPredicate(field="year", op=op, value=VALID_FIXTURES[op])  # type: ignore[arg-type]

@@ -64,6 +64,65 @@ def test_activation_rolls_back_atomically() -> None:
     assert conn.committed is False
 
 
-@pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 1")
+class _ReadConn:
+    """Fake conn recording statements; the last execute returns a row cursor."""
+
+    def __init__(self, rows: list[tuple]) -> None:
+        self.rows = rows
+        self.statements: list[str] = []
+        self.committed = False
+
+    def execute(self, statement: sql.Composable, params=None):
+        self.statements.append(str(statement))
+
+        class _Cur:
+            description = [("col",)]
+
+            def fetchall(_self):
+                return self.rows
+
+        return _Cur()
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def rollback(self) -> None:  # pragma: no cover - not hit on the happy path
+        pass
+
+
+def test_execute_read_txn_runs_setup_then_fetches() -> None:
+    client = NeonClient(lambda: "postgresql://ro@host/db")
+    conn = _ReadConn([("h1",), ("h2",)])
+    client._conn = conn  # type: ignore[attr-defined]
+    rows = client.execute_read_txn(
+        sql.SQL("SELECT id FROM v"),
+        {"top_k": 5},
+        session_setup=[sql.SQL("SET LOCAL lakebase_bm25.prefilter = on")],
+    )
+    assert rows == [("h1",), ("h2",)]
+    # SET LOCAL runs before the SELECT, in the same (committed) transaction.
+    assert "SET LOCAL lakebase_bm25.prefilter = on" in conn.statements[0]
+    assert "SELECT id FROM v" in conn.statements[1]
+    assert conn.committed is True
+
+
+def test_execute_read_txn_rejects_raw_string() -> None:
+    client = NeonClient(lambda: "postgresql://ro@host/db")
+    with pytest.raises(TypeError):
+        client.execute_read_txn("SELECT 1")  # type: ignore[arg-type]
+
+
 def test_fuse_rrf_single_owner() -> None:
-    fuse_rrf([["a", "b"], ["b", "c"]])
+    # b is hit by both lists (rank 1 then rank 0), a and c once each. Scores:
+    # b = 1/61 + 1/60, a = 1/60, c = 1/61 -> order b, a, c (a > c since 1/60 > 1/61).
+    fused = fuse_rrf([["a", "b"], ["b", "c"]])
+    assert [cid for cid, _ in fused] == ["b", "a", "c"]
+    assert fused[0][1] == 1 / 61 + 1 / 60
+
+
+def test_fuse_rrf_tie_break_is_chunk_id_ascending() -> None:
+    # Equal single-hit scores must break deterministically on chunk_id ascending.
+    fused = fuse_rrf([["z", "a"], []])
+    assert [cid for cid, _ in fused] == ["z", "a"]  # z rank0 > a rank1
+    same = fuse_rrf([["b"], ["a"]])  # both rank 0 -> tie -> id asc
+    assert [cid for cid, _ in same] == ["a", "b"]

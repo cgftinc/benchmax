@@ -3,8 +3,10 @@
 Contract-freeze artifact (Slice A). This module freezes, per operator: the
 type-directed positive SQL, the three-valued *negated-leaf* SQL, the five edge
 outcomes, index-eligibility, and the value-validation rules. Slice 1 adds
-``to_neon_filters``, which walks a ``FilterPredicate`` tree and emits parameterized
-WHERE SQL. The separately frozen ``predicate_to_sql`` Slice 4 seam remains a stub.
+``to_neon_filters`` / ``to_neon_where``, which walk a ``FilterPredicate`` tree and
+emit parameterized WHERE SQL (as a ``str`` and a ``sql.Composable`` respectively —
+the query layer splices the Composable into both retrieval legs, B15). Slice 4
+adds ``predicate_to_sql``, the canonical single-leaf positive-SQL surface.
 
 Three safety properties are frozen (they drove the review):
 
@@ -692,34 +694,78 @@ def _guarded_empty_scalar_list(key: sql.Placeholder) -> sql.Composable:
     ).format(key, key)
 
 
-def to_neon_filters(
+def to_neon_where(
     predicate: FilterPredicate | None,
-) -> tuple[str, dict[str, object]]:
-    """Translate a predicate AST into parameterized Neon WHERE SQL.
+) -> tuple[sql.Composable, dict[str, object]]:
+    """Translate a predicate tree into a ``sql.Composable`` WHERE + bound params.
 
-    The returned SQL contains named psycopg placeholders for every metadata key
-    and value. Caller input is returned only in ``params`` and is never composed
-    into SQL text. ``None`` maps to ``TRUE`` so the result is always a valid
-    WHERE expression.
+    The single Composable-producing entrypoint the query layer splices into BOTH
+    the vector and the BM25 leg (B15) via ``NeonClient.*_candidates_sql(where=...)``.
+    ``.positive`` is correct for every top-level shape: the renderer already
+    substitutes the three-valued guarded form *inside* any ``NotPredicate``, so a
+    negated tree returns its fully-negated Composable. ``None`` maps to ``TRUE``.
+    Param keys (``k0``/``v0``…) never collide with the candidate binds
+    (``vector``/``text``/``top_k``/``bm25_*``).
     """
     _ensure_supported(_NEON_FILTER_CAPABILITIES, predicate)
     if predicate is None:
-        return "TRUE", {}
+        return sql.SQL("TRUE"), {}
 
     renderer = _PredicateRenderer()
     rendered = renderer.render(predicate)
-    return rendered.positive.as_string(), renderer.params
+    return rendered.positive, renderer.params
+
+
+def to_neon_filters(
+    predicate: FilterPredicate | None,
+) -> tuple[str, dict[str, object]]:
+    """Translate a predicate AST into parameterized Neon WHERE SQL as a ``str``.
+
+    The string form of :func:`to_neon_where`. The returned SQL contains named
+    psycopg placeholders for every metadata key and value; caller input is
+    returned only in ``params`` and is never composed into SQL text.
+    """
+    where, params = to_neon_where(predicate)
+    return where.as_string(), params
 
 
 def predicate_to_sql(
     predicate: FilterPredicate | None,
 ) -> tuple[str, dict[str, object]]:
-    """Translate a predicate tree to parameterized SQL + bound params.
+    """Return one field leaf's canonical positive SQL + bound params.
 
-    Enforces the value-validation rules above (rejecting mixed-type lists and
-    bool-as-number), emits the type-directed containment/range SQL (positive
-    leaves for plain predicates, ``NOT(negated_leaf_sql)`` under ``NotPredicate``),
-    and capability-gates unsupported ops via the search-schema exceptions.
-    Design-lock stub: the tree walk lands in Slice 4.
+    The frozen per-operator positive form (``FILTER_TRUTH_TABLE_BY_OP``), with
+    ``%(k)s`` bound to the field and ``%(v)s``/``%(v0)s``… to the value(s). Value
+    validation mirrors the tree path (range ops require a non-bool number; list
+    ops require a homogeneous list; ``eq``/``ne`` a single scalar), and the op is
+    capability-gated. This is the canonical single-leaf surface; the executable
+    tree path (And/Or/Not, arbitrary arity, three-valued negation) is
+    :func:`to_neon_where` / :func:`to_neon_filters`.
     """
-    raise NotImplementedError("filter SQL emission is built in Slice 4")
+    if not isinstance(predicate, FieldPredicate):
+        raise InvalidFilterError(
+            backend="neon",
+            message="predicate_to_sql renders a single field leaf; compose "
+            "And/Or/Not via to_neon_where",
+            predicate=predicate,
+        )
+    _ensure_supported(_NEON_FILTER_CAPABILITIES, predicate)
+
+    op = predicate.op
+    params: dict[str, object] = {"k": predicate.field}
+    if op in RANGE_OPS:
+        if not _is_number(predicate.value):
+            raise InvalidFilterError(
+                backend="neon",
+                message=f"field operator '{op}' requires a numeric value",
+                predicate=predicate,
+            )
+        params["v"] = predicate.value
+    elif op in LIST_OPS:
+        values, _ = _homogeneous_list(predicate.value, predicate)
+        for index, value in enumerate(values):
+            params[f"v{index}"] = value
+    else:  # eq / ne — single scalar (validates text/number/boolean, rejects bool-as-num)
+        _scalar_json_type(predicate.value, predicate)
+        params["v"] = predicate.value
+    return FILTER_TRUTH_TABLE_BY_OP[op].positive_sql, params

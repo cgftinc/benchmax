@@ -101,3 +101,21 @@ def test_cloudpickle_roundtrip_before_first_call(monkeypatch):
     monkeypatch.setenv("CASTFORM_LLM_URL", "https://llm.test.example/v1")
     _patch(monkeypatch)
     assert restored(["zz"]) == [[2.0]]
+
+
+def test_cloudpickle_roundtrip_after_warming(monkeypatch):
+    # B2: a WARMED fn (a live client cached in the instance) must still pickle safely —
+    # the client is dropped by __getstate__, not serialized, and rebuilt on the far side.
+    monkeypatch.setenv("CASTFORM_LLM_URL", "https://llm.test.example/v1")
+    _patch(monkeypatch)
+
+    fn = platform_embed_fn(api_key="tok-seam")
+    assert fn(["a"]) == [[1.0]]  # warm: builds + caches the live client
+    assert fn.__getstate__()["_client"] is None  # never serialized
+
+    data = cloudpickle.dumps(fn)  # a bare warmed closure would drag the live client in
+    _FakeOpenAI.instances.clear()
+    restored = pickle.loads(data)
+
+    assert restored(["bb"]) == [[2.0]]  # rebuilt lazily post-unpickle
+    assert len(_FakeOpenAI.instances) == 1

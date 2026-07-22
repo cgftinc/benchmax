@@ -31,11 +31,13 @@ def resolve_read_dsn_provider(
 ) -> TokenProvider:
     """Return the lazily-resolved read-only DSN provider for search.
 
-    Mirrors ``as_token_provider(value, env_token(READ_DSN_ENV_VAR))``. The
-    returned callable yields a DSN string carrying only the RO grant.
-    Design-lock stub: the resolution wiring lands in Slice 4.
+    ``None`` yields the runtime seam ``env_token(READ_DSN_ENV_VAR)`` (the DSN is
+    read from the environment per connection, nothing baked); a ``str`` bakes a
+    literal RO DSN into the closure (the platform-orchestrated path, since a Ray
+    actor can't read the env at runtime); a callable is used as-is. The returned
+    provider yields a DSN string carrying only the RO grant (SELECT).
     """
-    raise NotImplementedError("read DSN resolution is built in Slice 4")
+    return as_token_provider(dsn_provider, env_token(READ_DSN_ENV_VAR))
 
 
 def resolve_write_dsn_provider(
@@ -43,11 +45,12 @@ def resolve_write_dsn_provider(
 ) -> TokenProvider:
     """Return the lazily-resolved read-write DSN provider for ingest.
 
-    Mirrors ``as_token_provider(value, env_token(WRITE_DSN_ENV_VAR))``. The
-    returned callable yields a DSN string carrying the RW grant.
-    Design-lock stub: the resolution wiring lands in Slice 4.
+    Same resolution rules as :func:`resolve_read_dsn_provider`, but the default
+    seam is ``env_token(WRITE_DSN_ENV_VAR)`` and the yielded DSN carries the RW
+    grant (DDL + DML). Kept a separate surface so a search-only handle can never
+    be handed the ingest role.
     """
-    raise NotImplementedError("write DSN resolution is built in Slice 4")
+    return as_token_provider(dsn_provider, env_token(WRITE_DSN_ENV_VAR))
 
 
 __all__ = [

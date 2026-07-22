@@ -362,6 +362,39 @@ class NeonClient:
 
         self._in_bounded_txn(work)
 
+    def execute_read_txn(
+        self,
+        query: sql.Composable,
+        params: dict[str, Any] | None = None,
+        *,
+        session_setup: list[sql.Composable] | None = None,
+    ) -> list[tuple[Any, ...]]:
+        """Run optional ``SET LOCAL`` setup + one SELECT in ONE txn; fetch rows.
+
+        The read counterpart to :meth:`execute_in_transaction`: needed when a
+        session GUC must hold across the fetch. ``session_setup`` statements (e.g.
+        ``SET LOCAL lakebase_bm25.prefilter = on`` for a filtered BM25 query, F7)
+        run first in the same transaction; being ``SET LOCAL`` they are
+        transaction-scoped and auto-reset at commit, so they never leak to a
+        reused/pooled connection. Rejects raw strings (B4) and rides
+        :meth:`_in_bounded_txn`, so an autosuspend-killed cached connection
+        reconnects and the whole read retries once. A lost commit ack surfaces as
+        :class:`InDoubtTransactionError` (never retried) — over-conservative for a
+        read, but a read caller simply re-issues.
+        """
+        self._require_composable(query)
+        setup = session_setup or []
+        for statement in setup:
+            self._require_composable(statement)
+
+        def work(conn: Any) -> list[tuple[Any, ...]]:
+            for statement in setup:
+                conn.execute(statement, params or {})
+            cur = conn.execute(query, params or {})
+            return cur.fetchall() if cur.description is not None else []
+
+        return self._in_bounded_txn(work)
+
     def vacuum(self, spec: NeonTableSpec) -> None:
         """``VACUUM ANALYZE`` a version's table in autocommit, outside any txn (B14).
 
