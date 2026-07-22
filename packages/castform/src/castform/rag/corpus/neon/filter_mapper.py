@@ -2,9 +2,9 @@
 
 Contract-freeze artifact (Slice A). This module freezes, per operator: the
 type-directed positive SQL, the three-valued *negated-leaf* SQL, the five edge
-outcomes, index-eligibility, and the value-validation rules. The translator that
-walks a ``FilterPredicate`` tree and emits ``(sql, params)`` is Slice 4 —
-``predicate_to_sql`` is a stub.
+outcomes, index-eligibility, and the value-validation rules. Slice 1 adds
+``to_neon_filters``, which walks a ``FilterPredicate`` tree and emits parameterized
+WHERE SQL. The separately frozen ``predicate_to_sql`` Slice 4 seam remains a stub.
 
 Three safety properties are frozen (they drove the review):
 
@@ -32,10 +32,9 @@ Bound-path discipline: the metadata key and every value are bound parameters
 function form, not the ``?`` operator, which collides with psycopg placeholder
 parsing). ``psycopg.sql.Identifier`` is never used on caller keys.
 
-Operator set: nine field ops. The shared enum carries six (``eq, in, gte, lte,
-contains_any, contains_all``); Neon adds ``ne, gt, lt`` in a local superset;
-promoting them into ``search_schema/search_types.py`` is a Slice 4 edit kept out
-of this slice.
+Operator set: nine field ops. Neon was the first backend to require ``ne, gt,
+lt`` in addition to the shared six, so Slice 1 promotes all nine to the shared
+``FieldOperator`` enum.
 """
 
 from __future__ import annotations
@@ -43,7 +42,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from castform.rag.corpus.search_schema.search_types import FilterPredicate
+from psycopg import sql
+
+from castform.rag.corpus.search_schema.search_exceptions import (
+    InvalidFilterError,
+    UnsupportedFilterError,
+)
+from castform.rag.corpus.search_schema.search_types import (
+    AndPredicate,
+    FieldPredicate,
+    FilterPredicate,
+    NotPredicate,
+    OrPredicate,
+    SearchCapabilities,
+)
 
 NeonFieldOperator = Literal[
     "eq", "ne", "in", "gt", "gte", "lt", "lte", "contains_any", "contains_all"
@@ -320,8 +332,8 @@ FILTER_TRUTH_TABLE_BY_OP: dict[NeonFieldOperator, FilterOpSpec] = {
     spec.op: spec for spec in FILTER_TRUTH_TABLE
 }
 
-# Value-validation rules frozen for Slice 4's predicate_to_sql (each raises
-# InvalidFilterError from search_schema.search_exceptions):
+# Value-validation rules enforced by ``to_neon_filters`` (each raises
+# ``InvalidFilterError`` from ``search_schema.search_exceptions``):
 #   - range ops require a numeric value (int/float, NOT bool);
 #   - in/contains_* require a homogeneous list — mixed JSON types are rejected,
 #     and a Python bool is never accepted where a number is expected;
@@ -330,6 +342,373 @@ RANGE_OPS: frozenset[NeonFieldOperator] = frozenset({"gt", "gte", "lt", "lte"})
 LIST_OPS: frozenset[NeonFieldOperator] = frozenset(
     {"in", "contains_any", "contains_all"}
 )
+
+_NEON_FILTER_CAPABILITIES: SearchCapabilities = {
+    "backend": "neon",
+    "modes": {"lexical", "vector", "hybrid"},
+    "filter_ops": {
+        "field": set(NEON_FIELD_OPERATORS),
+        "logical": {"and", "or", "not"},
+    },
+    "ranking": set(),
+    "constraints": {},
+    "graph_expansion": False,
+}
+
+_RANGE_SQL_OPERATOR: dict[NeonFieldOperator, str] = {
+    "gt": ">",
+    "gte": ">=",
+    "lt": "<",
+    "lte": "<=",
+}
+
+
+def _ensure_supported(
+    capabilities: SearchCapabilities,
+    predicate: FilterPredicate | None,
+) -> None:
+    """Validate a predicate tree against backend filter capabilities."""
+    backend = str(capabilities.get("backend", "unknown"))
+    filter_ops = capabilities.get("filter_ops", {"field": set(), "logical": set()})
+    field_operators = set(filter_ops.get("field", []))
+    logical_operators = set(filter_ops.get("logical", []))
+
+    if predicate is None:
+        return
+
+    if isinstance(predicate, FieldPredicate):
+        if predicate.op not in field_operators:
+            raise UnsupportedFilterError(
+                backend=backend,
+                message=f"field operator '{predicate.op}' is not supported",
+                predicate=predicate,
+            )
+        if not isinstance(predicate.field, str) or not predicate.field.strip():
+            raise InvalidFilterError(
+                backend=backend,
+                message="field predicate must have a non-empty field name",
+                predicate=predicate,
+            )
+        return
+
+    if isinstance(predicate, (AndPredicate, OrPredicate)):
+        operator = "and" if isinstance(predicate, AndPredicate) else "or"
+        if operator not in logical_operators:
+            raise UnsupportedFilterError(
+                backend=backend,
+                message=f"logical operator '{operator}' is not supported",
+                predicate=predicate,
+            )
+        if not predicate.clauses:
+            raise InvalidFilterError(
+                backend=backend,
+                message=f"'{operator}' must include at least one clause",
+                predicate=predicate,
+            )
+        for clause in predicate.clauses:
+            _ensure_supported(capabilities, clause)
+        return
+
+    if isinstance(predicate, NotPredicate):
+        if "not" not in logical_operators:
+            raise UnsupportedFilterError(
+                backend=backend,
+                message="logical operator 'not' is not supported",
+                predicate=predicate,
+            )
+        _ensure_supported(capabilities, predicate.clause)
+        return
+
+    raise InvalidFilterError(
+        backend=backend,
+        message=f"unexpected predicate type '{type(predicate).__name__}'",
+        predicate=predicate,
+    )
+
+
+@dataclass(frozen=True)
+class _RenderedPredicate:
+    """Positive and three-valued forms of one rendered predicate tree."""
+
+    positive: sql.Composable
+    negatable: sql.Composable
+
+
+class _PredicateRenderer:
+    """Render a validated predicate while allocating unique bound parameters."""
+
+    def __init__(self) -> None:
+        self.params: dict[str, object] = {}
+        self._key_index = 0
+        self._value_index = 0
+
+    def render(self, predicate: FilterPredicate) -> _RenderedPredicate:
+        if isinstance(predicate, FieldPredicate):
+            return self._render_field(predicate)
+
+        if isinstance(predicate, (AndPredicate, OrPredicate)):
+            operator = " AND " if isinstance(predicate, AndPredicate) else " OR "
+            children = [self.render(clause) for clause in predicate.clauses]
+            return _RenderedPredicate(
+                positive=self._join([child.positive for child in children], operator),
+                negatable=self._join([child.negatable for child in children], operator),
+            )
+
+        if isinstance(predicate, NotPredicate):
+            child = self.render(predicate.clause)
+            rendered = sql.SQL("NOT ({})").format(child.negatable)
+            return _RenderedPredicate(positive=rendered, negatable=rendered)
+
+        raise InvalidFilterError(
+            backend="neon",
+            message=f"unexpected predicate type '{type(predicate).__name__}'",
+            predicate=predicate,
+        )
+
+    def _render_field(self, predicate: FieldPredicate) -> _RenderedPredicate:
+        key = self._bind_key(predicate.field)
+        op = predicate.op
+
+        if op in {"eq", "ne"}:
+            scalar_type = _scalar_json_type(predicate.value, predicate)
+            value = self._bind_value(predicate.value)
+            containment = _scalar_containment(key, value, scalar_type)
+            if op == "ne":
+                rendered = sql.SQL("({}) IS NOT TRUE").format(containment)
+                return _RenderedPredicate(positive=rendered, negatable=rendered)
+            return _RenderedPredicate(
+                positive=containment,
+                negatable=_guarded_containment(key, scalar_type, containment),
+            )
+
+        if op in RANGE_OPS:
+            if not _is_number(predicate.value):
+                raise InvalidFilterError(
+                    backend="neon",
+                    message=f"field operator '{op}' requires a numeric value",
+                    predicate=predicate,
+                )
+            value = self._bind_value(predicate.value)
+            rendered = sql.SQL(
+                "CASE WHEN jsonb_typeof(metadata -> {}) = 'number' "
+                "THEN (metadata ->> {})::numeric {} {}::numeric ELSE NULL END"
+            ).format(key, key, sql.SQL(_RANGE_SQL_OPERATOR[op]), value)
+            return _RenderedPredicate(positive=rendered, negatable=rendered)
+
+        if op in LIST_OPS:
+            values, scalar_type = _homogeneous_list(predicate.value, predicate)
+            if op == "in":
+                return self._render_in(key, values, scalar_type)
+            if op == "contains_any":
+                return self._render_contains_any(key, values, scalar_type)
+            return self._render_contains_all(key, values, scalar_type)
+
+        raise UnsupportedFilterError(
+            backend="neon",
+            message=f"field operator '{op}' has no Neon SQL mapping",
+            predicate=predicate,
+        )
+
+    def _render_in(
+        self,
+        key: sql.Placeholder,
+        values: list[object],
+        scalar_type: ScalarJsonType | None,
+    ) -> _RenderedPredicate:
+        if not values:
+            return _RenderedPredicate(
+                positive=sql.SQL("FALSE"),
+                negatable=_guarded_empty_scalar_list(key),
+            )
+
+        atoms = [
+            _scalar_containment(key, self._bind_value(value), scalar_type)
+            for value in values
+        ]
+        rendered = self._join(atoms, " OR ")
+        return _RenderedPredicate(
+            positive=rendered,
+            negatable=_guarded_containment(key, scalar_type, rendered),
+        )
+
+    def _render_contains_any(
+        self,
+        key: sql.Placeholder,
+        values: list[object],
+        scalar_type: ScalarJsonType | None,
+    ) -> _RenderedPredicate:
+        if not values:
+            return _RenderedPredicate(
+                positive=sql.SQL("FALSE"),
+                negatable=_guarded_array_expression(key, sql.SQL("FALSE")),
+            )
+
+        atoms = [
+            _array_atom(key, self._bind_value(value), scalar_type) for value in values
+        ]
+        rendered = self._join(atoms, " OR ")
+        return _RenderedPredicate(
+            positive=rendered,
+            negatable=_guarded_array_expression(key, rendered),
+        )
+
+    def _render_contains_all(
+        self,
+        key: sql.Placeholder,
+        values: list[object],
+        scalar_type: ScalarJsonType | None,
+    ) -> _RenderedPredicate:
+        elements = [_to_jsonb(self._bind_value(value), scalar_type) for value in values]
+        array = sql.SQL("jsonb_build_array({})").format(sql.SQL(", ").join(elements))
+        rendered = sql.SQL("metadata @> jsonb_build_object({}, {})").format(key, array)
+        return _RenderedPredicate(
+            positive=rendered,
+            negatable=_guarded_array_expression(key, rendered),
+        )
+
+    def _bind_key(self, key: str) -> sql.Placeholder:
+        name = f"k{self._key_index}"
+        self._key_index += 1
+        self.params[name] = key
+        return sql.Placeholder(name)
+
+    def _bind_value(self, value: object) -> sql.Placeholder:
+        name = f"v{self._value_index}"
+        self._value_index += 1
+        self.params[name] = value
+        return sql.Placeholder(name)
+
+    @staticmethod
+    def _join(parts: list[sql.Composable], separator: str) -> sql.Composable:
+        return sql.SQL("({})").format(sql.SQL(separator).join(parts))
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _scalar_json_type(value: object, predicate: FieldPredicate) -> ScalarJsonType:
+    if isinstance(value, bool):
+        return "boolean"
+    if _is_number(value):
+        return "number"
+    if isinstance(value, str):
+        return "text"
+    raise InvalidFilterError(
+        backend="neon",
+        message="eq/ne require a text, numeric, or boolean scalar",
+        predicate=predicate,
+    )
+
+
+def _homogeneous_list(
+    value: object,
+    predicate: FieldPredicate,
+) -> tuple[list[object], ScalarJsonType | None]:
+    if not isinstance(value, list):
+        raise InvalidFilterError(
+            backend="neon",
+            message=f"field operator '{predicate.op}' requires a list",
+            predicate=predicate,
+        )
+    if not value:
+        return [], None
+
+    scalar_types = [_scalar_json_type(item, predicate) for item in value]
+    if any(scalar_type != scalar_types[0] for scalar_type in scalar_types[1:]):
+        raise InvalidFilterError(
+            backend="neon",
+            message=f"field operator '{predicate.op}' requires a homogeneous list",
+            predicate=predicate,
+        )
+    return list(value), scalar_types[0]
+
+
+def _to_jsonb(
+    value: sql.Placeholder,
+    scalar_type: ScalarJsonType | None,
+) -> sql.Composable:
+    if scalar_type is None:
+        raise AssertionError("non-empty values require a scalar type")
+    return sql.SQL("to_jsonb({}::{})").format(
+        value,
+        sql.SQL(CAST_BY_SCALAR_TYPE[scalar_type]),
+    )
+
+
+def _scalar_containment(
+    key: sql.Placeholder,
+    value: sql.Placeholder,
+    scalar_type: ScalarJsonType | None,
+) -> sql.Composable:
+    return sql.SQL("metadata @> jsonb_build_object({}, {})").format(
+        key,
+        _to_jsonb(value, scalar_type),
+    )
+
+
+def _array_atom(
+    key: sql.Placeholder,
+    value: sql.Placeholder,
+    scalar_type: ScalarJsonType | None,
+) -> sql.Composable:
+    return sql.SQL("metadata @> jsonb_build_object({}, jsonb_build_array({}))").format(
+        key, _to_jsonb(value, scalar_type)
+    )
+
+
+def _guarded_containment(
+    key: sql.Placeholder,
+    scalar_type: ScalarJsonType | None,
+    inner: sql.Composable,
+) -> sql.Composable:
+    if scalar_type is None:
+        raise AssertionError("non-empty values require a scalar type")
+    return sql.SQL(
+        "CASE WHEN NOT jsonb_exists(metadata, {}) THEN NULL "
+        "WHEN jsonb_typeof(metadata -> {}) <> {} THEN NULL ELSE {} END"
+    ).format(
+        key,
+        key,
+        sql.Literal(JSON_TYPEOF_BY_SCALAR_TYPE[scalar_type]),
+        inner,
+    )
+
+
+def _guarded_array_expression(
+    key: sql.Placeholder,
+    inner: sql.Composable,
+) -> sql.Composable:
+    return sql.SQL(
+        "CASE WHEN NOT jsonb_exists(metadata, {}) THEN NULL "
+        "WHEN jsonb_typeof(metadata -> {}) <> 'array' THEN NULL ELSE {} END"
+    ).format(key, key, inner)
+
+
+def _guarded_empty_scalar_list(key: sql.Placeholder) -> sql.Composable:
+    return sql.SQL(
+        "CASE WHEN NOT jsonb_exists(metadata, {}) THEN NULL "
+        "WHEN jsonb_typeof(metadata -> {}) = 'null' THEN NULL ELSE FALSE END"
+    ).format(key, key)
+
+
+def to_neon_filters(
+    predicate: FilterPredicate | None,
+) -> tuple[str, dict[str, object]]:
+    """Translate a predicate AST into parameterized Neon WHERE SQL.
+
+    The returned SQL contains named psycopg placeholders for every metadata key
+    and value. Caller input is returned only in ``params`` and is never composed
+    into SQL text. ``None`` maps to ``TRUE`` so the result is always a valid
+    WHERE expression.
+    """
+    _ensure_supported(_NEON_FILTER_CAPABILITIES, predicate)
+    if predicate is None:
+        return "TRUE", {}
+
+    renderer = _PredicateRenderer()
+    rendered = renderer.render(predicate)
+    return rendered.positive.as_string(), renderer.params
 
 
 def predicate_to_sql(
