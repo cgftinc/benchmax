@@ -60,11 +60,14 @@ class HarveyLabHarborEnv(HarborEnv):
         judge_concurrency: int = 1,
         max_agent_timeout_secs: float | None = None,
         max_concurrent_trials: int | None = 1000,
+        eval_ratio: float = 0.1,
     ) -> None:
         if not isinstance(judge_api_key, str) or not judge_api_key:
             raise ValueError("judge_api_key must be a non-empty string")
         if judge_concurrency < 1:
             raise ValueError("judge_concurrency must be positive")
+        if not 0 < eval_ratio < 1:
+            raise ValueError("eval_ratio must be in (0, 1)")
 
         normalized_judge_base_url = judge_base_url.rstrip("/")
         verifier_env = {
@@ -80,7 +83,7 @@ class HarveyLabHarborEnv(HarborEnv):
         super().__init__(
             dataset=DatasetConfig(name="harveyai/lab", ref="latest"),
             reward_keys=("reward", "partial_credit"),
-            eval_ratio=0.1,
+            eval_ratio=eval_ratio,
             trial=HarborTrialTemplate(
                 agent=BundledHarborAgent(
                     config=TrialAgentConfig(
