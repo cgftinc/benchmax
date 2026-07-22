@@ -118,6 +118,23 @@ class VersionStateError(RuntimeError):
     """
 
 
+class InDoubtTransactionError(RuntimeError):
+    """A transaction's connection died AT the commit boundary (B16).
+
+    The ``COMMIT`` was sent but its acknowledgement was lost, so the server may or
+    may not have committed. Unlike a pre-commit failure, this is NOT retried —
+    replaying non-idempotent work could double-apply it. The caller must reconcile
+    against the ledger (re-read state) before deciding whether to re-run.
+
+    Re-run safety after reconcile is per operation: activate (``state='ready'``
+    guard), rollback (idempotent re-point), and prune (re-retire + ``DROP TABLE IF
+    EXISTS``) all tolerate a blind re-run; ``allocate_version`` does NOT — its
+    unguarded ``INSERT ... 'building'`` would raise a duplicate-key on a re-run if
+    the in-doubt commit landed, so reconciling allocation means checking whether the
+    ``building`` row already exists before retrying.
+    """
+
+
 class NeonClient:
     """Thin connection + SQL-execution wrapper over a resolved Neon DSN.
 
@@ -242,54 +259,78 @@ class NeonClient:
         error (bad SQL, a constraint or lock failure) is re-raised immediately and
         never retried, and a second dead-connection failure propagates too — the
         retry is bounded, never a reconnect storm.
+
+        Commit-boundary failures are NOT retried (data integrity): if the statement
+        may already have committed but the ack was lost, replaying it could
+        double-apply a write, so the error is surfaced rather than retried (a read
+        caller simply re-issues; a write caller must reconcile).
         """
         import psycopg
 
         self._require_composable(query)
         for attempt in range(2):  # original attempt + one bounded reconnect
             conn = self._live_conn()
+            commit_attempted = False
             try:
                 cur = conn.execute(query, params or {})
                 rows = cur.fetchall() if cur.description is not None else []
+                commit_attempted = True
                 conn.commit()
                 return rows
             except (psycopg.OperationalError, psycopg.InterfaceError):
                 dead = self._is_dead(conn)
                 self._conn = None  # drop the handle; next _live_conn reconnects
-                if attempt == 0 and dead:
-                    continue  # autosuspend-killed conn: reconnect and retry once
-                raise  # live-conn error, or a second dead-conn failure
+                if not commit_attempted and attempt == 0 and dead:
+                    continue  # pre-commit dead conn: reconnect and retry once
+                raise  # commit-stage (in-doubt), live-conn, or 2nd dead-conn failure
         raise AssertionError("unreachable")  # the loop always returns or raises
 
     def _in_bounded_txn(self, work: Any) -> Any:
         """Run ``work(conn)`` as one transaction with a bounded dead-conn retry (B16).
 
         ``work`` receives a live connection, performs the transaction body, and its
-        return value is passed through after commit. If any statement — INCLUDING
-        the first, when an apparently-live cached socket turns out to be dead —
-        raises an ``OperationalError``/``InterfaceError`` on a genuinely dead
-        connection, the transaction is rolled back, the handle dropped, and the
-        WHOLE transaction retried once on a freshly-resolved, pgvector-re-registered
-        connection. Nothing commits until ``work`` returns, and a dead connection's
-        server-side transaction is already rolled back, so a mid-transaction retry
-        never double-applies. A live-connection error, an application error (e.g.
-        :class:`VersionStateError`), or a second dead-connection failure propagates.
+        return value is passed through after commit.
+
+        Retry policy hinges on WHERE the failure happens (data integrity):
+
+        - **Pre-commit** dead connection (any ``work`` statement — including the
+          first, when an apparently-live cached socket turns out dead) — the
+          server-side transaction is already rolled back, nothing is durable, so we
+          drop the handle and retry the WHOLE transaction ONCE on a freshly-resolved,
+          pgvector-re-registered connection. ``commit_attempted`` is reset each
+          iteration so the retry starts clean.
+        - **Commit-boundary** failure — the ``COMMIT`` was sent but its ack was lost,
+          so the server MAY have committed. Retrying could double-apply non-idempotent
+          work, so we raise :class:`InDoubtTransactionError` (never retry) for the
+          caller to reconcile against the ledger. No rollback is attempted (a
+          committed txn cannot be undone; a dead handle cannot send one anyway).
+        - A live-connection error, an application error (e.g.
+          :class:`VersionStateError`), or a second pre-commit dead-conn failure
+          propagates as-is.
         """
         import psycopg
 
         for attempt in range(2):  # original attempt + one bounded reconnect
             conn = self._live_conn()
+            commit_attempted = False
             try:
                 result = work(conn)
+                commit_attempted = True
                 conn.commit()
                 return result
-            except (psycopg.OperationalError, psycopg.InterfaceError):
+            except (psycopg.OperationalError, psycopg.InterfaceError) as exc:
                 dead = self._is_dead(conn)
-                self._safe_rollback(conn)
                 self._conn = None  # drop the handle; next _live_conn reconnects
+                if commit_attempted:
+                    raise InDoubtTransactionError(
+                        "connection failed at commit; the transaction may or may "
+                        "not have committed — reconcile against the ledger before "
+                        "retrying"
+                    ) from exc
+                self._safe_rollback(conn)
                 if attempt == 0 and dead:
-                    continue  # autosuspend-killed conn: retry the whole txn once
-                raise  # live-conn error, or a second dead-conn failure
+                    continue  # pre-commit dead conn: retry the whole txn once
+                raise  # pre-commit live-conn error, or a second dead-conn failure
             except Exception:
                 self._safe_rollback(conn)
                 raise  # application error: abort, no retry
@@ -553,11 +594,10 @@ class NeonClient:
         boundary. Bounded-retry wrapped (B16).
 
         In-doubt-commit note: if the connection dies AFTER ``COMMIT`` is sent but
-        before its ack, the bounded retry re-runs and, finding the row already
-        ``activated``, raises :class:`VersionStateError` for an activation that in
-        fact succeeded. This never corrupts state (the retry's own work rolls back);
-        callers should treat an activation failure as "re-check the ledger", not
-        "the version is unpublished".
+        before its ack, the wrapper raises :class:`InDoubtTransactionError` (it does
+        NOT retry), since the activation may in fact have committed. Callers treat
+        that as "re-check the ledger", not "the version is unpublished". A
+        genuine bad-state rejection is a distinct :class:`VersionStateError`.
 
         ``grant.view`` must equal :func:`view_name` of the logical name, or the RO
         grant lands on a different identifier than the published view and search
@@ -803,18 +843,20 @@ class NeonClient:
 
     def vector_candidates_sql(
         self, spec: NeonTableSpec, where: sql.Composable | None = None
-    ) -> sql.Composed:
-        """Return the vector candidate query (``ORDER BY embedding <=> %s``, B14).
+    ) -> tuple[sql.Composed, dict[str, Any]]:
+        """Return the vector candidate ``(query, params)`` (``ORDER BY <=>``, B14).
 
         Selects the view columns plus the raw cosine distance as ``native_score``,
         ordered best-first by the ANN operator matching the index opclass. An
         optional pre-composed ``where`` (a metadata filter fragment built by the
         filter layer) is spliced in; the client never builds the filter itself,
-        keeping it decoupled from ``filter_mapper``.
+        keeping it decoupled from ``filter_mapper``. The vector path carries no
+        client-side bind params (the caller supplies ``vector``/``top_k`` at
+        execution), so ``params`` is empty — returned for a uniform candidate API.
         """
         from psycopg import sql
 
-        return self._candidate_query(
+        query = self._candidate_query(
             spec,
             score_expr=sql.SQL("embedding {op} %(vector)s").format(
                 op=sql.SQL(ANN_DISTANCE_OPERATOR)
@@ -822,6 +864,7 @@ class NeonClient:
             order=sql.SQL("ASC"),
             where=where,
         )
+        return query, {}
 
     def bm25_candidates_sql(
         self,
@@ -829,8 +872,8 @@ class NeonClient:
         where: sql.Composable | None = None,
         *,
         schema: str,
-    ) -> sql.Composed:
-        """Return the BM25 candidate query (``<@> to_bm25query(...)`` ASC, B13).
+    ) -> tuple[sql.Composed, dict[str, Any]]:
+        """Return the BM25 candidate ``(query, params)`` (``<@> to_bm25query`` ASC).
 
         The scored column ``content_tsv`` is the LEFT operand of ``<@>``; the
         ``<@>`` score is negative (more-relevant is more-negative), so best
@@ -844,7 +887,10 @@ class NeonClient:
         owner's rights), ``to_bm25query`` and the ``::regclass`` name lookup run in
         the RO *invoker's* ``search_path`` — which need not include the corpus
         schema — so an unqualified name would fail to resolve for the very RO caller
-        this enables. ``quote_ident`` on each part keeps the qualification safe.
+        this enables. The schema and index are **bound params** (``%(bm25_schema)s``
+        / ``%(bm25_index)s``) fed through ``quote_ident`` (not inlined literals), so
+        they are injection-safe and correctly quoted; the returned ``params`` carry
+        the client-known values for the caller to merge with ``text``/``top_k``.
         """
         from psycopg import sql
 
@@ -853,15 +899,13 @@ class NeonClient:
         score_expr = sql.SQL(
             "content_tsv <@> to_bm25query("
             "to_tsvector({tsconfig}::regconfig, %(text)s), "
-            "(quote_ident({schema}) || '.' || quote_ident({index}))::regclass)"
-        ).format(
-            tsconfig=sql.Literal(tsconfig),
-            schema=sql.Literal(schema),
-            index=sql.Literal(bm25_index),
-        )
-        return self._candidate_query(
+            "(quote_ident(%(bm25_schema)s) || '.' || quote_ident(%(bm25_index)s))"
+            "::regclass)"
+        ).format(tsconfig=sql.Literal(tsconfig))
+        query = self._candidate_query(
             spec, score_expr=score_expr, order=sql.SQL("ASC"), where=where
         )
+        return query, {"bm25_schema": schema, "bm25_index": bm25_index}
 
     def hybrid_candidates_sql(
         self,
@@ -869,8 +913,10 @@ class NeonClient:
         where: sql.Composable | None = None,
         *,
         schema: str,
-    ) -> tuple[sql.Composed, sql.Composed]:
-        """Return the ``(vector, bm25)`` candidate queries for hybrid fusion (B13).
+    ) -> tuple[
+        tuple[sql.Composed, dict[str, Any]], tuple[sql.Composed, dict[str, Any]]
+    ]:
+        """Return the ``(vector, bm25)`` candidate ``(query, params)`` pairs (B13).
 
         Two independent ranked candidate lists; RRF fusion over them is owned by
         the query layer (Slice 1), not the client. The same optional ``where`` is

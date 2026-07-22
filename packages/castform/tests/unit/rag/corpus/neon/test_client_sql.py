@@ -28,7 +28,11 @@ import pytest
 from psycopg import sql
 
 from castform.rag.corpus.neon import client as client_mod
-from castform.rag.corpus.neon.client import NeonClient, VersionStateError
+from castform.rag.corpus.neon.client import (
+    InDoubtTransactionError,
+    NeonClient,
+    VersionStateError,
+)
 from castform.rag.corpus.neon.schema import (
     VIEW_COLUMNS,
     NeonTableSpec,
@@ -270,7 +274,9 @@ def test_ann_index_opclass() -> None:
 
 def test_vector_candidate_operator_and_view() -> None:
     c = NeonClient(lambda: "dsn")
-    text = render(c.vector_candidates_sql(SPEC))
+    query, params = c.vector_candidates_sql(SPEC)
+    text = render(query)
+    assert params == {}  # vector path carries no client-side bind params
     # cosine opclass binds <=>, NOT <-> (which is L2 and would skip the ANN index).
     assert "embedding <=> %(vector)s" in text
     assert "<->" not in text
@@ -298,16 +304,19 @@ def test_bm25_index_storage_params_not_gucs() -> None:
 
 def test_bm25_candidate_asc_polarity_and_schema_qualified_regclass() -> None:
     c = NeonClient(lambda: "dsn")
-    text = render(c.bm25_candidates_sql(SPEC, schema="corpora"))
+    query, params = c.bm25_candidates_sql(SPEC, schema="corpora")
+    text = render(query)
     # scored column is the <@> LEFT operand; query text is a bound param through
     # to_tsvector with the same baked config; index is the SECOND arg (regclass).
     assert "content_tsv <@> to_bm25query(" in text
     assert "to_tsvector('pg_catalog.english'::regconfig, %(text)s)" in text
-    # index regclass is schema-qualified via quote_ident so it resolves under the
-    # RO invoker's search_path (which need not include the corpus schema).
-    assert "quote_ident('corpora')" in text
-    assert "quote_ident('mycorpus__v2_bm25')" in text
+    # schema + index are BOUND params fed through quote_ident (not inlined
+    # literals), so the regclass resolves under any RO search_path, injection-safe.
+    assert "quote_ident(%(bm25_schema)s)" in text
+    assert "quote_ident(%(bm25_index)s)" in text
     assert "::regclass)" in text
+    assert "'corpora'" not in text  # schema is a param, never inlined
+    assert params == {"bm25_schema": "corpora", "bm25_index": "mycorpus__v2_bm25"}
     assert 'FROM "mycorpus"' in text  # the view, not the physical table
     # negative-score polarity => best candidates come first under ASC.
     assert "ORDER BY content_tsv <@> to_bm25query(" in text
@@ -316,18 +325,20 @@ def test_bm25_candidate_asc_polarity_and_schema_qualified_regclass() -> None:
 
 def test_hybrid_returns_two_independent_candidate_queries() -> None:
     c = NeonClient(lambda: "dsn")
-    vec, bm25 = c.hybrid_candidates_sql(SPEC, schema="corpora")
-    assert "<=> %(vector)s" in render(vec)
-    bm25_text = render(bm25)
+    (vec_q, vec_p), (bm25_q, bm25_p) = c.hybrid_candidates_sql(SPEC, schema="corpora")
+    assert "<=> %(vector)s" in render(vec_q)
+    assert vec_p == {}
+    bm25_text = render(bm25_q)
     assert "to_bm25query(" in bm25_text
-    assert "quote_ident('corpora')" in bm25_text
+    assert "quote_ident(%(bm25_schema)s)" in bm25_text
+    assert bm25_p == {"bm25_schema": "corpora", "bm25_index": "mycorpus__v2_bm25"}
 
 
 def test_candidate_filter_is_spliced_not_built() -> None:
     c = NeonClient(lambda: "dsn")
     where = sql.SQL("metadata @> {}").format(sql.Placeholder("f0"))
-    text = render(c.vector_candidates_sql(SPEC, where=where))
-    assert "WHERE metadata @> %(f0)s" in text
+    query, _ = c.vector_candidates_sql(SPEC, where=where)
+    assert "WHERE metadata @> %(f0)s" in render(query)
 
 
 # --- B14: VACUUM in autocommit, outside any transaction -----------------------
@@ -459,6 +470,44 @@ def test_transaction_reconnects_on_dead_first_statement(
     assert live.committed == 1
 
 
+class _CommitDies(_FakeConn):
+    """A connection whose statements succeed but whose commit() dies (lost ack)."""
+
+    def commit(self) -> None:
+        self.broken = True
+        raise psycopg.OperationalError("commit ack lost")
+
+
+def test_txn_commit_failure_is_in_doubt_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dead conn AT the commit boundary is in-doubt: raise, never retry the work
+    (retrying could double-apply the possibly-committed transaction)."""
+    resp = {"SET state = 'activated'": ([(2,)], [("version",)])}
+    live = _FakeConn(responses=resp)
+    counters = _patch_connect(monkeypatch, [live])
+    conn = _CommitDies(responses=resp)
+    c = NeonClient(lambda: "dsn")
+    c._conn = conn
+    with pytest.raises(InDoubtTransactionError):
+        c.activate(SPEC, GRANT)
+    assert counters["connects"] == 0  # never reconnected / re-ran the work
+    assert live.committed == 0  # the retry target was never touched
+
+
+def test_execute_commit_failure_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single-statement commit-boundary failure is re-raised, never retried."""
+    live = _FakeConn(responses={"count": ([(1,)], [("count",)])})
+    counters = _patch_connect(monkeypatch, [live])
+    conn = _CommitDies(responses={"count": ([(5,)], [("count",)])})
+    c = NeonClient(lambda: "dsn")
+    c._conn = conn
+    with pytest.raises(psycopg.OperationalError):
+        c.execute(c.count_sql("mycorpus"))
+    assert counters["connects"] == 0  # commit-stage failure is not retried
+    assert live.executed == []
+
+
 # --- B5: activation one-row guard ---------------------------------------------
 
 
@@ -501,7 +550,7 @@ def test_activate_rejects_mismatched_grant_view() -> None:
         c.activate(SPEC, bad)
 
 
-def test_activate_rolls_back_on_view_failure() -> None:
+def test_activation_rolls_back_atomically() -> None:
     """Uses the REAL activation flow: transition succeeds, view DDL fails, rollback."""
 
     class _FailView(_FakeConn):
