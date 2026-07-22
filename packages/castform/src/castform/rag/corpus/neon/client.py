@@ -68,22 +68,25 @@ if TYPE_CHECKING:
 # Ordering + CASCADE are frozen (B14); the exact names are slice-3-verified.
 REQUIRED_EXTENSIONS: tuple[str, ...] = ("lakebase_vector", "lakebase_text")
 
-# PROVISIONAL ANN choice (see schema.PROVISIONAL_ANN_OPTIONS). Provisional primary
-# is native ``lakebase_ann`` on ``vector(3072)`` with the cosine opclass. Slice 3
-# must confirm the access method / vector type / opclass / operator on the live DB
-# before it is frozen — the client emits the primary form and slice 3 swaps the
-# proven one (the ``hnsw``/``halfvec_cosine_ops`` fallback uses the SAME operator).
+# PROVEN ANN choice (Slice 3, see schema.PROVEN_ANN_DDL). Live-verified on Neon
+# Lakebase (PG 18.4): native ``lakebase_ann`` indexes a full-precision
+# ``vector(3072)`` column with ``vector_cosine_ops`` and the planner uses it
+# (EXPLAIN: ``Index Scan using ..._ann``). lakebase_ann has no 2000-dim cap, so the
+# ``halfvec`` workaround is not needed (kept documented in schema as the
+# storage-saving alternative).
 ANN_ACCESS_METHOD = "lakebase_ann"
 ANN_VECTOR_TYPE = "vector(3072)"
 ANN_OPCLASS = "vector_cosine_ops"
-# Ordering operator, matching the cosine opclass (B14). DEVIATION: the slice-2
-# brief wrote ``<->`` for the vector ORDER BY, but ``<->`` is L2 (Euclidean) — it
-# does NOT match ``vector_cosine_ops`` and would make the planner skip the ANN
-# index. The operator matching a cosine opclass is ``<=>`` (both for
-# ``lakebase_ann`` and the vanilla ``hnsw``/``halfvec_cosine_ops`` fallback), so
-# we emit the opclass-matching operator the brief actually asked for. Slice 3
-# confirms against the live DB.
+# Ordering operator matching the cosine opclass (B14): ``<=>`` is cosine distance;
+# ``<->`` (L2) would not match ``vector_cosine_ops`` and the planner would skip the
+# ANN index. Live-confirmed against ``lakebase_ann``.
 ANN_DISTANCE_OPERATOR = "<=>"
+# Query-param cast, frozen WITH the type/opclass/operator as one unit (Slice 3). A
+# bound param (Python list/tuple) binds as ``float8[]`` and ``embedding <=> $1``
+# then errors "operator does not exist: vector <=> double precision[]"; casting the
+# param to ``vector`` resolves the operator and the planner still uses the
+# ``lakebase_ann`` index (verified for both list- and text-form params).
+ANN_QUERY_PARAM_CAST = "vector"
 
 # B13: BM25 relevance via the ``<@>`` distance operator against ``to_bm25query``.
 # The score is NEGATIVE (more-relevant is more-negative), so candidate ordering is
@@ -858,8 +861,9 @@ class NeonClient:
 
         query = self._candidate_query(
             spec,
-            score_expr=sql.SQL("embedding {op} %(vector)s").format(
-                op=sql.SQL(ANN_DISTANCE_OPERATOR)
+            score_expr=sql.SQL("embedding {op} %(vector)s::{cast}").format(
+                op=sql.SQL(ANN_DISTANCE_OPERATOR),
+                cast=sql.SQL(ANN_QUERY_PARAM_CAST),
             ),
             order=sql.SQL("ASC"),
             where=where,

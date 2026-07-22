@@ -15,7 +15,7 @@ from castform.rag.corpus.neon.schema import (
     DISTANCE_METRIC,
     EMBEDDING_DIM,
     MAX_IDENTIFIER_BYTES,
-    PROVISIONAL_ANN_OPTIONS,
+    PROVEN_ANN_DDL,
     VERSION_STATE_TRANSITIONS,
     NeonTableSpec,
     NeonVersionRecord,
@@ -119,10 +119,16 @@ def test_retention_validates_minimum() -> None:
         RetentionPolicy(keep_ready=0)
 
 
-def test_ann_options_are_provisional() -> None:
-    statuses = {opt["status"] for opt in PROVISIONAL_ANN_OPTIONS}
-    assert statuses == {"provisional-primary", "provisional-fallback"}
-    assert PROVISIONAL_ANN_OPTIONS[0]["access_method"] == "lakebase_ann"
+def test_ann_ddl_is_proven() -> None:
+    # Slice 3 froze the live-verified ANN choice: lakebase_ann over a full-precision
+    # vector(3072) with vector_cosine_ops + <=>, param cast to ::vector.
+    assert PROVEN_ANN_DDL == {
+        "access_method": "lakebase_ann",
+        "vector_type": "vector(3072)",
+        "opclass": "vector_cosine_ops",
+        "operator": "<=>",
+        "query_param_cast": "vector",
+    }
 
 
 @pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 2")

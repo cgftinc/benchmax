@@ -277,14 +277,15 @@ def test_vector_candidate_operator_and_view() -> None:
     query, params = c.vector_candidates_sql(SPEC)
     text = render(query)
     assert params == {}  # vector path carries no client-side bind params
-    # cosine opclass binds <=>, NOT <-> (which is L2 and would skip the ANN index).
-    assert "embedding <=> %(vector)s" in text
+    # cosine opclass binds <=>, NOT <-> (which is L2 and would skip the ANN index);
+    # the param is cast to ::vector (a bound list binds as float8[] otherwise).
+    assert "embedding <=> %(vector)s::vector" in text
     assert "<->" not in text
     # RO reads the stable owner-rights view, never the physical version table.
     assert 'FROM "mycorpus"' in text
     assert "mycorpus__v2" not in text
     assert "AS native_score" in text
-    assert "ORDER BY embedding <=> %(vector)s ASC" in text
+    assert "ORDER BY embedding <=> %(vector)s::vector ASC" in text
     assert text.rstrip().endswith("LIMIT %(top_k)s")
 
 
@@ -326,7 +327,7 @@ def test_bm25_candidate_asc_polarity_and_schema_qualified_regclass() -> None:
 def test_hybrid_returns_two_independent_candidate_queries() -> None:
     c = NeonClient(lambda: "dsn")
     (vec_q, vec_p), (bm25_q, bm25_p) = c.hybrid_candidates_sql(SPEC, schema="corpora")
-    assert "<=> %(vector)s" in render(vec_q)
+    assert "<=> %(vector)s::vector" in render(vec_q)
     assert vec_p == {}
     bm25_text = render(bm25_q)
     assert "to_bm25query(" in bm25_text

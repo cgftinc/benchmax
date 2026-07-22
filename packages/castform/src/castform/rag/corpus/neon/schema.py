@@ -66,26 +66,36 @@ TABLE_COLUMNS: tuple[str, ...] = (
 VIEW_COLUMNS: tuple[str, ...] = TABLE_COLUMNS
 
 
-# --- B1 (Group 2): ANN access method / vector type / opclass are PROVISIONAL ----
-# The native Lakebase ANN access method, the vector column type, and the opclass
-# are NOT frozen here. Vanilla pgvector caps ``vector`` HNSW/IVFFlat at 2000 dims
-# (so 3072 would need ``halfvec``), but that is an UNPROVEN assumption for
-# Lakebase's ``lakebase_ann``. Slice 3 must verify on the live DB before any of
-# these is frozen. See CONTRACT.md "PROVISIONAL" and PROVISIONAL_ANN_OPTIONS.
-PROVISIONAL_ANN_OPTIONS: tuple[dict[str, str], ...] = (
-    {
-        "access_method": "lakebase_ann",
-        "vector_type": "vector(3072)",
-        "opclass": "vector_cosine_ops",
-        "status": "provisional-primary",
-    },
-    {
-        "access_method": "hnsw",
-        "vector_type": "halfvec(3072)",
-        "opclass": "halfvec_cosine_ops",
-        "status": "provisional-fallback",
-    },
-)
+# --- B1 (Group 2): ANN access method / vector type / opclass — PROVEN (Slice 3) --
+# Verified live on Neon Lakebase (PG 18.4, lakebase_vector 1.0.0-dev): the native
+# ``lakebase_ann`` access method indexes a full-precision ``vector(3072)`` column
+# with ``vector_cosine_ops`` and is used by the planner (EXPLAIN: ``Index Scan
+# using ..._ann``) for a cosine ``ORDER BY``. Unlike pgvector's ``hnsw`` — which
+# rejects >2000 dims — ``lakebase_ann`` has no dimension cap at 3072, so the
+# ``halfvec`` workaround is NOT required for correctness (it also builds and is
+# kept documented below as the storage-saving alternative). The query param MUST be
+# cast to ``vector`` (a bound Python list binds as ``float8[]`` and the cast-less
+# ``<=>`` errors "operator does not exist: vector <=> double precision[]"). The
+# type, opclass, distance operator, and query-param cast are frozen together as one
+# coherent unit — changing any one alone breaks index use. See CONTRACT.md §1.
+PROVEN_ANN_DDL: dict[str, str] = {
+    "access_method": "lakebase_ann",
+    "vector_type": "vector(3072)",
+    "opclass": "vector_cosine_ops",
+    "operator": "<=>",
+    "query_param_cast": "vector",
+}
+
+# Storage-saving alternative (also live-verified to build + be planner-used): halves
+# the bytes per vector at a small recall cost. NOT the frozen primary — documented
+# so a future cost-driven switch is a one-line, already-proven change.
+ANN_HALFVEC_ALTERNATIVE: dict[str, str] = {
+    "access_method": "lakebase_ann",
+    "vector_type": "halfvec(3072)",
+    "opclass": "halfvec_cosine_ops",
+    "operator": "<=>",
+    "query_param_cast": "halfvec",
+}
 
 
 VersionState = Literal["building", "ready", "activated", "retired"]
@@ -297,7 +307,7 @@ _LONGEST_INDEX_SUFFIX = max(_INDEX_SUFFIXES.values(), key=len)
 def index_names(logical_name: str, version: int) -> dict[str, str]:
     """Return the per-version index identifier set for a corpus version.
 
-    Keys: ``ann`` (PROVISIONAL vector index, see PROVISIONAL_ANN_OPTIONS),
+    Keys: ``ann`` (vector index, see PROVEN_ANN_DDL — ``lakebase_ann``),
     ``bm25`` (lexical), ``meta_gin`` (``jsonb_path_ops`` for ``@>`` containment,
     B3), ``scan`` (btree on ``(source_file, chunk_index, id)``, B6), ``tsv_gin``
     (native FTS fallback). All are length-safe.

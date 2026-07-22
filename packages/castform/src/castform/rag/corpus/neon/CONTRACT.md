@@ -3,7 +3,9 @@
 design-lock for the neon lakebase (postgres + pgvector + bm25) corpus provider.
 this slice ships typed stubs, this doc, and parametrized test skeletons only. all
 real sql/client/filter/search logic lands in slices 1/2/4; live verification of
-the ann access method + index EXPLAIN lands in slice 3 (see PROVISIONAL below).
+the ann access method + index EXPLAIN landed in slice 3 (see PROVEN ON LIVE NEON
+below — the previously-provisional ann/bm25/gin DDL is now frozen from empirical
+results against a live neon lakebase compute).
 
 > convention note: the existing `corpus/` tests are class-grouped with fake
 > injection and no `parametrize`/`xfail`. this slice introduces parametrized
@@ -20,7 +22,7 @@ managed physical table (per version):
 | `id` | `text primary key` | chunk hash (sha256 hexdigest) |
 | `content` | `text not null` | |
 | `metadata` | `jsonb not null default '{}'` | |
-| `embedding` | PROVISIONAL vector type | see §PROVISIONAL — not frozen |
+| `embedding` | `vector(3072)` | PROVEN §PROVEN ON LIVE NEON; lakebase_ann indexable at 3072 |
 | `source_file` | `text not null` | typed scan-order column (B6) |
 | `chunk_index` | `integer not null` | typed scan-order column (B6) |
 | `content_tsv` | `tsvector generated always as (to_tsvector(<config>::regconfig, content)) stored` | config allowlisted, baked per version |
@@ -60,9 +62,9 @@ managed physical table (per version):
   `view_name(logical_name)` — validated printable-ASCII and length-fitted to 63
   bytes (a long logical name is hash-fitted, same as physical names); readers
   resolve it through `view_name`, never assume it equals the raw logical name.
-- indexes per version: `ann` (PROVISIONAL), `bm25` (lexical), `meta_gin`
-  (`jsonb_path_ops`, serves `@>`), `scan` (btree `(source_file, chunk_index,
-  id)`), `tsv_gin` (native fts fallback).
+- indexes per version: `ann` (`lakebase_ann`, PROVEN), `bm25` (`lakebase_bm25`,
+  PROVEN lexical), `meta_gin` (`jsonb_path_ops`, serves `@>`, PROVEN), `scan`
+  (btree `(source_file, chunk_index, id)`), `tsv_gin` (native fts fallback).
 - **injection-safe DDL** (B4): all identifiers via `psycopg.sql.Identifier`;
   regconfig via allowlist + bound `sql.Literal`; version numbers validated
   (`validate_version`, positive int, rejects bool); logical names validated
@@ -169,8 +171,10 @@ surfaced_score(rank) = 1 / (SURFACED_RANK_K + rank)   # rank 0-based, K = 60
   descending (mirrors `postgres/source.py`). result dicts key `{chunk, queries,
   same_file, max_score, native_score}`.
 - exact numeric anchors: rank 0 -> `1/60 = 0.016666666666666666`, rank 1 ->
-  `1/61`, rank 2 -> `1/62`. empirical `<@>` range validation deferred to the slice
-  3 live smoke; formula + monotonicity + dedup frozen here.
+  `1/61`, rank 2 -> `1/62`. `<@>` polarity PROVEN on live neon (slice 3): scores
+  are NEGATIVE, lower = more relevant, so candidate ordering is `ASC` (best-first)
+  — smoke fixture `smoke-1` = -3.74 < `smoke-2` = -2.62 for query "quick brown
+  fox". formula + monotonicity + dedup frozen here.
 
 ## 5. scan_chunks determinism
 
@@ -201,22 +205,74 @@ gold_chunk_hashes (exact — carried explicitly because `Chunk.to_dict` omits
   orthogonal** (3 modes x filtered/unfiltered), not a 4th mode. **hybrid rrf
   single-owned** by the query layer (`fuse_rrf`).
 
-## PROVISIONAL — must verify on live neon (slice 3)
+## PROVEN ON LIVE NEON (slice 3)
 
-the following are **not frozen**; slice 3 must verify them against the live
-lakebase DB and then freeze only the proven form (see
-`schema.PROVISIONAL_ANN_OPTIONS`):
+verified against a live neon lakebase compute (PG 18.4; `lakebase_vector`
+1.0.0-dev, `lakebase_text` 0.1.0-dev, pgvector 0.8.1). the previously-provisional
+DDL is now **frozen** in `schema.PROVEN_ANN_DDL` and `client.py`.
 
-- **ann access method + vector type + opclass** (B1). the stub emits vanilla
-  `hnsw`/`halfvec` as a *fallback*; the intended primary is native
-  `lakebase_ann` on `vector(3072)`. the 2000-dim `vector` hnsw limit and the
-  `halfvec` workaround are vanilla-pgvector facts, UNPROVEN for `lakebase_ann`.
-  slice 3 must: attempt `lakebase_ann` on `vector(3072)` AND the halfvec
-  alternative, verify index creation, cosine queries, matching query casts, and
-  `EXPLAIN` index use — then freeze the proven DDL.
-- **meta_gin index EXPLAIN** (B3). the `@>`/`jsonb_path_ops` pairing is standard
-  postgres and frozen, but slice 3 should confirm via `EXPLAIN` that the
-  containment predicates actually hit the GIN on live data.
+- **ann (B1)** — `CREATE INDEX ... USING lakebase_ann (embedding
+  vector_cosine_ops)` on a full-precision `vector(3072)` column; query `embedding
+  <=> %(vector)s::vector` `ORDER BY ... ASC`. `EXPLAIN` shows `Index Scan using
+  ..._ann` (natural, not seq scan). frozen as one coherent unit — **type**
+  `vector(3072)` + **opclass** `vector_cosine_ops` + **operator** `<=>` +
+  **query-param cast** `::vector`. the cast is REQUIRED: a bound python list binds
+  as `float8[]` and the cast-less operator errors (`operator does not exist:
+  vector <=> double precision[]`). `lakebase_ann` (unlike pgvector `hnsw`, which
+  rejects >2000 dims) indexes 3072 directly, so `halfvec` is NOT needed for
+  correctness — `halfvec(3072)`+`halfvec_cosine_ops` also builds and is
+  planner-used, kept in `schema.ANN_HALFVEC_ALTERNATIVE` as the storage-saving
+  swap (halves bytes/vector at a small recall cost).
+- **bm25 (B13)** — `CREATE INDEX ... USING lakebase_bm25 (content_tsv
+  tsvector_bm25_ops) WITH (k1 = 1.2, b = 0.75)` built AFTER the load + `VACUUM`
+  (corpus stats come from index metadata). query `content_tsv <@> to_bm25query(
+  to_tsvector('pg_catalog.english'::regconfig, %(text)s), '<schema>.<index>'
+  ::regclass)` `ORDER BY ... ASC`. `to_bm25query(tsvector, regclass) ->
+  bm25query_tsvector`. scores NEGATIVE (lower = more relevant); `EXPLAIN` shows
+  `Index Scan using ..._bm25` with top-K pushdown once the row count makes the
+  index cheaper than a seq scan.
+- **meta_gin (B3)** — `USING gin (metadata jsonb_path_ops)`; predicate `metadata
+  @> %(f)s::jsonb`. `EXPLAIN` shows `Bitmap Index Scan on ..._gin` on a selective
+  predicate at scale (tiny tables seq-scan, which is optimal and score-identical).
+
+frozen operational caveats (from the slice-3 verify + design review):
+
+- **regconfig lockstep** — the `content_tsv` generated column and every bm25 query
+  MUST use the identical fully-qualified `'pg_catalog.english'::regconfig`; drift
+  is silent recall loss, not an error.
+- **k1/b baked in the index** — bm25 scores come from the index's stored
+  `k1=1.2,b=0.75`; rebuilding with different values shifts magnitudes. frozen.
+- **build-once versions** — bm25 idf is index-build-time; versions are
+  build-once-immutable (versioned-replace), so idf never drifts under a live view.
+  the writer owns the table and runs `VACUUM ANALYZE` in the ingest path (RO
+  cannot vacuum).
+- **NULL-drop** — `to_tsvector(NULL)`/NULL embedding silently drop a row from
+  bm25/ann; `content` is `NOT NULL`, and ingest must supply a non-null embedding.
+- **storage / projection** — a `vector(3072)` is ~12 KB and TOASTs out of line
+  (uncompressible), plus `lakebase_ann` keeps its own copy — budget ~24 KB/row
+  all-in; project `embedding` OUT of client-facing selects to avoid detoast over
+  the wire. no pgvector ANN fallback exists at 3072 (>2000 cap), so the column is
+  indexable ONLY by `lakebase_ann` — an availability dependency.
+- **no PREPARE across index recreation** — the bm25 `::regclass` binds an OID; the
+  client interpolates the schema/index per statement (re-parsed each call), so
+  never server-side `PREPARE` the bm25 query across a version/index swap.
+
+## enablement (slice 3, how the sample DB is stood up)
+
+the lakebase extensions load only when `lakebase_vector`+`lakebase_text` are in the
+compute's preload libraries. on neon this is set via the **project setting**
+`preload_libraries.enabled_libraries` (the raw `shared_preload_libraries` /
+`neon.lakebase_mode` GUCs are rejected by the settings API), then the endpoint is
+restarted/woken and the admin (`neon_superuser`) runs `CREATE EXTENSION ...
+CASCADE`. see `provision.py` (idempotent) and `README.md` (runbook). three roles
+with EXPLICIT grants (a SQL-created role does NOT inherit `neon_superuser`):
+**admin** installs extensions only; **writer** (`benchmax_writer`) OWNS the schema
++ version tables (DDL + ingest) -> `NEON_CORPUS_DSN_RW`; **read-only**
+(`benchmax_ro`) gets schema `USAGE` + the writer's `ALTER DEFAULT PRIVILEGES ...
+GRANT SELECT ON TABLES` (covers current + future version tables/views) ->
+`NEON_CORPUS_DSN_RO`. the RO SELECT on the base tables is what lets `to_bm25query`
+(which runs with invoker rights, NOT the owner-rights view's) read the bm25 index
+stats — verified end-to-end under the RO role.
 
 ## deferred to the implementing slice (contract frozen now, enforcement later)
 
