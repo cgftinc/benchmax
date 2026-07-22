@@ -4,6 +4,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from fakes.neon import (
+    FakeQueryRunner,
+    FakeReadClient,
+    constant_embed_fn,
+    make_neon_source,
+    make_query_row,
+    make_read_row,
+)
+
 from castform.rag.chunkers.models import Chunk
 from castform.rag.corpus.pinecone.source import PineconeChunkSource
 from castform.rag.corpus.search_schema.search_types import SearchCapabilities, SearchSpec
@@ -352,3 +361,97 @@ class TestPineconeProtocolConformance:
     def test_get_top_level_returns_chunks(self):
         result = _pc_source.get_top_level_chunks()
         assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# NeonChunkSource protocol conformance (via fakes)
+# ---------------------------------------------------------------------------
+
+
+_neon_source = make_neon_source(
+    embed_fn=constant_embed_fn(),
+    search=FakeQueryRunner(
+        rows=[
+            make_query_row(
+                "r1",
+                "neon chunk",
+                metadata={"file": "other.md", "index": 5},
+                source_file="other.md",
+                chunk_index=5,
+            )
+        ]
+    ),
+    read_client=FakeReadClient(
+        count=2,
+        sample_rows=[make_read_row("s1", "sample chunk")],
+        top_level_rows=[make_read_row("t1", "top chunk")],
+    ),
+)
+_NEON_CHUNK = Chunk(content="seed chunk", metadata=(("file", "n.md"), ("index", 0)))
+
+
+class TestNeonProtocolConformance:
+    def test_isinstance_check(self):
+        assert isinstance(_neon_source, ChunkSource)
+
+    def test_capabilities_keys(self):
+        caps = _neon_source.get_search_capabilities()
+        for key in ("backend", "modes", "filter_ops", "ranking", "constraints"):
+            assert key in caps
+        assert "graph_expansion" in caps
+
+    def test_capabilities_hybrid_with_embed(self):
+        caps = _neon_source.get_search_capabilities()
+        assert caps["backend"] == "neon"
+        assert {"lexical", "vector", "hybrid"} <= caps["modes"]
+
+    def test_search_related_shape(self):
+        result = _neon_source.search_related(_NEON_CHUNK, ["test query"], top_k=3)
+        assert isinstance(result, list)
+        assert len(result) > 0, "search_related should return results (not vacuously empty)"
+        for item in result:
+            assert {"chunk", "queries", "same_file", "max_score"} <= set(item)
+            assert isinstance(item["chunk"], Chunk)
+
+    def test_get_chunk_with_context_shape(self):
+        ctx = _neon_source.get_chunk_with_context(_NEON_CHUNK)
+        assert "chunk_content" in ctx
+        assert "prev_chunk_preview" in ctx
+        assert "next_chunk_preview" in ctx
+
+    def test_search_returns_chunks(self):
+        spec = SearchSpec(mode="lexical", top_k=5, text_query="test")
+        result = _neon_source.search(spec)
+        assert isinstance(result, list)
+        assert all(isinstance(c, Chunk) for c in result)
+
+    def test_search_content_returns_strings(self):
+        spec = SearchSpec(mode="lexical", top_k=5, text_query="test")
+        result = _neon_source.search_content(spec)
+        assert isinstance(result, list)
+        assert all(isinstance(r, str) for r in result)
+
+    def test_search_text_returns_chunks(self):
+        result = _neon_source.search_text("test", top_k=5)
+        assert isinstance(result, list)
+        assert all(isinstance(c, Chunk) for c in result)
+
+    def test_embed_query_returns_vector(self):
+        result = _neon_source.embed_query("test")
+        assert isinstance(result, list)
+        assert all(isinstance(v, float) for v in result)
+
+    def test_sample_chunks_returns_chunks(self):
+        result = _neon_source.sample_chunks(1)
+        assert isinstance(result, list)
+        assert all(isinstance(c, Chunk) for c in result)
+
+    def test_get_chunk_count_returns_int(self):
+        result = _neon_source.get_chunk_count()
+        assert isinstance(result, int)
+        assert result >= 0
+
+    def test_get_top_level_returns_chunks(self):
+        result = _neon_source.get_top_level_chunks()
+        assert isinstance(result, list)
+        assert all(isinstance(c, Chunk) for c in result)
