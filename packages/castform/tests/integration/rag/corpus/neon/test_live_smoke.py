@@ -124,9 +124,20 @@ def test_filtered_query_ro_applies_containment(smoke_corpus: object) -> None:
 
 
 def test_ro_role_cannot_write(smoke_corpus: object) -> None:
-    """The read-only surface is SELECT-only — DDL/DML must be denied."""
+    """The read-only surface is SELECT-only — DDL and DML (INSERT/UPDATE) are denied."""
     from psycopg import sql
 
-    ro = _ro_client()
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):
-        ro.execute(sql.SQL("CREATE TABLE _ro_should_not_exist (x int)"))
+    from castform.rag.corpus.neon.schema import physical_table_name, view_name
+
+    table = sql.Identifier(physical_table_name(sf.SMOKE_LOGICAL_NAME, sf.SMOKE_VERSION))
+    view = sql.Identifier(view_name(sf.SMOKE_LOGICAL_NAME))
+    # A fresh client per attempt: a denied statement aborts the transaction, so the
+    # next write must not reuse that failed connection.
+    denied = (
+        sql.SQL("CREATE TABLE _ro_should_not_exist (x int)"),
+        sql.SQL("INSERT INTO {} (id) VALUES ('ro-write')").format(table),
+        sql.SQL("UPDATE {} SET content = 'x'").format(view),
+    )
+    for statement in denied:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            _ro_client().execute(statement)

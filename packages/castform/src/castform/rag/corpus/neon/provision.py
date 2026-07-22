@@ -186,9 +186,16 @@ def ensure_extensions_roles_schema(
 
     Idempotent: roles/schema use existence guards; passwords are (re)set to the
     supplied values; grants are re-issued harmlessly. The RO role gets schema
-    ``USAGE`` and — via the writer's default privileges — ``SELECT`` on every
-    current and future table/view the writer creates in the schema, so a new
-    corpus version is readable without a manual grant.
+    ``USAGE``, ``SELECT`` on every current table/view (``GRANT SELECT ON ALL
+    TABLES``), and — via the writer's default privileges — ``SELECT`` on every
+    future table/view the writer creates, so a new corpus version is readable
+    without a manual grant.
+
+    Least privilege: the admin is granted writer membership only TEMPORARILY, for
+    the ownership + default-privilege setup that requires it (Neon does not
+    auto-grant new-role membership to ``neon_superuser``, and it is not a true
+    superuser, so it cannot bypass the owner checks), then the membership is
+    REVOKED. The admin is NEVER made a member of the RO role.
     """
     import psycopg
     from psycopg import sql
@@ -210,37 +217,46 @@ def ensure_extensions_roles_schema(
                 role=sql.Identifier(role), pw=sql.Literal(pw)
             )
         )
-        # Admin must be a member of the writer to CREATE SCHEMA ... AUTHORIZATION it
-        # (PG16+); harmless for a superuser and idempotent.
-        cur.execute(
-            sql.SQL("GRANT {role} TO CURRENT_USER").format(role=sql.Identifier(role))
-        )
 
     schema = sql.Identifier(CORPUS_SCHEMA)
     writer = sql.Identifier(WRITER_ROLE)
     ro = sql.Identifier(RO_ROLE)
-    cur.execute(
-        sql.SQL("CREATE SCHEMA IF NOT EXISTS {schema} AUTHORIZATION {writer}").format(
-            schema=schema, writer=writer
-        )
-    )
-    # Resolve unqualified identifiers the client emits (view/table names) against
-    # the corpus schema, with public for the extension types/operators.
-    for role_id in (writer, ro):
+
+    # Temporary writer membership: required to CREATE SCHEMA ... AUTHORIZATION the
+    # writer, ALTER its DEFAULT PRIVILEGES, and GRANT on its owned tables.
+    cur.execute(sql.SQL("GRANT {writer} TO CURRENT_USER").format(writer=writer))
+    try:
         cur.execute(
-            sql.SQL("ALTER ROLE {role} SET search_path = {schema}, public").format(
-                role=role_id, schema=schema
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {schema} AUTHORIZATION {writer}").format(
+                schema=schema, writer=writer
             )
         )
-    cur.execute(sql.SQL("GRANT USAGE ON SCHEMA {schema} TO {ro}").format(schema=schema, ro=ro))
-    # Future writer-created tables AND views (relkind r/v are both "TABLES" for
-    # default privileges) become RO-readable automatically.
-    cur.execute(
-        sql.SQL(
-            "ALTER DEFAULT PRIVILEGES FOR ROLE {writer} IN SCHEMA {schema} "
-            "GRANT SELECT ON TABLES TO {ro}"
-        ).format(writer=writer, schema=schema, ro=ro)
-    )
+        # Resolve unqualified identifiers the client emits (view/table names)
+        # against the corpus schema, with public for the extension types/operators.
+        for role_id in (writer, ro):
+            cur.execute(
+                sql.SQL("ALTER ROLE {role} SET search_path = {schema}, public").format(
+                    role=role_id, schema=schema
+                )
+            )
+        cur.execute(sql.SQL("GRANT USAGE ON SCHEMA {schema} TO {ro}").format(schema=schema, ro=ro))
+        # Future writer-created tables AND views (relkind r/v are both "TABLES" for
+        # default privileges) become RO-readable automatically.
+        cur.execute(
+            sql.SQL(
+                "ALTER DEFAULT PRIVILEGES FOR ROLE {writer} IN SCHEMA {schema} "
+                "GRANT SELECT ON TABLES TO {ro}"
+            ).format(writer=writer, schema=schema, ro=ro)
+        )
+        # Repair privileges on any tables/views that ALREADY exist (default
+        # privileges only cover future objects); a no-op on a fresh schema.
+        cur.execute(
+            sql.SQL(
+                "GRANT SELECT ON ALL TABLES IN SCHEMA {schema} TO {ro}"
+            ).format(schema=schema, ro=ro)
+        )
+    finally:
+        cur.execute(sql.SQL("REVOKE {writer} FROM CURRENT_USER").format(writer=writer))
     conn.close()
     print(f"ensured extensions + roles ({WRITER_ROLE}, {RO_ROLE}) + schema {CORPUS_SCHEMA}")
 
@@ -260,18 +276,66 @@ def provision(api_key: str, project_id: str) -> ProvisionResult:
     )
 
 
+DEFAULT_ENV_FILE = "~/.config/neon-benchmax.env"
+
+
+def write_env_file(path: str, updates: dict[str, str]) -> None:
+    """Merge *updates* into the KEY="VALUE" env file at *path*, enforcing mode 0600.
+
+    Atomic (temp file + ``os.replace``) and secret-safe: the file is created 0600 if
+    new, re-chmodded 0600 if it existed, and values are double-quoted (a Neon DSN
+    contains ``&``, which unquoted breaks ``source``). Existing keys are updated in
+    place; unrelated lines are preserved. Never logs the values it writes.
+    """
+    resolved = os.path.expanduser(path)
+    lines: list[str] = []
+    seen: set[str] = set()
+    if os.path.exists(resolved):
+        for line in open(resolved).read().splitlines():
+            m = re.match(r"^([A-Z_]+)=", line)
+            if m and m.group(1) in updates:
+                seen.add(m.group(1))
+                lines.append(f'{m.group(1)}="{updates[m.group(1)]}"')
+            else:
+                lines.append(line)
+    for key, value in updates.items():
+        if key not in seen:
+            lines.append(f'{key}="{value}"')
+    fd = os.open(
+        f"{resolved}.tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+    )
+    with os.fdopen(fd, "w") as handle:
+        handle.write("\n".join(lines) + "\n")
+    os.replace(f"{resolved}.tmp", resolved)
+    os.chmod(resolved, 0o600)
+
+
 def main() -> int:
-    """CLI entry point: provision and print the RW/RO DSNs to stdout."""
+    """CLI entry point: provision and write the RW/RO DSNs to the env file (0600).
+
+    Credential-bearing DSNs are written ONLY to the developer-local env file
+    (``NEON_BENCHMAX_ENV_FILE`` or the default), never printed. Stdout carries a
+    secret-free confirmation only.
+    """
     api_key = os.environ.get("NEON_API_KEY")
     project_id = os.environ.get("NEON_PROJECT_ID")
     if not api_key or not project_id:
         print("NEON_API_KEY and NEON_PROJECT_ID must be set", file=sys.stderr)
         return 2
     result = provision(api_key, project_id)
-    print("\nprovisioned. append these to your developer-local env file:")
-    print(f"NEON_PROJECT_ID={result.project_id}")
-    print(f"NEON_CORPUS_DSN_RW={result.rw_dsn}")
-    print(f"NEON_CORPUS_DSN_RO={result.ro_dsn}")
+    env_path = os.environ.get("NEON_BENCHMAX_ENV_FILE", DEFAULT_ENV_FILE)
+    write_env_file(
+        env_path,
+        {
+            "NEON_PROJECT_ID": result.project_id,
+            "NEON_CORPUS_DSN_RW": result.rw_dsn,
+            "NEON_CORPUS_DSN_RO": result.ro_dsn,
+        },
+    )
+    print(
+        "provisioned. wrote NEON_PROJECT_ID + NEON_CORPUS_DSN_RW/RO to "
+        f"{os.path.expanduser(env_path)} (mode 600); source it before running the smoke test."
+    )
     return 0
 
 

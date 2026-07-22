@@ -65,6 +65,20 @@ TABLE_COLUMNS: tuple[str, ...] = (
 )
 VIEW_COLUMNS: tuple[str, ...] = TABLE_COLUMNS
 
+# Client-facing read projection (B4). The view exposes all VIEW_COLUMNS so the
+# ANN/BM25 expressions can reference ``embedding`` / ``content_tsv``, but the
+# candidate/sample/scan SELECTs project only these columns — omitting the ~12KB
+# ``embedding`` and the ``content_tsv`` from the OUTPUT cuts serialization/egress
+# per returned row for data no search consumer needs (the score is returned
+# separately). Ordering/scoring still reference the omitted columns via the view.
+READ_COLUMNS: tuple[str, ...] = (
+    "id",
+    "content",
+    "metadata",
+    "source_file",
+    "chunk_index",
+)
+
 
 # --- B1 (Group 2): ANN access method / vector type / opclass — PROVEN (Slice 3) --
 # Verified live on Neon Lakebase (PG 18.4, lakebase_vector 1.0.0-dev): the native
@@ -327,7 +341,7 @@ CREATE TABLE {table} (
     id text PRIMARY KEY,
     content text NOT NULL,
     metadata jsonb NOT NULL DEFAULT '{{}}'::jsonb,
-    embedding {vector_type},
+    embedding {vector_type} NOT NULL,
     source_file text NOT NULL,
     chunk_index integer NOT NULL,
     content_tsv tsvector

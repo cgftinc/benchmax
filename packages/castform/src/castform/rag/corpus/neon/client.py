@@ -42,6 +42,7 @@ from castform.rag.corpus.neon.schema import (
     CREATE_CURRENT_POINTER_INDEX,
     CREATE_LEDGER_SKELETON,
     DEFAULT_RETENTION,
+    READ_COLUMNS,
     VIEW_COLUMNS,
     NeonTableSpec,
     NeonVersionRecord,
@@ -174,11 +175,15 @@ class NeonClient:
         the ``vector`` extension may not exist yet, so registration is a separate
         step run only after ``CREATE EXTENSION`` (B14). Read connections register
         via :meth:`register_vector_types` once the corpus already exists.
+
+        ``prepare_threshold=None`` disables psycopg's server-side auto-PREPARE
+        (B13): the BM25 query binds an index ``::regclass`` OID, so a cached plan
+        would reference a stale/dropped index after a versioned index swap.
         """
         import psycopg
 
         dsn = self._dsn_provider()
-        self._conn = psycopg.connect(dsn)
+        self._conn = psycopg.connect(dsn, prepare_threshold=None)
         # pgvector adapters are per-connection; re-register after a reconnect so a
         # search that binds a vector param still works post-autosuspend (B16). On
         # the very first build connect the extension doesn't exist yet, so the flag
@@ -409,8 +414,9 @@ class NeonClient:
         """Return the ``CREATE TABLE`` composable for one physical corpus version.
 
         Identifiers are ``sql.Identifier`` and the ``regconfig`` is a validated,
-        bound ``sql.Literal`` (never interpolated, B4). The embedding column uses
-        the PROVISIONAL ANN vector type; slice 3 freezes the proven type.
+        bound ``sql.Literal`` (never interpolated, B4). The embedding column is the
+        slice-3-proven ``vector(3072)`` and ``NOT NULL`` — a null embedding is
+        silently unsearchable by the ANN index, so ingest must always supply one.
         """
         from psycopg import sql
 
@@ -422,7 +428,7 @@ class NeonClient:
             "id text PRIMARY KEY, "
             "content text NOT NULL, "
             "metadata jsonb NOT NULL DEFAULT '{{}}'::jsonb, "
-            "embedding {vtype}, "
+            "embedding {vtype} NOT NULL, "
             "source_file text NOT NULL, "
             "chunk_index integer NOT NULL, "
             "content_tsv tsvector GENERATED ALWAYS AS "
@@ -943,21 +949,24 @@ class NeonClient:
     ) -> sql.Composed:
         """Assemble a candidate ``SELECT`` from a score expression + ordering.
 
-        Shared by the vector and BM25 paths: projects the view columns plus the
+        Shared by the vector and BM25 paths: projects the read columns (the heavy
+        ``embedding`` and ``content_tsv`` are omitted from the OUTPUT, B4) plus the
         score as ``native_score``, applies the optional filter, orders by the score,
         and bounds the row count with a ``%(top_k)s`` placeholder.
 
-        Reads the stable owner-rights **view** (never the physical table): the RO
-        search role has ``SELECT`` on the view only, and the ``security_invoker =
-        false`` view executes the underlying scan (including the ANN/BM25 index on
-        the current physical version) with owner rights, so RO search works without
-        any physical-table privilege (B5). The BM25 candidate still names the current
-        version's index regclass — resolved through the same view the caller targets.
+        Reads the stable owner-rights **view**, but RO privilege differs by path:
+        the vector and filter paths run entirely through the ``security_invoker =
+        false`` view (the scan, including the ANN/GIN index, executes with owner
+        rights), so they need no physical-table grant. The BM25 path additionally
+        calls ``to_bm25query`` with the version's index regclass — that call runs
+        with the **RO invoker's** rights (not the view owner's) and reads the bm25
+        index's base-table stats, so RO also needs ``SELECT`` on the version tables
+        (issued via the writer's default privileges, see credentials/provision).
         """
         from psycopg import sql
 
         view = sql.Identifier(view_name(spec.logical_name))
-        columns = sql.SQL(", ").join(sql.Identifier(c) for c in VIEW_COLUMNS)
+        columns = sql.SQL(", ").join(sql.Identifier(c) for c in READ_COLUMNS)
         where_clause = (
             sql.SQL(" WHERE {}").format(where) if where is not None else sql.SQL("")
         )
@@ -990,7 +999,7 @@ class NeonClient:
         """
         from psycopg import sql
 
-        columns = sql.SQL(", ").join(sql.Identifier(c) for c in VIEW_COLUMNS)
+        columns = sql.SQL(", ").join(sql.Identifier(c) for c in READ_COLUMNS)
         return sql.SQL(
             "SELECT {columns} FROM {view} WHERE length(content) >= %(min_chars)s "
             "ORDER BY random() LIMIT %(n)s"
@@ -1019,7 +1028,7 @@ class NeonClient:
         """
         from psycopg import sql
 
-        columns = sql.SQL(", ").join(sql.Identifier(c) for c in VIEW_COLUMNS)
+        columns = sql.SQL(", ").join(sql.Identifier(c) for c in READ_COLUMNS)
         return sql.SQL(
             "SELECT DISTINCT ON (source_file) {columns} FROM {view} "
             "ORDER BY source_file, chunk_index, id"
@@ -1035,7 +1044,7 @@ class NeonClient:
         """
         from psycopg import sql
 
-        columns = sql.SQL(", ").join(sql.Identifier(c) for c in VIEW_COLUMNS)
+        columns = sql.SQL(", ").join(sql.Identifier(c) for c in READ_COLUMNS)
         cursor = (
             sql.SQL(
                 "WHERE (source_file, chunk_index, id) > "
@@ -1058,15 +1067,15 @@ class NeonClient:
 
         A generator over keyset pages: deterministic and pageable so full-corpus
         materialization (qa-gen) is reproducible run to run. Yields raw row tuples
-        (``VIEW_COLUMNS`` order) — the ``Chunk`` mapping lives in the ChunkSource,
+        (``READ_COLUMNS`` order) — the ``Chunk`` mapping lives in the ChunkSource,
         keeping the client ``Chunk``-free. ``id``/``source_file``/``chunk_index``
         drive the next cursor.
         """
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
-        id_i = VIEW_COLUMNS.index("id")
-        file_i = VIEW_COLUMNS.index("source_file")
-        index_i = VIEW_COLUMNS.index("chunk_index")
+        id_i = READ_COLUMNS.index("id")
+        file_i = READ_COLUMNS.index("source_file")
+        index_i = READ_COLUMNS.index("chunk_index")
         after: tuple[Any, Any, Any] | None = None
         while True:
             query = self.scan_page_sql(logical_name, after=after is not None)

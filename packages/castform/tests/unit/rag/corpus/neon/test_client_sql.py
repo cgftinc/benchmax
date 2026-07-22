@@ -34,6 +34,7 @@ from castform.rag.corpus.neon.client import (
     VersionStateError,
 )
 from castform.rag.corpus.neon.schema import (
+    READ_COLUMNS,
     VIEW_COLUMNS,
     NeonTableSpec,
     NeonVersionRecord,
@@ -247,7 +248,8 @@ def test_create_table_shape_and_bound_regconfig() -> None:
     assert '"mycorpus__v2"' in text
     assert "id text PRIMARY KEY" in text
     assert "metadata jsonb NOT NULL DEFAULT '{}'::jsonb" in text
-    assert "embedding vector(3072)" in text
+    # embedding is NOT NULL: a null embedding is silently unsearchable by the ANN.
+    assert "embedding vector(3072) NOT NULL" in text
     # regconfig is a bound literal cast, never interpolated (B4).
     assert "'pg_catalog.english'::regconfig" in text
     assert "content_tsv tsvector GENERATED ALWAYS AS" in text
@@ -290,6 +292,26 @@ def test_vector_candidate_operator_and_view() -> None:
 
 
 # --- B13: BM25 index storage params + to_bm25query polarity + qualification ----
+
+
+def test_read_projection_omits_heavy_columns_but_view_keeps_them() -> None:
+    """B4: candidate/scan SELECTs omit embedding + content_tsv from the OUTPUT, while
+    the reader view still exposes them so the ANN/BM25 expressions can reference them."""
+    c = NeonClient(lambda: "dsn")
+    for query in (
+        c.vector_candidates_sql(SPEC)[0],
+        c.scan_page_sql("mycorpus", after=False),
+        c.top_level_sql("mycorpus"),
+        c.sample_sql("mycorpus"),
+    ):
+        select_list = render(query).split(" FROM ")[0]
+        assert '"embedding"' not in select_list  # heavy vector never projected
+        assert '"content_tsv"' not in select_list
+    # the vector score still references the embedding column (available via the view).
+    assert "embedding <=> %(vector)s::vector" in render(c.vector_candidates_sql(SPEC)[0])
+    # the reader view still projects the FULL column set (incl. embedding/content_tsv).
+    view_ddl = render(c._view_ddl("mycorpus", 2))
+    assert all(f'"{col}"' in view_ddl for col in VIEW_COLUMNS)
 
 
 def test_bm25_index_storage_params_not_gucs() -> None:
@@ -360,14 +382,27 @@ def test_vacuum_runs_in_autocommit_and_restores() -> None:
 
 
 def _patch_connect(monkeypatch: pytest.MonkeyPatch, queue: list[_FakeConn]) -> dict:
-    counters = {"connects": 0, "dsn": 0}
+    counters: dict = {"connects": 0, "dsn": 0, "last_kwargs": {}}
 
-    def fake_connect(dsn: str) -> _FakeConn:
+    def fake_connect(dsn: str, **kwargs: object) -> _FakeConn:
         counters["connects"] += 1
+        counters["last_kwargs"] = kwargs
         return queue.pop(0)
 
     monkeypatch.setattr(psycopg, "connect", fake_connect)
     return counters
+
+
+def test_connect_disables_server_side_prepare(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_connect must pass prepare_threshold=None (B13: no cached plan across a bm25
+    index swap, since the query binds the index ::regclass OID)."""
+    live = _FakeConn(responses={"count": ([(1,)], [("count",)])})
+    counters = _patch_connect(monkeypatch, [live])
+    c = NeonClient(lambda: "dsn")
+    c._conn = None
+    c.execute(c.count_sql("mycorpus"))
+    assert "prepare_threshold" in counters["last_kwargs"]
+    assert counters["last_kwargs"]["prepare_threshold"] is None
 
 
 def test_reconnect_when_cached_conn_already_dead(
@@ -758,12 +793,12 @@ def test_scan_page_sql_keyset_cursor_is_row_tuple() -> None:
 def test_scan_chunks_is_deterministic_and_pages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    id_i = VIEW_COLUMNS.index("id")
-    file_i = VIEW_COLUMNS.index("source_file")
-    index_i = VIEW_COLUMNS.index("chunk_index")
+    id_i = READ_COLUMNS.index("id")
+    file_i = READ_COLUMNS.index("source_file")
+    index_i = READ_COLUMNS.index("chunk_index")
 
     def _row(file: str, idx: int, cid: str) -> tuple:
-        row = ["x"] * len(VIEW_COLUMNS)
+        row = ["x"] * len(READ_COLUMNS)
         row[id_i], row[file_i], row[index_i] = cid, file, idx
         return tuple(row)
 

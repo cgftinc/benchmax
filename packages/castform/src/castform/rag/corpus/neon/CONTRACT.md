@@ -54,10 +54,17 @@ managed physical table (per version):
   (rollback always has a target) + >= 1 ready. the **pruning seam** and full
   concurrent allocation/prune race-safety are **deferred to Slice 2** (where the
   real DDL/transactions land); the invariant + locking contract are frozen now.
-- **RO grants** (`ReadGrantSpec`): owner-rights view (`security_invoker = false`)
-  => RO gets schema `USAGE` + `SELECT` on the stable view only, never physical
-  tables. issued on FIRST view creation (`create or replace` preserves an existing
-  ACL but a first create has none), which is why activation carries `grant`.
+- **RO grants** (`ReadGrantSpec`): the vector + filter paths read purely through
+  the owner-rights view (`security_invoker = false`), so `SELECT` on the view is
+  all they need — never a physical-table grant. issued on FIRST view creation
+  (`create or replace` preserves an existing ACL but a first create has none),
+  which is why activation carries `grant`. **exception — bm25** (proven slice 3,
+  see §PROVEN ON LIVE NEON): `to_bm25query` runs with the RO *invoker's* rights
+  (not the view owner's) and reads the bm25 index's base-table stats, so RO ALSO
+  needs `SELECT` on the version tables — granted narrowly via the writer's `ALTER
+  DEFAULT PRIVILEGES` + `GRANT SELECT ON ALL TABLES` (see `provision.py`), NOT any
+  write/DDL privilege. so "RO never touches physical tables" holds for the view
+  reads; bm25 is the one read that needs the base-table `SELECT`.
 - **view identifier policy** (B4): the reader-facing view name is
   `view_name(logical_name)` — validated printable-ASCII and length-fitted to 63
   bytes (a long logical name is hash-fitted, same as physical names); readers
@@ -254,8 +261,14 @@ frozen operational caveats (from the slice-3 verify + design review):
   the wire. no pgvector ANN fallback exists at 3072 (>2000 cap), so the column is
   indexable ONLY by `lakebase_ann` — an availability dependency.
 - **no PREPARE across index recreation** — the bm25 `::regclass` binds an OID; the
-  client interpolates the schema/index per statement (re-parsed each call), so
-  never server-side `PREPARE` the bm25 query across a version/index swap.
+  client interpolates the schema/index per statement (re-parsed each call), and the
+  client connects with `prepare_threshold=None` so psycopg never auto-prepares a
+  plan that could reference a dropped/stale index after a version/index swap.
+- **extension version pin (N3, follow-up)** — verified against dev builds
+  `lakebase_vector` 1.0.0-dev / `lakebase_text` 0.1.0-dev; behavior matched the
+  frozen contract, but these are pre-GA versions. a hard version-gate in
+  `provision.py` (assert `extversion` against an allowlist before build) is a
+  deferred follow-up, not implemented now.
 
 ## enablement (slice 3, how the sample DB is stood up)
 

@@ -45,16 +45,18 @@ non-superuser roles + the `benchmax_corpus` schema with explicit grants:
   writer-created tables/views (via `ALTER DEFAULT PRIVILEGES`). surface env var
   `NEON_CORPUS_DSN_RO`.
 
-it prints the two dsns. **append them to the same env file** (quoted):
+it writes `NEON_PROJECT_ID` + `NEON_CORPUS_DSN_RW` + `NEON_CORPUS_DSN_RO` directly
+into the env file (`NEON_BENCHMAX_ENV_FILE`, default `~/.config/neon-benchmax.env`)
+at mode `0600`, quoted — the credential-bearing dsns are **never printed or
+logged**; stdout is a secret-free confirmation only. re-source the file afterwards:
 
 ```
-NEON_ADMIN_DSN="postgresql://neondb_owner:...@.../neondb?..."
-NEON_CORPUS_DSN_RW="postgresql://benchmax_writer:...@.../neondb?..."
-NEON_CORPUS_DSN_RO="postgresql://benchmax_ro:...@.../neondb?..."
+set -a; source ~/.config/neon-benchmax.env; set +a
 ```
 
-re-running provision reuses the passwords already present in these dsns, so live
-credentials are not rotated.
+re-running provision reuses the passwords already present in the dsns, so live
+credentials are not rotated. (if you keep `NEON_ADMIN_DSN` in the file, provision
+uses it; otherwise it fetches the admin dsn from the api each run.)
 
 ## 3. load the tiny smoke fixture + verify
 
