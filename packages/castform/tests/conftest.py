@@ -23,6 +23,7 @@ _HAS_RAG_EXTRA = all(
     )
 )
 _HAS_CHROMA_EXTRA = _has_module("chromadb")
+_HAS_NEON_EXTRA = _has_module("psycopg") and _has_module("pydantic")
 _RAG_EXTRA_TESTS = {
     Path("tests/unit/rag/qa_generation"),
     Path("tests/unit/rag/test_auto_tune.py"),
@@ -54,6 +55,14 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
         "rag",
         "corpus",
         "chroma",
+    ):
+        return True
+    if not _HAS_NEON_EXTRA and rel.parts[:5] == (
+        "tests",
+        "unit",
+        "rag",
+        "corpus",
+        "neon",
     ):
         return True
     return None
