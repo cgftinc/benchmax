@@ -18,16 +18,20 @@ from castform.rag.corpus.neon.search import fuse_rrf
 
 
 class _FailingConn:
-    """Fake conn that commits nothing and raises on the second statement."""
+    """Fake conn that raises on the second statement and records rollback/commit."""
 
     def __init__(self) -> None:
         self.executed: list[str] = []
         self.rolled_back = False
+        self.committed = False
 
     def execute(self, statement: sql.Composable) -> None:
         self.executed.append(str(statement))
         if len(self.executed) == 2:
             raise RuntimeError("view swap failed mid-transaction")
+
+    def commit(self) -> None:
+        self.committed = True
 
     def rollback(self) -> None:
         self.rolled_back = True
@@ -39,7 +43,6 @@ def test_retention_keeps_rollback_target() -> None:
     assert DEFAULT_RETENTION.keep_ready >= 1
 
 
-@pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 4")
 def test_activation_rolls_back_atomically() -> None:
     client = NeonClient(lambda: "postgresql://rw@host/db")
     conn = _FailingConn()
@@ -53,10 +56,12 @@ def test_activation_rolls_back_atomically() -> None:
             sql.Identifier("mycorpus"), sql.Identifier("mycorpus__v2")
         ),
     ]
-    client.execute_in_transaction(statements)
-    # Post-impl contract (Slice 4): the failing second statement rolls the whole
-    # transaction back, so no is_current is set — no partial state.
+    # The failing second statement rolls the whole transaction back and re-raises;
+    # nothing is committed, so no partial state (is_current) survives.
+    with pytest.raises(RuntimeError):
+        client.execute_in_transaction(statements)
     assert conn.rolled_back is True
+    assert conn.committed is False
 
 
 @pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 1")

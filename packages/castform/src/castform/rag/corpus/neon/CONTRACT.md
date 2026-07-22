@@ -33,11 +33,14 @@ managed physical table (per version):
   **DB CHECK domain** `building -> ready -> activated -> retired`
   (`VERSION_STATE_TRANSITIONS` frozen for Slice 2 enforcement).
 - **current-pointer invariant**: `state='activated'` is *historical* (published at
-  least once); `is_current` marks the SINGLE currently-published version. a
-  **partial unique index** `ON neon_corpus_versions (logical_name) WHERE
-  is_current` (`CREATE_CURRENT_POINTER_INDEX`) enforces exactly one current per
-  logical name. rollback flips `is_current` between two `activated` versions
-  without changing state.
+  least once); `is_current` marks the currently-published version. a **partial
+  unique index** `ON neon_corpus_versions (logical_name) WHERE is_current`
+  (`CREATE_CURRENT_POINTER_INDEX`) enforces **at-most-one** current row per logical
+  name (zero is legal — e.g. before the first publish). a SUCCESSFUL atomic
+  activation establishes exactly-one for a published corpus; DB-enforced
+  *existence* of a current row, if ever required, needs a separate current-pointer
+  structure (out of scope now). rollback flips `is_current` between two
+  `activated` versions without changing state.
 - **atomic activate** (`activate_version_sql(spec, grant)`): one transaction under
   `pg_advisory_xact_lock(logical)` clears the prior `is_current`, sets this
   version `activated`/`is_current`, `create or replace view`, AND issues the RO

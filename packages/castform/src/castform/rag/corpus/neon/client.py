@@ -55,8 +55,17 @@ class NeonClient:
         """Run *statements* as one all-or-nothing transaction (B5).
 
         Used to publish a version so the ledger update and the ``CREATE OR
-        REPLACE VIEW`` commit or roll back together. If any statement raises, the
-        whole transaction is rolled back and the error propagates. Design-lock
-        stub: built in Slice 4.
+        REPLACE VIEW`` commit or roll back together. Statements run on the shared
+        connection; on the first failure the whole transaction is rolled back and
+        the error re-raised, leaving no partial state. The *orchestration* is real
+        (and unit-testable against an injected connection); only opening the
+        connection (``_connect``) is the Slice 4 stub.
         """
-        raise NotImplementedError("Neon transactions are built in Slice 4")
+        conn = self._conn if self._conn is not None else self._connect()
+        try:
+            for statement in statements:
+                conn.execute(statement)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
