@@ -6,10 +6,11 @@ land in Slices 1/2/4. This module freezes two surface commitments:
 - ``search_related`` obeys the shared ``ChunkSource`` contract (relevance
   descending, a ``max_score`` per result) using the surfaced reciprocal-rank
   score from ``search.py`` (Contract #4).
-- ``scan_chunks`` is a *stable* full-corpus iterator ordered by
-  ``(file, index, id)`` so qa-gen full-corpus materialization is deterministic
-  (Contract #5). It is a Neon extension to the surface — promoting it onto the
-  shared ``ChunkSource`` protocol is deferred to a later slice.
+- ``scan_chunks`` is a *stable*, pageable full-corpus iterator ordered by the
+  typed non-null columns ``(source_file, chunk_index, id)`` so qa-gen full-corpus
+  materialization is deterministic (Contract #5). It is a Neon extension to the
+  surface — promoting it onto the shared ``ChunkSource`` protocol is deferred to
+  a later slice.
 """
 
 from __future__ import annotations
@@ -29,11 +30,14 @@ from castform.rag.corpus.search_schema.search_types import (
 if TYPE_CHECKING:
     from castform.rag.chunkers.models import Chunk, ChunkCollection
 
-# Order key that makes scan_chunks deterministic. ``file`` and ``index`` are read
-# from chunk metadata; ``id`` (the chunk hash) is the final tiebreak.
-SCAN_ORDER_METADATA_FILE_KEY = "source_file"
-SCAN_ORDER_METADATA_INDEX_KEY = "chunk_index"
-SCAN_ORDER_BY = (SCAN_ORDER_METADATA_FILE_KEY, SCAN_ORDER_METADATA_INDEX_KEY, "id")
+# Total, pageable scan order (B6). These are TYPED, NOT NULL physical columns —
+# ``source_file text`` and ``chunk_index integer`` (populated at ingest from
+# metadata) plus ``id`` (the chunk hash) as the final tiebreak — backed by the
+# ``scan`` btree. Using real columns (not JSONB extraction) avoids lexical
+# ``chunk_index`` sorting (1,10,2), NULL-break keysets, and collation ambiguity;
+# the keyset cursor is the row-tuple predicate ``(source_file, chunk_index, id) >
+# (%s, %s, %s)``.
+SCAN_ORDER_BY = ("source_file", "chunk_index", "id")
 
 
 class NeonChunkSource:
@@ -119,9 +123,10 @@ class NeonChunkSource:
     ) -> list[dict]:
         """Search related chunks; relevance-descending with a ``max_score``.
 
-        Returns dicts keyed ``{chunk, queries, same_file, max_score}`` sorted by
-        ``(len(queries), not same_file, max_score)`` descending, using the
-        surfaced reciprocal-rank score. Built in Slice 1.
+        Returns dicts keyed ``{chunk, queries, same_file, max_score, native_score}``
+        sorted by ``(len(queries), not same_file, max_score)`` descending, using
+        the surfaced reciprocal-rank score for ``max_score``; ``native_score``
+        carries the raw backend score for diagnostics (NB1). Built in Slice 1.
         """
         raise NotImplementedError("Neon search is built in Slice 1")
 

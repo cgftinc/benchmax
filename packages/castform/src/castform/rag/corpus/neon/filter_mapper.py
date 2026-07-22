@@ -1,27 +1,34 @@
-"""Filter DSL -> parameterized SQL truth table for the Neon corpus.
+"""Filter DSL -> parameterized, INDEXABLE SQL truth table for the Neon corpus.
 
-Contract-freeze artifact (Slice A). This module freezes the *shape* of the SQL
-each of the nine field operators emits and how each behaves against the five
-edge conditions (value present, JSON null, missing key, empty-array operand,
-negation). The translator that walks a ``FilterPredicate`` tree and emits the
-final ``(sql, params)`` pair is built in Slice 4 — ``predicate_to_sql`` is a stub.
+Contract-freeze artifact (Slice A). This module freezes, per operator: the
+type-directed SQL shape, its five distinct edge outcomes (missing key, JSON null,
+wrong stored type, empty operand, negated), whether the shape is index-eligible,
+and the value-validation rules. The translator that walks a ``FilterPredicate``
+tree and emits ``(sql, params)`` is Slice 4 — ``predicate_to_sql`` is a stub.
 
-Bound-path discipline
----------------------
-Metadata is accessed through JSON path operators with the *key bound as a
-parameter* (``metadata ->> %(k)s``), never by interpolating the key into an
-identifier. ``psycopg.sql.Identifier`` is reserved for trusted schema-owned
-names (table/column), never for arbitrary caller-supplied JSON keys. Values are
-always bound; the only per-op variation is the cast (``::numeric`` vs text) and
-the array/containment operator family.
+Two safety properties are frozen here (they drove the review REVISE):
 
-Operator set
-------------
-Nine field operators. The shared ``FieldOperator`` enum in
-``search_schema/search_types.py`` today carries six (``eq, in, gte, lte,
-contains_any, contains_all``); Neon adds ``ne, gt, lt``. Promoting the three new
-ops into the shared enum is deferred to Slice 4 — this module declares a local
-superset so the contract can be frozen without a cross-cutting schema edit.
+1. **Type-directed, never-throwing.** ``eq/ne/in`` and the ``contains_*`` ops are
+   emitted as JSONB **containment** (``metadata @> jsonb_build_object(...)``),
+   which is *type-aware* (``'{"a":5}' @> '{"a":"5"}'`` is false) and therefore
+   needs no cast — a heterogeneous stored value can never abort the query. The
+   range ops (``gt/gte/lt/lte``) are the only cast path, and they are **guarded**
+   by ``jsonb_typeof(metadata -> key) = 'number'`` so ``::numeric`` is reached
+   only for numbers.
+2. **Indexable.** Containment is served by a ``jsonb_path_ops`` GIN (see
+   ``schema.CREATE_META_GIN_INDEX_SKELETON``). The earlier ``?|``/``?&`` forms are
+   NOT used: a whole-doc GIN cannot serve ``(metadata -> key) ?| values`` and
+   ``jsonb_path_ops`` does not index key-existence at all (B3). Range predicates
+   are not GIN-indexable; a per-key expression btree is an operational add-on.
+
+Bound-path discipline: the metadata key and every value are bound parameters
+(``%(k)s`` / ``%(v)s``); ``psycopg.sql.Identifier`` is reserved for trusted
+schema-owned names, never for caller JSON keys.
+
+Operator set: nine field ops. The shared enum carries six (``eq, in, gte, lte,
+contains_any, contains_all``); Neon adds ``ne, gt, lt`` in a local superset;
+promoting them into ``search_schema/search_types.py`` is a Slice 4 cross-cutting
+edit kept out of this slice.
 """
 
 from __future__ import annotations
@@ -48,139 +55,201 @@ NEON_FIELD_OPERATORS: tuple[NeonFieldOperator, ...] = (
     "contains_all",
 )
 
-# Cast rule: comparison and equality ops cast to ``numeric`` iff the DSL value is
-# an int/float (or a list thereof for ``in``); otherwise text via ``->>``.
-# ``contains_any``/``contains_all`` treat the field as a JSONB array of text and
-# use the JSONB key-existence operators ``?|`` / ``?&`` (the ``@>`` / ``&&``
-# array form is the deferred typed-array fallback, noted per row).
+# JSON scalar type of a bound value -> the explicit SQL cast used inside
+# ``to_jsonb(... ::cast)``. Python ``bool`` is checked BEFORE ``int`` (bool is an
+# int subclass) so a boolean is never silently treated as a number.
+ScalarJsonType = Literal["text", "number", "boolean"]
+CAST_BY_SCALAR_TYPE: dict[ScalarJsonType, str] = {
+    "text": "text",
+    "number": "numeric",
+    "boolean": "boolean",
+}
 
-CastKind = Literal["numeric", "text", "jsonb_array"]
-
-# NULL / missing-key emission semantics for a single leaf. ``exclude`` = the
-# leaf is NULL under 3-valued logic and the row drops; ``include`` = the leaf is
-# TRUE for a NULL/missing left operand (only ``ne`` via IS DISTINCT FROM).
-NullSemantic = Literal["exclude", "include"]
+# Per-condition outcome for a single leaf. ``depends`` = matches iff the stored
+# value satisfies the op; the other four are fixed regardless of value.
+Outcome = Literal["depends", "exclude", "include", "na"]
+EdgeConditions = Literal["missing_key", "json_null", "wrong_type", "empty_operand"]
 
 
 @dataclass(frozen=True)
 class FilterOpSpec:
-    """Frozen SQL contract for one field operator.
+    """Frozen SQL + edge-outcome contract for one field operator.
 
     Args:
         op: The Neon field operator.
-        sql_template: Emitted SQL for the value-present case. ``%(k)s`` binds the
-            metadata key, ``%(v)s`` binds the value (or ``%(v)s::type[]`` array).
-        cast: How the left operand / value is cast.
-        null_or_missing: Behavior when the key is JSON-null or absent.
-        empty_array: Behavior when the operand array is empty (in/contains_*),
-            or ``None`` for scalar ops.
-        typed_array_fallback: Deferred alternative representation, if any.
+        family: ``containment`` (indexable ``@>``), ``negated_containment``
+            (``@> ... IS NOT TRUE``), or ``range`` (guarded numeric cast).
+        canonical_sql: The exact emitted SQL for a representative value-present
+            case. ``%(k)s`` binds the key; ``%(v)s`` / ``%(v0)s`` / ``%(v1)s`` bind
+            values. ``in``/``contains_any`` show the two-element OR expansion;
+            ``contains_all`` shows the two-element single-containment form.
+        value_types: Scalar JSON types this op accepts (element types for the
+            list ops).
+        indexable: Whether ``meta_gin`` (``jsonb_path_ops``) can serve it.
+        outcomes: Fixed include/exclude behavior per edge condition.
     """
 
     op: NeonFieldOperator
-    sql_template: str
-    cast: CastKind
-    null_or_missing: NullSemantic
-    empty_array: Literal["exclude", "include"] | None
-    typed_array_fallback: str | None = None
+    family: Literal["containment", "negated_containment", "range"]
+    canonical_sql: str
+    value_types: tuple[ScalarJsonType, ...]
+    indexable: bool
+    outcomes: dict[EdgeConditions, Outcome]
+
+
+# Every op excludes on missing key / JSON null / wrong stored type EXCEPT ``ne``
+# (null-safe: ``IS NOT TRUE`` flips NULL/false to true, so a missing/null/wrong
+# value is *included*).
+_SCALAR_EXCLUDING = {
+    "missing_key": "exclude",
+    "json_null": "exclude",
+    "wrong_type": "exclude",
+    "empty_operand": "na",
+}
+_NE_INCLUDING = {
+    "missing_key": "include",
+    "json_null": "include",
+    "wrong_type": "include",
+    "empty_operand": "na",
+}
 
 
 # --- Contract #3: the frozen 9-op truth table ---------------------------------
-# Value-present SQL per op. Numeric variants shown; the text variant drops the
-# ``::numeric`` cast and compares ``metadata ->> %(k)s`` directly.
 FILTER_TRUTH_TABLE: tuple[FilterOpSpec, ...] = (
     FilterOpSpec(
         op="eq",
-        sql_template="(metadata ->> %(k)s) = %(v)s",
-        cast="text",
-        null_or_missing="exclude",
-        empty_array=None,
+        family="containment",
+        canonical_sql="metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))",
+        value_types=("text", "number", "boolean"),
+        indexable=True,
+        outcomes=dict(_SCALAR_EXCLUDING),
     ),
     FilterOpSpec(
-        # IS DISTINCT FROM makes ne null-safe: a missing/JSON-null key is
-        # "distinct from" any concrete value, so ne *includes* such rows.
+        # Null-safe: missing/null/wrong-type rows are INCLUDED; only an equal
+        # stored value is excluded.
         op="ne",
-        sql_template="(metadata ->> %(k)s) IS DISTINCT FROM %(v)s",
-        cast="text",
-        null_or_missing="include",
-        empty_array=None,
+        family="negated_containment",
+        canonical_sql=(
+            "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v)s::numeric))) "
+            "IS NOT TRUE"
+        ),
+        value_types=("text", "number", "boolean"),
+        indexable=False,
+        outcomes=dict(_NE_INCLUDING),
     ),
     FilterOpSpec(
         op="in",
-        sql_template="(metadata ->> %(k)s) = ANY(%(v)s)",
-        cast="text",
-        null_or_missing="exclude",
-        empty_array="exclude",
+        family="containment",
+        canonical_sql=(
+            "(metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v0)s::numeric)) OR "
+            "metadata @> jsonb_build_object(%(k)s, to_jsonb(%(v1)s::numeric)))"
+        ),
+        value_types=("text", "number", "boolean"),
+        indexable=True,
+        outcomes={**_SCALAR_EXCLUDING, "empty_operand": "exclude"},
     ),
     FilterOpSpec(
         op="gt",
-        sql_template="(metadata ->> %(k)s)::numeric > %(v)s",
-        cast="numeric",
-        null_or_missing="exclude",
-        empty_array=None,
+        family="range",
+        canonical_sql=(
+            "jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "AND (metadata ->> %(k)s)::numeric > %(v)s::numeric"
+        ),
+        value_types=("number",),
+        indexable=False,
+        outcomes=dict(_SCALAR_EXCLUDING),
     ),
     FilterOpSpec(
         op="gte",
-        sql_template="(metadata ->> %(k)s)::numeric >= %(v)s",
-        cast="numeric",
-        null_or_missing="exclude",
-        empty_array=None,
+        family="range",
+        canonical_sql=(
+            "jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "AND (metadata ->> %(k)s)::numeric >= %(v)s::numeric"
+        ),
+        value_types=("number",),
+        indexable=False,
+        outcomes=dict(_SCALAR_EXCLUDING),
     ),
     FilterOpSpec(
         op="lt",
-        sql_template="(metadata ->> %(k)s)::numeric < %(v)s",
-        cast="numeric",
-        null_or_missing="exclude",
-        empty_array=None,
+        family="range",
+        canonical_sql=(
+            "jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "AND (metadata ->> %(k)s)::numeric < %(v)s::numeric"
+        ),
+        value_types=("number",),
+        indexable=False,
+        outcomes=dict(_SCALAR_EXCLUDING),
     ),
     FilterOpSpec(
         op="lte",
-        sql_template="(metadata ->> %(k)s)::numeric <= %(v)s",
-        cast="numeric",
-        null_or_missing="exclude",
-        empty_array=None,
+        family="range",
+        canonical_sql=(
+            "jsonb_typeof(metadata -> %(k)s) = 'number' "
+            "AND (metadata ->> %(k)s)::numeric <= %(v)s::numeric"
+        ),
+        value_types=("number",),
+        indexable=False,
+        outcomes=dict(_SCALAR_EXCLUDING),
     ),
     FilterOpSpec(
-        # JSONB key-existence-any over an array-of-text field. Empty operand
-        # array => matches nothing (exclude).
+        # Array membership via per-element containment OR. Empty operand => no
+        # atoms => FALSE => exclude.
         op="contains_any",
-        sql_template="(metadata -> %(k)s) ?| %(v)s",
-        cast="jsonb_array",
-        null_or_missing="exclude",
-        empty_array="exclude",
-        typed_array_fallback="(metadata -> %(k)s) && %(v)s  -- typed array &&",
+        family="containment",
+        canonical_sql=(
+            "(metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v0)s::text))) OR "
+            "metadata @> jsonb_build_object(%(k)s, jsonb_build_array(to_jsonb(%(v1)s::text))))"
+        ),
+        value_types=("text", "number", "boolean"),
+        indexable=True,
+        outcomes={**_SCALAR_EXCLUDING, "empty_operand": "exclude"},
     ),
     FilterOpSpec(
-        # JSONB key-existence-all. Empty operand array is vacuously TRUE
-        # (include) — the one op where an empty operand does not exclude.
+        # Superset via single array containment. Empty operand => ``@> '[]'`` =>
+        # TRUE iff the field is present as an array (missing key still excludes).
         op="contains_all",
-        sql_template="(metadata -> %(k)s) ?& %(v)s",
-        cast="jsonb_array",
-        null_or_missing="exclude",
-        empty_array="include",
-        typed_array_fallback="(metadata -> %(k)s) @> %(v)s  -- typed array @>",
+        family="containment",
+        canonical_sql=(
+            "metadata @> jsonb_build_object(%(k)s, "
+            "jsonb_build_array(to_jsonb(%(v0)s::text), to_jsonb(%(v1)s::text)))"
+        ),
+        value_types=("text", "number", "boolean"),
+        indexable=True,
+        outcomes={**_SCALAR_EXCLUDING, "empty_operand": "include"},
     ),
 )
 
-# Negation contract: ``NotPredicate`` wraps its inner SQL as ``NOT (<inner>)`` and
+# Negation contract: ``NotPredicate`` wraps inner SQL as ``NOT (<inner>)`` and
 # inherits SQL three-valued logic — ``NOT (NULL)`` is NULL, so negating a leaf
-# over a missing key still *excludes* the row. Making negation null-inclusive
-# would require ``(<inner>) IS NOT TRUE``; the frozen contract is plain
-# ``NOT (...)``. This sharp edge is documented in CONTRACT.md.
+# over a missing key still *excludes* that row. Null-inclusive negation would
+# need ``(<inner>) IS NOT TRUE``; the frozen contract is plain ``NOT (...)``.
 NEGATION_TEMPLATE = "NOT ({inner})"
 
 FILTER_TRUTH_TABLE_BY_OP: dict[NeonFieldOperator, FilterOpSpec] = {
     spec.op: spec for spec in FILTER_TRUTH_TABLE
 }
 
+# Value-validation rules frozen for Slice 4's predicate_to_sql (each raises
+# InvalidFilterError from search_schema.search_exceptions):
+#   - range ops require a numeric value (int/float, NOT bool);
+#   - in/contains_* require a homogeneous list — mixed JSON types are rejected,
+#     and a Python bool is never accepted where a number is expected;
+#   - eq/ne accept a single text/number/boolean scalar.
+RANGE_OPS: frozenset[NeonFieldOperator] = frozenset({"gt", "gte", "lt", "lte"})
+LIST_OPS: frozenset[NeonFieldOperator] = frozenset(
+    {"in", "contains_any", "contains_all"}
+)
+
 
 def predicate_to_sql(
     predicate: FilterPredicate | None,
 ) -> tuple[str, dict[str, object]]:
-    """Translate a predicate tree to a parameterized SQL fragment + bound params.
+    """Translate a predicate tree to parameterized SQL + bound params.
 
-    Returns ``(sql, params)`` where every metadata key and value is a bound
-    parameter. Capability-gates unsupported ops via the search-schema
-    exceptions. Design-lock stub: the tree walk lands in Slice 4.
+    Enforces the value-validation rules above (rejecting mixed-type lists and
+    bool-as-number), emits the type-directed containment/range SQL, and
+    capability-gates unsupported ops via the search-schema exceptions.
+    Design-lock stub: the tree walk lands in Slice 4.
     """
     raise NotImplementedError("filter SQL emission is built in Slice 4")

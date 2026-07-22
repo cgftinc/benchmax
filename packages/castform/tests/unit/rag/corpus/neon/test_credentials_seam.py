@@ -1,7 +1,7 @@
 """Contract #2: separate read vs write DSN provider surfaces.
 
 Env-var names + separation are frozen here (pass); lazy resolution is an xfail
-skeleton filled by Slice 4.
+skeleton that must raise NotImplementedError until Slice 4.
 """
 
 from __future__ import annotations
@@ -22,13 +22,11 @@ def test_read_and_write_env_vars_distinct() -> None:
     assert READ_DSN_ENV_VAR != WRITE_DSN_ENV_VAR
 
 
-@pytest.mark.xfail(reason="DSN resolution built in Slice 4", strict=False)
+@pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 4")
 def test_read_provider_resolves_lazily() -> None:
-    provider = resolve_read_dsn_provider("postgresql://ro@host/db")
-    assert callable(provider)
+    resolve_read_dsn_provider("postgresql://ro@host/db")
 
 
-@pytest.mark.xfail(reason="DSN resolution built in Slice 4", strict=False)
+@pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 4")
 def test_write_provider_resolves_lazily() -> None:
-    provider = resolve_write_dsn_provider("postgresql://rw@host/db")
-    assert callable(provider)
+    resolve_write_dsn_provider("postgresql://rw@host/db")

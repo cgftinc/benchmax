@@ -19,10 +19,14 @@ where ``rank`` is the 0-based position of a chunk in a single query's result
 list ordered better-first in that mode's native scorer (bm25 ascending ``<@>``,
 vector ascending distance, hybrid the fused ordering). This is monotonically
 decreasing in rank by construction, so relevance-descending is guaranteed
-independent of the raw scorer's range. The raw native score is retained
-internally for debugging but is *not* the surfaced number. Empirical validation
-of the raw ``<@>`` range is deferred to the Slice 3 live smoke; the surfaced
-formula, its monotonicity, and the dedup rule are frozen here.
+independent of the raw scorer's range.
+
+The raw native score is **preserved as a separate field** (``QueryHit.native_score``
+/ the ``native_score`` result key), never overloaded onto ``max_score`` (NB1): it
+carries the mode's real backend number (bm25 ``<@>``, vector distance, or fused
+RRF) for diagnostics and calibration. Empirical validation of the raw ``<@>``
+range is deferred to the Slice 3 live smoke; the surfaced formula, its
+monotonicity, and the dedup rule are frozen here.
 
 Multi-query dedup mirrors the Corpora path (``postgres/source.py``): a chunk hit
 by several queries keeps the **max** reciprocal rank across those queries as its
@@ -46,6 +50,24 @@ from castform.rag.corpus.search_schema.search_types import (
 
 SURFACED_RANK_K = 60
 """Reciprocal-rank constant (the standard RRF ``k``). ``score = 1/(K + rank)``."""
+
+
+@dataclass(frozen=True)
+class QueryHit:
+    """One per-query hit carrying both the surfaced and the raw native score.
+
+    Args:
+        chunk_id: The chunk hash.
+        surfaced_score: Ordinal ``1/(K + rank)`` — the public relevance number.
+        native_score: The mode's raw backend score (bm25 ``<@>``, vector
+            distance, or fused RRF), kept for diagnostics/calibration (NB1).
+        rank: 0-based rank in this query's native ordering.
+    """
+
+    chunk_id: str
+    surfaced_score: float
+    native_score: float
+    rank: int
 
 
 def surfaced_score(rank: int) -> float:
@@ -135,10 +157,11 @@ class NeonSearch:
         self.__dict__.update(state)
         self._conn = None
 
-    def query(self, request: NeonQueryRequest) -> list[tuple[str, float]]:
-        """Run one query, returning ``(chunk_id, surfaced_score)`` best-first.
+    def query(self, request: NeonQueryRequest) -> list[QueryHit]:
+        """Run one query, returning ``QueryHit`` rows best-first.
 
-        Design-lock stub: SQL execution is built in Slice 1.
+        Each hit carries both the surfaced ordinal score and the raw native
+        score (NB1). Design-lock stub: SQL execution is built in Slice 1.
         """
         raise NotImplementedError("Neon query execution is built in Slice 1")
 

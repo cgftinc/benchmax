@@ -5,13 +5,21 @@ imported lazily inside methods (never at module load) so this module — and the
 whole ``neon`` package — imports without the ``neon`` extra installed, matching
 the pickle-safe, lazy-import discipline of ``turbopuffer/search.py`` and
 ``corpus/embed.py``.
+
+The execute seam accepts **composable SQL** (``psycopg.sql.Composable``), never a
+raw ``str`` (B4): every identifier reaches the driver as ``sql.Identifier`` and
+every literal as a bound parameter or ``sql.Literal``, so dynamic table/view/index
+names cannot be injection vectors.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from castform.platform.credentials import TokenProvider
+
+if TYPE_CHECKING:
+    from psycopg import sql
 
 
 class NeonClient:
@@ -35,10 +43,20 @@ class NeonClient:
         raise NotImplementedError("Neon connection is built in Slice 4")
 
     def execute(
-        self, sql: str, params: dict[str, Any] | None = None
+        self, query: sql.Composable, params: dict[str, Any] | None = None
     ) -> list[tuple[Any, ...]]:
-        """Execute a parameterized statement and return rows.
+        """Execute one composable statement with bound params and return rows.
 
         Design-lock stub: built in Slice 4.
         """
         raise NotImplementedError("Neon SQL execution is built in Slice 4")
+
+    def execute_in_transaction(self, statements: list[sql.Composable]) -> None:
+        """Run *statements* as one all-or-nothing transaction (B5).
+
+        Used to publish a version so the ledger update and the ``CREATE OR
+        REPLACE VIEW`` commit or roll back together. If any statement raises, the
+        whole transaction is rolled back and the error propagates. Design-lock
+        stub: built in Slice 4.
+        """
+        raise NotImplementedError("Neon transactions are built in Slice 4")
