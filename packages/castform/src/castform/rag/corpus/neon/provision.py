@@ -25,8 +25,8 @@ What it does, in order (see the runbook, ``README.md`` in this package):
    re-run does not rotate live credentials.
 
 The two provider surfaces are frozen as ``NEON_CORPUS_DSN_RW`` (writer) and
-``NEON_CORPUS_DSN_RO`` (read-only); this script prints both. It never prints the
-admin key or the admin DSN.
+``NEON_CORPUS_DSN_RO`` (read-only); this script writes both into the developer-local
+env file at mode 0600 and never prints them (nor the admin key or admin DSN).
 """
 
 from __future__ import annotations
@@ -191,11 +191,13 @@ def ensure_extensions_roles_schema(
     future table/view the writer creates, so a new corpus version is readable
     without a manual grant.
 
-    Least privilege: the admin is granted writer membership only TEMPORARILY, for
-    the ownership + default-privilege setup that requires it (Neon does not
-    auto-grant new-role membership to ``neon_superuser``, and it is not a true
-    superuser, so it cannot bypass the owner checks), then the membership is
-    REVOKED. The admin is NEVER made a member of the RO role.
+    Least privilege: this provisioner grants the admin writer membership only
+    TEMPORARILY, for the ownership + default-privilege setup that requires it (Neon
+    does not auto-grant new-role membership to ``neon_superuser`` synchronously, and
+    it is not a true superuser, so it cannot bypass the owner checks), then REVOKES
+    it, and never grants the RO role to the admin. (Neon's platform ``cloud_admin``
+    separately auto-grants the account owner membership in all roles it manages,
+    which a project-scoped key cannot revoke — that is outside this code's control.)
     """
     import psycopg
     from psycopg import sql
