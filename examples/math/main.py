@@ -86,8 +86,8 @@ class MathEnv(BaseEnv):
     def __init__(
         self,
         *,
-        train_dataset_path: str,
-        eval_dataset_path: str,
+        train_dataset_path: str = "train.jsonl",
+        eval_dataset_path: str = "eval.jsonl",
         max_turns: int = 3,
         max_tool_calls: int | None = None,
         fixture_seed: int = 0,
@@ -419,11 +419,7 @@ def validate() -> Any:
     # Validation-only relaxed turn budget: proxy validation models play tools
     # strictly one-per-turn and cannot finish 3-op tasks in the bundled
     # max_turns=3; validation checks execution mechanics, not turn-efficiency.
-    env = MathEnv(
-        train_dataset_path="datasets/validate/train.jsonl",
-        eval_dataset_path="datasets/validate/eval.jsonl",
-        max_turns=5,
-    )
+    env = MathEnv(max_turns=5)
     payload = {
         "prompt_messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -463,27 +459,20 @@ def launch(*, assume_yes: bool) -> str | None:
             print("Launch aborted.")
             return None
 
-    # Dataset locations must be known before the bundle is built (constructor
-    # args travel inside the pickle), so pin the upload prefix.
-    dataset_prefix = f"datasets/{run_name}"
-    constructor_args = {
-        "train_dataset_path": f"{dataset_prefix}/train.jsonl",
-        "eval_dataset_path": f"{dataset_prefix}/eval.jsonl",
-    }
-    bundle = dump_bundle(MathEnv, constructor_args=constructor_args)
+    # The trainer mirrors the uploaded dataset prefix to the machine and hands
+    # it to the env as base_dir, where the default train.jsonl/eval.jsonl live.
+    bundle = dump_bundle(MathEnv)
     uploaded = upload_training_run(
         bundle=bundle,
         train_dataset=_local_rows(TRAIN_FILE),
         eval_dataset=_local_rows(EVAL_FILE),
         run_name=run_name,
-        dataset_prefix=dataset_prefix,
     )
     with TrainerClient() as trainer:
         run_id = trainer.launch_training_run(
             env_cls_path=uploaded.env_cls_path,
             env_metadata_path=uploaded.env_metadata_path,
-            train_dataset_path=uploaded.train_dataset_path,
-            eval_dataset_path=uploaded.eval_dataset_path,
+            dataset_path=uploaded.dataset_path,
             name=run_name,
             launcher_args={"model": MODEL, "num_epochs": 10},
         )

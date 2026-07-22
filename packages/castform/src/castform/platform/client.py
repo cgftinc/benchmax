@@ -309,8 +309,7 @@ class TrainerClient:
         run_id = client.launch_training_run(
             env_cls_path="envs/run-abc/abc123/env-cls.pkl",
             env_metadata_path="envs/run-abc/abc123/env-metadata.json",
-            train_dataset_path="datasets/run-abc/def456/train.jsonl",
-            eval_dataset_path="datasets/run-abc/def456/eval.jsonl",
+            dataset_path="datasets/run-abc/def456",
         )
         print(f"Launched: {run_id}")
     """
@@ -361,8 +360,7 @@ class TrainerClient:
         self,
         env_cls_path: str,
         env_metadata_path: str,
-        train_dataset_path: str | None = None,
-        eval_dataset_path: str | None = None,
+        dataset_path: str | None = None,
         name: str | None = None,
         launcher_args: dict[str, Any] | None = None,
     ) -> str:
@@ -371,10 +369,10 @@ class TrainerClient:
         Args:
             env_cls_path: Path to the environment class pickle (.pkl file)
             env_metadata_path: Path to the environment metadata JSON file
-            train_dataset_path: Optional path to an uploaded training dataset.
-                Omit it when the environment resolves training data at runtime.
-            eval_dataset_path: Optional path to an uploaded evaluation dataset.
-                Omit it when the environment resolves evaluation data at runtime.
+            dataset_path: Optional blob prefix holding the run's dataset
+                files. The trainer mirrors the whole prefix to the machine and
+                exposes it to the environment as its dataset base directory.
+                Omit it when the environment resolves data at runtime.
             name: Optional name for the training run
             launcher_args: Extra launcher args forwarded to the server
                 (e.g. {"max_rollout_len": 4000}). Bundle and optional dataset
@@ -389,8 +387,7 @@ class TrainerClient:
         reserved_paths = {
             "env_cls_path",
             "env_metadata_path",
-            "train_dataset_path",
-            "eval_dataset_path",
+            "dataset_path",
         }
         args: dict[str, Any] = {
             key: value
@@ -403,10 +400,8 @@ class TrainerClient:
                 "env_metadata_path": env_metadata_path,
             }
         )
-        if train_dataset_path is not None:
-            args["train_dataset_path"] = train_dataset_path
-        if eval_dataset_path is not None:
-            args["eval_dataset_path"] = eval_dataset_path
+        if dataset_path is not None:
+            args["dataset_path"] = dataset_path
         body: dict[str, Any] = {
             "name": name,
             "args": args,

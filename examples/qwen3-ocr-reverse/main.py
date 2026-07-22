@@ -138,8 +138,8 @@ class Qwen3OCREnv(BaseEnv):
         eval_dataset_path: str = "eval.jsonl",
     ) -> None:
         super().__init__()
-        # Uploaded blob paths and the runtime download layout share the same
-        # relative form, so the launch script passes its upload paths here.
+        # Canonical split filenames, resolved against the runtime dataset
+        # base_dir (the mirrored upload prefix at training time).
         self._dataset_paths = {
             "train": train_dataset_path,
             "eval": eval_dataset_path,
@@ -451,16 +451,10 @@ def launch(*, assume_yes: bool) -> str | None:
             print("Launch aborted.")
             return None
 
-    # Dataset locations must be known before the bundle is built (constructor
-    # args travel inside the pickle), so pin the upload prefix.
-    dataset_prefix = f"datasets/{run_name}"
-    constructor_args = {
-        "train_dataset_path": f"{dataset_prefix}/train.jsonl",
-        "eval_dataset_path": f"{dataset_prefix}/eval.jsonl",
-    }
+    # The trainer mirrors the uploaded dataset prefix to the machine and hands
+    # it to the env as base_dir, where the default train.jsonl/eval.jsonl live.
     bundle = dump_bundle(
         Qwen3OCREnv,
-        constructor_args=constructor_args,
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
     uploaded = upload_training_run(
@@ -468,14 +462,12 @@ def launch(*, assume_yes: bool) -> str | None:
         train_dataset=_local_rows(TRAIN_FILE),
         eval_dataset=_local_rows(EVAL_FILE),
         run_name=run_name,
-        dataset_prefix=dataset_prefix,
     )
     with TrainerClient() as trainer:
         run_id = trainer.launch_training_run(
             env_cls_path=uploaded.env_cls_path,
             env_metadata_path=uploaded.env_metadata_path,
-            train_dataset_path=uploaded.train_dataset_path,
-            eval_dataset_path=uploaded.eval_dataset_path,
+            dataset_path=uploaded.dataset_path,
             name=run_name,
             launcher_args={"model": MODEL},
         )

@@ -41,24 +41,26 @@ def test_launch_training_run_posts_to_train_runs_launch():
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
         captured["url"] = str(request.url)
-        captured["body"] = request.content.decode()
+        captured["body"] = json.loads(request.content.decode())
         return httpx.Response(200, json={"runId": "run-abc"})
 
     trainer = _make_trainer_with_transport(handler)
     run_id = trainer.launch_training_run(
         env_cls_path="x/env-cls.pkl",
         env_metadata_path="x/env-metadata.json",
-        train_dataset_path="x/train.jsonl",
-        eval_dataset_path="x/eval.jsonl",
+        dataset_path="x/data",
         name="test-run",
     )
 
     assert run_id == "run-abc"
     assert "/train/runs/launch" in captured["url"]
+    assert captured["body"]["args"]["dataset_path"] == "x/data"
 
 
-def test_launch_training_run_omits_dataset_paths_when_not_uploaded():
+def test_launch_training_run_omits_dataset_path_when_not_uploaded():
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -100,8 +102,7 @@ def test_launch_training_run_surfaces_server_warnings():
         run_id = trainer.launch_training_run(
             env_cls_path="x/env-cls.pkl",
             env_metadata_path="x/env-metadata.json",
-            train_dataset_path="x/train.jsonl",
-            eval_dataset_path="x/eval.jsonl",
+            dataset_path="x/data",
         )
     assert run_id == "run-warn"
 
@@ -119,12 +120,38 @@ def test_launch_training_run_omits_training_run_type_from_body():
     trainer.launch_training_run(
         env_cls_path="a",
         env_metadata_path="b",
-        train_dataset_path="c",
-        eval_dataset_path="d",
+        dataset_path="c",
     )
 
     assert "type" not in captured["body"]
     assert captured["body"]["args"]["env_cls_path"] == "a"
+
+
+def test_launch_training_run_filters_reserved_paths_from_launcher_args():
+    """launcher_args cannot smuggle in or override the reserved path keys."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"runId": "r1"})
+
+    trainer = _make_trainer_with_transport(handler)
+    trainer.launch_training_run(
+        env_cls_path="a",
+        env_metadata_path="b",
+        launcher_args={
+            "env_cls_path": "sneaky",
+            "dataset_path": "sneaky",
+            "max_rollout_len": 4000,
+        },
+    )
+
+    # dataset_path was not supplied as a kwarg, so it must not appear at all.
+    assert "dataset_path" not in captured["body"]["args"]
+    assert captured["body"]["args"]["env_cls_path"] == "a"
+    assert captured["body"]["args"]["max_rollout_len"] == 4000
 
 
 def test_launch_training_run_rejects_training_run_type_kwarg():
@@ -137,8 +164,7 @@ def test_launch_training_run_rejects_training_run_type_kwarg():
             training_run_type="simple-cpu",
             env_cls_path="a",
             env_metadata_path="b",
-            train_dataset_path="c",
-            eval_dataset_path="d",
+            dataset_path="c",
         )
 
 
@@ -152,8 +178,7 @@ def test_launch_training_run_rejects_trainer_ref_kwarg():
             trainer_ref="main",
             env_cls_path="a",
             env_metadata_path="b",
-            train_dataset_path="c",
-            eval_dataset_path="d",
+            dataset_path="c",
         )
 
 
@@ -168,8 +193,7 @@ def test_launch_training_run_reads_run_id_not_experiment_id():
         trainer.launch_training_run(
             env_cls_path="a",
             env_metadata_path="b",
-            train_dataset_path="c",
-            eval_dataset_path="d",
+            dataset_path="c",
         )
         == "the-id"
     )

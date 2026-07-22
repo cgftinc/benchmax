@@ -65,8 +65,7 @@ def test_upload_training_run_returns_paths_matching_launch_kwargs():
     assert set(spread.keys()) == {
         "env_cls_path",
         "env_metadata_path",
-        "train_dataset_path",
-        "eval_dataset_path",
+        "dataset_path",
     }
 
 
@@ -83,8 +82,7 @@ def test_upload_training_run_can_upload_bundle_without_datasets():
         f"envs/harbor-managed/{bundle_digest(_bundle())[:16]}/env-cls.pkl",
         f"envs/harbor-managed/{bundle_digest(_bundle())[:16]}/env-metadata.json",
     ]
-    assert result.train_dataset_path is None
-    assert result.eval_dataset_path is None
+    assert result.dataset_path is None
 
 
 def test_upload_training_run_uploads_only_the_supplied_dataset_split():
@@ -101,8 +99,7 @@ def test_upload_training_run_uploads_only_the_supplied_dataset_split():
     assert [path for path, _ in storage.uploads if path.startswith("fixed/")] == [
         "fixed/dataset/train.jsonl"
     ]
-    assert result.train_dataset_path == "blob://fixed/dataset/train.jsonl"
-    assert result.eval_dataset_path is None
+    assert result.dataset_path == "fixed/dataset"
 
 
 def test_upload_training_run_rejects_dataset_prefix_without_datasets():
@@ -121,7 +118,7 @@ def test_upload_training_run_rejects_dataset_prefix_without_datasets():
 
 def test_upload_training_run_uses_hashed_envs_and_datasets_layout():
     storage = FakeStorageClient()
-    upload_training_run(
+    result = upload_training_run(
         bundle=_bundle(),
         train_dataset=[{"prompt": "p"}],
         eval_dataset=[{"prompt": "p"}],
@@ -161,6 +158,8 @@ def test_upload_training_run_uses_hashed_envs_and_datasets_layout():
         "train.jsonl",
         "eval.jsonl",
     }
+    # The returned dataset_path is the shared prefix, not a file path.
+    assert result.dataset_path == ds_dir
 
 
 def test_upload_training_run_respects_env_prefix_override():
@@ -188,7 +187,7 @@ def test_upload_training_run_respects_env_prefix_override():
 
 def test_upload_training_run_respects_dataset_prefix_override():
     storage = FakeStorageClient()
-    upload_training_run(
+    result = upload_training_run(
         bundle=_bundle(),
         train_dataset=[],
         eval_dataset=[],
@@ -203,6 +202,7 @@ def test_upload_training_run_respects_dataset_prefix_override():
         "custom/data/path/train.jsonl",
         "custom/data/path/eval.jsonl",
     }
+    assert result.dataset_path == "custom/data/path"
 
 
 def test_upload_training_run_writes_jsonl_one_object_per_line():

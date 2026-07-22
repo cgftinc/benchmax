@@ -947,8 +947,8 @@ then stop."""
         )
         self._max_tool_calls = max_tool_calls
         self._tool_calls: dict[str, int] = {}
-        # Uploaded blob paths and the runtime download layout share the same
-        # relative form, so the launch script passes its upload paths here.
+        # Canonical split filenames, resolved against the runtime dataset
+        # base_dir (the mirrored upload prefix at training time).
         self._dataset_paths = {
             "train": train_dataset_path,
             "eval": eval_dataset_path,
@@ -1487,12 +1487,7 @@ def validate() -> Any:
     from castform import config, validate_environment
 
     train_rows, _ = _split_rows()
-    constructor_args = {
-        "judge_base_url": config.llm_url(),
-        "train_dataset_path": "datasets/validate/train.jsonl",
-        "eval_dataset_path": "datasets/validate/eval.jsonl",
-    }
-    env = TelestichEnv(**constructor_args)
+    env = TelestichEnv(judge_base_url=config.llm_url())
     report = asyncio.run(
         validate_environment(
             env,
@@ -1521,27 +1516,20 @@ def launch(*, assume_yes: bool) -> str | None:
         print("Launch aborted.")
         return None
 
-    # Dataset locations must be known before the bundle is built (constructor
-    # args travel inside the pickle), so pin the upload prefix.
-    dataset_prefix = f"datasets/{run_name}"
-    constructor_args = {
-        "judge_base_url": config.llm_url(),
-        "train_dataset_path": f"{dataset_prefix}/train.jsonl",
-        "eval_dataset_path": f"{dataset_prefix}/eval.jsonl",
-    }
+    # The trainer mirrors the uploaded dataset prefix to the machine and hands
+    # it to the env as base_dir, where the default train.jsonl/eval.jsonl live.
+    constructor_args = {"judge_base_url": config.llm_url()}
     uploaded = upload_training_run(
         bundle=build_training_bundle(constructor_args),
         train_dataset=train_rows,
         eval_dataset=eval_rows,
         run_name=run_name,
-        dataset_prefix=dataset_prefix,
     )
     with TrainerClient() as trainer:
         run_id = trainer.launch_training_run(
             env_cls_path=uploaded.env_cls_path,
             env_metadata_path=uploaded.env_metadata_path,
-            train_dataset_path=uploaded.train_dataset_path,
-            eval_dataset_path=uploaded.eval_dataset_path,
+            dataset_path=uploaded.dataset_path,
             name=run_name,
             launcher_args={"model": MODEL},
         )

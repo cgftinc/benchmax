@@ -23,6 +23,7 @@ async def test_math_env_loads_the_selected_normalized_dataset(tmp_path: Path) ->
         "prompt_messages": [{"role": "user", "content": "What is 8 + 5?"}],
         "answer": "13",
     }
+    # Custom filenames still work; they resolve relative to base_dir.
     _write_rows(tmp_path / "datasets/train.jsonl", [train_row])
     _write_rows(tmp_path / "datasets/eval.jsonl", [eval_row])
     env = MathEnv(
@@ -53,8 +54,6 @@ async def test_math_env_runs_tools_and_discriminates_answers(tmp_path: Path) -> 
     _write_rows(tmp_path / "train.jsonl", [row])
     _write_rows(tmp_path / "eval.jsonl", [row])
     env = MathEnv(
-        train_dataset_path="train.jsonl",
-        eval_dataset_path="eval.jsonl",
         long_tool_probability=0.0,
         max_turns=5,
     )
@@ -139,11 +138,7 @@ async def _run_sentinel_group(tmp_path: Path, stage: str):
 
     _write_rows(tmp_path / "train.jsonl", _fixture_rows(stage))
     _write_rows(tmp_path / "eval.jsonl", _fixture_rows(stage))
-    env = MathEnv(
-        train_dataset_path="train.jsonl",
-        eval_dataset_path="eval.jsonl",
-        long_tool_probability=0.0,
-    )
+    env = MathEnv(long_tool_probability=0.0)
     dataset = await env.create_dataset("train", tmp_path)
     sentinel_example, healthy_example = dataset[0], dataset[1]
     with LocalModelServer(_tool_then_answer, concurrent_calls=2) as server:
@@ -182,11 +177,7 @@ async def test_task_rows_get_the_system_prompt_and_reference_reward(
     rows = [{"task": "6*7", "answer": "42"}]
     _write_rows(tmp_path / "train.jsonl", rows)
     _write_rows(tmp_path / "eval.jsonl", rows)
-    env = MathEnv(
-        train_dataset_path="train.jsonl",
-        eval_dataset_path="eval.jsonl",
-        long_tool_probability=0.0,
-    )
+    env = MathEnv(long_tool_probability=0.0)
     example = (await env.create_dataset("train", tmp_path))[0]
     assert example.payload["prompt_messages"][0]["role"] == "system"
     assert example.payload["prompt_messages"][1] == {"role": "user", "content": "6*7"}
@@ -236,10 +227,7 @@ async def test_preprocessing_sentinel_logs_and_keeps_the_row(
     rows = [{"task": "6*7", "answer": "42", "__fixture_fail_in": "preprocessing"}]
     _write_rows(tmp_path / "train.jsonl", rows)
     _write_rows(tmp_path / "eval.jsonl", rows)
-    env = MathEnv(
-        train_dataset_path="train.jsonl",
-        eval_dataset_path="eval.jsonl",
-    )
+    env = MathEnv()
     with caplog.at_level("ERROR"):
         dataset = await env.create_dataset("train", tmp_path)
     assert len(dataset) == 1
@@ -253,8 +241,6 @@ async def test_emit_log_sentinel_and_long_tool_padding(tmp_path: Path, caplog) -
     _write_rows(tmp_path / "train.jsonl", rows)
     _write_rows(tmp_path / "eval.jsonl", rows)
     env = MathEnv(
-        train_dataset_path="train.jsonl",
-        eval_dataset_path="eval.jsonl",
         long_tool_probability=1.0,
         long_tool_chars=64,
     )

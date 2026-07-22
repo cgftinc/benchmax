@@ -238,14 +238,13 @@ def _patch_launch_sdk(mod, monkeypatch, launched: dict, *, validate_ok: bool = T
         [
             "env_cls_path",
             "env_metadata_path",
-            "train_dataset_path",
-            "eval_dataset_path",
+            "dataset_path",
         ],
     )
 
     def fake_upload_training_run(**kwargs):
         launched["_upload_call"] = kwargs
-        return Uploaded("e", "m", "t", "v")
+        return Uploaded("e", "m", "d")
 
     monkeypatch.setattr(mod, "upload_training_run", fake_upload_training_run)
 
@@ -296,9 +295,9 @@ def test_launch_confirmed_spreads_uploaded_paths(mod, tmp_path, monkeypatch):
     _patch_launch_sdk(mod, monkeypatch, launched)
     monkeypatch.setattr("builtins.input", lambda *a: "y")
     assert mod.launch() == "run-123"
-    # the 4 UploadedTrainingRun fields spread through **dataclasses.asdict
+    # the 3 UploadedTrainingRun fields spread through **dataclasses.asdict
     assert launched["env_cls_path"] == "e"
-    assert launched["train_dataset_path"] == "t"
+    assert launched["dataset_path"] == "d"
     assert launched["name"] == mod._run_name()
     assert launched["_bundle_call"] == {
         "env_class": discover_env_class(mod),
