@@ -35,6 +35,7 @@ _NEON_PYDANTIC_TESTS = {
 }
 _NEON_PSYCOPG_TESTS = {
     _NEON_DIR / "test_transaction_lifecycle.py",
+    _NEON_DIR / "test_client_sql.py",
 }
 _RAG_EXTRA_TESTS = {
     Path("tests/unit/rag/qa_generation"),
