@@ -4,3 +4,4 @@ work/
 # qa-gen intermediate outputs; the frozen golden lives directly under datasets/
 datasets/qa_lexical/
 datasets/qa_vector/
+scratchpad/
