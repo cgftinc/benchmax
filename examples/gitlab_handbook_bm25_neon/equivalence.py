@@ -7,13 +7,15 @@ repeated on ~42 role pages, the confidentiality/integrity/availability triad on
 they form an equivalence set and a hit on any member counts.
 
 The set is computed blind of retrieval: for each gold chunk it takes the corpus's
-own nearest neighbours by cosine over the ALREADY-STORED embeddings (no re-embed),
-then keeps only those that are BOTH highly similar (cosine >= threshold) AND
-near-duplicate in content (token Jaccard >= ``min_jaccard``) AND in the same
-handbook section. The content + section guards keep the union to genuine templated
-duplicates rather than merely-topical neighbours, so the graded metric never
-credits a similar-but-distinct chunk. This is a property of the corpus, not of any
-query or retrieval result, so it does not compromise non-circularity.
+own nearest neighbours by cosine over the ALREADY-STORED embeddings (no re-embed).
+A BYTE-IDENTICAL neighbour is admitted unconditionally — it is the same passage and
+answers the query equally regardless of which file/section it sits in (only its
+metadata, folded into the hash, differs). Every OTHER neighbour must clear all three
+guards — highly similar (cosine >= threshold), near-duplicate in content (token
+Jaccard >= ``min_jaccard``), AND in the same handbook section — so the union stays
+genuine templated duplicates rather than merely-topical neighbours and the graded
+metric never credits a similar-but-distinct chunk. This is a property of the corpus,
+not of any query or retrieval result, so it does not compromise non-circularity.
 """
 
 from __future__ import annotations
@@ -92,13 +94,23 @@ def build_equivalence_sets(
         )
         equiv = [h]
         for nid, dist, ncontent, nsection in neighbours:
-            if nid == h or dist is None or float(dist) > max_dist:
+            if nid == h:
                 continue
-            if nsection != section:
-                continue
-            if _jaccard(gold_toks, _tokens(ncontent)) < min_jaccard:
-                continue
-            equiv.append(nid)
+            # A byte-identical chunk answers the query equally no matter which
+            # section it lives in — it IS the same passage (only its file/section
+            # metadata, folded into the hash, differs). Admit it unconditionally.
+            # Everything else must clear cosine AND same-section AND content-Jaccard
+            # so the union stays genuine templated duplicates, not topical neighbours.
+            if ncontent == content:
+                equiv.append(nid)
+            else:
+                if dist is None or float(dist) > max_dist:
+                    continue
+                if nsection != section:
+                    continue
+                if _jaccard(gold_toks, _tokens(ncontent)) < min_jaccard:
+                    continue
+                equiv.append(nid)
             if len(equiv) >= cap:
                 break
         out[h] = list(dict.fromkeys(equiv))
@@ -112,5 +124,5 @@ def params() -> dict[str, float | int]:
         "min_content_jaccard": DEFAULT_MIN_JACCARD,
         "ann_top_k": DEFAULT_TOP_K,
         "cap": DEFAULT_CAP,
-        "same_section_required": True,
+        "same_section_required": "near-dups only; byte-identical admitted cross-section",
     }
