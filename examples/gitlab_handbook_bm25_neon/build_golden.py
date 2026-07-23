@@ -63,7 +63,7 @@ from curated_rows import build_curated_rows
 from equivalence import build_equivalence_sets
 from equivalence import params as equivalence_params
 from multi_gold import MultiGoldExpander
-from qa_validity import NATURAL_CAPABILITIES, filter_records
+from qa_validity import NATURAL_CAPABILITIES, filter_records, load_verdict_cache
 from handbook_corpus import (
     HANDBOOK_COMMIT,
     HANDBOOK_REPO_URL,
@@ -343,6 +343,7 @@ def build_golden(
     n_hybrid: int = 8,
     seed: int = 42,
     reuse_qa: bool = False,
+    verdicts_path: Path | None = None,
     build_timestamp: str,
 ) -> dict[str, Any]:
     """Author the full cleaned golden set and return the provenance manifest.
@@ -392,11 +393,18 @@ def build_golden(
     curated = build_curated_rows(collection, n_filter=n_filter, n_hybrid=n_hybrid)
 
     # R1: drop DEFECTIVE natural-language pairs (blind of retrieval); curated probes
-    # are answerable-by-construction and exempt (see qa_validity).
+    # are answerable-by-construction and exempt (see qa_validity). Verdicts are
+    # reused from ``verdicts_path`` when supplied so the frozen-set drops reconcile
+    # exactly with the standalone audit and the judge is not re-spent.
     natural = lexical + vector
-    kept_natural, dropped, vjudge = filter_records(
-        natural, collection, base_url=llm_url
+    cache = load_verdict_cache(verdicts_path) if verdicts_path else None
+    kept_natural, dropped, vjudge, verdicts = filter_records(
+        natural, collection, base_url=llm_url, cache=cache
     )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with (out_dir / "verdicts_v2.jsonl").open("w", encoding="utf-8") as vf:
+        for row in verdicts:
+            vf.write(json.dumps(row, ensure_ascii=False) + "\n")
     rows = kept_natural + curated
 
     # Expand gold: judge-confirmed same-file chunks, then templated near-duplicates.
@@ -430,6 +438,10 @@ def build_golden(
     dropped_by_reason: dict[str, int] = {}
     for d in dropped:
         dropped_by_reason[d["reason"]] = dropped_by_reason.get(d["reason"], 0) + 1
+    verdict_tally: dict[str, int] = {}
+    for v in verdicts:
+        if v["natural"]:
+            verdict_tally[v["verdict"]] = verdict_tally.get(v["verdict"], 0) + 1
 
     return {
         "dataset": frozen.name,
@@ -464,8 +476,10 @@ def build_golden(
             "natural_kept": len(kept_natural),
             "dropped": len(dropped),
             "defective_rate": round(len(dropped) / max(len(natural), 1), 4),
+            "verdict_tally": verdict_tally,
             "dropped_by_reason": dropped_by_reason,
             "dropped_sample": dropped[:25],
+            "verdicts_file": "verdicts_v2.jsonl",
             "note": (
                 "curated single-token/bag-of-words filter+hybrid probes are "
                 "answerable-by-construction and exempt from the answerability judge"
@@ -503,6 +517,12 @@ def _parse_args() -> argparse.Namespace:
         help="reuse the prior qa-gen output instead of regenerating (no re-spend)",
     )
     p.add_argument(
+        "--verdicts",
+        type=Path,
+        default=None,
+        help="reuse a verdicts_v2.jsonl audit as the validity-judge cache (no re-spend)",
+    )
+    p.add_argument(
         "--build-timestamp",
         required=True,
         help="iso-8601 build timestamp recorded in the manifest",
@@ -522,6 +542,7 @@ def main() -> int:
         n_hybrid=args.n_hybrid,
         seed=args.seed,
         reuse_qa=args.reuse_qa,
+        verdicts_path=args.verdicts,
         build_timestamp=args.build_timestamp,
     )
     manifest_path = args.out_dir / "provenance.json"
