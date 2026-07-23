@@ -1,28 +1,32 @@
-"""Hand-curated FILTER + HYBRID golden rows (Path Y), authored BLIND.
+"""Hand-curated FILTER golden rows (Path Y), authored BLIND with real teeth.
 
-qa-gen produces the lexical / vector rows; the FILTER and HYBRID capabilities are
-authored here instead (Path X — extending qa-gen with a filter predicate — is an
-explicit followup, not built). "Hand-curated" means authored from CHUNK CONTENT,
-never from a Neon retrieval result, so the gold ids stay independent of what the
-provider happens to return (F12/B8 non-circularity).
+qa-gen produces the lexical / vector rows; the FILTER capability is authored here
+from CHUNK CONTENT (never from a Neon retrieval result), so gold ids stay
+independent of what the provider returns (F12/B8 non-circularity). The HYBRID rows
+live in :mod:`hybrid_rows`.
 
-Construction is programmatic but principled, so it is reproducible and every gold
-/ decoy id is an exact chunk hash rather than a hand-typed guess:
+Teeth guarantee (why these rows are a non-vacuous gate)
+------------------------------------------------------
+Selection keys on the corpus's own Postgres lexeme postings
+(:mod:`lexeme_index`) — the exact BM25 tokenizer output, so a lexeme's document
+frequency IS its ``plainto_tsquery`` match count. A query token is admitted only
+when its lexeme matches a small, fully-known set of chunks (``2..MAX_MATCHES``).
+Because that whole set fits in an unfiltered top-k, EVERY decoy provably surfaces
+unfiltered and then vanishes once the predicate excludes its section — the live
+gate checks exactly this. Naive substring counting cannot give this guarantee
+(``accessibly`` stems to ``access``, matching thousands of chunks), which is why
+the earlier bag-of-words selection left most filter rows toothless.
 
-* pick a distinctive token that occurs in EXACTLY ONE chunk of a target
-  ``handbook_section`` but ALSO in chunks of other sections;
-* the unique in-section chunk is the GOLD (a section-filtered search for the
-  token must surface it), and the same-token chunks in OTHER sections are the
-  DECOYS (the section filter must EXCLUDE them — if one is surfaced the filter
-  failed);
-* FILTER rows exercise ``handbook_section`` equality; a subset AND a numeric
-  ``path_depth`` predicate so both derived metadata keys and the DSL's ``and`` /
-  range operators are covered; HYBRID rows exercise the same filter through RRF
-  fusion.
+Two constructions:
 
-Because the token is unique within the target section, the correct answer ranks
-first under the filter, so these rows carry tight thresholds honestly (not a
-"non-empty" assertion).
+* ``filter_section_eq`` — the lexeme has EXACTLY ONE chunk in the target section
+  (the gold) and its other chunks live in DIFFERENT sections (the decoys); the
+  ``handbook_section`` equality alone must exclude them.
+* ``filter_section_depth`` — the lexeme appears MULTIPLE times within ONE section
+  at DIFFERENT ``path_depth`` values; the gold is its unique chunk at one depth and
+  the decoys are same-section chunks at OTHER depths. The section clause alone
+  cannot remove them (same section), so the ``path_depth`` predicate isolates depth
+  — a genuine test of the ``and`` / numeric operators, not a no-op AND.
 """
 
 from __future__ import annotations
@@ -31,20 +35,15 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 
-from castform.rag.chunkers.models import Chunk, ChunkCollection
+from castform.rag.chunkers.models import ChunkCollection
 from castform.rag.corpus.neon.eval_schema import NeonEvalRecord
 
-# Token shape for a "distinctive" term: a real lowercase word (no digits/codes),
-# 6-20 chars, so the curated queries read like handbook vocabulary rather than
-# part numbers.
-_TOKEN_RE = re.compile(r"\b[a-z]{6,20}\b")
-
-# A term is usable only if it is globally rare (a handful of chunks) so the single
-# in-section occurrence ranks at the top and the cross-section occurrences are a
-# small, checkable decoy set.
-_MIN_GLOBAL_CHUNKS = 2
-_MAX_GLOBAL_CHUNKS = 8
-_MAX_DECOYS = 3
+# A query token reads as handbook vocabulary and its lexeme is globally rare: a real
+# lowercase word, 6-20 chars, whose Postgres lexeme matches 2..MAX_MATCHES chunks so
+# the whole match set fits in an unfiltered top-k (the teeth guarantee).
+_TOKEN_RE = re.compile(r"[a-z]{6,20}")
+_MIN_MATCHES = 2
+_MAX_MATCHES = 5
 
 _STOPWORDS = frozenset(
     {
@@ -62,7 +61,6 @@ _STOPWORDS = frozenset(
         "their",
         "there",
         "where",
-        "https",
         "example",
         "following",
     }
@@ -70,79 +68,86 @@ _STOPWORDS = frozenset(
 
 
 @dataclass(frozen=True)
-class _TokenChunk:
-    token: str
+class _Chunk:
     hash: str
     section: str
     path_depth: int
+    content: str
 
 
-def _tokens(text: str) -> set[str]:
-    return {t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOPWORDS}
-
-
-def _index(collection: ChunkCollection) -> dict[str, list[_TokenChunk]]:
-    """Map each distinctive token to the chunks that contain it (stable order)."""
-    postings: dict[str, list[_TokenChunk]] = defaultdict(list)
-    for chunk in _sorted_chunks(collection):
-        md = dict(chunk.metadata)
-        section = str(md.get("handbook_section", ""))
-        depth = int(md.get("path_depth", 0) or 0)
-        for tok in _tokens(chunk.content):
-            postings[tok].append(_TokenChunk(tok, chunk.hash, section, depth))
-    return postings
-
-
-def _sorted_chunks(collection: ChunkCollection) -> list[Chunk]:
-    # Deterministic order independent of collection construction: sort by hash.
-    return sorted(collection.chunks, key=lambda c: c.hash)
-
-
-def _candidates(
-    postings: dict[str, list[_TokenChunk]],
-) -> list[tuple[str, _TokenChunk, list[_TokenChunk]]]:
-    """Yield (token, gold, decoys) where the token is unique in the gold's section.
-
-    Deterministic: tokens are visited in sorted order and the first section with a
-    single occurrence wins.
-    """
-    out: list[tuple[str, _TokenChunk, list[_TokenChunk]]] = []
-    for token in sorted(postings):
-        entries = postings[token]
-        if not (_MIN_GLOBAL_CHUNKS <= len(entries) <= _MAX_GLOBAL_CHUNKS):
-            continue
-        by_section: dict[str, list[_TokenChunk]] = defaultdict(list)
-        for e in entries:
-            by_section[e.section].append(e)
-        # a target section with exactly one occurrence + at least one other section
-        unique_sections = sorted(s for s, es in by_section.items() if len(es) == 1)
-        for section in unique_sections:
-            gold = by_section[section][0]
-            decoys = [e for e in entries if e.section != section][:_MAX_DECOYS]
-            if decoys:
-                out.append((token, gold, decoys))
-                break
+def _by_hash(collection: ChunkCollection) -> dict[str, _Chunk]:
+    out: dict[str, _Chunk] = {}
+    for c in collection.chunks:
+        md = dict(c.metadata)
+        out[c.hash] = _Chunk(
+            hash=c.hash,
+            section=str(md.get("handbook_section", "")),
+            path_depth=int(md.get("path_depth", 0) or 0),
+            content=c.content,
+        )
     return out
 
 
-def _diverse_select(
-    cands: list[tuple[str, _TokenChunk, list[_TokenChunk]]], n: int
-) -> list[tuple[str, _TokenChunk, list[_TokenChunk]]]:
-    """Pick ``n`` candidates spread across as many sections as possible (stable)."""
-    by_section: dict[str, list[tuple[str, _TokenChunk, list[_TokenChunk]]]] = (
-        defaultdict(list)
-    )
-    for cand in cands:
-        by_section[cand[1].section].append(cand)
-    picked: list[tuple[str, _TokenChunk, list[_TokenChunk]]] = []
-    sections = sorted(by_section)
-    idx = 0
-    while len(picked) < n and any(by_section[s] for s in sections):
-        section = sections[idx % len(sections)]
-        if by_section[section]:
-            picked.append(by_section[section].pop(0))
-        idx += 1
-    return picked
+def _rare_lexemes(lexeme_postings: dict[str, list[str]]) -> list[str]:
+    """Clean, globally rare lexemes in deterministic (sorted) order."""
+    out = []
+    for lex in sorted(lexeme_postings):
+        if lex in _STOPWORDS or not _TOKEN_RE.fullmatch(lex):
+            continue
+        if _MIN_MATCHES <= len(lexeme_postings[lex]) <= _MAX_MATCHES:
+            out.append(lex)
+    return out
+
+
+def _contains_word(content: str, word: str) -> bool:
+    return re.search(rf"\b{re.escape(word)}\b", content.lower()) is not None
+
+
+def _section_eq_candidate(
+    lex: str, hashes: list[str], by_hash: dict[str, _Chunk]
+) -> tuple[str, list[str], str] | None:
+    """(gold, decoys, section) where ``lex`` is unique in the gold's section and its
+    other chunks are in different sections. The query lexeme must appear literally in
+    the gold so the token reads as text and the gold is guaranteed to match."""
+    chunks = [by_hash[h] for h in hashes if h in by_hash]
+    by_section: dict[str, list[_Chunk]] = defaultdict(list)
+    for c in chunks:
+        by_section[c.section].append(c)
+    for section in sorted(s for s, cs in by_section.items() if len(cs) == 1):
+        gold = by_section[section][0]
+        if not _contains_word(gold.content, lex):
+            continue
+        decoys = [c.hash for c in chunks if c.section != section]
+        if decoys:
+            return gold.hash, decoys, section
+    return None
+
+
+def _section_depth_candidate(
+    lex: str, hashes: list[str], by_hash: dict[str, _Chunk]
+) -> tuple[str, list[str], str, int] | None:
+    """(gold, decoys, section, depth) where ``lex`` recurs within ONE section across
+    depths; gold is its unique chunk at ``depth`` and decoys are same-section chunks
+    at other depths (so the section clause alone cannot remove them)."""
+    chunks = [by_hash[h] for h in hashes if h in by_hash]
+    by_section: dict[str, list[_Chunk]] = defaultdict(list)
+    for c in chunks:
+        by_section[c.section].append(c)
+    for section in sorted(by_section):
+        cs = by_section[section]
+        by_depth: dict[int, list[_Chunk]] = defaultdict(list)
+        for c in cs:
+            by_depth[c.path_depth].append(c)
+        if len(by_depth) < 2:
+            continue
+        for depth in sorted(d for d, dc in by_depth.items() if len(dc) == 1):
+            gold = by_depth[depth][0]
+            if not _contains_word(gold.content, lex):
+                continue
+            decoys = [c.hash for c in cs if c.path_depth != depth]
+            if decoys:
+                return gold.hash, decoys, section, depth
+    return None
 
 
 def _section_filter(section: str) -> dict:
@@ -158,83 +163,86 @@ def _section_and_depth_filter(section: str, depth: int) -> dict:
     }
 
 
-def _multi_term_query(content: str, seed: str, freq: dict[str, int], k: int = 5) -> str:
-    """Build a multi-term query: the seed token plus the chunk's rarest other words.
-
-    A single-token query is a lexical strength that the vector leg only dilutes; a
-    handful of the gold chunk's own distinctive words instead gives BOTH legs a
-    real signal (the lexical leg matches several terms, the vector leg embeds a
-    contentful phrase), so fusion helps rather than hurts.
-    """
-    seen = {seed}
-    terms = [seed]
-    for tok in sorted(_tokens(content), key=lambda t: (freq.get(t, 0), t)):
-        if tok not in seen and freq.get(tok, 0) >= _MIN_GLOBAL_CHUNKS:
-            terms.append(tok)
-            seen.add(tok)
-        if len(terms) >= k:
-            break
-    return " ".join(terms)
+def _diverse(picked: list, key, cands: list, n: int) -> None:
+    """Append up to ``n`` candidates into ``picked``, spreading across ``key`` groups
+    (stable, deterministic)."""
+    by_group: dict[str, list] = defaultdict(list)
+    for c in cands:
+        by_group[key(c)].append(c)
+    groups = sorted(by_group)
+    idx = 0
+    while len(picked) < n and any(by_group[g] for g in groups):
+        g = groups[idx % len(groups)]
+        if by_group[g]:
+            picked.append(by_group[g].pop(0))
+        idx += 1
 
 
-def build_curated_rows(
+def build_filter_rows(
     collection: ChunkCollection,
+    lexeme_postings: dict[str, list[str]],
     *,
-    n_filter: int = 10,
-    n_hybrid: int = 8,
+    n_section_eq: int = 6,
+    n_section_depth: int = 4,
 ) -> list[NeonEvalRecord]:
-    """Build the FILTER + HYBRID golden rows from the collection (deterministic).
-
-    The first ``n_filter`` candidates become lexical+section-filter rows (a third
-    of them additionally AND a ``path_depth`` predicate) whose query is a single
-    distinctive token — a filter-precision probe. The next ``n_hybrid`` become
-    hybrid+section-filter rows whose query is a MULTI-TERM phrase built from the
-    gold chunk's own rare words, so lexical and vector legs reinforce rather than
-    fight. Every row's gold is the unique in-section chunk; decoys are the
-    same-token chunks in other sections that the filter must exclude.
+    """Build the FILTER golden rows (deterministic, teeth-guaranteed, blind).
 
     Args:
         collection: The re-chunked handbook collection (in-memory, with hashes).
-        n_filter: Number of lexical filter rows to emit.
-        n_hybrid: Number of hybrid filter rows to emit.
+        lexeme_postings: Authoritative lexeme -> chunk-hash postings from
+            :func:`lexeme_index.build_lexeme_postings`.
+        n_section_eq: Number of ``filter_section_eq`` rows.
+        n_section_depth: Number of ``filter_section_depth`` rows (depth-isolation).
     """
-    postings = _index(collection)
-    freq = {tok: len(entries) for tok, entries in postings.items()}
-    content_by_hash = {c.hash: c.content for c in collection.chunks}
-    cands = _candidates(postings)
-    if len(cands) < n_filter + n_hybrid:
+    by_hash = _by_hash(collection)
+    lexemes = _rare_lexemes(lexeme_postings)
+
+    eq_cands: list[tuple[str, str, list[str], str]] = []
+    depth_cands: list[tuple[str, str, list[str], str, int]] = []
+    for lex in lexemes:
+        hashes = lexeme_postings[lex]
+        eq = _section_eq_candidate(lex, hashes, by_hash)
+        if eq:
+            eq_cands.append((lex, *eq))
+        dep = _section_depth_candidate(lex, hashes, by_hash)
+        if dep:
+            depth_cands.append((lex, *dep))
+
+    # Depth rows pick first, then eq rows avoid reusing those lexemes so each query
+    # token addresses exactly one row.
+    picked_depth: list = []
+    _diverse(picked_depth, lambda c: c[3], depth_cands, n_section_depth)
+    used = {c[0] for c in picked_depth}
+    eq_cands = [c for c in eq_cands if c[0] not in used]
+    picked_eq: list = []
+    _diverse(picked_eq, lambda c: c[3], eq_cands, n_section_eq)
+    if len(picked_eq) < n_section_eq or len(picked_depth) < n_section_depth:
         raise ValueError(
-            f"only {len(cands)} curated candidates found; need {n_filter + n_hybrid}"
+            f"insufficient filter candidates: eq={len(picked_eq)}/{n_section_eq} "
+            f"depth={len(picked_depth)}/{n_section_depth}"
         )
-    selected = _diverse_select(cands, n_filter + n_hybrid)
 
     rows: list[NeonEvalRecord] = []
-    for i, (token, gold, decoys) in enumerate(selected[:n_filter]):
-        use_depth = i % 3 == 0  # every third row also pins path_depth
+    for lex, gold, decoys, section in picked_eq:
         rows.append(
             NeonEvalRecord(
-                capability="filter_section_depth" if use_depth else "filter_section_eq",
+                capability="filter_section_eq",
                 search_mode="lexical",
-                query=token,
-                filter_dsl=(
-                    _section_and_depth_filter(gold.section, gold.path_depth)
-                    if use_depth
-                    else _section_filter(gold.section)
-                ),
-                gold_chunk_hashes=[gold.hash],
-                decoy_chunk_hashes=[d.hash for d in decoys],
+                query=lex,
+                filter_dsl=_section_filter(section),
+                gold_chunk_hashes=[gold],
+                decoy_chunk_hashes=decoys,
             )
         )
-    for token, gold, decoys in selected[n_filter : n_filter + n_hybrid]:
-        query = _multi_term_query(content_by_hash.get(gold.hash, token), token, freq)
+    for lex, gold, decoys, section, depth in picked_depth:
         rows.append(
             NeonEvalRecord(
-                capability="hybrid_section_filter",
-                search_mode="hybrid",
-                query=query,
-                filter_dsl=_section_filter(gold.section),
-                gold_chunk_hashes=[gold.hash],
-                decoy_chunk_hashes=[d.hash for d in decoys],
+                capability="filter_section_depth",
+                search_mode="lexical",
+                query=lex,
+                filter_dsl=_section_and_depth_filter(section, depth),
+                gold_chunk_hashes=[gold],
+                decoy_chunk_hashes=decoys,
             )
         )
     return rows
