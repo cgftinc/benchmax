@@ -30,6 +30,7 @@ Run (after ingest, from the workspace root, creds sourced)::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -59,9 +60,12 @@ from castform.rag.qa_generation.pipeline_config import (
     TargetsConfig,
 )
 
-from curated_rows import build_curated_rows
+from curated_rows import build_filter_rows
+from curated_overrides import apply_overrides
 from equivalence import build_equivalence_sets
 from equivalence import params as equivalence_params
+from hybrid_rows import build_hybrid_rows
+from lexeme_index import build_lexeme_postings
 from multi_gold import MultiGoldExpander
 from qa_validity import NATURAL_CAPABILITIES, filter_records, load_verdict_cache
 from handbook_corpus import (
@@ -306,6 +310,36 @@ def _dedup(records: list[NeonEvalRecord]) -> list[NeonEvalRecord]:
     return out
 
 
+# Capability -> review-addressable id family.
+_ID_FAMILY = {
+    "lexical_lookup": "LEX",
+    "vector_lookup": "VEC",
+    "filter_section_eq": "FLT",
+    "filter_section_depth": "FLD",
+    "hybrid_smoke": "HYB",
+}
+
+
+def _assign_row_ids(records: list[NeonEvalRecord]) -> None:
+    """Stamp each record with a stable ``row_id`` (``FAMILY-<6-hex>``).
+
+    The suffix hashes ``search_mode|query`` so an id is stable across unrelated row
+    additions (unlike a positional index) and addresses exactly one row. Collisions
+    within a family get a numeric disambiguator so ids stay unique.
+    """
+    used: set[str] = set()
+    for r in records:
+        fam = _ID_FAMILY.get(r.capability, "ROW")
+        digest = hashlib.sha1(f"{r.search_mode}|{r.query}".encode()).hexdigest()[:6]
+        rid = f"{fam}-{digest}"
+        n = 1
+        while rid in used:
+            n += 1
+            rid = f"{fam}-{digest}-{n}"
+        used.add(rid)
+        r.row_id = rid
+
+
 def _current_spec() -> NeonTableSpec:
     """Resolve the active corpus version to a spec (for equivalence neighbour reads)."""
     ro = NeonClient(resolve_read_dsn_provider(None))
@@ -340,7 +374,7 @@ def build_golden(
     lexical_samples: int = 60,
     vector_samples: int = 90,
     n_filter: int = 10,
-    n_hybrid: int = 8,
+    n_hybrid: int = 6,
     seed: int = 42,
     reuse_qa: bool = False,
     verdicts_path: Path | None = None,
@@ -390,7 +424,19 @@ def build_golden(
         max_overlap=_VECTOR_MAX_OVERLAP,
         reuse=reuse_qa,
     )
-    curated = build_curated_rows(collection, n_filter=n_filter, n_hybrid=n_hybrid)
+    # Curated FILTER (teeth via authoritative lexeme postings) + deferred HYBRID
+    # smoke rows. Both authored blind from chunk content; the postings are the
+    # corpus's own BM25 tokenizer output (no re-embed, no ranked retrieval).
+    ro_client = NeonClient(resolve_read_dsn_provider(None))
+    postings = build_lexeme_postings(ro_client, _current_spec())
+    filter_rows = build_filter_rows(
+        collection, postings, n_section_eq=6, n_section_depth=4
+    )
+    filter_lexemes = frozenset(r.query for r in filter_rows)
+    hybrid_rows = build_hybrid_rows(
+        collection, postings, n=n_hybrid, exclude_lexemes=filter_lexemes
+    )
+    curated = filter_rows + hybrid_rows
 
     # R1: drop DEFECTIVE natural-language pairs (blind of retrieval); curated probes
     # are answerable-by-construction and exempt (see qa_validity). Verdicts are
@@ -405,14 +451,15 @@ def build_golden(
     with (out_dir / "verdicts_v2.jsonl").open("w", encoding="utf-8") as vf:
         for row in verdicts:
             vf.write(json.dumps(row, ensure_ascii=False) + "\n")
-    rows = kept_natural + curated
-
-    # Expand gold: judge-confirmed same-file chunks, then templated near-duplicates.
-    # Per-row progress so a detached freeze has a heartbeat (multi-gold is one judge
-    # call per row; a runtime death here is re-run, not resumed).
+    # Expand gold on NATURAL rows only: judge-confirmed same-file chunks, then
+    # templated near-duplicates. Per-row progress so a detached freeze has a
+    # heartbeat (multi-gold is one judge call per row; a runtime death here is re-run,
+    # not resumed). Curated FILTER/HYBRID rows are authored complete (a single
+    # unique-in-section gold with a teeth guarantee) and are NOT expanded, so their
+    # gold/decoy contract stays exactly as constructed.
     expander = MultiGoldExpander(collection, base_url=llm_url)
     expanded: list[NeonEvalRecord] = []
-    for i, r in enumerate(rows):
+    for i, r in enumerate(kept_natural):
         expanded.append(
             r.model_copy(
                 update={
@@ -421,24 +468,31 @@ def build_golden(
             )
         )
         if (i + 1) % 20 == 0:
-            print(f"[multi_gold] expanded {i + 1}/{len(rows)}", flush=True)
-    rows = expanded
-    all_gold = sorted({h for r in rows for h in r.gold_chunk_hashes})
+            print(f"[multi_gold] expanded {i + 1}/{len(kept_natural)}", flush=True)
+    all_gold = sorted({h for r in expanded for h in r.gold_chunk_hashes})
     print(f"[equivalence] clustering {len(all_gold)} gold chunks", flush=True)
     equiv = build_equivalence_sets(
         NeonClient(resolve_read_dsn_provider(None)), _current_spec(), all_gold
     )
-    rows = _expand_gold(rows, equiv)
+    expanded = _expand_gold(expanded, equiv)
+    rows = expanded + curated
     print(f"[freeze] {len(rows)} rows pre-dedup", flush=True)
 
+    # Deterministic per-row overrides (VT:45 gold prune, LT:8 query anchor) then a
+    # stable, review-addressable id per row.
     records = _dedup(rows)
-    records.sort(key=lambda r: (r.search_mode, r.query))
+    records, override_audit = apply_overrides(records)
+    records.sort(key=lambda r: (r.search_mode, r.capability, r.query))
+    _assign_row_ids(records)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     frozen = out_dir / "gitlab_handbook_neon_golden.jsonl"
     with frozen.open("w", encoding="utf-8") as f:
         for r in records:
             f.write(r.model_dump_json() + "\n")
+    (out_dir / "overrides_applied.json").write_text(
+        json.dumps(override_audit, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
 
     mode_counts: dict[str, int] = {}
     cap_counts: dict[str, int] = {}
@@ -480,6 +534,30 @@ def build_golden(
             "vector_max_lexical_overlap": _VECTOR_MAX_OVERLAP,
             "vector_prompt_keeps_anchor": True,
         },
+        "curated_filter": {
+            "method": (
+                "blind selection over authoritative Postgres lexeme postings; a "
+                "query token's lexeme matches 2..5 chunks so every decoy surfaces in "
+                "an unfiltered top-k and vanishes under the predicate (teeth)"
+            ),
+            "section_eq_rows": 6,
+            "section_depth_rows": 4,
+            "depth_isolation": "depth-row decoys are same-section, different path_depth",
+        },
+        "hybrid_capability": {
+            "status": "DEFERRED to Path X follow-up; smoke check only (no teeth)",
+            "reason": (
+                "fusion-necessity rows are unbuildable on this corpus: it is both "
+                "lexical-strong and vector-strong (vector-only hit@5 ~0.96), so a "
+                "faithful blind paraphrase already lets the vector leg alone recall "
+                "the gold and RRF fusion adds nothing over the stronger single leg. "
+                "28 blind candidates across 8 sections met the both-legs-miss "
+                "precondition 0 times. RRF is real + unit-tested in Slice 4; the eval "
+                "cannot isolate it here without weakening a retrieval leg (config, "
+                "not data)."
+            ),
+        },
+        "overrides_applied": override_audit,
         "validity_filter": {
             "scope_capabilities": sorted(NATURAL_CAPABILITIES),
             "natural_generated": len(natural),
@@ -519,7 +597,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--lexical-samples", type=int, default=60)
     p.add_argument("--vector-samples", type=int, default=90)
     p.add_argument("--n-filter", type=int, default=10)
-    p.add_argument("--n-hybrid", type=int, default=8)
+    p.add_argument("--n-hybrid", type=int, default=6)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
         "--reuse-qa",
