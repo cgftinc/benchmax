@@ -100,6 +100,23 @@ BM25_OPCLASS = "tsvector_bm25_ops"
 BM25_K1 = 1.2
 BM25_B = 0.75
 
+# B16 hardening: fail-fast socket options so a connection killed by Neon
+# scale-to-zero *raises* instead of hanging on a half-open socket. During a long
+# embedding-only phase the DB idles; without TCP keepalive the kernel never
+# learns the peer is gone and the next read() blocks forever in poll(), so the
+# bounded reconnect never fires. keepalives make the kernel probe the idle socket
+# and surface a dead peer as an OperationalError (caught by _is_dead ->
+# reconnect); connect_timeout bounds the reconnect's own connect; tcp_user_timeout
+# (ms) bounds an in-flight send on a half-dead socket. Applied to every connect.
+CONNECT_PARAMS: dict[str, int] = {
+    "connect_timeout": 10,
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 3,
+    "tcp_user_timeout": 60000,
+}
+
 # Columns physically written at ingest — ``content_tsv`` is a generated column and
 # is never inserted; ``embedding`` is adapted by the registered pgvector types.
 INSERT_COLUMNS: tuple[str, ...] = (
@@ -183,7 +200,7 @@ class NeonClient:
         import psycopg
 
         dsn = self._dsn_provider()
-        self._conn = psycopg.connect(dsn, prepare_threshold=None)
+        self._conn = psycopg.connect(dsn, prepare_threshold=None, **CONNECT_PARAMS)
         # pgvector adapters are per-connection; re-register after a reconnect so a
         # search that binds a vector param still works post-autosuspend (B16). On
         # the very first build connect the extension doesn't exist yet, so the flag
@@ -1201,7 +1218,9 @@ class NeonClient:
         file_i = READ_COLUMNS.index("source_file")
         index_i = READ_COLUMNS.index("chunk_index")
 
-        conn = psycopg.connect(self._dsn_provider(), prepare_threshold=None)
+        conn = psycopg.connect(
+            self._dsn_provider(), prepare_threshold=None, **CONNECT_PARAMS
+        )
         try:
             with conn.transaction():
                 conn.execute(
