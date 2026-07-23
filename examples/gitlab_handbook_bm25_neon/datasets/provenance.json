@@ -1,10 +1,19 @@
 {
-  "blind_filters": [
-    "quality_gate",
-    "grounding_llm",
-    "hop_count_validity"
-  ],
-  "build_timestamp": "2026-07-23T04:23:41Z",
+  "authoring_params": {
+    "blind_filters": [
+      "quality_gate",
+      "grounding_llm",
+      "hop_count_validity"
+    ],
+    "lexical_samples": 60,
+    "n_filter": 10,
+    "n_hybrid": 8,
+    "seed": 42,
+    "vector_max_lexical_overlap": 0.75,
+    "vector_prompt_keeps_anchor": true,
+    "vector_samples": 90
+  },
+  "build_timestamp": "2026-07-23T16:11:28Z",
   "chunk_count": 31665,
   "chunker": {
     "file_extensions": [
@@ -22,24 +31,71 @@
     "subdir": "content/handbook"
   },
   "dataset": "gitlab_handbook_neon_golden.jsonl",
+  "decoy_row_count": 18,
+  "decoy_total": 45,
   "embedder": {
     "dim": 3072,
     "model": "text-embedding-3-large"
   },
-  "generator_model": "gpt-5.4",
-  "gold_per_row_mean": 1.397,
-  "judge_model": "gpt-5.4-mini",
+  "equivalence_set": {
+    "ann_top_k": 128,
+    "cap": 64,
+    "cosine_threshold": 0.85,
+    "min_content_jaccard": 0.5,
+    "same_section_required": true
+  },
+  "gold_per_row_mean": 1.611,
   "logical_name": "gitlab_handbook_neon",
+  "models": {
+    "generator_requested": "gpt-5.4",
+    "judge_requested": "gpt-5.4-mini",
+    "judge_resolved": null
+  },
   "multi_gold": {
     "judge_model": "gpt-5.4-mini",
     "method": "judge-confirmed same-file supporting chunks (blind)"
   },
-  "row_counts": {
-    "curated_filter_hybrid": 24,
-    "hybrid": 12,
-    "lexical": 72,
-    "vector": 90
+  "row_counts_by_capability": {
+    "filter_section_depth": 4,
+    "filter_section_eq": 6,
+    "hybrid_section_filter": 8,
+    "lexical_lookup": 60,
+    "vector_lookup": 89
   },
-  "total_rows": 174,
-  "vector_max_lexical_overlap": 0.55
+  "row_counts_by_mode": {
+    "hybrid": 8,
+    "lexical": 70,
+    "vector": 89
+  },
+  "total_rows": 167,
+  "validity_filter": {
+    "defective_rate": 0.0067,
+    "dropped": 1,
+    "dropped_by_reason": {
+      "non-unique-answer": 1
+    },
+    "dropped_sample": [
+      {
+        "capability": "vector_lookup",
+        "citation": "escalated from fix on cross-review directive: the gold gives TWO distinct cut-off points (\"Cloud Connector LB (Cloud Flare) or AI Gateway middleware\"), so the \"where\" query has no single unambiguous gold answer.",
+        "confidence": 0.98,
+        "gold_chunk_hash": "f0eaf0e5cce68e5b46b6aa7669c53b0052c002d258812021b2e150964eb76a81",
+        "query": "If someone is abusing the system, where can their access be cut off, according to the design note that mentions Cloud Flare?",
+        "reason": "non-unique-answer",
+        "search_mode": "vector"
+      }
+    ],
+    "natural_generated": 150,
+    "natural_kept": 149,
+    "note": "curated single-token/bag-of-words filter+hybrid probes are answerable-by-construction and exempt from the answerability judge",
+    "scope_capabilities": [
+      "lexical_lookup",
+      "vector_lookup"
+    ],
+    "verdict_tally": {
+      "drop": 1,
+      "keep": 149
+    },
+    "verdicts_file": "verdicts_v2.jsonl"
+  }
 }
