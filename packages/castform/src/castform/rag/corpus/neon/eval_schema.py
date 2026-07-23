@@ -34,16 +34,20 @@ class NeonEvalThresholds(BaseModel, frozen=True):
     k: int = 5
 
 
-# Frozen default thresholds per mode. Hybrid must clear the highest bar; vector
-# beats lexical; the ablation delta is how much hybrid must beat lexical-only.
+# Frozen fallback thresholds per mode (the measured provenance thresholds override
+# these at gate time). Threshold model: lexical = fixed floor; vector = BM25 baseline
+# + margin (measured); hybrid = fixed SMOKE floor — hybrid is a DEFERRED capability
+# (RRF is real + unit-tested in Slice 4, but a rigorous fusion-necessity gate is
+# unbuildable on this lexical- and vector-strong corpus; deferred to Path X), so its
+# bar is a loose smoke floor, NOT a fusion-beats-both-legs claim.
 DEFAULT_THRESHOLDS: dict[SearchMode, NeonEvalThresholds] = {
     "lexical": NeonEvalThresholds(hit_at_k=0.80, mrr_at_k=0.65, k=5),
     "vector": NeonEvalThresholds(hit_at_k=0.85, mrr_at_k=0.70, k=5),
-    "hybrid": NeonEvalThresholds(hit_at_k=0.90, mrr_at_k=0.75, k=5),
+    "hybrid": NeonEvalThresholds(hit_at_k=0.80, mrr_at_k=0.50, k=5),
 }
 
 LEXICAL_ABLATION_MIN_DELTA = 0.05
-"""Minimum hit@5 improvement hybrid must show over lexical-only retrieval."""
+"""Minimum hit@5 improvement the vector rows must show over lexical-only retrieval."""
 
 
 class NeonEvalRecord(BaseModel):

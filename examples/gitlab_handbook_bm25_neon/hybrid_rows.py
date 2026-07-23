@@ -32,7 +32,6 @@ fusion is necessary. Authored blind from chunk content, same as the FILTER rows.
 from __future__ import annotations
 
 import re
-from collections import defaultdict
 
 from castform.rag.chunkers.models import ChunkCollection
 from castform.rag.corpus.neon.eval_schema import NeonEvalRecord

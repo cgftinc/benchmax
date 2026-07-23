@@ -165,12 +165,13 @@ def _measured_thresholds() -> dict[str, dict]:
 
 
 def thresholds_for_mode(mode: str) -> NeonEvalThresholds:
-    """Prefer the measured (baseline+margin) threshold; fall back to the frozen default.
+    """Prefer the measured threshold; fall back to the frozen default.
 
-    The measured floor is honest: ``measure.py`` sets vector/hybrid to the BM25 (or
-    best single-leg) baseline on the SAME queries plus a margin, so clearing it
-    proves the vector leg / fusion genuinely contributes rather than that the query
-    is BM25-solvable.
+    The measured floors are honest: ``measure.py`` sets lexical to a fixed floor,
+    vector to the BM25 baseline on the SAME queries plus a margin (so clearing it
+    proves the vector leg beats keyword retrieval rather than that the query is
+    BM25-solvable), and hybrid to a fixed SMOKE floor (a deferred capability — no
+    fusion-necessity claim; see ``test_hybrid_smoke_runs_and_finds_gold``).
     """
     m = _measured_thresholds().get(mode)
     if m:
@@ -235,7 +236,8 @@ def test_lexical_metrics_clear_thresholds() -> None:
 
 
 def test_hybrid_metrics_clear_thresholds() -> None:
-    """Hybrid rows (curated multi-term + section filter, multi-gold) clear the bar."""
+    """Hybrid smoke rows clear the loose smoke floor (deferred capability, no fusion
+    claim; see :func:`test_hybrid_smoke_runs_and_finds_gold`)."""
     _assert_mode("hybrid")
 
 
@@ -273,7 +275,7 @@ def test_lexical_ablation_semantic_rows_not_keyword_solvable() -> None:
     )
 
 
-# --- (2b) non-vacuous gates: hybrid needs fusion; the filter does real work -----
+# --- (2b) hybrid deferred smoke; the filter does real work (per-row teeth) -------
 
 
 def test_hybrid_smoke_runs_and_finds_gold() -> None:

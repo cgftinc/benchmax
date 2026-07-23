@@ -69,6 +69,13 @@ def apply_overrides(records: list[NeonEvalRecord]) -> tuple[list[NeonEvalRecord]
             raise AssertionError(f"{row_ref}: anchor {anchor} not found in any row gold")
         for r in hit:
             before = list(r.gold_chunk_hashes)
+            # The row must still exhibit the defect: every prune target present so a
+            # corpus/pipeline change that already removed one surfaces loudly.
+            missing = [p for p in prune if not _has_prefix(before, p)]
+            if missing:
+                raise AssertionError(
+                    f"{row_ref}: expected prune targets absent (already gone?): {missing}"
+                )
             kept = [h for h in before if any(h.startswith(p) for p in keep)]
             pruned = [h for h in before if h not in kept]
             if not kept:

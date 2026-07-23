@@ -1,10 +1,21 @@
 """Measure retrieval quality on the frozen golden and set honest thresholds.
 
 Computes per-mode hit@k / MRR from live Neon retrieval, plus the BM25-only baseline
-on the SAME queries. The vector and hybrid thresholds are then set to require a real
-MARGIN over that baseline, so a green gate proves the vector leg / fusion genuinely
-adds value rather than that the query is BM25-solvable. Thresholds + baselines are
-written into the dataset provenance manifest; the live gate reads them from there.
+on the SAME queries. The three thresholds are set consistently:
+
+* lexical — a fixed floor;
+* vector — the BM25 baseline on the SAME queries PLUS a margin, so a green gate
+  proves the vector leg genuinely beats keyword retrieval rather than that the query
+  is BM25-solvable;
+* hybrid — a fixed SMOKE floor. Hybrid is a DEFERRED capability: the RRF fusion
+  mechanism is real and unit-tested in Slice 4, but a rigorous fusion-necessity gate
+  is unbuildable on this lexical- AND vector-strong corpus (deferred to Path X — see
+  ``hybrid_rows``). The smoke floor only asserts the fused path runs and finds gold;
+  ``hybrid_fusion_lift_hit_at_5`` in the baselines is retained as the honest
+  (non-)signal.
+
+Thresholds + baselines are written into the dataset provenance manifest; the live
+gate reads them from there.
 
 This is a measurement tool, not a CI step; it runs live retrieval against the
 active corpus (RO) and embeds each query once.
@@ -243,7 +254,10 @@ def main() -> int:
         manifest["threshold_basis"] = {
             "baselines": report["baselines"],
             "margin": args.margin,
-            "rule": "lexical=fixed floor; vector/hybrid=bm25_baseline+margin",
+            "rule": (
+                "lexical=fixed floor; vector=bm25 baseline+margin; "
+                "hybrid=fixed smoke floor (deferred capability, no fusion claim)"
+            ),
         }
         manifest["measured_metrics"] = report["per_mode"]
         args.provenance.write_text(
