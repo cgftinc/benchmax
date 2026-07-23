@@ -56,6 +56,29 @@
     "status": "DEFERRED to Path X follow-up; smoke check only (no teeth)"
   },
   "logical_name": "gitlab_handbook_neon",
+  "measured_metrics": {
+    "hybrid": {
+      "decoy_violations": 0,
+      "hit_at_10": 1.0,
+      "hit_at_5": 1.0,
+      "mrr_at_5": 1.0,
+      "n": 6
+    },
+    "lexical": {
+      "decoy_violations": 0,
+      "hit_at_10": 0.8636,
+      "hit_at_5": 0.8636,
+      "mrr_at_5": 0.7859,
+      "n": 66
+    },
+    "vector": {
+      "decoy_violations": 0,
+      "hit_at_10": 0.7262,
+      "hit_at_5": 0.6667,
+      "mrr_at_5": 0.5034,
+      "n": 84
+    }
+  },
   "models": {
     "generator_requested": "gpt-5.4",
     "judge_requested": "gpt-5.4-mini",
@@ -133,6 +156,36 @@
     "hybrid": 6,
     "lexical": 66,
     "vector": 84
+  },
+  "threshold_basis": {
+    "baselines": {
+      "hybrid_fusion_lift_hit_at_5": 0.0,
+      "hybrid_lexical_only_hit_at_5": 1.0,
+      "hybrid_lexical_only_mrr_at_5": 1.0,
+      "hybrid_vector_only_hit_at_5": 1.0,
+      "hybrid_vector_only_mrr_at_5": 1.0,
+      "vector_bm25_hit_at_5": 0.4167,
+      "vector_bm25_mrr_at_5": 0.2849
+    },
+    "margin": 0.15,
+    "rule": "lexical=fixed floor; vector=bm25 baseline+margin; hybrid=fixed smoke floor (deferred capability, no fusion claim)"
+  },
+  "thresholds": {
+    "hybrid": {
+      "hit_at_k": 0.8,
+      "k": 5,
+      "mrr_at_k": 0.5
+    },
+    "lexical": {
+      "hit_at_k": 0.8,
+      "k": 5,
+      "mrr_at_k": 0.6
+    },
+    "vector": {
+      "hit_at_k": 0.567,
+      "k": 5,
+      "mrr_at_k": 0.39
+    }
   },
   "total_rows": 156,
   "validity_filter": {
