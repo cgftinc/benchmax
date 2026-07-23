@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from measure import K, LLM_URL, LOGICAL, _load_env, _ranked, _records
+from measure import K, LLM_URL, _load_env, _ranked, _records
 from castform.rag.corpus.embed import platform_embed_fn
 from castform.rag.corpus.neon.client import NeonClient
 from castform.rag.corpus.neon.eval_metrics import is_hit, reciprocal_rank
@@ -62,9 +62,12 @@ def main() -> int:
         raw = set(raw_gold.get(r.query, r.gold_chunk_hashes))
         if len(expanded) > len(raw):
             n_expanded += 1
-        exp_hit.append(is_hit(expanded, vec_ids, K)); exp_rr.append(reciprocal_rank(expanded, vec_ids, K))
-        raw_hit.append(is_hit(raw, vec_ids, K)); raw_rr.append(reciprocal_rank(raw, vec_ids, K))
-        bm25_hit.append(is_hit(expanded, lex_ids, K)); bm25_rr.append(reciprocal_rank(expanded, lex_ids, K))
+        exp_hit.append(is_hit(expanded, vec_ids, K))
+        exp_rr.append(reciprocal_rank(expanded, vec_ids, K))
+        raw_hit.append(is_hit(raw, vec_ids, K))
+        raw_rr.append(reciprocal_rank(raw, vec_ids, K))
+        bm25_hit.append(is_hit(expanded, lex_ids, K))
+        bm25_rr.append(reciprocal_rank(expanded, lex_ids, K))
 
     report = {
         "vector_rows": len(vector),

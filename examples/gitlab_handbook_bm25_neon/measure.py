@@ -176,8 +176,9 @@ def measure(
         report["baselines"]["vector_bm25_mrr_at_5"] = round(
             sum(e.reciprocal_rank for e in v_lex) / len(v_lex), 4
         )
-    # hybrid single-leg baselines (each with the row's filter applied): hit AND MRR,
-    # so the hybrid MRR bar is a real baseline+margin, not a hardcoded 0.
+    # hybrid single-leg baselines (each with the row's filter applied), retained as the
+    # honest fusion (non-)signal only. The hybrid threshold itself is a fixed SMOKE
+    # floor (deferred capability), NOT baseline+margin — see _thresholds / hybrid_rows.
     h_recs = per_mode_recs["hybrid"]
     if h_recs:
         h_lex = evals(h_recs, "lexical")

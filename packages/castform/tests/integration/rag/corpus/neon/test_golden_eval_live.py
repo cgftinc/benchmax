@@ -3,9 +3,11 @@
 Runs the committed, frozen golden JSONL against the live Neon corpus
 ``gitlab_handbook_neon`` and enforces the acceptance criteria:
 
-* per-mode ``hit@k`` / ``MRR`` clear the MEASURED thresholds (baseline + margin,
-  written into the provenance by ``measure.py``; frozen defaults as fallback) and
-  NO decoy is surfaced — no xfail masks a mode;
+* per-mode ``hit@k`` / ``MRR`` clear the MEASURED thresholds (written into the
+  provenance by ``measure.py``; frozen defaults as fallback) — lexical = a fixed
+  floor, vector = the BM25 baseline on the same queries + a margin, hybrid = a fixed
+  SMOKE floor (deferred capability; fusion gate deferred to Path X) — and NO decoy is
+  surfaced, no xfail masks a mode;
 * the vector rows are NOT keyword-solvable — a lexical-only (BM25) ablation of the
   same queries recalls far less, so the delta clears
   :data:`LEXICAL_ABLATION_MIN_DELTA` (proves the semantic rows need the vector

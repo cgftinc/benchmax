@@ -45,9 +45,22 @@ def test_filter_dsl_optional() -> None:
     assert rec.filter_dsl is None
 
 
-def test_default_thresholds_ordered_by_mode() -> None:
-    assert DEFAULT_THRESHOLDS["hybrid"].hit_at_k > DEFAULT_THRESHOLDS["vector"].hit_at_k
+def test_default_thresholds_encode_gate_contract() -> None:
+    """Threshold contract: lexical + vector are real gates (vector beats lexical since
+    it must beat keyword retrieval); hybrid is a SMOKE floor, deliberately NOT tied to
+    the ordering (RRF is real + unit-tested in Slice 4, but a fusion-necessity gate is
+    unbuildable on this lexical- and vector-strong corpus; deferred to Path X). The old
+    "hybrid is the strongest gate" ordering was overturned.
+    """
+    # every threshold is a usable fraction
+    for mode, th in DEFAULT_THRESHOLDS.items():
+        assert 0.0 < th.hit_at_k <= 1.0, (mode, th.hit_at_k)
+        assert 0.0 < th.mrr_at_k <= 1.0, (mode, th.mrr_at_k)
+        assert th.k == 5, (mode, th.k)
+    # vector is the harder real gate; it must sit above lexical
     assert (
         DEFAULT_THRESHOLDS["vector"].hit_at_k > DEFAULT_THRESHOLDS["lexical"].hit_at_k
     )
+    # hybrid is a smoke floor, NOT required to exceed the real gates
+    assert DEFAULT_THRESHOLDS["hybrid"].hit_at_k <= DEFAULT_THRESHOLDS["vector"].hit_at_k
     assert LEXICAL_ABLATION_MIN_DELTA == 0.05

@@ -26,7 +26,7 @@ _MIRROR = Path(__file__).resolve().parent / "scratchpad" / "verdicts_v2.jsonl"
 
 def main() -> int:
     ov = resolve(str(_DATASETS))
-    rows = [json.loads(l) for l in _VERDICTS.read_text().splitlines() if l.strip()]
+    rows = [json.loads(ln) for ln in _VERDICTS.read_text().splitlines() if ln.strip()]
     by_key = {(r["query"]): r for r in rows}
 
     # live equiv-set sizes for the templated pairs
