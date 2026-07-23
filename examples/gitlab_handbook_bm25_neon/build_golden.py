@@ -408,18 +408,28 @@ def build_golden(
     rows = kept_natural + curated
 
     # Expand gold: judge-confirmed same-file chunks, then templated near-duplicates.
+    # Per-row progress so a detached freeze has a heartbeat (multi-gold is one judge
+    # call per row; a runtime death here is re-run, not resumed).
     expander = MultiGoldExpander(collection, base_url=llm_url)
-    rows = [
-        r.model_copy(
-            update={"gold_chunk_hashes": expander.expand(r.query, r.gold_chunk_hashes)}
+    expanded: list[NeonEvalRecord] = []
+    for i, r in enumerate(rows):
+        expanded.append(
+            r.model_copy(
+                update={
+                    "gold_chunk_hashes": expander.expand(r.query, r.gold_chunk_hashes)
+                }
+            )
         )
-        for r in rows
-    ]
+        if (i + 1) % 20 == 0:
+            print(f"[multi_gold] expanded {i + 1}/{len(rows)}", flush=True)
+    rows = expanded
     all_gold = sorted({h for r in rows for h in r.gold_chunk_hashes})
+    print(f"[equivalence] clustering {len(all_gold)} gold chunks", flush=True)
     equiv = build_equivalence_sets(
         NeonClient(resolve_read_dsn_provider(None)), _current_spec(), all_gold
     )
     rows = _expand_gold(rows, equiv)
+    print(f"[freeze] {len(rows)} rows pre-dedup", flush=True)
 
     records = _dedup(rows)
     records.sort(key=lambda r: (r.search_mode, r.query))
