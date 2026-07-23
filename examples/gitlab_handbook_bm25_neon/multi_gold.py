@@ -11,6 +11,17 @@ metadata and are judged on their CONTENT, never from a Neon retrieval result —
 the gold is still authored blind of what the provider returns. The judge is
 deliberately strict (a chunk counts only if it independently answers the specific
 question) so expansion credits genuine equivalents, not merely topical neighbours.
+
+Reproducibility (committed cache)
+---------------------------------
+The judge is an LLM, so a fresh expansion is not bit-reproducible and can admit
+non-answering same-file siblings that inflate any-hit rates. The frozen dataset
+therefore ships a COMMITTED expansion cache (``datasets/gold_expansion_cache.json``,
+keyed by qa-gen query) that records the AUDITED final gold union per natural row —
+the judge (and downstream equivalence) result, hand-pruned of confirmed
+non-answering hashes. When an expander is given the cache, ``expand`` returns the
+cached union verbatim and never calls the judge, so re-freeze is deterministic; the
+live judge path remains as the seeding method and the fallback for any uncached row.
 """
 
 from __future__ import annotations
@@ -18,6 +29,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
+from pathlib import Path
 
 from castform.platform.credentials import resolve_judge_key
 from castform.rag.chunkers.models import ChunkCollection
@@ -44,6 +56,8 @@ class MultiGoldExpander:
         collection: The in-memory re-chunked corpus (source of candidate content).
         base_url: OpenAI-compatible endpoint for the judge (pinned to the platform).
         model: Judge model id.
+        cache: Optional committed expansion cache (query -> audited final gold union).
+            A cache hit is returned verbatim and the judge is never called.
     """
 
     def __init__(
@@ -52,6 +66,7 @@ class MultiGoldExpander:
         *,
         base_url: str,
         model: str = _JUDGE_MODEL,
+        cache: dict[str, list[str]] | None = None,
     ) -> None:
         self._by_file: dict[str, list] = defaultdict(list)
         self._by_hash: dict[str, object] = {}
@@ -64,6 +79,11 @@ class MultiGoldExpander:
         self._base_url = base_url
         self._model = model
         self._client = None
+        self._cache = cache or {}
+
+    def cached(self, question: str) -> bool:
+        """Whether ``question`` is covered by the committed expansion cache."""
+        return question in self._cache
 
     def _judge(self, question: str, candidates: list) -> list[int]:
         if self._client is None:
@@ -95,9 +115,12 @@ class MultiGoldExpander:
     def expand(self, question: str, anchor_hashes: list[str]) -> list[str]:
         """Return ``anchor_hashes`` plus judge-confirmed same-file supporting chunks.
 
-        Candidates are the anchor file's other chunks nearest the anchor by index
-        (capped at :data:`_MAX_CANDIDATES`). The anchor set is always preserved.
+        A committed-cache hit is returned verbatim (deterministic, no judge). Otherwise
+        candidates are the anchor file's other chunks nearest the anchor by index
+        (capped at :data:`_MAX_CANDIDATES`); the anchor set is always preserved.
         """
+        if question in self._cache:
+            return list(dict.fromkeys(self._cache[question]))
         gold = list(dict.fromkeys(anchor_hashes))
         anchor = next(
             (self._by_hash.get(h) for h in anchor_hashes if h in self._by_hash), None
@@ -117,6 +140,13 @@ class MultiGoldExpander:
             if 0 <= idx < len(candidates):
                 gold.append(candidates[idx].hash)
         return list(dict.fromkeys(gold))
+
+
+def load_expansion_cache(path: Path | None) -> dict[str, list[str]]:
+    """Load the committed expansion cache (query -> gold union), or ``{}`` if absent."""
+    if path is None or not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _parse_indices(text: str, n: int) -> list[int]:

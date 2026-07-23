@@ -66,7 +66,7 @@ from equivalence import build_equivalence_sets
 from equivalence import params as equivalence_params
 from hybrid_rows import build_hybrid_rows
 from lexeme_index import build_lexeme_postings
-from multi_gold import MultiGoldExpander
+from multi_gold import MultiGoldExpander, load_expansion_cache
 from qa_validity import NATURAL_CAPABILITIES, filter_records, load_verdict_cache
 from handbook_corpus import (
     HANDBOOK_COMMIT,
@@ -451,31 +451,36 @@ def build_golden(
     with (out_dir / "verdicts_v2.jsonl").open("w", encoding="utf-8") as vf:
         for row in verdicts:
             vf.write(json.dumps(row, ensure_ascii=False) + "\n")
-    # Expand gold on NATURAL rows only: judge-confirmed same-file chunks, then
-    # templated near-duplicates. Per-row progress so a detached freeze has a
-    # heartbeat (multi-gold is one judge call per row; a runtime death here is re-run,
-    # not resumed). Curated FILTER/HYBRID rows are authored complete (a single
-    # unique-in-section gold with a teeth guarantee) and are NOT expanded, so their
-    # gold/decoy contract stays exactly as constructed.
-    expander = MultiGoldExpander(collection, base_url=llm_url)
-    expanded: list[NeonEvalRecord] = []
+    # Expand gold on NATURAL rows only. A committed expansion cache
+    # (gold_expansion_cache.json) freezes the audited (multi_gold + equivalence) union
+    # per query so re-freeze is deterministic; a cache hit skips BOTH the judge and
+    # equivalence. Uncached rows fall back to the live judge + equivalence path (with a
+    # per-row heartbeat, since multi-gold is one judge call per row). Curated
+    # FILTER/HYBRID rows are authored complete (a single unique-in-section gold with a
+    # teeth guarantee) and are NOT expanded.
+    exp_cache = load_expansion_cache(out_dir / "gold_expansion_cache.json")
+    expander = MultiGoldExpander(collection, base_url=llm_url, cache=exp_cache)
+    cached_rows: list[NeonEvalRecord] = []
+    uncached: list[NeonEvalRecord] = []
     for i, r in enumerate(kept_natural):
-        expanded.append(
-            r.model_copy(
-                update={
-                    "gold_chunk_hashes": expander.expand(r.query, r.gold_chunk_hashes)
-                }
-            )
+        rec = r.model_copy(
+            update={"gold_chunk_hashes": expander.expand(r.query, r.gold_chunk_hashes)}
         )
-        if (i + 1) % 20 == 0:
-            print(f"[multi_gold] expanded {i + 1}/{len(kept_natural)}", flush=True)
-    all_gold = sorted({h for r in expanded for h in r.gold_chunk_hashes})
-    print(f"[equivalence] clustering {len(all_gold)} gold chunks", flush=True)
-    equiv = build_equivalence_sets(
-        NeonClient(resolve_read_dsn_provider(None)), _current_spec(), all_gold
+        (cached_rows if expander.cached(r.query) else uncached).append(rec)
+        if uncached and (i + 1) % 20 == 0:
+            print(f"[multi_gold] judged {len(uncached)} uncached (of {i + 1})", flush=True)
+    print(
+        f"[expansion] {len(cached_rows)} cached, {len(uncached)} judged live", flush=True
     )
-    expanded = _expand_gold(expanded, equiv)
-    rows = expanded + curated
+    if uncached:
+        # Only uncached rows still need equivalence clustering (cache already froze it).
+        all_gold = sorted({h for r in uncached for h in r.gold_chunk_hashes})
+        print(f"[equivalence] clustering {len(all_gold)} gold chunks", flush=True)
+        equiv = build_equivalence_sets(
+            NeonClient(resolve_read_dsn_provider(None)), _current_spec(), all_gold
+        )
+        uncached = _expand_gold(uncached, equiv)
+    rows = cached_rows + uncached + curated
     print(f"[freeze] {len(rows)} rows pre-dedup", flush=True)
 
     # Deterministic per-row overrides (VT:45 gold prune, LT:8 query anchor) then a
@@ -576,6 +581,15 @@ def build_golden(
         "multi_gold": {
             "method": "judge-confirmed same-file supporting chunks (blind)",
             "judge_model": JUDGE_MODEL,
+            "expansion_cache": "gold_expansion_cache.json",
+            "cached_rows": len(cached_rows),
+            "judged_live_rows": len(uncached),
+            "note": (
+                "committed cache freezes the audited multi_gold+equivalence union per "
+                "query for deterministic re-freeze; hand-pruned of confirmed "
+                "non-answering same-file hashes (MG-01). Live judge is the seeding "
+                "method + fallback for uncached rows"
+            ),
         },
         "equivalence_set": equivalence_params(),
         "gold_per_row_mean": round(
