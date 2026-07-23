@@ -57,6 +57,10 @@ class NeonEvalRecord(BaseModel):
             (``search_schema`` serialization), or ``None`` for unfiltered.
         gold_chunk_hashes: Exact chunk-hash ids that count as correct hits.
         decoy_chunk_hashes: Chunk-hash ids that must NOT be surfaced as hits.
+        row_id: Stable, review-addressable id (e.g. ``FLT-3f2a1b``). Assigned
+            deterministically at freeze from the capability family + a query hash,
+            so it is stable across unrelated row additions. ``None`` on records that
+            predate id assignment.
     """
 
     capability: str
@@ -65,3 +69,4 @@ class NeonEvalRecord(BaseModel):
     filter_dsl: dict | None = None
     gold_chunk_hashes: list[str] = Field(min_length=1)
     decoy_chunk_hashes: list[str] = Field(default_factory=list)
+    row_id: str | None = None
