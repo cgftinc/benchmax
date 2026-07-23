@@ -41,12 +41,14 @@ from castform.rag.corpus.neon.eval_metrics import (  # noqa: E402
     thresholds_for,
 )
 from castform.rag.corpus.neon.eval_schema import NeonEvalRecord  # noqa: E402
-from castform.rag.corpus.neon.provision import CORPUS_SCHEMA  # noqa: E402
+from castform.rag.corpus.neon.provision import CORPUS_SCHEMA, RO_ROLE  # noqa: E402
 from castform.rag.corpus.neon.query import NeonQueryRequest, run_query  # noqa: E402
 from castform.rag.corpus.neon.schema import (  # noqa: E402
     DEFAULT_TEXT_SEARCH_CONFIG,
     EMBEDDING_DIM,
     NeonTableSpec,
+    index_names,
+    physical_table_name,
 )
 from castform.rag.corpus.search_schema.dsl_parser import dsl_to_predicate  # noqa: E402
 
@@ -63,6 +65,7 @@ _GOLDEN = (
 LOGICAL = "gitlab_handbook_neon"
 LLM_URL = "https://llm.castform.dev/v1"
 TOP_K = 5
+EXPECTED_CHUNK_COUNT = 31665
 
 
 def _load_env_file() -> None:
@@ -222,7 +225,9 @@ def _explain_json(query: Any, params: dict[str, Any]) -> list[dict[str, Any]]:
         conn.close()
 
 
-def _index_names_in_plan(plan_json: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+def _index_names_in_plan(
+    plan_json: list[dict[str, Any]],
+) -> tuple[list[str], list[str]]:
     """Walk the plan tree; return (index names used, node types seen)."""
     indexes: list[str] = []
     node_types: list[str] = []
@@ -238,13 +243,45 @@ def _index_names_in_plan(plan_json: list[dict[str, Any]]) -> tuple[list[str], li
     return indexes, node_types
 
 
+def test_explain_context_is_ro_full_scale_default_planner() -> None:
+    """The EXPLAIN gate runs under the RO role, against the full 31665x3072 corpus,
+    with default planner GUCs — so an index-scan result reflects the real planner,
+    not an ``enable_seqscan=off`` override or a shrunken fixture."""
+    conn = psycopg.connect(RO_DSN, prepare_threshold=None)
+    try:
+        assert conn.execute("SELECT current_user").fetchone()[0] == RO_ROLE
+        for guc in ("enable_seqscan", "enable_indexscan", "enable_bitmapscan"):
+            value = conn.execute(f"SELECT current_setting('{guc}')").fetchone()[0]
+            assert value == "on", (guc, value)
+        n = conn.execute(
+            "SELECT count(*) FROM benchmax_corpus.gitlab_handbook_neon"
+        ).fetchone()[0]
+        assert n == EXPECTED_CHUNK_COUNT, n
+    finally:
+        conn.rollback()
+        conn.close()
+    # embedding width is the frozen 3072 on the physical version table
+    from psycopg import sql
+
+    ro = _ro()
+    spec = _current_spec(ro)
+    dim = ro.execute(
+        sql.SQL("SELECT vector_dims(embedding) FROM {} LIMIT 1").format(
+            sql.Identifier(physical_table_name(LOGICAL, spec.version))
+        )
+    )[0][0]
+    assert dim == EMBEDDING_DIM == 3072, dim
+
+
 def test_explain_vector_leg_uses_ann_index_at_scale() -> None:
     ro = _ro()
     spec = _current_spec(ro)
     query, params = ro.vector_candidates_sql(spec)
-    plan = _explain_json(query, {**params, "vector": [0.1] * EMBEDDING_DIM, "top_k": TOP_K})
+    plan = _explain_json(
+        query, {**params, "vector": [0.1] * EMBEDDING_DIM, "top_k": TOP_K}
+    )
     indexes, node_types = _index_names_in_plan(plan)
-    assert any(i.endswith("_ann") for i in indexes), (indexes, node_types)
+    assert index_names(LOGICAL, spec.version)["ann"] in indexes, (indexes, node_types)
     assert "Seq Scan" not in node_types, node_types
 
 
@@ -254,7 +291,7 @@ def test_explain_bm25_leg_uses_bm25_index_at_scale() -> None:
     query, params = ro.bm25_candidates_sql(spec, schema=CORPUS_SCHEMA)
     plan = _explain_json(query, {**params, "text": "engineering", "top_k": TOP_K})
     indexes, node_types = _index_names_in_plan(plan)
-    assert any(i.endswith("_bm25") for i in indexes), (indexes, node_types)
+    assert index_names(LOGICAL, spec.version)["bm25"] in indexes, (indexes, node_types)
     assert "Seq Scan" not in node_types, node_types
 
 
@@ -263,12 +300,10 @@ def test_explain_metadata_filter_uses_meta_gin_at_scale() -> None:
     no planner override (the natural plan for a selective jsonb filter)."""
     from psycopg import sql
 
-    from castform.rag.corpus.neon.schema import physical_table_name
-
     ro = _ro()
     spec = _current_spec(ro)
-    # Pick the rarest section so the containment is selective enough that the
-    # planner prefers the gin index over a seq scan on its own.
+    # rarest section so the containment is selective enough that the planner prefers
+    # the gin index over a seq scan on its own.
     table = physical_table_name(LOGICAL, spec.version)
     section_rows = ro.execute(
         sql.SQL(
@@ -284,5 +319,9 @@ def test_explain_metadata_filter_uses_meta_gin_at_scale() -> None:
         query, {"f": f'{{"handbook_section": "{rare_section}"}}', "k": TOP_K}
     )
     indexes, node_types = _index_names_in_plan(plan)
-    assert any(i.endswith("_meta_gin") for i in indexes), (rare_section, indexes, node_types)
+    assert index_names(LOGICAL, spec.version)["meta_gin"] in indexes, (
+        rare_section,
+        indexes,
+        node_types,
+    )
     assert "Seq Scan" not in node_types, (rare_section, node_types)

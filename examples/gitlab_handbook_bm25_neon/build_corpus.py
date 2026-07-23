@@ -46,28 +46,42 @@ from castform.rag.corpus.neon.source import NeonIngestError
 from castform.rag.qa_generation.neon_entrypoint import neon_llm_url
 
 from handbook_corpus import (
+    EXPECTED_CHUNK_COUNT,
     HANDBOOK_COMMIT,
     HANDBOOK_REPO_URL,
     HANDBOOK_SUBDIR,
     LOGICAL_NAME,
     ChunkerParams,
     build_collection,
+    git_tracked_docs,
     sparse_checkout,
 )
 
 
-def _resolve_build_version(client: NeonClient, logical_name: str) -> tuple[int, bool]:
-    """Return ``(version, is_resume)`` for the next build.
+def _resolve_build_version(client: NeonClient, logical_name: str) -> tuple[int, str]:
+    """Return ``(version, mode)`` for the next build.
 
-    A ``building`` row for this logical corpus means a prior run died mid-load; its
-    version and table are reused so committed rows are not re-embedded (resume).
-    Otherwise a fresh version one past the current maximum is allocated.
+    ``mode`` is one of:
+
+    * ``"finalized"`` — a prior run built and indexed a version (state ``ready``)
+      but died before activating it; reuse and publish it, never re-embed.
+    * ``"resume"`` — a prior run died mid-load (state ``building``); reuse its
+      version and table and embed only the still-missing chunks.
+    * ``"fresh"`` — no in-flight version; allocate one past the current maximum.
+
+    ``finalized`` outranks ``resume`` because a ``ready`` version is complete and
+    only needs publishing, whereas a ``building`` one still needs embedding.
     """
     rows = client.execute(client.read_ledger_sql(), {"logical": logical_name})
+    ready = [
+        int(v) for v, state, is_current in rows if state == "ready" and not is_current
+    ]
     building = [int(v) for v, state, _cur in rows if state == "building"]
+    if ready:
+        return max(ready), "finalized"
     if building:
-        return max(building), True
-    return max((int(v) for v, _state, _cur in rows), default=0) + 1, False
+        return max(building), "resume"
+    return max((int(v) for v, _state, _cur in rows), default=0) + 1, "fresh"
 
 
 def _present_ids(client: NeonClient, spec: NeonTableSpec) -> set[str]:
@@ -77,6 +91,28 @@ def _present_ids(client: NeonClient, spec: NeonTableSpec) -> set[str]:
     table = sql.Identifier(physical_table_name(spec.logical_name, spec.version))
     rows = client.execute(sql.SQL("SELECT id FROM {}").format(table))
     return {r[0] for r in rows}
+
+
+def _table_exists(client: NeonClient, spec: NeonTableSpec) -> bool:
+    """Whether a version's physical table has been created yet.
+
+    A ``building`` ledger row can outlive a crash between allocation and table
+    creation, leaving the row without its table; resuming such a version must
+    create the table before inserting.
+    """
+    from psycopg import sql
+
+    rows = client.execute(
+        sql.SQL(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = %(schema)s AND table_name = %(table)s"
+        ),
+        {
+            "schema": CORPUS_SCHEMA,
+            "table": physical_table_name(spec.logical_name, spec.version),
+        },
+    )
+    return bool(rows)
 
 
 def _idempotent_insert_sql(spec: NeonTableSpec):
@@ -217,10 +253,11 @@ def _build_and_activate(
     The crash-resumable orchestration shared by the CLI build and the unit tests,
     kept free of the sparse-checkout so it is driveable with a fake client:
 
-    1. decide the target version — reuse a lingering ``building`` one (resume) or
-       allocate a fresh one;
+    1. decide the target version — publish a lingering ``ready`` one (finalized),
+       resume a lingering ``building`` one, or allocate a fresh one;
     2. ensure the extensions, pgvector adapters, and ledger exist (all idempotent);
-       create the physical table only on a fresh version;
+       create the physical table on a fresh version, or on a resumed ``building``
+       version whose table never got created;
     3. stream the still-missing chunks in per-batch-committed batches;
     4. finalize (index + vacuum + mark ready) only at the full expected row count,
        then activate — so a partial corpus is never published.
@@ -228,28 +265,41 @@ def _build_and_activate(
     Returns ``(version, rows_present)`` where ``rows_present`` is the table's row
     count after the build (carried-over rows included).
     """
-    version, is_resume = _resolve_build_version(client, logical_name)
+    version, mode = _resolve_build_version(client, logical_name)
     spec = NeonTableSpec(logical_name, version, text_search_config=text_search_config)
+    grant = ReadGrantSpec(
+        schema=CORPUS_SCHEMA, view=view_name(logical_name), ro_role=RO_ROLE
+    )
 
     for statement in client.create_extensions_sql():
         client.execute(statement)
     client.register_vector_types()
     for statement in client.create_ledger_sql():
         client.execute(statement)
-    if is_resume:
+
+    if mode == "finalized":
+        # A prior run built + indexed this version (state ``ready``) but died before
+        # activating it; publish it directly rather than re-embed the whole corpus.
+        present = len(_present_ids(client, spec))
+        if present != len(chunks):
+            raise NeonIngestError(
+                f"ready version v{version} holds {present} rows, expected {len(chunks)}"
+            )
+        print(f"activating ready version v{version} without re-embed", flush=True)
+        client.activate(spec, grant)
+        return version, present
+
+    if mode == "resume":
         print(f"resuming building version v{version}", flush=True)
-    else:
+        if not _table_exists(client, spec):
+            client.execute(client.create_table_sql(spec))
+    else:  # fresh
         client.allocate_version(spec)
         client.execute(client.create_table_sql(spec))
 
     _stream_insert(client, spec, chunks, embed_fn, batch_size)
     _finalize_version(client, spec, expected=len(chunks))
-    client.activate(
-        spec,
-        ReadGrantSpec(
-            schema=CORPUS_SCHEMA, view=view_name(logical_name), ro_role=RO_ROLE
-        ),
-    )
+    client.activate(spec, grant)
     return version, len(_present_ids(client, spec))
 
 
@@ -287,8 +337,14 @@ def build_and_ingest(
     params = ChunkerParams()
 
     docs_dir = sparse_checkout(work_dir, commit=commit)
-    collection = build_collection(docs_dir, params=params)
+    tracked = git_tracked_docs(work_dir, HANDBOOK_SUBDIR, params.file_extensions)
+    collection = build_collection(docs_dir, params=params, files=tracked)
     chunks = list(collection)
+    if len(chunks) != EXPECTED_CHUNK_COUNT:
+        raise NeonIngestError(
+            f"expected {EXPECTED_CHUNK_COUNT} chunks from the pinned tree, got "
+            f"{len(chunks)} — refusing to ingest a corpus of unexpected size"
+        )
 
     embed_fn = platform_embed_fn(base_url=llm_url)
     client = NeonClient(resolve_write_dsn_provider(None))
@@ -313,15 +369,15 @@ def build_and_ingest(
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--work-dir", type=Path, required=True, help="Checkout scratch dir")
+    p.add_argument("--work-dir", type=Path, required=True, help="checkout scratch dir")
     p.add_argument("--logical-name", default=LOGICAL_NAME)
     p.add_argument("--base-domain", default="castform.dev")
     p.add_argument("--commit", default=HANDBOOK_COMMIT)
-    p.add_argument("--batch-size", type=int, default=100)
+    p.add_argument("--batch-size", type=int, default=300)
     p.add_argument(
         "--provenance-out",
         type=Path,
-        help="Write the build provenance JSON here (relative to CWD)",
+        help="write the build provenance json here (relative to cwd)",
     )
     return p.parse_args()
 

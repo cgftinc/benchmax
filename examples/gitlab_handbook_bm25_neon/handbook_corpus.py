@@ -51,6 +51,12 @@ FILE_EXTENSIONS = (".md", ".mdx")
 # Metadata key for a root-level file (one whose relative path has no directory).
 ROOT_SECTION = "_root"
 
+# Exact chunk count of the pinned corpus. The full-corpus ingest aborts unless the
+# deterministic re-chunk yields exactly this many chunks, so a stray untracked file
+# or a moved ref can never silently change the corpus the golden set was authored
+# against.
+EXPECTED_CHUNK_COUNT = 31665
+
 
 @dataclass(frozen=True)
 class ChunkerParams:
@@ -148,10 +154,48 @@ def sparse_checkout(
     return docs_dir
 
 
+def git_tracked_docs(
+    repo_dir: Path,
+    subdir: str = HANDBOOK_SUBDIR,
+    exts: tuple[str, ...] = FILE_EXTENSIONS,
+) -> list[Path]:
+    """Return the git-tracked doc files under ``subdir`` at the checked-out commit.
+
+    Enumerates from ``git ls-tree`` rather than a working-tree walk, so an
+    untracked or ignored file dropped into the checkout cannot slip into the
+    corpus (the corpus is exactly the pinned tree, nothing more). Paths are
+    returned absolute and sorted for a deterministic order.
+
+    Args:
+        repo_dir: The git working directory (the sparse-checkout root).
+        subdir: Repository subdirectory to enumerate.
+        exts: Doc extensions to keep.
+    """
+    listing = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_dir),
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "HEAD",
+            "--",
+            subdir,
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.splitlines()
+    lower = tuple(e.lower() for e in exts)
+    return sorted(repo_dir / rel for rel in listing if rel.lower().endswith(lower))
+
+
 def build_collection(
     docs_dir: Path,
     *,
     params: ChunkerParams = ChunkerParams(),
+    files: list[Path] | None = None,
 ) -> ChunkCollection:
     """Chunk ``docs_dir`` deterministically with filterable metadata attached.
 
@@ -168,10 +212,16 @@ def build_collection(
     Args:
         docs_dir: Root directory of the checked-out docs.
         params: Chunker identity parameters (must match the frozen golden set).
+        files: Explicit file list to chunk (e.g. from :func:`git_tracked_docs`);
+            ``None`` falls back to a sorted recursive walk of ``docs_dir`` (used by
+            fixtures that are not git checkouts).
     """
     root = docs_dir.resolve()
     exts = params.file_extensions
-    files = sorted({p for ext in exts for p in root.rglob(f"*{ext}")})
+    if files is None:
+        paths = sorted({p for ext in exts for p in root.rglob(f"*{ext}")})
+    else:
+        paths = sorted({p.resolve() for p in files})
 
     chunker = MarkdownChunker(
         min_char=params.min_chars,
@@ -180,7 +230,7 @@ def build_collection(
     )
     all_chunks: list[Chunk] = []
     errors: dict[str, Exception] = {}
-    for file_path in files:
+    for file_path in paths:
         rel = PurePosixPath(file_path.relative_to(root)).as_posix()
         try:
             content = file_path.read_text(encoding="utf-8")

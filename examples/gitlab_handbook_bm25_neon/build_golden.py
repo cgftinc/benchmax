@@ -37,7 +37,10 @@ from typing import Any
 
 from castform.rag.chunkers.models import ChunkCollection
 from castform.rag.corpus.embed import DEFAULT_EMBED_MODEL, platform_embed_fn
+from castform.rag.corpus.neon.client import NeonClient
+from castform.rag.corpus.neon.credentials import resolve_read_dsn_provider
 from castform.rag.corpus.neon.eval_schema import NeonEvalRecord
+from castform.rag.corpus.neon.schema import DEFAULT_TEXT_SEARCH_CONFIG, NeonTableSpec
 from castform.rag.corpus.neon.source import NeonChunkSource
 from castform.rag.qa_generation.generators import direct_llm
 from castform.rag.qa_generation.neon_entrypoint import neon_llm_url
@@ -57,7 +60,10 @@ from castform.rag.qa_generation.pipeline_config import (
 )
 
 from curated_rows import build_curated_rows
+from equivalence import build_equivalence_sets
+from equivalence import params as equivalence_params
 from multi_gold import MultiGoldExpander
+from qa_validity import NATURAL_CAPABILITIES, filter_records
 from handbook_corpus import (
     HANDBOOK_COMMIT,
     HANDBOOK_REPO_URL,
@@ -65,6 +71,7 @@ from handbook_corpus import (
     LOGICAL_NAME,
     ChunkerParams,
     build_collection,
+    git_tracked_docs,
     sparse_checkout,
 )
 
@@ -90,12 +97,14 @@ _LEXICAL_SYSTEM_PROMPT = (
 _VECTOR_SYSTEM_PROMPT = (
     "You are an expert QA dataset author for a semantic-retrieval benchmark. Write "
     "a single-focus question that asks for one specific fact from the GitLab "
-    "handbook. PARAPHRASE it: replace the handbook's distinctive surface words with "
-    "everyday synonyms, but KEEP the specific concept, entity, quantity, or step "
-    "the fact is about, so the question stays clearly about the same thing and a "
-    "semantic search can still find the source while a plain keyword search cannot. "
-    "Do not make it vague or generic. Write a concise answer under 60 words with no "
-    "preamble."
+    "handbook. PARAPHRASE the wording — prefer everyday synonyms over the handbook's "
+    "phrasing — BUT you MUST keep exactly one disambiguating ANCHOR from the source "
+    "verbatim: a proper noun, a person or team name, a product, tool, policy, or "
+    "config-key name, or a specific number, so the question points at THIS one chunk "
+    "and not a dozen similar ones. NEVER replace that anchor with a generic "
+    "placeholder like 'this contact', 'a certain tool', or 'the team'. Keep the "
+    "specific concept, entity, quantity, or step intact; do not make it vague. Write "
+    "a concise answer under 60 words with no preamble."
 )
 
 _HANDBOOK_DESCRIPTION = (
@@ -107,15 +116,34 @@ _HANDBOOK_DESCRIPTION = (
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _WORD_RE = re.compile(r"[a-z]{4,}")
 _STOP = frozenset(
-    {"what", "when", "which", "where", "does", "the", "and", "for", "how", "that",
-     "with", "from", "this", "into", "about", "gitlab", "handbook"}
+    {
+        "what",
+        "when",
+        "which",
+        "where",
+        "does",
+        "the",
+        "and",
+        "for",
+        "how",
+        "that",
+        "with",
+        "from",
+        "this",
+        "into",
+        "about",
+        "gitlab",
+        "handbook",
+    }
 )
 
 # Local lexical-hardness ceiling: a vector question is kept only if at most this
-# fraction of its content words also appear in its gold chunk (blind of Neon).
-# Moderate (not aggressive) — enough to stay not-keyword-solvable while leaving the
-# question semantically recoverable by the vector leg.
-_VECTOR_MAX_OVERLAP = 0.55
+# fraction of its content words also appear in its gold chunk (blind of Neon). Loose
+# on purpose: the anchored prompt deliberately shares one distinctive token with the
+# gold, so a tight ceiling would pressure the model to strip the anchor (the exact
+# defect the fix-round removes). This only rejects near-verbatim copies; the real
+# not-keyword-solvable check is the live BM25-ablation margin in the gate.
+_VECTOR_MAX_OVERLAP = 0.75
 
 
 def _content_words(text: str) -> set[str]:
@@ -148,7 +176,9 @@ def _pipeline_config(
 ) -> PipelineConfig:
     return PipelineConfig(
         platform=PlatformConfig(),
-        corpus=CorpusConfig(corpus_name=LOGICAL_NAME, corpus_id="", min_chunk_chars=400),
+        corpus=CorpusConfig(
+            corpus_name=LOGICAL_NAME, corpus_id="", min_chunk_chars=400
+        ),
         corpus_context=CorpusContextConfig(
             enabled=False,
             description=_HANDBOOK_DESCRIPTION,
@@ -206,29 +236,37 @@ def run_qa_pass(
     base_domain: str,
     seed: int,
     max_overlap: float | None,
+    reuse: bool = False,
 ) -> list[NeonEvalRecord]:
     """Run one qa-gen pass forcing ``style_dist`` and map rows to eval records.
 
     ``max_overlap`` (vector pass only) drops questions whose content words overlap
     the gold chunk above the ceiling — a LOCAL, retrieval-free hardness filter.
+    ``reuse`` reads the prior pass's raw output instead of regenerating (so curated
+    / metric iterations do not re-spend on qa-gen).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    cfg = _pipeline_config(
-        system_prompt=system_prompt, n_samples=n_samples, out_dir=out_dir, seed=seed
+    cached = any(
+        (out_dir / n).exists() and (out_dir / n).stat().st_size > 0
+        for n in ("train_dataset.jsonl", "eval_dataset.jsonl")
     )
-    cfg.pin_llm_base_url(neon_llm_url(base_domain))
+    if not (reuse and cached):
+        cfg = _pipeline_config(
+            system_prompt=system_prompt, n_samples=n_samples, out_dir=out_dir, seed=seed
+        )
+        cfg.pin_llm_base_url(neon_llm_url(base_domain))
 
-    orig_style = direct_llm.get_style_distribution
-    orig_auto = auto_tune
-    direct_llm.get_style_distribution = lambda _qa_type: dict(style_dist)
-    import castform.rag.qa_generation.pipeline as _pipeline_mod
+        orig_style = direct_llm.get_style_distribution
+        orig_auto = auto_tune
+        direct_llm.get_style_distribution = lambda _qa_type: dict(style_dist)
+        import castform.rag.qa_generation.pipeline as _pipeline_mod
 
-    _pipeline_mod.auto_tune = lambda *a, **k: {}  # keep the requested style mix
-    try:
-        run_pipeline(cfg, source_factory=lambda _c: source)
-    finally:
-        direct_llm.get_style_distribution = orig_style
-        _pipeline_mod.auto_tune = orig_auto
+        _pipeline_mod.auto_tune = lambda *a, **k: {}  # keep the requested style mix
+        try:
+            run_pipeline(cfg, source_factory=lambda _c: source)
+        finally:
+            direct_llm.get_style_distribution = orig_style
+            _pipeline_mod.auto_tune = orig_auto
 
     records: list[NeonEvalRecord] = []
     for row in _read_qa_rows(out_dir):
@@ -237,7 +275,8 @@ def run_qa_pass(
         gold = [
             str(rc.get("id"))
             for rc in refs
-            if _HEX64.match(str(rc.get("id", ""))) and str(rc.get("id")) in collection_hashes
+            if _HEX64.match(str(rc.get("id", "")))
+            and str(rc.get("id")) in collection_hashes
         ]
         if not question or not gold:
             continue
@@ -267,6 +306,32 @@ def _dedup(records: list[NeonEvalRecord]) -> list[NeonEvalRecord]:
     return out
 
 
+def _current_spec() -> NeonTableSpec:
+    """Resolve the active corpus version to a spec (for equivalence neighbour reads)."""
+    ro = NeonClient(resolve_read_dsn_provider(None))
+    rows = ro.execute(ro.read_ledger_sql(), {"logical": LOGICAL_NAME})
+    for version, _state, is_current in rows:
+        if is_current:
+            return NeonTableSpec(
+                LOGICAL_NAME, version, text_search_config=DEFAULT_TEXT_SEARCH_CONFIG
+            )
+    raise LookupError(f"no current published version for {LOGICAL_NAME!r}")
+
+
+def _expand_gold(
+    records: list[NeonEvalRecord], mapping: dict[str, list[str]]
+) -> list[NeonEvalRecord]:
+    out = []
+    for r in records:
+        gold: list[str] = []
+        for h in r.gold_chunk_hashes:
+            gold.extend(mapping.get(h, [h]))
+        out.append(
+            r.model_copy(update={"gold_chunk_hashes": list(dict.fromkeys(gold))})
+        )
+    return out
+
+
 def build_golden(
     *,
     work_dir: Path,
@@ -277,12 +342,24 @@ def build_golden(
     n_filter: int = 10,
     n_hybrid: int = 8,
     seed: int = 42,
+    reuse_qa: bool = False,
     build_timestamp: str,
 ) -> dict[str, Any]:
-    """Author the full golden set and return the provenance manifest."""
+    """Author the full cleaned golden set and return the provenance manifest.
+
+    Pipeline: generate keyword (lexical) + anchored-paraphrase (vector) qa rows and
+    the curated filter/hybrid probes; screen the NATURAL-LANGUAGE rows through the
+    blind answerability filter (:mod:`qa_validity`), dropping only defective pairs
+    with a recorded reason; then expand every kept row's gold with judge-confirmed
+    same-file supporting chunks (:mod:`multi_gold`) and templated near-duplicates
+    (:mod:`equivalence`). The frozen JSONL + manifest record the full drop audit and
+    all authoring parameters.
+    """
+    llm_url = neon_llm_url(base_domain)
     params = ChunkerParams()
     docs_dir = sparse_checkout(work_dir, commit=HANDBOOK_COMMIT)
-    collection = build_collection(docs_dir, params=params)
+    tracked = git_tracked_docs(work_dir, HANDBOOK_SUBDIR, params.file_extensions)
+    collection = build_collection(docs_dir, params=params, files=tracked)
     collection_hashes = {c.hash for c in collection}
     source = bind_source(collection, base_domain)
 
@@ -297,6 +374,7 @@ def build_golden(
         base_domain=base_domain,
         seed=seed,
         max_overlap=None,
+        reuse=reuse_qa,
     )
     vector = run_qa_pass(
         source,
@@ -309,21 +387,33 @@ def build_golden(
         base_domain=base_domain,
         seed=seed + 1,
         max_overlap=_VECTOR_MAX_OVERLAP,
+        reuse=reuse_qa,
     )
     curated = build_curated_rows(collection, n_filter=n_filter, n_hybrid=n_hybrid)
 
-    # Judge-confirmed multi-gold: credit same-file chunks that also answer the
-    # question (blind of Neon retrieval), so an equally-correct chunk is not a miss.
-    expander = MultiGoldExpander(collection, base_url=neon_llm_url(base_domain))
-    expanded = [
+    # R1: drop DEFECTIVE natural-language pairs (blind of retrieval); curated probes
+    # are answerable-by-construction and exempt (see qa_validity).
+    natural = lexical + vector
+    kept_natural, dropped, vjudge = filter_records(
+        natural, collection, base_url=llm_url
+    )
+    rows = kept_natural + curated
+
+    # Expand gold: judge-confirmed same-file chunks, then templated near-duplicates.
+    expander = MultiGoldExpander(collection, base_url=llm_url)
+    rows = [
         r.model_copy(
             update={"gold_chunk_hashes": expander.expand(r.query, r.gold_chunk_hashes)}
         )
-        for r in lexical + vector + curated
+        for r in rows
     ]
+    all_gold = sorted({h for r in rows for h in r.gold_chunk_hashes})
+    equiv = build_equivalence_sets(
+        NeonClient(resolve_read_dsn_provider(None)), _current_spec(), all_gold
+    )
+    rows = _expand_gold(rows, equiv)
 
-    records = _dedup(expanded)
-    # Deterministic on-disk order: by mode then query.
+    records = _dedup(rows)
     records.sort(key=lambda r: (r.search_mode, r.query))
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -332,10 +422,14 @@ def build_golden(
         for r in records:
             f.write(r.model_dump_json() + "\n")
 
-    counts: dict[str, int] = {}
+    mode_counts: dict[str, int] = {}
+    cap_counts: dict[str, int] = {}
     for r in records:
-        counts[r.search_mode] = counts.get(r.search_mode, 0) + 1
-    counts["curated_filter_hybrid"] = len(curated)
+        mode_counts[r.search_mode] = mode_counts.get(r.search_mode, 0) + 1
+        cap_counts[r.capability] = cap_counts.get(r.capability, 0) + 1
+    dropped_by_reason: dict[str, int] = {}
+    for d in dropped:
+        dropped_by_reason[d["reason"]] = dropped_by_reason.get(d["reason"], 0) + 1
 
     return {
         "dataset": frozen.name,
@@ -349,18 +443,46 @@ def build_golden(
         "chunker": params.as_dict(),
         "chunk_count": len(collection_hashes),
         "embedder": {"model": DEFAULT_EMBED_MODEL, "dim": 3072},
-        "generator_model": GENERATOR_MODEL,
-        "judge_model": JUDGE_MODEL,
-        "blind_filters": list(BLIND_FILTERS),
-        "vector_max_lexical_overlap": _VECTOR_MAX_OVERLAP,
+        "models": {
+            "generator_requested": GENERATOR_MODEL,
+            "judge_requested": JUDGE_MODEL,
+            "judge_resolved": vjudge.resolved_model,
+        },
+        "authoring_params": {
+            "lexical_samples": lexical_samples,
+            "vector_samples": vector_samples,
+            "n_filter": n_filter,
+            "n_hybrid": n_hybrid,
+            "seed": seed,
+            "blind_filters": list(BLIND_FILTERS),
+            "vector_max_lexical_overlap": _VECTOR_MAX_OVERLAP,
+            "vector_prompt_keeps_anchor": True,
+        },
+        "validity_filter": {
+            "scope_capabilities": sorted(NATURAL_CAPABILITIES),
+            "natural_generated": len(natural),
+            "natural_kept": len(kept_natural),
+            "dropped": len(dropped),
+            "defective_rate": round(len(dropped) / max(len(natural), 1), 4),
+            "dropped_by_reason": dropped_by_reason,
+            "dropped_sample": dropped[:25],
+            "note": (
+                "curated single-token/bag-of-words filter+hybrid probes are "
+                "answerable-by-construction and exempt from the answerability judge"
+            ),
+        },
         "multi_gold": {
             "method": "judge-confirmed same-file supporting chunks (blind)",
             "judge_model": JUDGE_MODEL,
         },
+        "equivalence_set": equivalence_params(),
         "gold_per_row_mean": round(
-            sum(len(r.gold_chunk_hashes) for r in records) / len(records), 3
+            sum(len(r.gold_chunk_hashes) for r in records) / max(len(records), 1), 3
         ),
-        "row_counts": counts,
+        "decoy_row_count": sum(1 for r in records if r.decoy_chunk_hashes),
+        "decoy_total": sum(len(r.decoy_chunk_hashes) for r in records),
+        "row_counts_by_mode": mode_counts,
+        "row_counts_by_capability": cap_counts,
         "total_rows": len(records),
     }
 
@@ -376,9 +498,14 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--n-hybrid", type=int, default=8)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
+        "--reuse-qa",
+        action="store_true",
+        help="reuse the prior qa-gen output instead of regenerating (no re-spend)",
+    )
+    p.add_argument(
         "--build-timestamp",
         required=True,
-        help="ISO-8601 build timestamp recorded in the manifest",
+        help="iso-8601 build timestamp recorded in the manifest",
     )
     return p.parse_args()
 
@@ -394,6 +521,7 @@ def main() -> int:
         n_filter=args.n_filter,
         n_hybrid=args.n_hybrid,
         seed=args.seed,
+        reuse_qa=args.reuse_qa,
         build_timestamp=args.build_timestamp,
     )
     manifest_path = args.out_dir / "provenance.json"

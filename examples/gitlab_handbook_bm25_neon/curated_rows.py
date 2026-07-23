@@ -89,9 +89,7 @@ def _index(collection: ChunkCollection) -> dict[str, list[_TokenChunk]]:
         section = str(md.get("handbook_section", ""))
         depth = int(md.get("path_depth", 0) or 0)
         for tok in _tokens(chunk.content):
-            postings[tok].append(
-                _TokenChunk(tok, chunk.hash, section, depth)
-            )
+            postings[tok].append(_TokenChunk(tok, chunk.hash, section, depth))
     return postings
 
 
@@ -100,7 +98,9 @@ def _sorted_chunks(collection: ChunkCollection) -> list[Chunk]:
     return sorted(collection.chunks, key=lambda c: c.hash)
 
 
-def _candidates(postings: dict[str, list[_TokenChunk]]) -> list[tuple[str, _TokenChunk, list[_TokenChunk]]]:
+def _candidates(
+    postings: dict[str, list[_TokenChunk]],
+) -> list[tuple[str, _TokenChunk, list[_TokenChunk]]]:
     """Yield (token, gold, decoys) where the token is unique in the gold's section.
 
     Deterministic: tokens are visited in sorted order and the first section with a
@@ -129,7 +129,9 @@ def _diverse_select(
     cands: list[tuple[str, _TokenChunk, list[_TokenChunk]]], n: int
 ) -> list[tuple[str, _TokenChunk, list[_TokenChunk]]]:
     """Pick ``n`` candidates spread across as many sections as possible (stable)."""
-    by_section: dict[str, list[tuple[str, _TokenChunk, list[_TokenChunk]]]] = defaultdict(list)
+    by_section: dict[str, list[tuple[str, _TokenChunk, list[_TokenChunk]]]] = (
+        defaultdict(list)
+    )
     for cand in cands:
         by_section[cand[1].section].append(cand)
     picked: list[tuple[str, _TokenChunk, list[_TokenChunk]]] = []
@@ -156,9 +158,7 @@ def _section_and_depth_filter(section: str, depth: int) -> dict:
     }
 
 
-def _multi_term_query(
-    content: str, seed: str, freq: dict[str, int], k: int = 5
-) -> str:
+def _multi_term_query(content: str, seed: str, freq: dict[str, int], k: int = 5) -> str:
     """Build a multi-term query: the seed token plus the chunk's rarest other words.
 
     A single-token query is a lexical strength that the vector leg only dilutes; a

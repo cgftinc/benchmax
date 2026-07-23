@@ -81,7 +81,10 @@ class MultiGoldExpander:
                 model=self._model,
                 messages=[
                     {"role": "system", "content": _JUDGE_SYSTEM},
-                    {"role": "user", "content": f"QUESTION: {question}\n\nEXCERPTS:\n{blocks}"},
+                    {
+                        "role": "user",
+                        "content": f"QUESTION: {question}\n\nEXCERPTS:\n{blocks}",
+                    },
                 ],
             )
             text = resp.choices[0].message.content or "[]"
@@ -96,13 +99,17 @@ class MultiGoldExpander:
         (capped at :data:`_MAX_CANDIDATES`). The anchor set is always preserved.
         """
         gold = list(dict.fromkeys(anchor_hashes))
-        anchor = next((self._by_hash.get(h) for h in anchor_hashes if h in self._by_hash), None)
+        anchor = next(
+            (self._by_hash.get(h) for h in anchor_hashes if h in self._by_hash), None
+        )
         if anchor is None:
             return gold
         file = str(dict(anchor.metadata).get("file", ""))
         anchor_idx = int(dict(anchor.metadata).get("index", 0) or 0)
         siblings = [c for c in self._by_file.get(file, []) if c.hash not in set(gold)]
-        siblings.sort(key=lambda c: abs(int(dict(c.metadata).get("index", 0) or 0) - anchor_idx))
+        siblings.sort(
+            key=lambda c: abs(int(dict(c.metadata).get("index", 0) or 0) - anchor_idx)
+        )
         candidates = siblings[:_MAX_CANDIDATES]
         if not candidates:
             return gold

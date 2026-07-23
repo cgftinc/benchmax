@@ -15,6 +15,7 @@ from castform.rag.corpus.neon.schema import NeonTableSpec  # noqa: E402
 
 from build_corpus import (  # noqa: E402
     NeonIngestError,
+    _build_and_activate,
     _finalize_version,
     _resolve_build_version,
     _stream_insert,
@@ -24,7 +25,9 @@ _SPEC = NeonTableSpec("t", 1)
 
 
 def _chunk(i: int) -> Chunk:
-    return Chunk(content=f"chunk content number {i}", metadata=(("index", i),), hash=f"{i:064x}")
+    return Chunk(
+        content=f"chunk content number {i}", metadata=(("index", i),), hash=f"{i:064x}"
+    )
 
 
 class _CountingEmbed:
@@ -81,12 +84,34 @@ class _FakeClient:
         self.conn = _FakeConn(self.store)
         self.ready = False
         self.vacuumed = False
+        self.activated = False
+        self.table_created = bool(present)  # rows present => table already exists
+        self.created_table_calls = 0
+        self.allocated: list[int] = []
 
     def read_ledger_sql(self) -> str:
         return "LEDGER"
 
     def _live_conn(self) -> _FakeConn:
         return self.conn
+
+    def create_extensions_sql(self) -> list[str]:
+        return []
+
+    def register_vector_types(self) -> None:
+        pass
+
+    def create_ledger_sql(self) -> list[str]:
+        return []
+
+    def allocate_version(self, spec: object) -> None:
+        self.allocated.append(spec.version)
+
+    def create_table_sql(self, _spec: object) -> str:
+        return "CREATE TABLE t"
+
+    def activate(self, _spec: object, _grant: object) -> None:
+        self.activated = True
 
     def create_ann_index_sql(self, _spec: object) -> str:
         return "ANN"
@@ -110,6 +135,12 @@ class _FakeClient:
         if s == "READY":
             self.ready = True
             return []
+        if "CREATE TABLE" in s:
+            self.table_created = True
+            self.created_table_calls += 1
+            return []
+        if "information_schema.tables" in s:
+            return [(1,)] if self.table_created else []
         if "pg_indexes" in s:
             return []  # no indexes exist yet -> finalize creates them
         if "SELECT id FROM" in s:
@@ -150,12 +181,51 @@ def test_partial_corpus_is_not_finalized() -> None:
     assert not client.ready
 
 
-def test_resolve_build_version_reuses_building() -> None:
-    building = _FakeClient(ledger=[(1, "activated", False), (2, "building", False)])
-    assert _resolve_build_version(building, "t") == (2, True)
+def test_resolve_build_version_classifies_ledger_state() -> None:
+    resume = _FakeClient(ledger=[(1, "activated", False), (2, "building", False)])
+    assert _resolve_build_version(resume, "t") == (2, "resume")
+
+    # a ready-but-not-current version outranks resume: publish it, don't re-embed
+    finalized = _FakeClient(ledger=[(1, "activated", True), (2, "ready", False)])
+    assert _resolve_build_version(finalized, "t") == (2, "finalized")
 
     activated = _FakeClient(ledger=[(1, "activated", True)])
-    assert _resolve_build_version(activated, "t") == (2, False)
+    assert _resolve_build_version(activated, "t") == (2, "fresh")
 
     empty = _FakeClient(ledger=[])
-    assert _resolve_build_version(empty, "t") == (1, False)
+    assert _resolve_build_version(empty, "t") == (1, "fresh")
+
+
+def test_resume_creates_missing_table() -> None:
+    """A building row whose table was never created (crash between allocate and
+    create_table) gets its table (re)created before the resume inserts."""
+    client = _FakeClient(ledger=[(1, "building", False)])
+    assert client.table_created is False
+    chunks = [_chunk(i) for i in range(4)]
+    emb = _CountingEmbed()
+    version, present = _build_and_activate(client, "t", chunks, emb, batch_size=2)
+    assert version == 1
+    assert client.created_table_calls == 1  # table (re)created on resume
+    assert present == 4 and client.activated and client.ready
+    assert len(emb.seen) == 4  # a fresh table => everything embedded
+
+
+def test_finalized_version_activates_without_reembed() -> None:
+    """A ready-but-unpublished version is activated directly — never re-embedded."""
+    chunks = [_chunk(i) for i in range(4)]
+    client = _FakeClient(present={c.hash for c in chunks}, ledger=[(1, "ready", False)])
+    emb = _CountingEmbed()
+    version, present = _build_and_activate(client, "t", chunks, emb, batch_size=2)
+    assert version == 1 and present == 4
+    assert client.activated
+    assert emb.seen == []  # nothing re-embedded
+    assert client.created_table_calls == 0  # existing table reused
+
+
+def test_finalized_version_refuses_partial() -> None:
+    """A ready version short of the expected rows is not published."""
+    chunks = [_chunk(i) for i in range(4)]
+    client = _FakeClient(present={chunks[0].hash}, ledger=[(1, "ready", False)])
+    with pytest.raises(NeonIngestError, match="ready version"):
+        _build_and_activate(client, "t", chunks, _CountingEmbed(), batch_size=2)
+    assert not client.activated
