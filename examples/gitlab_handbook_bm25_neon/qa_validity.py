@@ -55,6 +55,7 @@ DROP_REASONS = (
     "wrong-gold",  # gold-doesn't-answer
     "non-unique-templated-answer",  # templated answer with no unique gold
     "unanswerable",  # not answerable from the gold as written
+    "non-unique-answer",  # gold gives several distinct answers; no single gold answer
 )
 
 _VERDICTS = ("keep", "fix", "drop")

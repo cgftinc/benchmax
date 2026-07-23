@@ -1,13 +1,16 @@
 {
   "defect_ceiling": 0.35,
-  "defect_rate": 0.0,
-  "dropped_by_reason": {},
+  "defect_rate": 0.0067,
+  "dropped_by_reason": {
+    "non-unique-answer": 1
+  },
   "judge_resolved_model": "gpt-5.4-mini-2026-03-17",
   "natural_judged": 150,
+  "note": "1 fix (Cloud Flare cutoff ambiguity) escalated to drop on cross-review directive; 0 rubric drops",
   "out": "examples/gitlab_handbook_bm25_neon/datasets/verdicts_v2.jsonl",
   "over_ceiling": false,
   "verdict_tally": {
-    "fix": 1,
+    "drop": 1,
     "keep": 149
   }
 }
