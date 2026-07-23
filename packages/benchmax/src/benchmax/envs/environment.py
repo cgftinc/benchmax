@@ -113,7 +113,7 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
                 )
             elif isinstance(result, BaseException):
                 contract_errors.append(result)
-            elif result.termination_reason != "finished":
+            elif result.termination_reason not in ("finished", "context_exceeded"):
                 _validate_failure_rewards(result, reward_keys)
                 _log_terminal_attempt(result)
                 outcomes[result.rollout_id] = RolloutOutcome(
@@ -121,6 +121,8 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
                     termination_reason=result.termination_reason,
                 )
             else:
+                if result.termination_reason != "finished":
+                    _log_terminal_attempt(result)
                 rollouts.append(result)
 
         if contract_errors:

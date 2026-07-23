@@ -256,7 +256,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     example_args=example_args,
                     split=request.split,
                 )
-                if termination_reason != "finished":
+                if termination_reason not in ("finished", "context_exceeded"):
                     return replace(
                         rollout,
                         rewards={key: 0.0 for key in self.reward_keys},
