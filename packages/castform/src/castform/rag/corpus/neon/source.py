@@ -443,12 +443,21 @@ class NeonChunkSource:
         per-logical advisory lock (:meth:`NeonClient.scan_in_snapshot`), so a
         concurrent activation cannot swap the version mid-scan and interleave rows
         from two versions — full-corpus materialization (qa-gen) is reproducible
-        run to run. The scan runs on its own dedicated connection, closed when the
-        iterator is exhausted or abandoned.
+        run to run. The scan runs on its own dedicated connection.
+
+        The inner iterator is closed in a ``finally`` so that early-abandoning this
+        generator (partial iteration then ``.close()`` or drop) deterministically
+        propagates closure inward — a bare ``for`` loop does NOT forward close to
+        its iterator — committing/rolling back the transaction, closing the
+        connection, and releasing the advisory lock immediately rather than at GC
+        (a leaked scan would otherwise hold the shared lock and block activation).
         """
-        client = self._reader()
-        for row in client.scan_in_snapshot(self._logical_name, batch_size):
-            yield self._row_to_chunk(row)
+        inner = self._reader().scan_in_snapshot(self._logical_name, batch_size)
+        try:
+            for row in inner:
+                yield self._row_to_chunk(row)
+        finally:
+            inner.close()
 
     def get_chunk_with_context(self, chunk: Chunk, max_chars: int = 200) -> dict:
         """Return *chunk* with truncated previews of its same-file neighbors.

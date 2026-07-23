@@ -55,6 +55,7 @@ class _FakeScanConn:
         self._pinned_current: int | None = None
         self._txn_exec = 0
         self.transactions_entered = 0
+        self.transactions_exited = 0
         self.locked = False
         self.closed_count = 0
 
@@ -70,6 +71,9 @@ class _FakeScanConn:
                 return self
 
             def __exit__(self, *exc):
+                # Runs on normal exit AND on GeneratorExit (early close): a real
+                # transaction rollback here is what releases the advisory lock.
+                outer.transactions_exited += 1
                 outer._pinned = None
                 return False
 
@@ -152,3 +156,29 @@ def test_scan_holds_snapshot_against_concurrent_activation(monkeypatch) -> None:
     assert conn.transactions_entered == 1  # ONE transaction for the whole iterator
     assert conn.locked  # shared advisory lock acquired inside that transaction
     assert conn.closed_count == 1  # dedicated connection closed exactly once
+
+
+def test_scan_early_close_releases_lock_and_connection(monkeypatch) -> None:
+    """Early-abandoning the PUBLIC iterator (partial iterate then .close()) must
+    deterministically close the inner scan — transaction exited, connection closed,
+    advisory lock released — WITHOUT waiting for GC."""
+    rows = [
+        make_read_row("a", "ca", source_file="a.md", chunk_index=0),
+        make_read_row("b", "cb", source_file="a.md", chunk_index=1),
+    ]
+    conn = _FakeScanConn({1: rows}, current=1)
+    source = make_neon_source(read_client=_scan_client(conn, monkeypatch))
+
+    it = source.scan_chunks(batch_size=1)
+    first = next(it)  # consume exactly one item; the scan is now mid-stream
+    assert first.hash == "a"
+    assert conn.transactions_entered == 1
+    assert conn.transactions_exited == 0  # still open, lock still held
+    assert conn.closed_count == 0
+
+    it.close()  # early close of the public generator
+
+    # Closure propagates inward immediately (no GC): txn exited (lock released) and
+    # the dedicated connection closed, exactly once each.
+    assert conn.transactions_exited == 1
+    assert conn.closed_count == 1
