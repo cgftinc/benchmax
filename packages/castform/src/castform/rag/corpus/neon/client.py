@@ -1120,11 +1120,16 @@ class NeonClient:
     def scan_chunks(self, logical_name: str, batch_size: int = 1000) -> Any:
         """Yield every row of the active corpus in the frozen scan order (B9).
 
-        A generator over keyset pages: deterministic and pageable so full-corpus
-        materialization (qa-gen) is reproducible run to run. Yields raw row tuples
-        (``READ_COLUMNS`` order) — the ``Chunk`` mapping lives in the ChunkSource,
-        keeping the client ``Chunk``-free. ``id``/``source_file``/``chunk_index``
-        drive the next cursor.
+        A generator over keyset pages: deterministic and pageable. Yields raw row
+        tuples (``READ_COLUMNS`` order) — the ``Chunk`` mapping lives in the
+        ChunkSource, keeping the client ``Chunk``-free. ``id``/``source_file``/
+        ``chunk_index`` drive the next cursor.
+
+        Low-level primitive: each page runs through :meth:`execute`, which COMMITS
+        per statement, so a concurrent activation CAN swap the reader view between
+        pages. For a snapshot-consistent full-corpus scan (qa-gen), use
+        :meth:`scan_in_snapshot`, which holds one transaction + the shared advisory
+        lock for the whole iterator.
         """
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
@@ -1146,6 +1151,84 @@ class NeonClient:
                 return
             last = rows[-1]
             after = (last[file_i], last[index_i], last[id_i])
+
+    def _resolve_current_version(self, conn: Any, logical_name: str) -> int:
+        """Return the current published version (ledger read), or raise if none.
+
+        Read on *conn* (inside the caller's locked transaction), mirroring
+        :func:`query._resolve_current_spec`, so a scan can fail fast with a clear
+        error rather than hitting a missing view.
+        """
+        cur = conn.execute(self.read_ledger_sql(), {"logical": logical_name})
+        for version, _state, is_current in cur.fetchall():
+            if is_current:
+                return version
+        raise LookupError(
+            f"neon corpus {logical_name!r} has no current published version"
+        )
+
+    def scan_in_snapshot(self, logical_name: str, batch_size: int = 1000) -> Any:
+        """Snapshot-consistent full-corpus scan in the frozen order (B6/B9).
+
+        Streams every row of the active version in ``(source_file, chunk_index,
+        id)`` order within ONE read transaction that holds the shared per-logical
+        advisory lock for the iterator's whole lifetime. Because activation,
+        rollback, and prune each take the EXCLUSIVE advisory lock on the same key
+        as their first step (before any ``CREATE OR REPLACE VIEW`` or ``DROP
+        TABLE``), they block while this scan runs — so the reader view cannot be
+        re-pointed and no scanned version table can be dropped mid-scan, and every
+        page resolves to one consistent version. Versions are build-once-immutable,
+        so default (READ COMMITTED) isolation is sufficient; the lock, not the
+        isolation level, provides the stable snapshot.
+
+        Runs on a DEDICATED connection (not the client's cached one): the generator
+        suspends between pages with its transaction open, so sharing the cached
+        connection would corrupt any other read issued while the scan is paused.
+        The connection is always closed (``try/finally``), releasing the
+        xact-scoped lock even if the caller abandons the iterator.
+
+        Latency note: a long full-corpus scan holds the shared lock for its whole
+        duration, so a concurrent activation waits until the scan ends (and, by
+        fair lock queueing, briefly delays reads behind it). Acceptable for the
+        offline qa-gen materialization this serves.
+        """
+        import psycopg
+
+        validate_logical_name(logical_name)
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+        id_i = READ_COLUMNS.index("id")
+        file_i = READ_COLUMNS.index("source_file")
+        index_i = READ_COLUMNS.index("chunk_index")
+
+        conn = psycopg.connect(self._dsn_provider(), prepare_threshold=None)
+        try:
+            with conn.transaction():
+                conn.execute(
+                    self._advisory_lock_shared_stmt(), {"logical": logical_name}
+                )
+                self._resolve_current_version(conn, logical_name)  # fail-fast
+                after: tuple[Any, Any, Any] | None = None
+                while True:
+                    query = self.scan_page_sql(logical_name, after=after is not None)
+                    params: dict[str, Any] = {"batch_size": batch_size}
+                    if after is not None:
+                        (
+                            params["after_file"],
+                            params["after_index"],
+                            params["after_id"],
+                        ) = after
+                    rows = conn.execute(query, params).fetchall()
+                    if not rows:
+                        return
+                    for row in rows:
+                        yield row
+                    if len(rows) < batch_size:
+                        return
+                    last = rows[-1]
+                    after = (last[file_i], last[index_i], last[id_i])
+        finally:
+            conn.close()
 
     # --- end-to-end build lifecycle (B14) ------------------------------------
 

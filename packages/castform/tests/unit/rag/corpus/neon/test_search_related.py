@@ -13,6 +13,10 @@ unconditionally, no vacuous ``if``.
 
 from __future__ import annotations
 
+from typing import Any
+
+import psycopg
+import pytest
 from fakes.neon import (
     FakeAsyncQueryRunner,
     FakeQueryRunner,
@@ -22,6 +26,8 @@ from fakes.neon import (
 )
 
 from castform.rag.chunkers.models import Chunk
+from castform.rag.corpus.neon.async_source import _AsyncQueryRunner
+from castform.rag.corpus.neon.query import NeonQueryRequest
 
 
 def _chunk(content: str, source_file: str, chunk_index: int) -> Chunk:
@@ -142,3 +148,103 @@ def test_async_protocol_is_separate_from_sync():
     assert not isinstance(sync, AsyncChunkSource)
     # The async source conforms to the separate async protocol.
     assert isinstance(asynchronous, AsyncChunkSource)
+
+
+# ---------------------------------------------------------------------------
+# Real _AsyncQueryRunner: per-op connection lifecycle (prepare_threshold + close)
+# ---------------------------------------------------------------------------
+
+
+class _FakeAsyncCursor:
+    def __init__(self, rows: list[tuple], description: Any = None) -> None:
+        self._rows = rows
+        self.description = description
+
+    async def fetchall(self) -> list[tuple]:
+        return self._rows
+
+
+class _FakeAsyncConn:
+    """Per-op async connection: statement order is [lock, ledger, leg]."""
+
+    def __init__(self, *, ledger, legs, fail=False) -> None:
+        self._ledger = ledger
+        self._legs = legs
+        self._fail = fail
+        self._logical_exec = 0
+        self.closed_count = 0
+
+    def transaction(self):
+        class _Txn:
+            async def __aenter__(self_):
+                return self_
+
+            async def __aexit__(self_, *exc):
+                return False
+
+        return _Txn()
+
+    async def execute(self, query, params=None):
+        params = params or {}
+        if self._fail:
+            raise RuntimeError("boom")
+        if "top_k" in params:  # a retrieval leg
+            return _FakeAsyncCursor(self._legs, description=[("c",)])
+        self._logical_exec += 1
+        if self._logical_exec == 1:  # advisory lock (result unused)
+            return _FakeAsyncCursor([])
+        return _FakeAsyncCursor(self._ledger, description=[("c",)])  # ledger
+
+    async def close(self):
+        self.closed_count += 1
+
+
+async def _noop_register(_conn) -> None:  # skip pgvector registration in tests
+    pass
+
+
+def _runner() -> _AsyncQueryRunner:
+    return _AsyncQueryRunner(
+        lambda: "dsn://unused",
+        logical_name="c",
+        schema="s",
+        text_search_config="pg_catalog.english",
+    )
+
+
+async def test_async_runner_uses_no_prepare_and_closes_once_on_success(monkeypatch):
+    conn = _FakeAsyncConn(
+        ledger=[(1, "activated", True)],
+        legs=[("h1", "body", {}, "f.md", 0, -1.0)],
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_connect(dsn, **kw):
+        captured["dsn"] = dsn
+        captured["kw"] = kw
+        return conn
+
+    monkeypatch.setattr(psycopg.AsyncConnection, "connect", fake_connect)
+    runner = _runner()
+    monkeypatch.setattr(runner, "_register_vector", _noop_register)
+
+    rows = await runner.query_rows(NeonQueryRequest(mode="lexical", top_k=5, text="q"))
+
+    assert [r.chunk_id for r in rows] == ["h1"]
+    assert captured["kw"]["prepare_threshold"] is None  # no server-side auto-PREPARE
+    assert conn.closed_count == 1  # per-op connection closed exactly once
+
+
+async def test_async_runner_closes_once_on_failure(monkeypatch):
+    conn = _FakeAsyncConn(ledger=[], legs=[], fail=True)
+
+    async def fake_connect(dsn, **kw):
+        return conn
+
+    monkeypatch.setattr(psycopg.AsyncConnection, "connect", fake_connect)
+    runner = _runner()
+    monkeypatch.setattr(runner, "_register_vector", _noop_register)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await runner.query_rows(NeonQueryRequest(mode="lexical", top_k=5, text="q"))
+    assert conn.closed_count == 1  # closed even when the query body raises

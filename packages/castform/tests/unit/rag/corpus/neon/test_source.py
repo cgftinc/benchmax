@@ -84,13 +84,13 @@ class TestReads:
         ctx = source.get_chunk_with_context(chunk, max_chars=50)
         assert len(ctx["next_chunk_preview"]) == 50
         assert ctx["next_chunk_preview"].endswith("...")
-        assert ctx["prev_chunk_preview"] == "(No previous chunk)"
+        assert ctx["prev_chunk_preview"] == "(no previous chunk)"
 
     def test_get_chunk_with_context_no_file_metadata(self):
         source = make_neon_source(read_client=FakeReadClient())
         ctx = source.get_chunk_with_context(Chunk(content="x", metadata=()))
-        assert ctx["prev_chunk_preview"] == "(No previous chunk)"
-        assert ctx["next_chunk_preview"] == "(No next chunk)"
+        assert ctx["prev_chunk_preview"] == "(no previous chunk)"
+        assert ctx["next_chunk_preview"] == "(no next chunk)"
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +185,18 @@ class TestIngestVersioning:
         source = make_neon_source(embed_fn=None, write_client=FakeWriteClient())
         with pytest.raises(ValueError, match="embed_fn"):
             source.populate_from_chunks(ChunkCollection([_chunk("a")]))
+
+    def test_short_embedding_batch_raises_before_publishing(self):
+        """An embed_fn that returns fewer vectors than inputs must raise (data loss
+        guard) — NOT silently truncate and publish a version missing chunks."""
+        fake = FakeWriteClient()
+        # Returns exactly one vector no matter how many chunks were passed.
+        short_embed = lambda texts: [[0.1, 0.1, 0.1]]  # noqa: E731
+        source = make_neon_source(embed_fn=short_embed, write_client=fake)
+        collection = ChunkCollection([_chunk("a", index=0), _chunk("b", index=1)])
+        with pytest.raises(ValueError, match="exactly one embedding"):
+            source.populate_from_chunks(collection, show_summary=False)
+        assert fake.versions == {}  # nothing built or published
 
     def test_versioned_replace_atomic_swap_no_stale_rows_and_rollback(self):
         """Proves the F10 contract end to end: each ingest builds a NEW version and

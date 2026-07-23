@@ -71,8 +71,8 @@ class TestNoFileMetadata:
         source = make_neon_source(read_client=FakeReadClient())
         ctx = source.get_chunk_with_context(Chunk(content="body"))
         assert ctx["chunk_content"]
-        assert ctx["prev_chunk_preview"] == "(No previous chunk)"
-        assert ctx["next_chunk_preview"] == "(No next chunk)"
+        assert ctx["prev_chunk_preview"] == "(no previous chunk)"
+        assert ctx["next_chunk_preview"] == "(no next chunk)"
 
 
 class TestModeResolution:

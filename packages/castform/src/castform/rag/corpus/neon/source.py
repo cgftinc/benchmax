@@ -262,7 +262,7 @@ class NeonChunkSource:
         """
         if self._embed_fn is None:
             raise ValueError(
-                "neon ingest requires an embed_fn — the embedding column is NOT NULL"
+                "neon ingest requires an embed_fn — every chunk needs an embedding"
             )
         self.collection = collection
         version = self._next_version()
@@ -367,8 +367,9 @@ class NeonChunkSource:
         if not chunks:
             return []
         vectors = self._embed_all([c.content for c in chunks], batch_size)
+        # strict=True is a backstop; _embed_all already guarantees the 1:1 count.
         rows: list[tuple[Any, ...]] = []
-        for chunk, vector in zip(chunks, vectors):
+        for chunk, vector in zip(chunks, vectors, strict=True):
             metadata = chunk.metadata_dict
             rows.append(
                 (
@@ -383,12 +384,25 @@ class NeonChunkSource:
         return rows
 
     def _embed_all(self, contents: list[str], batch_size: int) -> list[list[float]]:
-        """Embed *contents* in batches, preserving order (embed_fn required)."""
+        """Embed *contents* in batches, one vector per input, preserving order.
+
+        Each batch is checked for a 1:1 vector-per-chunk count BEFORE any row is
+        built, so an ``embed_fn`` that returns a short batch fails loudly here
+        instead of silently truncating the corpus (which would publish a version
+        missing chunks). ``embed_fn`` is required (guarded by the caller).
+        """
         assert self._embed_fn is not None  # guarded by populate_from_chunks
         step = max(batch_size, 1)
         vectors: list[list[float]] = []
         for start in range(0, len(contents), step):
-            vectors.extend(self._embed_fn(contents[start : start + step]))
+            batch = contents[start : start + step]
+            result = self._embed_fn(batch)
+            if len(result) != len(batch):
+                raise ValueError(
+                    f"embed_fn returned {len(result)} vectors for {len(batch)} "
+                    "chunks — each chunk must get exactly one embedding"
+                )
+            vectors.extend(result)
         return vectors
 
     def _next_version(self) -> int:
@@ -425,11 +439,15 @@ class NeonChunkSource:
     def scan_chunks(self, batch_size: int = 1000) -> Iterator[Chunk]:
         """Yield every chunk in the stable ``(file, index, id)`` order (B6).
 
-        A generator over the client's keyset-paged, reconnect-safe scan so
-        full-corpus materialization (qa-gen) is reproducible run to run.
+        Streams the whole corpus within ONE read transaction holding the shared
+        per-logical advisory lock (:meth:`NeonClient.scan_in_snapshot`), so a
+        concurrent activation cannot swap the version mid-scan and interleave rows
+        from two versions — full-corpus materialization (qa-gen) is reproducible
+        run to run. The scan runs on its own dedicated connection, closed when the
+        iterator is exhausted or abandoned.
         """
         client = self._reader()
-        for row in client.scan_chunks(self._logical_name, batch_size):
+        for row in client.scan_in_snapshot(self._logical_name, batch_size):
             yield self._row_to_chunk(row)
 
     def get_chunk_with_context(self, chunk: Chunk, max_chars: int = 200) -> dict:
@@ -445,8 +463,8 @@ class NeonChunkSource:
         if source_file is None or index is None:
             return {
                 "chunk_content": chunk.chunk_str(),
-                "prev_chunk_preview": "(No previous chunk)",
-                "next_chunk_preview": "(No next chunk)",
+                "prev_chunk_preview": "(no previous chunk)",
+                "next_chunk_preview": "(no next chunk)",
             }
         client = self._reader()
         rows = client.execute(
@@ -461,12 +479,12 @@ class NeonChunkSource:
             "prev_chunk_preview": (
                 self._preview(prev, max_chars, "leading")
                 if prev is not None
-                else "(No previous chunk)"
+                else "(no previous chunk)"
             ),
             "next_chunk_preview": (
                 self._preview(nxt, max_chars, "trailing")
                 if nxt is not None
-                else "(No next chunk)"
+                else "(no next chunk)"
             ),
         }
 

@@ -156,7 +156,7 @@ class FakeReadClient:
             return list(self._neighbor_rows)
         return []
 
-    def scan_chunks(self, logical_name: str, batch_size: int = 1000) -> Any:
+    def scan_in_snapshot(self, logical_name: str, batch_size: int = 1000) -> Any:
         yield from self._scan_rows
 
 
