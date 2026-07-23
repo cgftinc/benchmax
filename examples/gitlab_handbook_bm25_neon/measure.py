@@ -133,11 +133,20 @@ def measure(
             )
             for r in recs
         ]
+        h5, h10 = hit_at_k(ev5), hit_at_k(ev10)
+        mrr5 = sum(e.reciprocal_rank for e in ev5) / len(ev5)
+        # Invariant: hit@k / MRR are per-query means of a per-query any-hit boolean
+        # and a reciprocal rank, so each is in [0, 1] by construction. Assert it so a
+        # metric regression (e.g. summing total gold hits over the equivalence set)
+        # is caught here, not shipped into a threshold.
+        assert 0.0 <= h5 <= 1.0 and 0.0 <= h10 <= 1.0 and 0.0 <= mrr5 <= 1.0, (
+            mode, h5, h10, mrr5
+        )
         report["per_mode"][mode] = {
             "n": len(recs),
-            "hit_at_5": round(hit_at_k(ev5), 4),
-            "hit_at_10": round(hit_at_k(ev10), 4),
-            "mrr_at_5": round(sum(e.reciprocal_rank for e in ev5) / len(ev5), 4),
+            "hit_at_5": round(h5, 4),
+            "hit_at_10": round(h10, 4),
+            "mrr_at_5": round(mrr5, 4),
             "decoy_violations": sum(e.decoy_violation for e in ev5),
         }
 
@@ -149,13 +158,28 @@ def measure(
         report["baselines"]["vector_bm25_mrr_at_5"] = round(
             sum(e.reciprocal_rank for e in v_lex) / len(v_lex), 4
         )
-    # hybrid single-leg baselines (each with the row's filter applied).
+    # hybrid single-leg baselines (each with the row's filter applied): hit AND MRR,
+    # so the hybrid MRR bar is a real baseline+margin, not a hardcoded 0.
     h_recs = per_mode_recs["hybrid"]
     if h_recs:
         h_lex = evals(h_recs, "lexical")
         h_vec = evals(h_recs, "vector")
         report["baselines"]["hybrid_lexical_only_hit_at_5"] = round(hit_at_k(h_lex), 4)
         report["baselines"]["hybrid_vector_only_hit_at_5"] = round(hit_at_k(h_vec), 4)
+        report["baselines"]["hybrid_lexical_only_mrr_at_5"] = round(
+            sum(e.reciprocal_rank for e in h_lex) / len(h_lex), 4
+        )
+        report["baselines"]["hybrid_vector_only_mrr_at_5"] = round(
+            sum(e.reciprocal_rank for e in h_vec) / len(h_vec), 4
+        )
+        hyb_hit = report["per_mode"].get("hybrid", {}).get("hit_at_5", 0.0)
+        best_leg = max(
+            report["baselines"]["hybrid_lexical_only_hit_at_5"],
+            report["baselines"]["hybrid_vector_only_hit_at_5"],
+        )
+        # fusion lift: how much the fused hit@5 beats the best single leg. <=0 means a
+        # single mode already solves the rows, so a "beats both legs" gate is vacuous.
+        report["baselines"]["hybrid_fusion_lift_hit_at_5"] = round(hyb_hit - best_leg, 4)
 
     report["thresholds"] = _thresholds(report, margin)
     return report
@@ -163,27 +187,42 @@ def measure(
 
 def _thresholds(report: dict, margin: float) -> dict:
     """Derive per-mode thresholds: a fixed floor for lexical, baseline+margin for
-    the modes that must beat BM25 (vector, hybrid)."""
+    the modes that must beat a single-retrieval baseline (vector, hybrid).
+
+    Every threshold is clamped to ``[0, 1]`` — a hit@k / MRR threshold above 1.0 is
+    unreachable and hides, rather than proves, a capability. When a single hybrid
+    leg already saturates (so ``best_leg + margin > 1``) the clamp records that the
+    fused gate cannot show a margin over that leg; ``hybrid_fusion_lift_hit_at_5`` in
+    the baselines is the honest non-vacuity signal.
+    """
+
+    def clamp(x: float) -> float:
+        return round(min(max(x, 0.0), 1.0), 3)
+
     out: dict[str, dict] = {}
     lex = report["per_mode"].get("lexical")
     if lex:
-        out["lexical"] = {
-            "hit_at_k": LEXICAL_FLOOR_HIT,
-            "mrr_at_k": LEXICAL_FLOOR_MRR,
-            "k": K,
-        }
+        out["lexical"] = {"hit_at_k": LEXICAL_FLOOR_HIT, "mrr_at_k": LEXICAL_FLOOR_MRR, "k": K}
     base = report["baselines"]
     if "vector_bm25_hit_at_5" in base:
         out["vector"] = {
-            "hit_at_k": round(base["vector_bm25_hit_at_5"] + margin, 3),
-            "mrr_at_k": round(base["vector_bm25_mrr_at_5"] + margin * 0.7, 3),
+            "hit_at_k": clamp(base["vector_bm25_hit_at_5"] + margin),
+            "mrr_at_k": clamp(base["vector_bm25_mrr_at_5"] + margin * 0.7),
             "k": K,
         }
     if "hybrid_lexical_only_hit_at_5" in base:
-        leg = max(
+        leg_hit = max(
             base["hybrid_lexical_only_hit_at_5"], base["hybrid_vector_only_hit_at_5"]
         )
-        out["hybrid"] = {"hit_at_k": round(leg + margin, 3), "mrr_at_k": 0.0, "k": K}
+        leg_mrr = max(
+            base.get("hybrid_lexical_only_mrr_at_5", 0.0),
+            base.get("hybrid_vector_only_mrr_at_5", 0.0),
+        )
+        out["hybrid"] = {
+            "hit_at_k": clamp(leg_hit + margin),
+            "mrr_at_k": clamp(leg_mrr + margin * 0.7),
+            "k": K,
+        }
     return out
 
 
