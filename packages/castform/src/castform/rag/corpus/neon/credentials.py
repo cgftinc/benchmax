@@ -14,6 +14,11 @@ Read and write are deliberately *separate* provider surfaces. A single provider
 cannot be both the RW-ingest role (DDL + INSERT into version tables) and the
 RO-search role (SELECT only, no DDL/DML) — the RO grant is what the sandbox
 rollout env is handed, so it cannot mutate the corpus even if compromised.
+
+The DSN resolves *only* from these explicit vars — a generic ``DATABASE_URL``
+never satisfies a Neon DSN (NB5). Neon is DDL-capable, so a broad fallback could
+silently point ingest/provisioning at an unintended database; the seam has no
+fallback chain, and ``env_token`` raises when the var is unset.
 """
 
 from __future__ import annotations
