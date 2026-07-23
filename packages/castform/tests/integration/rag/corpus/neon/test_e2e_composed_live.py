@@ -196,7 +196,10 @@ def _vector_oracle(
 # the composed==oracle assertion, not native monotonicity. These bound the
 # approximation without going vacuous: a real reorder blows past both.
 _NATIVE_APPROX_EPS = 0.05  # >> observed 0.013, << the score magnitude / a real inversion
-_RANK_CORR_MIN = 0.8  # observed spearman 0.9 (one adjacent tail near-tie); a shuffle <= 0.6
+# floor admits up to two adjacent tail near-ties (one swap = rho 0.9, two = 0.8); the
+# EPS adjacency bound is what keeps those swaps to genuine near-ties, while a real
+# reorder (a single 2-apart displacement already = rho 0.6) still fails. observed 0.9.
+_RANK_CORR_MIN = 0.8
 
 
 def _assert_native_sane(mode: str, natives: list[float]) -> None:
@@ -213,9 +216,9 @@ def _assert_native_sane(mode: str, natives: list[float]) -> None:
 def _spearman(natives: list[float]) -> float:
     """Spearman rho between the returned position and the native-sorted rank.
 
-    For ``n`` = TOP_K = 5 a single adjacent transposition gives exactly 0.9 and a
-    genuine shuffle gives <= 0.6, so a floor cleanly separates an approximate-index
-    tail near-tie from a real reorder.
+    For ``n`` = TOP_K = 5 one adjacent transposition gives 0.9, two give 0.8, and any
+    genuine reorder (a single 2-apart displacement already) gives <= 0.6, so a floor
+    between separates approximate-index tail near-ties from a real shuffle.
     """
     n = len(natives)
     order = sorted(range(n), key=lambda i: natives[i])
@@ -237,6 +240,26 @@ def _assert_best_first_approx(natives: list[float]) -> None:
     assert rho >= _RANK_CORR_MIN, f"rank correlation {rho:.3f} < {_RANK_CORR_MIN}: {natives}"
     for earlier, later in zip(natives, natives[1:]):
         assert earlier <= later + _NATIVE_APPROX_EPS, f"native inversion too large: {natives}"
+
+
+def _oracle_ids_for_mode(
+    mode: str, ro: NeonClient, spec: NeonTableSpec, query_vector: list[float]
+) -> list[str]:
+    """Return the independent same-mode candidate-SQL / RRF ranking of ids (top TOP_K).
+
+    The identity oracle shared by the capability and ``search_related`` tests: raw
+    ``NeonClient`` candidate SQL for lexical/vector, and an out-of-band RRF fusion of
+    both legs (at the query layer's oversample depth) for hybrid.
+    """
+    if mode == "lexical":
+        return [r[0] for r in _bm25_oracle(ro, spec, PROBE, TOP_K)]
+    if mode == "vector":
+        return [r[0] for r in _vector_oracle(ro, spec, query_vector, TOP_K)]
+    depth = min(TOP_K * HYBRID_OVERSAMPLE_FACTOR, HYBRID_OVERSAMPLE_CAP)
+    vrows = _vector_oracle(ro, spec, query_vector, depth)
+    brows = _bm25_oracle(ro, spec, PROBE, depth)
+    fused = fuse_rrf([[r[0] for r in vrows], [r[0] for r in brows]])[:TOP_K]
+    return [cid for cid, _ in fused]
 
 
 @pytest.fixture(scope="module")
@@ -387,22 +410,44 @@ def test_hybrid_capability_matches_rrf_fusion_oracle(
 
 @pytest.mark.parametrize("mode", ["lexical", "vector", "hybrid"])
 def test_search_related_surfaces_exact_reciprocal_rank(
-    source: NeonChunkSource, mode: str
+    source: NeonChunkSource,
+    ro_client: NeonClient,
+    spec: NeonTableSpec,
+    query_vector: list[float],
+    mode: str,
 ) -> None:
-    """``search_related`` surfaces the EXACT reciprocal-rank score on every mode.
+    """``search_related`` returns the same-mode ranking with the exact reciprocal-rank score.
 
     A synthetic source chunk (absent from the corpus, no ``file`` metadata) keeps
-    ``same_file`` uniformly false, so the result set is the full TOP_K ranked hits with
-    surfaced scores exactly ``[1/(60+i)]`` and a finite, mode-appropriate native score.
+    ``same_file`` uniformly false, so the result set is the full TOP_K ranked hits.
+    Teeth (would fail on duplicates, a shuffle, or wrong ids): TOP_K UNIQUE hashes; the
+    ids equal the independent same-mode oracle ranking; the surfaced scores are exactly
+    ``[1/(60+i)]``; and the native scores are best-first — approximate for lexical/vector
+    (:func:`_assert_best_first_approx`), strictly descending for hybrid (RRF fuses
+    integer ranks, so it is exact).
     """
     synthetic = Chunk(content="", metadata=(), hash="__slice8_synthetic_source__")
     results = _cold_start_retry(
         lambda: source.search_related(synthetic, [PROBE], top_k=TOP_K, mode=mode)
     )
     assert len(results) == TOP_K, f"{mode}: expected {TOP_K} related, got {len(results)}"
+    hashes = [r["chunk"].hash for r in results]
+    assert len(set(hashes)) == TOP_K, f"{mode}: duplicate related hashes: {hashes}"
+
+    oracle_ids = _cold_start_retry(
+        lambda: _oracle_ids_for_mode(mode, ro_client, spec, query_vector)
+    )
+    assert hashes == oracle_ids, f"{mode}: search_related order != oracle {hashes} vs {oracle_ids}"
+
     scores = [r["max_score"] for r in results]
     assert scores == [surfaced_score(i) for i in range(TOP_K)], scores
-    _assert_native_sane(mode, [r["native_score"] for r in results])
+
+    natives = [r["native_score"] for r in results]
+    _assert_native_sane(mode, natives)
+    if mode == "hybrid":
+        assert natives == sorted(natives, reverse=True), f"rrf native not descending: {natives}"
+    else:
+        _assert_best_first_approx(natives)
 
 
 @pytest.mark.parametrize("mode", ["lexical", "vector", "hybrid"])
