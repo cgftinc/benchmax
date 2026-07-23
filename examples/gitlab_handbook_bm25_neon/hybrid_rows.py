@@ -40,10 +40,22 @@ from castform.rag.corpus.neon.eval_schema import NeonEvalRecord
 from curated_rows import _by_hash, _rare_lexemes, _section_eq_candidate
 
 _WORD_RE = re.compile(r"[a-z]{5,}")
+_ALPHA_WORD_RE = re.compile(r"^[a-z][a-z'-]+$")
 _STOP = frozenset(
     {"handbook", "gitlab", "which", "these", "their", "there", "where", "about",
      "would", "should", "could", "other", "under", "using", "based"}
 )
+
+
+def _looks_prose(content: str) -> bool:
+    """Cheap guard that a chunk is readable prose, not a diagram / code / config
+    block (mermaid ``accdescr``/``fontfamily`` etc.), so a smoke query reads cleanly.
+    """
+    toks = content.lower().split()
+    if len(toks) < 40:
+        return False
+    alpha = sum(1 for t in toks if _ALPHA_WORD_RE.match(t))
+    return alpha / len(toks) >= 0.7
 
 
 def _smoke_query(content: str, lex: str, k: int = 6) -> str:
@@ -89,7 +101,7 @@ def build_hybrid_rows(
         if not cand:
             continue
         gold, decoys, section = cand
-        if section in seen_sections:
+        if section in seen_sections or not _looks_prose(by_hash[gold].content):
             continue
         seen_sections.add(section)
         rows.append(
