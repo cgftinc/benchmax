@@ -1,0 +1,45 @@
+{
+  "blind_filters": [
+    "quality_gate",
+    "grounding_llm",
+    "hop_count_validity"
+  ],
+  "build_timestamp": "2026-07-23T04:23:41Z",
+  "chunk_count": 31665,
+  "chunker": {
+    "file_extensions": [
+      ".md",
+      ".mdx"
+    ],
+    "max_chars": 2048,
+    "min_chars": 1024,
+    "overlap_chars": 128,
+    "version": "markdown-v1"
+  },
+  "corpus_source": {
+    "commit": "3078d0213524f8ca0c0e3a70680a21929a9f65ff",
+    "repo_url": "https://gitlab.com/gitlab-com/content-sites/handbook.git",
+    "subdir": "content/handbook"
+  },
+  "dataset": "gitlab_handbook_neon_golden.jsonl",
+  "embedder": {
+    "dim": 3072,
+    "model": "text-embedding-3-large"
+  },
+  "generator_model": "gpt-5.4",
+  "gold_per_row_mean": 1.397,
+  "judge_model": "gpt-5.4-mini",
+  "logical_name": "gitlab_handbook_neon",
+  "multi_gold": {
+    "judge_model": "gpt-5.4-mini",
+    "method": "judge-confirmed same-file supporting chunks (blind)"
+  },
+  "row_counts": {
+    "curated_filter_hybrid": 24,
+    "hybrid": 12,
+    "lexical": 72,
+    "vector": 90
+  },
+  "total_rows": 174,
+  "vector_max_lexical_overlap": 0.55
+}

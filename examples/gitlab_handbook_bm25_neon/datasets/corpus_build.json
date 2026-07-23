@@ -1,0 +1,27 @@
+{
+  "chunk_count": 31665,
+  "chunker": {
+    "file_extensions": [
+      ".md",
+      ".mdx"
+    ],
+    "max_chars": 2048,
+    "min_chars": 1024,
+    "overlap_chars": 128,
+    "version": "markdown-v1"
+  },
+  "corpus_source": {
+    "commit": "3078d0213524f8ca0c0e3a70680a21929a9f65ff",
+    "repo_url": "https://gitlab.com/gitlab-com/content-sites/handbook.git",
+    "subdir": "content/handbook"
+  },
+  "embedder": {
+    "base_url": "https://llm.castform.dev/v1",
+    "dim": 3072,
+    "model": "text-embedding-3-large"
+  },
+  "ingest_seconds": 1118.2,
+  "inserted": 31665,
+  "logical_name": "gitlab_handbook_neon",
+  "neon_version": 1
+}
