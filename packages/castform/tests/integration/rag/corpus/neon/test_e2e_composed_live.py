@@ -188,6 +188,17 @@ def _vector_oracle(
     return ro.execute(query, {**params, "vector": list(vector), "top_k": top_k})
 
 
+# lakebase_bm25 / lakebase_ann serve the ORDER BY from an APPROXIMATE index scan
+# while the SELECT re-projects the identical <@> / <=> score into native_score; on
+# near-equal candidates the two can invert by a hair (measured live: max 0.013 /
+# ~0.28% on one adjacent BM25 tail pair; vector 0.0). So the RE-PROJECTED native
+# score is best-first only within this small tolerance — the EXACT ranking teeth is
+# the composed==oracle assertion, not native monotonicity. These bound the
+# approximation without going vacuous: a real reorder blows past both.
+_NATIVE_APPROX_EPS = 0.05  # >> observed 0.013, << the score magnitude / a real inversion
+_RANK_CORR_MIN = 0.8  # observed spearman 0.9 (one adjacent tail near-tie); a shuffle <= 0.6
+
+
 def _assert_native_sane(mode: str, natives: list[float]) -> None:
     """Assert every native score is finite and in the mode's documented direction."""
     assert all(math.isfinite(n) for n in natives), f"{mode} native not finite: {natives}"
@@ -199,15 +210,33 @@ def _assert_native_sane(mode: str, natives: list[float]) -> None:
         assert all(n > 0 for n in natives), f"rrf native must be > 0: {natives}"
 
 
-def _assert_ascending(natives: list[float], *, tol: float = 1e-6) -> None:
-    """Assert best-first ascending, tolerating id-tiebreak swaps of near-tied scores.
+def _spearman(natives: list[float]) -> float:
+    """Spearman rho between the returned position and the native-sorted rank.
 
-    The candidate SQL breaks ties on ``id``, so two near-equal native scores can
-    legitimately arrive in the opposite order to a pure float sort; the tolerance
-    absorbs that while still catching a real (large) ranking inversion.
+    For ``n`` = TOP_K = 5 a single adjacent transposition gives exactly 0.9 and a
+    genuine shuffle gives <= 0.6, so a floor cleanly separates an approximate-index
+    tail near-tie from a real reorder.
     """
+    n = len(natives)
+    order = sorted(range(n), key=lambda i: natives[i])
+    native_rank = {i: r for r, i in enumerate(order)}
+    d2 = sum((pos - native_rank[pos]) ** 2 for pos in range(n))
+    return 1.0 - 6.0 * d2 / (n * (n * n - 1))
+
+
+def _assert_best_first_approx(natives: list[float]) -> None:
+    """Assert best-first up to the index's approximation (not strict monotonicity).
+
+    Three teeth that a real reorder fails but a sub-1% tail near-tie survives: the top
+    row carries the global minimum (best) native score, the position/native rank
+    correlation clears :data:`_RANK_CORR_MIN`, and no adjacent pair inverts by more
+    than :data:`_NATIVE_APPROX_EPS`.
+    """
+    assert natives[0] == min(natives), f"top row is not the best native score: {natives}"
+    rho = _spearman(natives)
+    assert rho >= _RANK_CORR_MIN, f"rank correlation {rho:.3f} < {_RANK_CORR_MIN}: {natives}"
     for earlier, later in zip(natives, natives[1:]):
-        assert earlier <= later + tol, f"native not ascending within tol: {natives}"
+        assert earlier <= later + _NATIVE_APPROX_EPS, f"native inversion too large: {natives}"
 
 
 @pytest.fixture(scope="module")
@@ -269,8 +298,9 @@ def test_lexical_capability_matches_bm25_oracle(
 
     The composed path (``NeonChunkSource.search`` -> query layer) must not reorder the
     backend's ranking: its ids equal a raw ``bm25_candidates_sql`` ordering issued
-    directly through ``NeonClient``, and that leg's native ``<@>`` scores are finite,
-    non-positive, and ascending (best-first).
+    directly through ``NeonClient`` (the exact teeth). The re-projected ``<@>`` scores
+    are finite, non-positive, and best-first up to the ``lakebase_bm25`` approximate
+    scan (:func:`_assert_best_first_approx`) — not strictly monotone at near-ties.
     """
     chunks = _cold_start_retry(
         lambda: source.search(
@@ -286,7 +316,7 @@ def test_lexical_capability_matches_bm25_oracle(
     assert hashes == [r[0] for r in rows], "composed lexical order != bm25 candidate SQL"
     natives = [r[5] for r in rows]
     _assert_native_sane("lexical", natives)
-    _assert_ascending(natives)
+    _assert_best_first_approx(natives)
 
 
 def test_vector_capability_matches_ann_oracle(
@@ -297,8 +327,9 @@ def test_vector_capability_matches_ann_oracle(
 ) -> None:
     """Vector (ANN) search returns TOP_K unique chunks in the exact ANN candidate order.
 
-    Ids equal a raw ``vector_candidates_sql`` ordering on the SAME query embedding, and
-    that leg's cosine distances are finite, non-negative, and ascending (nearest-first).
+    Ids equal a raw ``vector_candidates_sql`` ordering on the SAME query embedding (the
+    exact teeth); the re-projected cosine distances are finite, non-negative, and
+    nearest-first up to the ``lakebase_ann`` approximation (:func:`_assert_best_first_approx`).
     """
     chunks = _cold_start_retry(
         lambda: source.search(
@@ -314,7 +345,7 @@ def test_vector_capability_matches_ann_oracle(
     assert hashes == [r[0] for r in rows], "composed vector order != ann candidate SQL"
     natives = [r[5] for r in rows]
     _assert_native_sane("vector", natives)
-    _assert_ascending(natives)
+    _assert_best_first_approx(natives)
 
 
 def test_hybrid_capability_matches_rrf_fusion_oracle(
