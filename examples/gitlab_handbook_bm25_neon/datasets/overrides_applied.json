@@ -1,0 +1,29 @@
+[
+  {
+    "row_ref": "VT:45",
+    "action": "gold_restriction",
+    "kept": [
+      "b0e04cd6",
+      "1ba40196"
+    ],
+    "pruned": [
+      "44a52648",
+      "ea25e033",
+      "88dac88e",
+      "5eba960c"
+    ],
+    "reason": "byte-identical FEEDBACK clause only (anchor + v5); v1/v2/v3/v4 are reworded or different clauses, not truly equivalent"
+  },
+  {
+    "row_ref": "LT:8",
+    "action": "query_anchor",
+    "new_query": "software supply chain security compliance asynchronous stand-up channel",
+    "gold": [
+      "355e0f51"
+    ],
+    "dropped_gold": [
+      "46842214"
+    ],
+    "reason": "templated stand-up boilerplate recurs across team pages; anchored on the SSCS:Compliance team + channel so the gold is uniquely correct (drops the generic devops copy 46842214)"
+  }
+]
