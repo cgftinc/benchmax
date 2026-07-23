@@ -199,6 +199,17 @@ def _assert_native_sane(mode: str, natives: list[float]) -> None:
         assert all(n > 0 for n in natives), f"rrf native must be > 0: {natives}"
 
 
+def _assert_ascending(natives: list[float], *, tol: float = 1e-6) -> None:
+    """Assert best-first ascending, tolerating id-tiebreak swaps of near-tied scores.
+
+    The candidate SQL breaks ties on ``id``, so two near-equal native scores can
+    legitimately arrive in the opposite order to a pure float sort; the tolerance
+    absorbs that while still catching a real (large) ranking inversion.
+    """
+    for earlier, later in zip(natives, natives[1:]):
+        assert earlier <= later + tol, f"native not ascending within tol: {natives}"
+
+
 @pytest.fixture(scope="module")
 def embed_fn() -> Any:
     """Platform embedder for vector/hybrid modes (resolves PLATFORM_API_KEY at call)."""
@@ -275,7 +286,7 @@ def test_lexical_capability_matches_bm25_oracle(
     assert hashes == [r[0] for r in rows], "composed lexical order != bm25 candidate SQL"
     natives = [r[5] for r in rows]
     _assert_native_sane("lexical", natives)
-    assert natives == sorted(natives), f"bm25 native not ascending: {natives}"
+    _assert_ascending(natives)
 
 
 def test_vector_capability_matches_ann_oracle(
@@ -303,7 +314,7 @@ def test_vector_capability_matches_ann_oracle(
     assert hashes == [r[0] for r in rows], "composed vector order != ann candidate SQL"
     natives = [r[5] for r in rows]
     _assert_native_sane("vector", natives)
-    assert natives == sorted(natives), f"vector distance not ascending: {natives}"
+    _assert_ascending(natives)
 
 
 def test_hybrid_capability_matches_rrf_fusion_oracle(
