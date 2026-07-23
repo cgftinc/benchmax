@@ -1,0 +1,13 @@
+{
+  "defect_ceiling": 0.35,
+  "defect_rate": 0.0,
+  "dropped_by_reason": {},
+  "judge_resolved_model": "gpt-5.4-mini-2026-03-17",
+  "natural_judged": 150,
+  "out": "examples/gitlab_handbook_bm25_neon/datasets/verdicts_v2.jsonl",
+  "over_ceiling": false,
+  "verdict_tally": {
+    "fix": 1,
+    "keep": 149
+  }
+}
