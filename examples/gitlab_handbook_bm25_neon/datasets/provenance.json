@@ -13,7 +13,7 @@
     "vector_prompt_keeps_anchor": true,
     "vector_samples": 90
   },
-  "build_timestamp": "2026-07-23T16:11:28Z",
+  "build_timestamp": "2026-07-23T17:10:36Z",
   "chunk_count": 31665,
   "chunker": {
     "file_extensions": [
@@ -42,10 +42,33 @@
     "cap": 64,
     "cosine_threshold": 0.85,
     "min_content_jaccard": 0.5,
-    "same_section_required": true
+    "same_section_required": "near-dups only; byte-identical admitted cross-section"
   },
-  "gold_per_row_mean": 1.611,
+  "gold_per_row_mean": 1.597,
   "logical_name": "gitlab_handbook_neon",
+  "measured_metrics": {
+    "hybrid": {
+      "decoy_violations": 0,
+      "hit_at_10": 1.0,
+      "hit_at_5": 1.0,
+      "mrr_at_5": 0.875,
+      "n": 8
+    },
+    "lexical": {
+      "decoy_violations": 0,
+      "hit_at_10": 0.8485,
+      "hit_at_5": 0.8333,
+      "mrr_at_5": 0.7556,
+      "n": 66
+    },
+    "vector": {
+      "decoy_violations": 0,
+      "hit_at_10": 0.7412,
+      "hit_at_5": 0.6588,
+      "mrr_at_5": 0.491,
+      "n": 85
+    }
+  },
   "models": {
     "generator_requested": "gpt-5.4",
     "judge_requested": "gpt-5.4-mini",
@@ -59,42 +82,148 @@
     "filter_section_depth": 4,
     "filter_section_eq": 6,
     "hybrid_section_filter": 8,
-    "lexical_lookup": 60,
-    "vector_lookup": 89
+    "lexical_lookup": 56,
+    "vector_lookup": 85
   },
   "row_counts_by_mode": {
     "hybrid": 8,
-    "lexical": 70,
-    "vector": 89
+    "lexical": 66,
+    "vector": 85
   },
-  "total_rows": 167,
+  "threshold_basis": {
+    "baselines": {
+      "hybrid_fusion_lift_hit_at_5": 0.0,
+      "hybrid_lexical_only_hit_at_5": 1.0,
+      "hybrid_lexical_only_mrr_at_5": 1.0,
+      "hybrid_vector_only_hit_at_5": 0.75,
+      "hybrid_vector_only_mrr_at_5": 0.6875,
+      "vector_bm25_hit_at_5": 0.4,
+      "vector_bm25_mrr_at_5": 0.2698
+    },
+    "margin": 0.15,
+    "rule": "lexical=fixed floor; vector/hybrid=bm25_baseline+margin"
+  },
+  "thresholds": {
+    "hybrid": {
+      "hit_at_k": 1.0,
+      "k": 5,
+      "mrr_at_k": 1.0
+    },
+    "lexical": {
+      "hit_at_k": 0.8,
+      "k": 5,
+      "mrr_at_k": 0.6
+    },
+    "vector": {
+      "hit_at_k": 0.55,
+      "k": 5,
+      "mrr_at_k": 0.375
+    }
+  },
+  "total_rows": 159,
   "validity_filter": {
-    "defective_rate": 0.0067,
-    "dropped": 1,
+    "defective_rate": 0.06,
+    "dropped": 9,
     "dropped_by_reason": {
-      "non-unique-answer": 1
+      "answer-leak": 1,
+      "non-unique-templated-answer": 4,
+      "stripped-anchor": 3,
+      "wrong-gold": 1
     },
     "dropped_sample": [
       {
-        "capability": "vector_lookup",
-        "citation": "escalated from fix on cross-review directive: the gold gives TWO distinct cut-off points (\"Cloud Connector LB (Cloud Flare) or AI Gateway middleware\"), so the \"where\" query has no single unambiguous gold answer.",
+        "capability": "lexical_lookup",
+        "citation": "templated / non-unique gold and equivalence set found no duplicate (size 1); no unique gold",
+        "confidence": 0.96,
+        "gold_chunk_hash": "84b722a50e24cfbe58a22220d91393c226405f3d2baabb52631a9ef3195b5516",
+        "query": "team for large complex customer engagements advisory",
+        "reason": "non-unique-templated-answer",
+        "search_mode": "lexical"
+      },
+      {
+        "capability": "lexical_lookup",
+        "citation": "wrong-gold: gold only says 'See the Motivation section', no answer",
+        "confidence": 0.99,
+        "gold_chunk_hash": "29e0c45f8d778d6b6028225869d3d9a703446ae747cbf9203558ad24a0311492",
+        "query": "ci job token Alternative Solutions do nothing cons",
+        "reason": "wrong-gold",
+        "search_mode": "lexical"
+      },
+      {
+        "capability": "lexical_lookup",
+        "citation": "templated / non-unique gold and equivalence set found no duplicate (size 1); no unique gold",
         "confidence": 0.98,
-        "gold_chunk_hash": "f0eaf0e5cce68e5b46b6aa7669c53b0052c002d258812021b2e150964eb76a81",
-        "query": "If someone is abusing the system, where can their access be cut off, according to the design note that mentions Cloud Flare?",
-        "reason": "non-unique-answer",
+        "gold_chunk_hash": "c768add1b9e7e3fa705d874d59baae73b9a438108e0dccef687f93caef87a59b",
+        "query": "solution validation proposed solution confidence goal",
+        "reason": "non-unique-templated-answer",
+        "search_mode": "lexical"
+      },
+      {
+        "capability": "lexical_lookup",
+        "citation": "templated / non-unique gold and equivalence set found no duplicate (size 1); no unique gold",
+        "confidence": 0.99,
+        "gold_chunk_hash": "061178aa560c504cf77ba2a3f6d014d561566948d99d00e1bffd6d3a9feb9436",
+        "query": "RED Data Third Party Sub-Processor default tier",
+        "reason": "non-unique-templated-answer",
+        "search_mode": "lexical"
+      },
+      {
+        "capability": "vector_lookup",
+        "citation": "stripped-anchor: 'this stricter approach' drops the Category Maturity Scorecard anchor",
+        "confidence": 0.98,
+        "gold_chunk_hash": "af21454bc8c78861c27054bb52cbd40c301c37a4a1f489afa6f60a5e280ea276",
+        "query": "Within UX research, what is this stricter approach trying to produce as objectively as possible, even with limited time and resources?",
+        "reason": "stripped-anchor",
+        "search_mode": "vector"
+      },
+      {
+        "capability": "vector_lookup",
+        "citation": "under-spec: Canada benefits rule omits 'Canada'",
+        "confidence": 0.98,
+        "gold_chunk_hash": "fe27982667a4770944bf1d44af007a603d00d0d35d23c15ec90d407361ec41de",
+        "query": "After a family-status change like marriage or a new child, what starts the 31 days countdown for asking to revise your enrollment?",
+        "reason": "stripped-anchor",
+        "search_mode": "vector"
+      },
+      {
+        "capability": "vector_lookup",
+        "citation": "stripped-anchor: 'in this workflow' drops the Compliance Frameworks anchor",
+        "confidence": 0.98,
+        "gold_chunk_hash": "0e1cad4b3ea4df78b55da7488d90b53a342251ec34017d3128073efdd6288122",
+        "query": "In this workflow, after 30 mins, what outcome is automatically written for an item that still hasn\u2019t completed and remains waiting?",
+        "reason": "stripped-anchor",
+        "search_mode": "vector"
+      },
+      {
+        "capability": "vector_lookup",
+        "citation": "answer-leak: query supplies the 32,767 limit then asks for the maximum",
+        "confidence": 0.99,
+        "gold_chunk_hash": "28708463bb047ab35e870bfa54a25d06327416b47b7679796389ad6293ee93b4",
+        "query": "If I need a compact number field for many kinds of tracked user actions, what is the maximum number of categories it can support according to the 32,767 limit?",
+        "reason": "answer-leak",
+        "search_mode": "vector"
+      },
+      {
+        "capability": "vector_lookup",
+        "citation": "templated / non-unique gold and equivalence set found no duplicate (size 1); no unique gold",
+        "confidence": 0.98,
+        "gold_chunk_hash": "c262d76fdfe54e6682648ce4c121ef89e1b33f871697fdfcc84ab836c0630968",
+        "query": "For Siphon, if I want the sample table tuned for fast one-record lookups, what value is used for the row-block sizing setting?",
+        "reason": "non-unique-templated-answer",
         "search_mode": "vector"
       }
     ],
     "natural_generated": 150,
-    "natural_kept": 149,
+    "natural_kept": 141,
     "note": "curated single-token/bag-of-words filter+hybrid probes are answerable-by-construction and exempt from the answerability judge",
     "scope_capabilities": [
       "lexical_lookup",
       "vector_lookup"
     ],
     "verdict_tally": {
-      "drop": 1,
-      "keep": 149
+      "drop": 9,
+      "fix": 5,
+      "keep": 136
     },
     "verdicts_file": "verdicts_v2.jsonl"
   }
