@@ -133,3 +133,33 @@ def test_run_qa_gen_on_neon_pins_llm_base_url(monkeypatch) -> None:
     assert captured["cfg"].platform.llm_base_url == PINNED_LLM_URL
     assert isinstance(captured["source"], NeonChunkSource)
     assert captured["source"]._embed_fn._base_url == PINNED_LLM_URL
+
+
+def test_pin_overwrites_pre_resolved_generator_and_judge_urls(monkeypatch) -> None:
+    # A config as load_pipeline_config() would hand us: the generator/judge base
+    # URLs are ALREADY populated with .com, so resolve_api_keys (fill-if-unset)
+    # would never overwrite them. The pin must, or generation/judge traffic
+    # silently goes to castform.com.
+    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
+    cfg = _cfg("wiki")
+    cfg.platform.llm_base_url = "https://llm.castform.com/v1"
+    cfg.resolve_api_keys()
+    assert cfg.generation.llm_direct.base_url == "https://llm.castform.com/v1"
+    assert cfg.filtering.grounding_llm.judge_base_url == "https://llm.castform.com/v1"
+
+    captured: dict = {}
+
+    def _fake_run_pipeline(cfg, *, source_factory, rollout_client_factory=None):
+        captured["cfg"] = cfg
+        return {}
+
+    monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake_run_pipeline)
+
+    run_qa_gen_on_neon(cfg)
+
+    c = captured["cfg"]
+    assert c.generation.llm_direct.base_url == PINNED_LLM_URL
+    assert c.filtering.retrieval_llm.judge_base_url == PINNED_LLM_URL
+    assert c.filtering.grounding_llm.judge_base_url == PINNED_LLM_URL
+    assert c.filtering.hop_count_validity.judge_base_url == PINNED_LLM_URL
+    assert "castform.com" not in c.generation.llm_direct.base_url

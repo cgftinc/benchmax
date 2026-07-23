@@ -10,10 +10,11 @@ Two pins live here on purpose (Slice 6):
 * **Endpoint domain (NB2).** The platform LLM endpoint is ``llm.castform.dev``
   (judge + generator, and the ``text-embedding-3-large`` embeddings), but the
   ambient ``CASTFORM_BASE_DOMAIN`` default resolves to ``castform.com``. Both
-  the generation/judge base URL (via ``cfg.platform.llm_base_url``) and the
-  embeddings base URL (via the ``embed_fn``) are pinned to ``base_domain``
-  (default ``castform.dev``) so the Neon path hits the correct host regardless
-  of the ambient default.
+  the generator/judge base URLs (via ``PipelineConfig.pin_llm_base_url``, which
+  overwrites even values already resolved to ``.com`` by
+  ``load_pipeline_config``) and the embeddings base URL (via the ``embed_fn``)
+  are pinned to ``base_domain`` (default ``castform.dev``) so the Neon path hits
+  the correct host regardless of the ambient default.
 * **DSN resolution (NB5).** Ingest/reads use only the explicit Neon DSN seam
   (``NEON_CORPUS_DSN_RO`` / ``NEON_CORPUS_DSN_RW`` via ``read_dsn_provider`` /
   ``write_dsn_provider``); a bare ``DATABASE_URL`` never satisfies a Neon DSN
@@ -113,11 +114,14 @@ def run_qa_gen_on_neon(
 
     Pins the generation/judge LLM base URL to ``base_domain`` (NB2) and injects a
     :func:`neon_source_factory`, so the pipeline never touches the Postgres
-    default path. All other config comes from ``cfg``.
+    default path. The pin is authoritative — it overwrites generator/judge URLs
+    even in a config already resolved to another domain by
+    ``load_pipeline_config`` — via :meth:`PipelineConfig.pin_llm_base_url`. All
+    other config comes from ``cfg``.
     """
     from castform.rag.qa_generation.pipeline import run_pipeline
 
-    cfg.platform.llm_base_url = neon_llm_url(base_domain)
+    cfg.pin_llm_base_url(neon_llm_url(base_domain))
     factory = neon_source_factory(
         read_dsn_provider=read_dsn_provider,
         write_dsn_provider=write_dsn_provider,
