@@ -346,17 +346,6 @@ def test_bm25_candidate_asc_polarity_and_schema_qualified_regclass() -> None:
     assert text.rstrip().endswith("ASC LIMIT %(top_k)s")
 
 
-def test_hybrid_returns_two_independent_candidate_queries() -> None:
-    c = NeonClient(lambda: "dsn")
-    (vec_q, vec_p), (bm25_q, bm25_p) = c.hybrid_candidates_sql(SPEC, schema="corpora")
-    assert "<=> %(vector)s::vector" in render(vec_q)
-    assert vec_p == {}
-    bm25_text = render(bm25_q)
-    assert "to_bm25query(" in bm25_text
-    assert "quote_ident(%(bm25_schema)s)" in bm25_text
-    assert bm25_p == {"bm25_schema": "corpora", "bm25_index": "mycorpus__v2_bm25"}
-
-
 def test_candidate_filter_is_spliced_not_built() -> None:
     c = NeonClient(lambda: "dsn")
     where = sql.SQL("metadata @> {}").format(sql.Placeholder("f0"))

@@ -989,28 +989,6 @@ class NeonClient:
         )
         return query, {"bm25_schema": schema, "bm25_index": bm25_index}
 
-    def hybrid_candidates_sql(
-        self,
-        spec: NeonTableSpec,
-        where: sql.Composable | None = None,
-        *,
-        schema: str,
-    ) -> tuple[
-        tuple[sql.Composed, dict[str, Any]], tuple[sql.Composed, dict[str, Any]]
-    ]:
-        """Return the ``(vector, bm25)`` candidate ``(query, params)`` pairs (B13).
-
-        Two independent ranked candidate lists; RRF fusion over them is owned by
-        the query layer (Slice 1), not the client. The same optional ``where`` is
-        applied to both so the filtered candidate sets are consistent; ``schema``
-        qualifies the BM25 index regclass for the RO caller (see
-        :meth:`bm25_candidates_sql`).
-        """
-        return (
-            self.vector_candidates_sql(spec, where=where),
-            self.bm25_candidates_sql(spec, where=where, schema=schema),
-        )
-
     def _candidate_query(
         self,
         spec: NeonTableSpec,
