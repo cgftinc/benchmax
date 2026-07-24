@@ -25,14 +25,11 @@ from castform.rag.corpus.neon.client import NeonClient
 from castform.rag.corpus.neon.credentials import resolve_read_dsn_provider
 from castform.rag.corpus.neon.provision import CORPUS_SCHEMA
 from castform.rag.corpus.neon.query import (
-    HYBRID_OVERSAMPLE_CAP,
-    HYBRID_OVERSAMPLE_FACTOR,
     NeonQueryRequest,
     QueryRow,
-    fuse_rrf,
-    surfaced_score,
+    run_query_async,
 )
-from castform.rag.corpus.neon.schema import DEFAULT_TEXT_SEARCH_CONFIG, NeonTableSpec
+from castform.rag.corpus.neon.schema import DEFAULT_TEXT_SEARCH_CONFIG
 from castform.rag.corpus.neon.source import NeonChunkSource
 from castform.rag.corpus.search_schema.search_exceptions import (
     UnsupportedSearchModeError,
@@ -69,13 +66,15 @@ class AsyncChunkSource(Protocol):
 
 
 class _AsyncQueryRunner:
-    """Runs one ``NeonQueryRequest`` on a fresh async connection per call (F6/B11).
+    """Transport for the async query path: a fresh async connection per call (F6/B11).
 
-    Mirrors ``query.run_query`` in async form: open a per-op async connection,
-    take the shared per-logical advisory lock, optionally enable the BM25
-    prefilter (F7), resolve the current version, run each retrieval leg, and fuse
-    hybrid legs with the query layer's :func:`fuse_rrf`. The ``NeonClient`` is used
-    only as a pure SQL composer here — its own connection is never opened.
+    Owns ONLY the per-op connection lifecycle — open the async connection (never a
+    long-lived cached socket, so it is safe under Neon autosuspend), register the
+    pgvector adapters, hand the open connection to the shared
+    :func:`castform.rag.corpus.neon.query.run_query_async` executor, and close on
+    the way out. All ranking, version resolution, prefilter, and RRF fusion live in
+    the query layer (``query.py``, the single owner), never here. The ``NeonClient``
+    is a pure SQL composer for that executor — its own connection is never opened.
     """
 
     def __init__(
@@ -93,24 +92,22 @@ class _AsyncQueryRunner:
         self._client = NeonClient(dsn_provider)  # composer only; never connects here
 
     async def query_rows(self, request: NeonQueryRequest) -> list[QueryRow]:
-        """Open a per-op async connection, run the request in one read snapshot."""
+        """Open a per-op async connection and run the request via the shared executor."""
         import psycopg
 
-        where, filter_params = self._resolve_where(request)
         conn = await psycopg.AsyncConnection.connect(
             self._dsn_provider(), prepare_threshold=None
         )
         try:
             await self._register_vector(conn)
-            async with conn.transaction():
-                await conn.execute(
-                    self._client._advisory_lock_shared_stmt(),
-                    {"logical": self._logical_name},
-                )
-                for statement in self._prefilter(request):
-                    await conn.execute(statement)
-                spec = await self._resolve_spec(conn)
-                return await self._run_legs(conn, spec, request, where, filter_params)
+            return await run_query_async(
+                conn,
+                self._client,
+                request,
+                logical_name=self._logical_name,
+                schema=self._schema,
+                text_search_config=self._text_search_config,
+            )
         finally:
             await conn.close()
 
@@ -123,148 +120,6 @@ class _AsyncQueryRunner:
             await register_vector_async(conn)
         except Exception:
             pass  # embedding is projected out of reads; the SQL cast binds the param
-
-    @staticmethod
-    def _resolve_where(
-        request: NeonQueryRequest,
-    ) -> tuple[Any | None, dict[str, Any]]:
-        if request.filter is None:
-            return None, {}
-        from castform.rag.corpus.neon.filter_mapper import to_neon_where
-
-        return to_neon_where(request.filter)
-
-    def _prefilter(self, request: NeonQueryRequest) -> list[Any]:
-        """``SET LOCAL`` enabling the BM25 prefilter for a filtered lexical/hybrid query."""
-        if request.filter is None or request.mode not in ("lexical", "hybrid"):
-            return []
-        from psycopg import sql
-
-        return [sql.SQL("SET LOCAL lakebase_bm25.prefilter = on")]
-
-    async def _resolve_spec(self, conn: Any) -> NeonTableSpec:
-        cur = await conn.execute(
-            self._client.read_ledger_sql(), {"logical": self._logical_name}
-        )
-        for version, _state, is_current in await cur.fetchall():
-            if is_current:
-                return NeonTableSpec(
-                    self._logical_name,
-                    version,
-                    text_search_config=self._text_search_config,
-                )
-        raise LookupError(
-            f"neon corpus {self._logical_name!r} has no current published version"
-        )
-
-    async def _run_legs(
-        self,
-        conn: Any,
-        spec: NeonTableSpec,
-        request: NeonQueryRequest,
-        where: Any | None,
-        filter_params: dict[str, Any],
-    ) -> list[QueryRow]:
-        if request.mode == "vector":
-            rows = await self._vector_rows(
-                conn, spec, request, where, filter_params, request.top_k
-            )
-            return _single_leg(rows)
-        if request.mode == "lexical":
-            rows = await self._bm25_rows(
-                conn, spec, request, where, filter_params, request.top_k
-            )
-            return _single_leg(rows)
-        if request.mode == "hybrid":
-            depth = min(request.top_k * HYBRID_OVERSAMPLE_FACTOR, HYBRID_OVERSAMPLE_CAP)
-            vector_rows = await self._vector_rows(
-                conn, spec, request, where, filter_params, depth
-            )
-            bm25_rows = await self._bm25_rows(
-                conn, spec, request, where, filter_params, depth
-            )
-            return _fuse(vector_rows, bm25_rows, request.top_k)
-        raise ValueError(f"unknown search mode {request.mode!r}")
-
-    async def _vector_rows(
-        self,
-        conn: Any,
-        spec: NeonTableSpec,
-        request: NeonQueryRequest,
-        where: Any | None,
-        filter_params: dict[str, Any],
-        depth: int,
-    ) -> list[tuple[Any, ...]]:
-        if request.vector is None:
-            raise ValueError("vector/hybrid search requires a query embedding")
-        query, params = self._client.vector_candidates_sql(spec, where=where)
-        merged = {
-            **filter_params,
-            **params,
-            "vector": list(request.vector),
-            "top_k": depth,
-        }
-        return await _fetch(conn, query, merged)
-
-    async def _bm25_rows(
-        self,
-        conn: Any,
-        spec: NeonTableSpec,
-        request: NeonQueryRequest,
-        where: Any | None,
-        filter_params: dict[str, Any],
-        depth: int,
-    ) -> list[tuple[Any, ...]]:
-        if request.text is None:
-            raise ValueError("lexical/hybrid search requires query text")
-        query, params = self._client.bm25_candidates_sql(
-            spec, where=where, schema=self._schema
-        )
-        merged = {**filter_params, **params, "text": request.text, "top_k": depth}
-        return await _fetch(conn, query, merged)
-
-
-async def _fetch(
-    conn: Any, query: Any, params: dict[str, Any]
-) -> list[tuple[Any, ...]]:
-    cur = await conn.execute(query, params)
-    if cur.description is None:
-        return []
-    return await cur.fetchall()
-
-
-def _single_leg(rows: list[tuple[Any, ...]]) -> list[QueryRow]:
-    return [_row_to_query_row(row, rank, row[5]) for rank, row in enumerate(rows)]
-
-
-def _fuse(
-    vector_rows: list[tuple[Any, ...]],
-    bm25_rows: list[tuple[Any, ...]],
-    top_k: int,
-) -> list[QueryRow]:
-    fused = fuse_rrf([[r[0] for r in vector_rows], [r[0] for r in bm25_rows]])
-    by_id: dict[str, tuple[Any, ...]] = {r[0]: r for r in vector_rows}
-    by_id.update({r[0]: r for r in bm25_rows})
-    return [
-        _row_to_query_row(by_id[chunk_id], rank, rrf_score)
-        for rank, (chunk_id, rrf_score) in enumerate(fused[:top_k])
-    ]
-
-
-def _row_to_query_row(
-    row: tuple[Any, ...], rank: int, native_score: float
-) -> QueryRow:
-    """Map a candidate row ``(id, content, metadata, source_file, chunk_index, native)``."""
-    return QueryRow(
-        chunk_id=row[0],
-        content=row[1],
-        metadata=row[2] or {},
-        source_file=row[3],
-        chunk_index=row[4],
-        surfaced_score=surfaced_score(rank),
-        native_score=native_score,
-        rank=rank,
-    )
 
 
 class NeonAsyncChunkSource:

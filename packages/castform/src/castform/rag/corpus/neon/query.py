@@ -225,6 +225,23 @@ def _resolve_current_spec(
     raise LookupError(f"neon corpus {logical_name!r} has no current published version")
 
 
+def _resolve_filter(
+    request: NeonQueryRequest,
+) -> tuple[sql.Composable | None, dict[str, Any]]:
+    """Render the request's metadata predicate into a WHERE clause + bound params.
+
+    The single filter-mapping seam shared by the sync and async executors; a
+    ``None`` filter yields ``(None, {})``. ``filter_mapper`` is imported lazily —
+    it pulls psycopg (the ``neon`` extra) the env-facing ``search.py`` must stay
+    importable without.
+    """
+    if request.filter is None:
+        return None, {}
+    from castform.rag.corpus.neon.filter_mapper import to_neon_where
+
+    return to_neon_where(request.filter)
+
+
 def run_query(
     client: NeonClient,
     request: NeonQueryRequest,
@@ -246,15 +263,7 @@ def run_query(
     truncates to ``top_k``.
     """
     mode = request.mode
-    if request.filter is None:
-        where: sql.Composable | None = None
-        filter_params: dict[str, Any] = {}
-    else:
-        # Imported lazily: filter_mapper pulls psycopg (the `neon` extra), which the
-        # env-facing search.py must stay importable without.
-        from castform.rag.corpus.neon.filter_mapper import to_neon_where
-
-        where, filter_params = to_neon_where(request.filter)
+    where, filter_params = _resolve_filter(request)
 
     def work(conn: Any) -> list[QueryRow]:
         spec = _resolve_current_spec(conn, client, logical_name, text_search_config)
@@ -350,3 +359,128 @@ def _fuse(
             _row_to_result(by_id[chunk_id], rank=rank, native_score=rrf_score)
         )
     return results
+
+
+# --- async executor (F6/B11) --------------------------------------------------
+# The async twin of ``run_query`` for the separate async protocol. It reuses every
+# ranking/version/prefilter/fusion decision above (``_resolve_filter``,
+# ``_prefilter_setup``, ``_hybrid_depth``, ``_single_leg``, ``_fuse``,
+# ``_row_to_result``) so lexical/vector/hybrid ordering and scoring are identical to
+# the sync path — only the ``await conn.execute`` I/O differs. Version resolution,
+# scoring, and RRF fusion live ONLY here, never in the async transport. The caller
+# owns the connection lifecycle (open/register/close); this runs the whole query in
+# one transaction under the shared advisory lock on the connection it is handed.
+
+
+async def run_query_async(
+    conn: Any,
+    client: NeonClient,
+    request: NeonQueryRequest,
+    *,
+    logical_name: str,
+    schema: str,
+    text_search_config: str,
+) -> list[QueryRow]:
+    """Execute one :class:`NeonQueryRequest` on an open async connection.
+
+    Mirrors :func:`run_query`: resolves the current version AND runs every leg in
+    ONE transaction under the shared advisory lock, so all legs read a single
+    consistent version even under a concurrent activation; renders the metadata
+    filter once into BOTH legs (B15); enables the ``lakebase_bm25`` prefilter for a
+    filtered lexical/hybrid query (F7); fuses hybrid legs with :func:`fuse_rrf`. The
+    caller opens/registers/closes *conn* (transport); no ranking, version, or fusion
+    logic lives outside this module.
+    """
+    mode = request.mode
+    where, filter_params = _resolve_filter(request)
+
+    async with conn.transaction():
+        await conn.execute(
+            client._advisory_lock_shared_stmt(), {"logical": logical_name}
+        )
+        for statement in _prefilter_setup(mode, request.filter is not None) or []:
+            await conn.execute(statement)
+        spec = await _resolve_current_spec_async(
+            conn, client, logical_name, text_search_config
+        )
+        if mode == "vector":
+            rows = await _vector_rows_async(
+                conn, client, spec, request, where, filter_params, request.top_k
+            )
+            return _single_leg(rows)
+        if mode == "lexical":
+            rows = await _bm25_rows_async(
+                conn, client, spec, request, where, filter_params, request.top_k, schema
+            )
+            return _single_leg(rows)
+        if mode == "hybrid":
+            depth = _hybrid_depth(request.top_k)
+            vector_rows = await _vector_rows_async(
+                conn, client, spec, request, where, filter_params, depth
+            )
+            bm25_rows = await _bm25_rows_async(
+                conn, client, spec, request, where, filter_params, depth, schema
+            )
+            return _fuse(vector_rows, bm25_rows, request.top_k)
+        raise ValueError(f"unknown search mode {mode!r}")
+
+
+async def _resolve_current_spec_async(
+    conn: Any,
+    client: NeonClient,
+    logical_name: str,
+    text_search_config: str,
+) -> NeonTableSpec:
+    """Async twin of :func:`_resolve_current_spec` (same current-version resolution)."""
+    from castform.rag.corpus.neon.schema import NeonTableSpec
+
+    cur = await conn.execute(client.read_ledger_sql(), {"logical": logical_name})
+    for version, _state, is_current in await cur.fetchall():
+        if is_current:
+            return NeonTableSpec(
+                logical_name, version, text_search_config=text_search_config
+            )
+    raise LookupError(f"neon corpus {logical_name!r} has no current published version")
+
+
+async def _fetch_async(
+    conn: Any, query: sql.Composed, params: dict[str, Any]
+) -> list[tuple[Any, ...]]:
+    """Async twin of :func:`_fetch`."""
+    cur = await conn.execute(query, params)
+    return await cur.fetchall() if cur.description is not None else []
+
+
+async def _vector_rows_async(
+    conn: Any,
+    client: NeonClient,
+    spec: NeonTableSpec,
+    request: NeonQueryRequest,
+    where: sql.Composable | None,
+    filter_params: dict[str, Any],
+    depth: int,
+) -> list[tuple[Any, ...]]:
+    """Async twin of :func:`_vector_rows`."""
+    if request.vector is None:
+        raise ValueError("vector/hybrid search requires a query embedding")
+    query, params = client.vector_candidates_sql(spec, where=where)
+    merged = {**filter_params, **params, "vector": list(request.vector), "top_k": depth}
+    return await _fetch_async(conn, query, merged)
+
+
+async def _bm25_rows_async(
+    conn: Any,
+    client: NeonClient,
+    spec: NeonTableSpec,
+    request: NeonQueryRequest,
+    where: sql.Composable | None,
+    filter_params: dict[str, Any],
+    depth: int,
+    schema: str,
+) -> list[tuple[Any, ...]]:
+    """Async twin of :func:`_bm25_rows`."""
+    if request.text is None:
+        raise ValueError("lexical/hybrid search requires query text")
+    query, params = client.bm25_candidates_sql(spec, where=where, schema=schema)
+    merged = {**filter_params, **params, "text": request.text, "top_k": depth}
+    return await _fetch_async(conn, query, merged)
