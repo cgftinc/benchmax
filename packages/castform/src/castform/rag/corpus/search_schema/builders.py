@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .search_types import AndPredicate, FieldPredicate, FilterPredicate, NotPredicate, OrPredicate
+from .search_types import (
+    AndPredicate,
+    FieldPredicate,
+    FilterPredicate,
+    NotPredicate,
+    OrPredicate,
+)
 
 
 @dataclass(frozen=True)
@@ -17,11 +23,20 @@ class FieldRef:
     def eq(self, value: Any) -> FieldPredicate:
         return FieldPredicate(field=self.name, op="eq", value=value)
 
+    def ne(self, value: Any) -> FieldPredicate:
+        return FieldPredicate(field=self.name, op="ne", value=value)
+
     def in_(self, values: list[Any]) -> FieldPredicate:
         return FieldPredicate(field=self.name, op="in", value=values)
 
+    def gt(self, value: Any) -> FieldPredicate:
+        return FieldPredicate(field=self.name, op="gt", value=value)
+
     def gte(self, value: Any) -> FieldPredicate:
         return FieldPredicate(field=self.name, op="gte", value=value)
+
+    def lt(self, value: Any) -> FieldPredicate:
+        return FieldPredicate(field=self.name, op="lt", value=value)
 
     def lte(self, value: Any) -> FieldPredicate:
         return FieldPredicate(field=self.name, op="lte", value=value)

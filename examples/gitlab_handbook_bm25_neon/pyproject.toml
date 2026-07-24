@@ -1,0 +1,20 @@
+[project]
+name = "benchmax-example-gitlab-handbook-bm25-neon"
+version = "0.1.0"
+description = "GitLab-handbook golden retrieval eval on the Neon lakebase corpus"
+requires-python = "==3.12.*"
+dependencies = ["benchmax", "castform[rag,neon]"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "ruff>=0.14.2",
+]

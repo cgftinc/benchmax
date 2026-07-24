@@ -590,6 +590,29 @@ class PipelineConfig:
         if not self.wiki_preprocessing.model:
             self.wiki_preprocessing.model = self.generation.llm_direct.model
 
+    def pin_llm_base_url(self, base_url: str) -> None:
+        """Force every platform-LLM base URL to ``base_url``, overwriting existing values.
+
+        Unlike :meth:`resolve_api_keys` (which only fills *unset* fields), this is
+        authoritative: it overwrites the generator/judge base URLs even when they
+        were already populated — e.g. a config from ``load_pipeline_config`` whose
+        ``field(default_factory=config.llm_url)`` defaults already resolved to
+        another domain. Covers exactly the URLs :meth:`resolve_api_keys` derives
+        from the shared LLM endpoint; does not touch the control-plane API base
+        URL (``platform.base_url``).
+        """
+        self.platform.llm_base_url = base_url
+        self.generation.llm_direct.base_url = base_url
+        self.corpus_context.base_url = base_url
+        self.corpus_context.entity_extraction_llm.base_url = base_url
+        self.filtering.retrieval_llm.judge_base_url = base_url
+        self.filtering.grounding_llm.judge_base_url = base_url
+        self.filtering.hop_count_validity.judge_base_url = base_url
+        self.filtering.env_rollout.base_url = base_url
+        self.filtering.env_rollout.judge_base_url = base_url
+        self.refinement.base_url = base_url
+        self.wiki_preprocessing.base_url = base_url
+
 
 @dataclass
 class GenerationTask:

@@ -1,0 +1,297 @@
+{
+  "authoring_params": {
+    "blind_filters": [
+      "quality_gate",
+      "grounding_llm",
+      "hop_count_validity"
+    ],
+    "lexical_samples": 60,
+    "n_filter": 10,
+    "n_hybrid": 6,
+    "seed": 42,
+    "vector_max_lexical_overlap": 0.75,
+    "vector_prompt_keeps_anchor": true,
+    "vector_samples": 90
+  },
+  "build_timestamp": "2026-07-23T21:22:54Z",
+  "chunk_count": 31665,
+  "chunker": {
+    "file_extensions": [
+      ".md",
+      ".mdx"
+    ],
+    "max_chars": 2048,
+    "min_chars": 1024,
+    "overlap_chars": 128,
+    "version": "markdown-v1"
+  },
+  "corpus_source": {
+    "commit": "3078d0213524f8ca0c0e3a70680a21929a9f65ff",
+    "repo_url": "https://gitlab.com/gitlab-com/content-sites/handbook.git",
+    "subdir": "content/handbook"
+  },
+  "curated_filter": {
+    "depth_isolation": "depth-row decoys are same-section, different path_depth",
+    "method": "blind selection over authoritative Postgres lexeme postings; a query token's lexeme matches 2..5 chunks so every decoy surfaces in an unfiltered top-k and vanishes under the predicate (teeth)",
+    "section_depth_rows": 4,
+    "section_eq_rows": 6
+  },
+  "dataset": "gitlab_handbook_neon_golden.jsonl",
+  "decoy_row_count": 16,
+  "decoy_total": 26,
+  "embedder": {
+    "dim": 3072,
+    "model": "text-embedding-3-large"
+  },
+  "equivalence_set": {
+    "ann_top_k": 128,
+    "cap": 64,
+    "cosine_threshold": 0.85,
+    "min_content_jaccard": 0.5,
+    "same_section_required": "near-dups only; byte-identical admitted cross-section"
+  },
+  "gold_per_row_mean": 1.481,
+  "hybrid_capability": {
+    "reason": "fusion-necessity rows are unbuildable on this corpus: it is both lexical-strong and vector-strong (vector-only hit@5 ~0.96), so a faithful blind paraphrase already lets the vector leg alone recall the gold and RRF fusion adds nothing over the stronger single leg. 28 blind candidates across 8 sections met the both-legs-miss precondition 0 times. RRF is real + unit-tested in Slice 4; the eval cannot isolate it here without weakening a retrieval leg (config, not data).",
+    "status": "DEFERRED to Path X follow-up; smoke check only (no teeth)"
+  },
+  "logical_name": "gitlab_handbook_neon",
+  "measured_metrics": {
+    "hybrid": {
+      "decoy_violations": 0,
+      "hit_at_10": 1.0,
+      "hit_at_5": 1.0,
+      "mrr_at_5": 1.0,
+      "n": 6
+    },
+    "lexical": {
+      "decoy_violations": 0,
+      "hit_at_10": 0.8636,
+      "hit_at_5": 0.8636,
+      "mrr_at_5": 0.7859,
+      "n": 66
+    },
+    "vector": {
+      "decoy_violations": 0,
+      "hit_at_10": 0.7262,
+      "hit_at_5": 0.6667,
+      "mrr_at_5": 0.5034,
+      "n": 84
+    }
+  },
+  "models": {
+    "generator_requested": "gpt-5.4",
+    "judge_requested": "gpt-5.4-mini",
+    "judge_resolved": null
+  },
+  "multi_gold": {
+    "cached_rows": 141,
+    "expansion_cache": "gold_expansion_cache.json",
+    "judge_model": "gpt-5.4-mini",
+    "judged_live_rows": 0,
+    "method": "judge-confirmed same-file supporting chunks (blind)",
+    "note": "committed cache freezes the audited multi_gold+equivalence union per query for deterministic re-freeze; hand-pruned of confirmed non-answering same-file hashes (MG-01). Live judge is the seeding method + fallback for uncached rows"
+  },
+  "overrides_applied": [
+    {
+      "action": "gold_restriction",
+      "kept": [
+        "b0e04cd6",
+        "1ba40196"
+      ],
+      "pruned": [
+        "44a52648",
+        "ea25e033",
+        "88dac88e",
+        "5eba960c"
+      ],
+      "reason": "byte-identical FEEDBACK clause only (anchor + v5); v1/v2/v3/v4 are reworded or different clauses, not truly equivalent",
+      "row_ref": "VT:45"
+    },
+    {
+      "action": "query_anchor",
+      "dropped_gold": [
+        "46842214"
+      ],
+      "gold": [
+        "355e0f51"
+      ],
+      "new_query": "software supply chain security compliance asynchronous stand-up channel",
+      "reason": "templated stand-up boilerplate recurs across team pages; anchored on the SSCS:Compliance team + channel so the gold is uniquely correct (drops the generic devops copy 46842214)",
+      "row_ref": "LT:8"
+    },
+    {
+      "action": "query_rewrite",
+      "gold": [
+        "acfc5fd2"
+      ],
+      "new_query": "At GitLab, in explaining why playing politics runs counter to our values, what is the name of the cognitive bias where someone judges an argument's strength by whether they already agree with its conclusion rather than by how well it actually supports that conclusion?",
+      "reason": "query named the answer 'Belief Bias'; re-anchored on the non-answer 'playing politics counter to our values' context (gold acfc5fd2 unchanged)",
+      "row_ref": "AL-01"
+    },
+    {
+      "action": "query_rewrite",
+      "gold": [
+        "0a027fcf",
+        "fe2c949b"
+      ],
+      "new_query": "If a manager is seeing repeated signs that someone isn\u2019t meeting role expectations, which group should they bring in early to help with coaching, legal compliance, and making sure feedback is handled correctly?",
+      "reason": "query supplied the answer 'Team Member Relations?'; trailing answer removed",
+      "row_ref": "AL-02"
+    },
+    {
+      "action": "row_drop",
+      "reason": "competency triad recurs verbatim across ~42 career matrices; no single gold is uniquely correct (under-specified templated query)",
+      "row_ref": "TMPL-01"
+    }
+  ],
+  "row_counts_by_capability": {
+    "filter_section_depth": 4,
+    "filter_section_eq": 6,
+    "hybrid_smoke": 6,
+    "lexical_lookup": 56,
+    "vector_lookup": 84
+  },
+  "row_counts_by_mode": {
+    "hybrid": 6,
+    "lexical": 66,
+    "vector": 84
+  },
+  "threshold_basis": {
+    "baselines": {
+      "hybrid_fusion_lift_hit_at_5": 0.0,
+      "hybrid_lexical_only_hit_at_5": 1.0,
+      "hybrid_lexical_only_mrr_at_5": 1.0,
+      "hybrid_vector_only_hit_at_5": 1.0,
+      "hybrid_vector_only_mrr_at_5": 1.0,
+      "vector_bm25_hit_at_5": 0.4167,
+      "vector_bm25_mrr_at_5": 0.2849
+    },
+    "margin": 0.15,
+    "rule": "lexical=fixed floor; vector=bm25 baseline+margin; hybrid=fixed smoke floor (deferred capability, no fusion claim)"
+  },
+  "thresholds": {
+    "hybrid": {
+      "hit_at_k": 0.8,
+      "k": 5,
+      "mrr_at_k": 0.5
+    },
+    "lexical": {
+      "hit_at_k": 0.8,
+      "k": 5,
+      "mrr_at_k": 0.6
+    },
+    "vector": {
+      "hit_at_k": 0.567,
+      "k": 5,
+      "mrr_at_k": 0.39
+    }
+  },
+  "total_rows": 156,
+  "validity_filter": {
+    "defective_rate": 0.06,
+    "dropped": 9,
+    "dropped_by_reason": {
+      "answer-leak": 1,
+      "non-unique-templated-answer": 4,
+      "stripped-anchor": 3,
+      "wrong-gold": 1
+    },
+    "dropped_sample": [
+      {
+        "capability": "lexical_lookup",
+        "citation": "templated / non-unique gold and equivalence set found no duplicate (size 1); no unique gold",
+        "confidence": 0.96,
+        "gold_chunk_hash": "84b722a50e24cfbe58a22220d91393c226405f3d2baabb52631a9ef3195b5516",
+        "query": "team for large complex customer engagements advisory",
+        "reason": "non-unique-templated-answer",
+        "search_mode": "lexical"
+      },
+      {
+        "capability": "lexical_lookup",
+        "citation": "wrong-gold: gold only says 'See the Motivation section', no answer",
+        "confidence": 0.99,
+        "gold_chunk_hash": "29e0c45f8d778d6b6028225869d3d9a703446ae747cbf9203558ad24a0311492",
+        "query": "ci job token Alternative Solutions do nothing cons",
+        "reason": "wrong-gold",
+        "search_mode": "lexical"
+      },
+      {
+        "capability": "lexical_lookup",
+        "citation": "templated / non-unique gold and equivalence set found no duplicate (size 1); no unique gold",
+        "confidence": 0.98,
+        "gold_chunk_hash": "c768add1b9e7e3fa705d874d59baae73b9a438108e0dccef687f93caef87a59b",
+        "query": "solution validation proposed solution confidence goal",
+        "reason": "non-unique-templated-answer",
+        "search_mode": "lexical"
+      },
+      {
+        "capability": "lexical_lookup",
+        "citation": "templated / non-unique gold and equivalence set found no duplicate (size 1); no unique gold",
+        "confidence": 0.99,
+        "gold_chunk_hash": "061178aa560c504cf77ba2a3f6d014d561566948d99d00e1bffd6d3a9feb9436",
+        "query": "RED Data Third Party Sub-Processor default tier",
+        "reason": "non-unique-templated-answer",
+        "search_mode": "lexical"
+      },
+      {
+        "capability": "vector_lookup",
+        "citation": "stripped-anchor: 'this stricter approach' drops the Category Maturity Scorecard anchor",
+        "confidence": 0.98,
+        "gold_chunk_hash": "af21454bc8c78861c27054bb52cbd40c301c37a4a1f489afa6f60a5e280ea276",
+        "query": "Within UX research, what is this stricter approach trying to produce as objectively as possible, even with limited time and resources?",
+        "reason": "stripped-anchor",
+        "search_mode": "vector"
+      },
+      {
+        "capability": "vector_lookup",
+        "citation": "under-spec: Canada benefits rule omits 'Canada'",
+        "confidence": 0.98,
+        "gold_chunk_hash": "fe27982667a4770944bf1d44af007a603d00d0d35d23c15ec90d407361ec41de",
+        "query": "After a family-status change like marriage or a new child, what starts the 31 days countdown for asking to revise your enrollment?",
+        "reason": "stripped-anchor",
+        "search_mode": "vector"
+      },
+      {
+        "capability": "vector_lookup",
+        "citation": "stripped-anchor: 'in this workflow' drops the Compliance Frameworks anchor",
+        "confidence": 0.98,
+        "gold_chunk_hash": "0e1cad4b3ea4df78b55da7488d90b53a342251ec34017d3128073efdd6288122",
+        "query": "In this workflow, after 30 mins, what outcome is automatically written for an item that still hasn\u2019t completed and remains waiting?",
+        "reason": "stripped-anchor",
+        "search_mode": "vector"
+      },
+      {
+        "capability": "vector_lookup",
+        "citation": "answer-leak: query supplies the 32,767 limit then asks for the maximum",
+        "confidence": 0.99,
+        "gold_chunk_hash": "28708463bb047ab35e870bfa54a25d06327416b47b7679796389ad6293ee93b4",
+        "query": "If I need a compact number field for many kinds of tracked user actions, what is the maximum number of categories it can support according to the 32,767 limit?",
+        "reason": "answer-leak",
+        "search_mode": "vector"
+      },
+      {
+        "capability": "vector_lookup",
+        "citation": "templated / non-unique gold and equivalence set found no duplicate (size 1); no unique gold",
+        "confidence": 0.98,
+        "gold_chunk_hash": "c262d76fdfe54e6682648ce4c121ef89e1b33f871697fdfcc84ab836c0630968",
+        "query": "For Siphon, if I want the sample table tuned for fast one-record lookups, what value is used for the row-block sizing setting?",
+        "reason": "non-unique-templated-answer",
+        "search_mode": "vector"
+      }
+    ],
+    "natural_generated": 150,
+    "natural_kept": 141,
+    "note": "curated single-token/bag-of-words filter+hybrid probes are answerable-by-construction and exempt from the answerability judge",
+    "scope_capabilities": [
+      "lexical_lookup",
+      "vector_lookup"
+    ],
+    "verdict_tally": {
+      "drop": 9,
+      "fix": 5,
+      "keep": 136
+    },
+    "verdicts_file": "verdicts_v2.jsonl"
+  }
+}

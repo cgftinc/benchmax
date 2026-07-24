@@ -1,0 +1,164 @@
+[
+  {
+    "id": "VT:53",
+    "disposition": "drop",
+    "reason": "answer-leak",
+    "note": "answer-leak: query supplies the 32,767 limit then asks for the maximum"
+  },
+  {
+    "id": "LT:32",
+    "disposition": "drop",
+    "reason": "wrong-gold",
+    "note": "wrong-gold: gold only says 'See the Motivation section', no answer"
+  },
+  {
+    "id": "VT:7",
+    "disposition": "drop",
+    "reason": "stripped-anchor",
+    "note": "stripped-anchor: 'this stricter approach' drops the Category Maturity Scorecard anchor"
+  },
+  {
+    "id": "VT:40",
+    "disposition": "drop",
+    "reason": "stripped-anchor",
+    "note": "stripped-anchor: 'in this workflow' drops the Compliance Frameworks anchor"
+  },
+  {
+    "id": "VT:20",
+    "disposition": "drop",
+    "reason": "stripped-anchor",
+    "note": "under-spec: Canada benefits rule omits 'Canada'"
+  },
+  {
+    "id": "LE:5",
+    "disposition": "keep(equiv=2)",
+    "reason": "valid",
+    "note": "AI Model Validation dup ai-core/data-science"
+  },
+  {
+    "id": "LT:7",
+    "disposition": "keep(equiv=2)",
+    "reason": "valid",
+    "note": "new-hire seller omits segment; mid-market vs enterprise"
+  },
+  {
+    "id": "LT:8",
+    "disposition": "keep(equiv=2)",
+    "reason": "valid",
+    "note": "async daily updates omits team; stand-up template many pages"
+  },
+  {
+    "id": "LT:31",
+    "disposition": "drop(equiv=1)",
+    "reason": "non-unique-templated-answer",
+    "note": "Strategic Field Org dup; citation omits team"
+  },
+  {
+    "id": "LT:33",
+    "disposition": "keep(equiv=2)",
+    "reason": "valid",
+    "note": "k8s support policy dup build//distribution/"
+  },
+  {
+    "id": "LT:39",
+    "disposition": "drop(equiv=1)",
+    "reason": "non-unique-templated-answer",
+    "note": "solution-validation confidence copied UX Research/Product Dev"
+  },
+  {
+    "id": "LT:46",
+    "disposition": "drop(equiv=1)",
+    "reason": "non-unique-templated-answer",
+    "note": "RED-data/Tier-1 recurs Critical Systems/Logging"
+  },
+  {
+    "id": "VE:7",
+    "disposition": "keep(equiv=4)",
+    "reason": "valid",
+    "note": "AI indemnification dup current+versioned terms"
+  },
+  {
+    "id": "VT:11",
+    "disposition": "keep(equiv=3)",
+    "reason": "valid",
+    "note": "senior competency triad across matrices"
+  },
+  {
+    "id": "VT:29",
+    "disposition": "keep(equiv=2)",
+    "reason": "valid",
+    "note": "Distribution MR guidance byte-for-byte build//distribution/"
+  },
+  {
+    "id": "VT:31",
+    "disposition": "keep(equiv=7)",
+    "reason": "valid",
+    "note": "customer-attribution consent across agreements"
+  },
+  {
+    "id": "VT:45",
+    "disposition": "keep(equiv=6)",
+    "reason": "valid",
+    "note": "confidentiality clause current+v5 testing agreements"
+  },
+  {
+    "id": "VT:56",
+    "disposition": "keep(equiv=2)",
+    "reason": "valid",
+    "note": "community triage dup two Distribution paths"
+  },
+  {
+    "id": "VT:59",
+    "disposition": "keep(equiv=2)",
+    "reason": "valid",
+    "note": "FedRAMP guidance across Dynamic/Composition Analysis; query names neither"
+  },
+  {
+    "id": "VT:64",
+    "disposition": "keep(equiv=6)",
+    "reason": "valid",
+    "note": "add-on invoicing across agreements"
+  },
+  {
+    "id": "VT:65",
+    "disposition": "drop(equiv=1)",
+    "reason": "non-unique-templated-answer",
+    "note": "Siphon index_granularity=512 in two design docs"
+  },
+  {
+    "id": "LT:2",
+    "disposition": "fix(citation)",
+    "reason": "citation-corrected",
+    "note": "citation quoted Trust Center bullet, not the sub-processor req"
+  },
+  {
+    "id": "LT:5",
+    "disposition": "fix(citation)",
+    "reason": "citation-corrected",
+    "note": "citation only the first Zoom recovery step"
+  },
+  {
+    "id": "LT:16",
+    "disposition": "fix(citation)",
+    "reason": "citation-corrected",
+    "note": "citation is just the 'Ending calls gracefully' heading"
+  },
+  {
+    "id": "LT:27",
+    "disposition": "fix(citation)",
+    "reason": "citation-corrected",
+    "note": "citation is just 'How to assign Agents to an account?'"
+  },
+  {
+    "id": "LT:41",
+    "disposition": "fix(citation)",
+    "reason": "citation-corrected",
+    "note": "citation only 1 of 3 CTP requirements"
+  },
+  {
+    "id": "VT:51",
+    "disposition": "keep(restored)",
+    "reason": "valid",
+    "note": "Cloud Flare two-alternative answer is complete; restore KEEP"
+  }
+]

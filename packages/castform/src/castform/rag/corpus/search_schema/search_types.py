@@ -5,7 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, NotRequired, TypeAlias, TypedDict
 
-FieldOperator = Literal["eq", "in", "gte", "lte", "contains_any", "contains_all"]
+FieldOperator = Literal[
+    "eq",
+    "ne",
+    "in",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "contains_any",
+    "contains_all",
+]
 LogicalOperator = Literal["and", "or", "not"]
 SearchMode = Literal["lexical", "vector", "hybrid"]
 
