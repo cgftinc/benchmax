@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,6 +29,7 @@ from benchmax.envs.harbor import (
     ModalCredentials,
 )
 from benchmax.envs.harbor.credentials import sandbox_credentials_scope
+from benchmax.envs.harbor.env import _log_rewardkit_criteria
 
 _REWARD_KEYS = ("reward", "partial_credit")
 
@@ -679,7 +681,9 @@ async def test_harbor_routes_the_request_model_through_the_openai_provider(
 async def test_harbor_enriches_native_rewards_with_rewardkit_partial_credit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.INFO)
     trials_dir = tmp_path / "trials"
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
@@ -706,8 +710,19 @@ async def test_harbor_enriches_native_rewards_with_rewardkit_partial_credit(
                     {
                         "reward": {
                             "criteria": [
-                                {"weight": 1, "value": 1},
-                                {"weight": 3, "value": 0.5},
+                                {
+                                    "name": "citation",
+                                    "weight": 1,
+                                    "value": 1,
+                                    "description": "Uses supporting citations",
+                                },
+                                {
+                                    "name": "analysis",
+                                    "weight": 3,
+                                    "value": 0.5,
+                                    "description": "Explains the relevant law",
+                                    "reasoning": "The answer missed one issue.",
+                                },
                             ]
                         }
                     }
@@ -729,6 +744,69 @@ async def test_harbor_enriches_native_rewards_with_rewardkit_partial_credit(
         "reward": 1.0,
         "partial_credit": 0.625,
     }
+    assert (
+        "harbor.rewardkit.criteria rollout_id=rollout-1 total=2 passed=1 "
+        'partial=1 failed=0 weighted_score=0.625000 values={"analysis":0.5,"citation":1.0}'
+    ) in caplog.text
+    assert (
+        "harbor.rewardkit.misses rollout_id=rollout-1 shown=1 omitted=0"
+    ) in caplog.text
+    assert '"name":"analysis"' in caplog.text
+    assert '"reasoning":"The answer missed one issue."' in caplog.text
+
+
+def test_rewardkit_logging_is_compact_and_asymmetric(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    _log_rewardkit_criteria(
+        "rollout-perfect",
+        [
+            {
+                "name": "complete",
+                "value": 1,
+                "weight": 1,
+                "description": "A" * 1_000,
+                "reasoning": "B" * 1_000,
+            }
+        ],
+    )
+
+    perfect_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "rollout-perfect" in record.getMessage()
+    ]
+    assert len(perfect_messages) == 1
+    assert "harbor.rewardkit.criteria" in perfect_messages[0]
+    assert 'values={"complete":1.0}' in perfect_messages[0]
+
+    caplog.clear()
+    _log_rewardkit_criteria(
+        "rollout-misses",
+        [
+            {
+                "name": f"criterion-{index}",
+                "value": 0,
+                "weight": index,
+                "description": "D" * 1_000,
+                "reasoning": "R" * 1_000,
+            }
+            for index in range(1, 11)
+        ],
+    )
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "rollout-misses" in record.getMessage()
+    ]
+    assert len(messages) == 2
+    misses = next(message for message in messages if "rewardkit.misses" in message)
+    assert "shown=8 omitted=2" in misses
+    assert misses.index('"name":"criterion-10"') < misses.index('"name":"criterion-9"')
+    assert len(misses) < 6_000
+    assert "…" in misses
 
 
 @pytest.mark.asyncio

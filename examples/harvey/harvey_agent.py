@@ -158,7 +158,7 @@ class HarveyHarnessAgent(BaseAgent):
                 "Harvey harness failed with exit code "
                 f"{result.return_code}\nSTDOUT:\n{result.stdout or ''}\nSTDERR:\n{result.stderr or ''}"
             )
-        self._populate_context_from_metrics(context, run_id)
+        await self._populate_context_from_metrics(environment, context, run_id)
 
     def _resolve_default_host_paths(self) -> None:
         if self.host_harvey_root is None:
@@ -321,8 +321,15 @@ class HarveyHarnessAgent(BaseAgent):
                 "fi",
                 '"${RUNNER[@]}" ' + " ".join(shlex.quote(arg) for arg in args),
                 f"RESULT_DIR={shlex.quote(result_dir)}",
-                f"rm -rf {shlex.quote(str(EnvironmentPaths.agent_dir / 'harvey-results'))}",
-                f'if [ -d "$RESULT_DIR" ]; then cp -a "$RESULT_DIR" {shlex.quote(str(EnvironmentPaths.agent_dir / "harvey-results"))}; fi',
+                f"STAGED_RESULT={shlex.quote(str(EnvironmentPaths.agent_dir / 'harvey-results'))}",
+                'rm -rf "$STAGED_RESULT"',
+                'if [ -d "$RESULT_DIR" ]; then cp -a "$RESULT_DIR" "$STAGED_RESULT"; fi',
+                # Harvey creates these aliases as absolute symlinks into the
+                # sandbox. They are redundant with Harbor's own workspace
+                # capture, and safe tar extraction rejects absolute links.
+                'for path in "$STAGED_RESULT/workspace/documents" "$STAGED_RESULT/workspace/output"; do',
+                '  if [ -L "$path" ]; then rm -f "$path"; fi',
+                "done",
                 f"mkdir -p {shlex.quote(str(EnvironmentPaths.artifacts_dir / 'harvey-output'))}",
                 f"if [ -d {shlex.quote(self.harbor_output_dir)} ]; then cp -a {shlex.quote(self.harbor_output_dir + '/.')} {shlex.quote(str(EnvironmentPaths.artifacts_dir / 'harvey-output/'))}; fi",
             ]
@@ -338,17 +345,28 @@ class HarveyHarnessAgent(BaseAgent):
                 env[key] = value
         return {key: value for key, value in env.items() if value}
 
-    def _populate_context_from_metrics(
-        self, context: AgentContext, run_id: str
+    async def _populate_context_from_metrics(
+        self,
+        environment: BaseEnvironment,
+        context: AgentContext,
+        run_id: str,
     ) -> None:
-        metrics_path = self.logs_dir / "harvey-results" / "metrics.json"
-        if not metrics_path.exists():
-            context.metadata = {"harvey_run_id": run_id}
+        context.metadata = {"harvey_run_id": run_id}
+        metrics_path = f"{self.container_harvey_root}/results/{run_id}/metrics.json"
+        try:
+            result = await environment.exec(
+                f"cat {shlex.quote(metrics_path)}",
+                timeout_sec=self.shell_timeout,
+            )
+        except Exception:
+            return
+        if result.return_code != 0:
             return
         try:
-            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            context.metadata = {"harvey_run_id": run_id}
+            metrics = json.loads(result.stdout or "")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(metrics, dict):
             return
         context.n_input_tokens = metrics.get("input_tokens")
         context.n_output_tokens = metrics.get("output_tokens")

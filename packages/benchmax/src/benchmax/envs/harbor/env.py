@@ -41,6 +41,10 @@ _SAFE_TRIAL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DEFAULT_MODAL_APP_NAME = "harbor-benchmax"
 _DEFAULT_MODAL_SANDBOX_TIMEOUT_SECS = 3600
 _DEFAULT_MODAL_SANDBOX_IDLE_TIMEOUT_SECS = 1800
+_REWARDKIT_MAX_MISSES = 8
+_REWARDKIT_NAME_LIMIT = 80
+_REWARDKIT_DESCRIPTION_LIMIT = 180
+_REWARDKIT_REASONING_LIMIT = 360
 _TERMINATION_REASON_BY_EXCEPTION = {
     "AgentTimeoutError": "harness_timeout",
     "ContextLengthExceededError": "context_exceeded",
@@ -340,14 +344,16 @@ def _rollout_attempt(
         )
 
     normalized_rewards = {str(key): float(value) for key, value in rewards.items()}
+    rewardkit_criteria = _rewardkit_criteria(trial_dir)
     if "partial_credit" in reward_keys and "partial_credit" not in normalized_rewards:
         if result.exception_info is None and "reward" in normalized_rewards:
-            partial_credit = _rewardkit_partial_credit(trial_dir)
+            partial_credit = _rewardkit_partial_credit(rewardkit_criteria)
             normalized_rewards["partial_credit"] = (
                 0.0 if partial_credit is None else partial_credit
             )
         else:
             normalized_rewards["partial_credit"] = 0.0
+    _log_rewardkit_criteria(rollout_id, rewardkit_criteria)
     return RolloutAttempt(
         rollout_id=rollout_id,
         termination_reason=_result_termination_reason(result),
@@ -399,8 +405,8 @@ def _normalize_reward_keys(reward_keys: Sequence[str]) -> tuple[str, ...]:
     return keys
 
 
-def _rewardkit_partial_credit(trial_dir: Path) -> float | None:
-    """Derive weighted criterion credit when a Harbor verifier used RewardKit."""
+def _rewardkit_criteria(trial_dir: Path) -> list[Mapping[str, object]] | None:
+    """Load criterion details when a Harbor verifier used RewardKit."""
 
     details_path = trial_dir / "verifier" / "reward-details.json"
     if not details_path.is_file():
@@ -419,12 +425,21 @@ def _rewardkit_partial_credit(trial_dir: Path) -> float | None:
     criteria = reward.get("criteria") if isinstance(reward, Mapping) else None
     if not isinstance(criteria, list) or not criteria:
         return None
+    if not all(isinstance(criterion, Mapping) for criterion in criteria):
+        return None
+    return criteria
 
+
+def _rewardkit_partial_credit(
+    criteria: Sequence[Mapping[str, object]] | None,
+) -> float | None:
+    """Derive weighted criterion credit from RewardKit details."""
+
+    if not criteria:
+        return None
     total_weight = 0.0
     earned_credit = 0.0
     for criterion in criteria:
-        if not isinstance(criterion, Mapping):
-            return None
         weight = criterion.get("weight", 1.0)
         value = criterion.get("value", 0.0)
         if (
@@ -443,6 +458,114 @@ def _rewardkit_partial_credit(trial_dir: Path) -> float | None:
     if total_weight <= 0:
         return None
     return earned_credit / total_weight
+
+
+def _log_rewardkit_criteria(
+    rollout_id: str,
+    criteria: Sequence[Mapping[str, object]] | None,
+) -> None:
+    """Log compact scores always and bounded diagnostics only for misses."""
+
+    if not criteria:
+        return
+
+    normalized: list[dict[str, object]] = []
+    names: set[str] = set()
+    for index, criterion in enumerate(criteria, start=1):
+        weight = criterion.get("weight", 1.0)
+        value = criterion.get("value", 0.0)
+        if (
+            isinstance(weight, bool)
+            or not isinstance(weight, (int, float))
+            or not math.isfinite(weight)
+            or weight < 0
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            return
+        name = _rewardkit_criterion_name(criterion.get("name"), index, names)
+        numeric_weight = float(weight)
+        numeric_value = float(value)
+        normalized.append(
+            {
+                "name": name,
+                "value": numeric_value,
+                "weight": numeric_weight,
+                "impact": numeric_weight * max(0.0, 1.0 - numeric_value),
+                "description": _truncate_log_text(
+                    criterion.get("description"), _REWARDKIT_DESCRIPTION_LIMIT
+                ),
+                "reasoning": _truncate_log_text(
+                    criterion.get("reasoning"), _REWARDKIT_REASONING_LIMIT
+                ),
+            }
+        )
+
+    total_weight = sum(float(item["weight"]) for item in normalized)
+    weighted_score = (
+        sum(float(item["weight"]) * float(item["value"]) for item in normalized)
+        / total_weight
+        if total_weight > 0
+        else 0.0
+    )
+    values = {str(item["name"]): float(item["value"]) for item in normalized}
+    passed = sum(float(item["value"]) >= 1.0 for item in normalized)
+    partial = sum(0.0 < float(item["value"]) < 1.0 for item in normalized)
+    failed = len(normalized) - passed - partial
+    logger.info(
+        "harbor.rewardkit.criteria rollout_id=%s total=%d passed=%d partial=%d "
+        "failed=%d weighted_score=%.6f values=%s",
+        rollout_id,
+        len(normalized),
+        passed,
+        partial,
+        failed,
+        weighted_score,
+        json.dumps(values, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+    )
+
+    misses = sorted(
+        (item for item in normalized if float(item["value"]) < 1.0),
+        key=lambda item: (-float(item["impact"]), str(item["name"])),
+    )
+    if not misses:
+        return
+    shown = misses[:_REWARDKIT_MAX_MISSES]
+    logger.info(
+        "harbor.rewardkit.misses rollout_id=%s shown=%d omitted=%d details=%s",
+        rollout_id,
+        len(shown),
+        len(misses) - len(shown),
+        json.dumps(shown, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+    )
+
+
+def _rewardkit_criterion_name(
+    raw_name: object,
+    index: int,
+    existing: set[str],
+) -> str:
+    name = _truncate_log_text(raw_name, _REWARDKIT_NAME_LIMIT)
+    if not name:
+        name = f"criterion-{index}"
+    unique_name = name
+    duplicate = 2
+    while unique_name in existing:
+        suffix = f"#{duplicate}"
+        unique_name = f"{name[: _REWARDKIT_NAME_LIMIT - len(suffix)]}{suffix}"
+        duplicate += 1
+    existing.add(unique_name)
+    return unique_name
+
+
+def _truncate_log_text(value: object, limit: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split())
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 1]}…"
 
 
 def _openai_model_name(model: str) -> str:
@@ -530,7 +653,9 @@ def _validate_configuration(
     if not isinstance(trial.agent, (AgentConfig, BundledHarborAgent)):
         raise TypeError("trial.agent must be Harbor AgentConfig or BundledHarborAgent")
     agent_config = (
-        trial.agent.config if isinstance(trial.agent, BundledHarborAgent) else trial.agent
+        trial.agent.config
+        if isinstance(trial.agent, BundledHarborAgent)
+        else trial.agent
     )
     if getattr(agent_config, "model_name", None):
         raise ValueError(

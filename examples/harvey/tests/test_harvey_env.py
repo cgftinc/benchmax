@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from benchmax.bundle import dump_bundle, load_bundle
@@ -64,6 +65,7 @@ def test_harvey_agent_builds_harbor_task_command(tmp_path: Path) -> None:
         extra_env={
             "OPENAI_API_KEY": "agent-key",
             "OPENAI_BASE_URL": "https://model.example/v1",
+            "HARBOR_HARVEY_RUN_ID": "test-run",
         },
     )
 
@@ -75,6 +77,61 @@ def test_harvey_agent_builds_harbor_task_command(tmp_path: Path) -> None:
     assert "--model gemma-model" in command
     assert "--max-turns 30" in command
     assert "/workspace/output/." in command
+    assert (
+        'for path in "$STAGED_RESULT/workspace/documents" '
+        '"$STAGED_RESULT/workspace/output"; do'
+    ) in command
+    assert 'if [ -L "$path" ]; then rm -f "$path"; fi' in command
+
+
+@pytest.mark.asyncio
+async def test_harvey_agent_reads_metrics_from_sandbox_before_download(
+    tmp_path: Path,
+) -> None:
+    agent = HarveyHarnessAgent(
+        logs_dir=tmp_path / "trial" / "agent",
+        model_name="openai/gemma-model",
+        extra_env={
+            "OPENAI_API_KEY": "agent-key",
+            "OPENAI_BASE_URL": "https://model.example/v1",
+            "HARBOR_HARVEY_RUN_ID": "test-run",
+        },
+    )
+    commands: list[str] = []
+
+    class FakeEnvironment:
+        async def exec(self, command: str, **kwargs: object) -> SimpleNamespace:
+            commands.append(command)
+            if command.startswith("cat "):
+                return SimpleNamespace(
+                    return_code=0,
+                    stdout='{"input_tokens":123,"output_tokens":45,"turns":3}',
+                    stderr="",
+                )
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    context = SimpleNamespace(
+        n_input_tokens=None,
+        n_output_tokens=None,
+        metadata=None,
+    )
+
+    await agent.run("Review the documents", FakeEnvironment(), context)  # type: ignore[arg-type]
+
+    assert len(commands) == 2
+    assert commands[1] == (
+        "cat /workspace/archive/harvey-labs/results/test-run/metrics.json"
+    )
+    assert context.n_input_tokens == 123
+    assert context.n_output_tokens == 45
+    assert context.metadata == {
+        "harvey_run_id": "test-run",
+        "harvey_metrics": {
+            "input_tokens": 123,
+            "output_tokens": 45,
+            "turns": 3,
+        },
+    }
 
 
 @pytest.mark.parametrize(
