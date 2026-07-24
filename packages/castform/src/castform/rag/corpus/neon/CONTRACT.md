@@ -43,13 +43,19 @@ managed physical table (per version):
   *existence* of a current row, if ever required, needs a separate current-pointer
   structure (out of scope now). rollback flips `is_current` between two
   `activated` versions without changing state.
-- **atomic activate** (`activate_version_sql(spec, grant)`): one transaction under
+- **lifecycle-SQL owner**: the per-version table/index/view/activation SQL is
+  composed and executed in `NeonClient` (`client.py`), reusing the validated
+  helpers + shared ledger DDL constants frozen in `schema.py`. activate/rollback
+  are execute-and-check flows (`RETURNING`-guarded row-count checks that abort the
+  transaction with `VersionStateError` before publishing), not static composable
+  lists, so they live in the client rather than as `schema.py` builders.
+- **atomic activate** (`NeonClient.activate(spec, grant)`): one transaction under
   `pg_advisory_xact_lock(logical)` clears the prior `is_current`, sets this
-  version `activated`/`is_current`, `create or replace view`, AND issues the RO
-  grants from `grant` — commit or roll back together (proven by
-  `test_activation_rolls_back_atomically`). **rollback**: re-point `is_current` to
-  a prior `activated` version; old physical tables retained → O(1),
-  non-destructive.
+  version `activated`/`is_current` (guarded `state='ready'` + `RETURNING`),
+  `create or replace view`, AND issues the RO grants from `grant` — commit or roll
+  back together. **rollback** (`NeonClient.rollback(logical, version)`): re-point
+  `is_current` to a prior `activated` version (row-locked `FOR UPDATE` first); old
+  physical tables retained → O(1), non-destructive.
 - **retention** (`RetentionPolicy`, self-validating): keep >= 2 activated
   (rollback always has a target) + >= 1 ready. the **pruning seam** and full
   concurrent allocation/prune race-safety are **deferred to Slice 2** (where the

@@ -1,8 +1,9 @@
 """Contract #1: physical naming, DDL safety, and the versioned-replace lifecycle.
 
 Identifier helpers, validation, length-safety, and lifecycle invariants are
-frozen here (pass); DDL assembly and activate/rollback are xfail skeletons that
-must raise NotImplementedError until Slice 2.
+frozen here. The lifecycle SQL (CREATE TABLE, activate/rollback, RO grants) is
+composed and executed in ``neon.client`` (the lifecycle-SQL owner) and covered by
+the client + live integration suites.
 """
 
 from __future__ import annotations
@@ -19,14 +20,9 @@ from castform.rag.corpus.neon.schema import (
     VERSION_STATE_TRANSITIONS,
     NeonTableSpec,
     NeonVersionRecord,
-    ReadGrantSpec,
     RetentionPolicy,
-    activate_version_sql,
-    create_table_ddl,
     index_names,
     physical_table_name,
-    read_grant_sql,
-    rollback_version_sql,
     validate_logical_name,
     validate_text_search_config,
     validate_version,
@@ -129,26 +125,3 @@ def test_ann_ddl_is_proven() -> None:
         "operator": "<=>",
         "query_param_cast": "vector",
     }
-
-
-@pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 2")
-def test_create_table_ddl() -> None:
-    create_table_ddl(NeonTableSpec(logical_name="mycorpus", version=1))
-
-
-@pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 2")
-def test_activate_version_sql_takes_grant() -> None:
-    activate_version_sql(
-        NeonTableSpec(logical_name="mycorpus", version=2),
-        ReadGrantSpec(schema="corpora", view="mycorpus", ro_role="ro"),
-    )
-
-
-@pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 2")
-def test_rollback_version_sql() -> None:
-    rollback_version_sql("mycorpus", 1)
-
-
-@pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="Slice 2")
-def test_read_grant_sql() -> None:
-    read_grant_sql(ReadGrantSpec(schema="corpora", view="mycorpus", ro_role="ro"))

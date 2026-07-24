@@ -1,9 +1,11 @@
 """Physical table schema and versioned-replace lifecycle for the Neon corpus.
 
-Contract-freeze artifact (Slice A). The identifier helpers, allowlists, and
-validation here are implemented (they are the frozen safety contract); the DDL
-*assembly* and execution are Slice 2 stubs that return ``psycopg.sql`` composables
-built from these helpers — never interpolated strings.
+Contract-freeze artifact (Slice A). This module owns the frozen safety contract:
+identifier helpers, allowlists, value validation, the version dataclasses, and the
+shared ledger DDL constants. The versioned-replace lifecycle SQL (per-version
+CREATE TABLE, index builds, activate/rollback, RO grants) is composed and executed
+in :mod:`castform.rag.corpus.neon.client` (the lifecycle-SQL owner), which reuses
+the helpers and constants here — never interpolated strings.
 
 Versioned-replace lifecycle
 ---------------------------
@@ -26,10 +28,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
-
-if TYPE_CHECKING:
-    from psycopg import sql
+from typing import Literal
 
 # --- Contract #7: embedding dim / metric (frozen) ------------------------------
 
@@ -330,40 +329,12 @@ def index_names(logical_name: str, version: int) -> dict[str, str]:
     return {key: f"{base}{suffix}" for key, suffix in _INDEX_SUFFIXES.items()}
 
 
-# --- DDL assembly seams (Slice 2 stubs; return psycopg.sql composables) --------
-# Reference skeletons documenting the FROZEN physical shape. These are NOT
-# executed by ``str`` interpolation — Slice 2 composes them with
-# ``sql.SQL(...).format(sql.Identifier(...), ...)`` and bound ``sql.Literal`` for
-# the regconfig, using only validated inputs from the helpers above.
-
-CREATE_TABLE_SKELETON = """
-CREATE TABLE {table} (
-    id text PRIMARY KEY,
-    content text NOT NULL,
-    metadata jsonb NOT NULL DEFAULT '{{}}'::jsonb,
-    embedding {vector_type} NOT NULL,
-    source_file text NOT NULL,
-    chunk_index integer NOT NULL,
-    content_tsv tsvector
-        GENERATED ALWAYS AS (to_tsvector({tsconfig}::regconfig, content)) STORED
-)
-""".strip()
-
-# B3: metadata predicates are emitted as ``@>`` containment (see filter_mapper),
-# which ``jsonb_path_ops`` GIN accelerates. ``?|``/``?&`` are intentionally NOT
-# used — a whole-doc GIN cannot serve them.
-CREATE_META_GIN_INDEX_SKELETON = (
-    "CREATE INDEX {index} ON {table} USING gin (metadata jsonb_path_ops)"
-)
-
-# B6: deterministic scan order is backed by a typed btree, not JSONB extraction.
-CREATE_SCAN_INDEX_SKELETON = (
-    "CREATE INDEX {index} ON {table} (source_file, chunk_index, id)"
-)
-
-CREATE_TSV_GIN_INDEX_SKELETON = (
-    "CREATE INDEX {index} ON {table} USING gin (content_tsv)"
-)
+# --- shared ledger DDL (consumed by the client.py lifecycle executor) ---------
+# The per-version ledger + current-pointer index are shared across every logical
+# corpus, so their DDL is frozen here as constants; NeonClient wraps them in
+# ``sql.SQL(...)`` and executes them. The per-version table/index/view/activation
+# SQL is composed from the validated helpers above inside client.py (the
+# lifecycle-SQL owner) — see CONTRACT.md §1.
 
 CREATE_LEDGER_SKELETON = """
 CREATE TABLE IF NOT EXISTS neon_corpus_versions (
@@ -385,55 +356,3 @@ CREATE_CURRENT_POINTER_INDEX = (
     "CREATE UNIQUE INDEX IF NOT EXISTS neon_corpus_current "
     "ON neon_corpus_versions (logical_name) WHERE is_current"
 )
-
-# Owner-rights view (security_invoker = false) so the RO role never touches
-# physical tables. Explicit column list, never SELECT *.
-ACTIVATE_VIEW_SKELETON = (
-    "CREATE OR REPLACE VIEW {view} WITH (security_invoker = false) AS "
-    "SELECT {columns} FROM {table}"
-)
-
-
-def create_table_ddl(spec: NeonTableSpec) -> sql.Composed:
-    """Return the ``CREATE TABLE`` composable for a physical corpus version.
-
-    Composed from ``sql.Identifier`` (table) + a bound ``sql.Literal`` regconfig
-    drawn from ALLOWED_TEXT_SEARCH_CONFIGS, using the PROVISIONAL vector type
-    resolved in Slice 3. Design-lock stub: assembly lands in Slice 2.
-    """
-    raise NotImplementedError("schema DDL assembly is built in Slice 2")
-
-
-def activate_version_sql(
-    spec: NeonTableSpec, grant: ReadGrantSpec
-) -> list[sql.Composed]:
-    """Return the single-transaction composables that publish a version (B5).
-
-    Ordered, all under one ``pg_advisory_xact_lock`` on the logical name:
-    acquire the lock; clear the prior ``is_current`` row; set this version
-    ``state='activated'``, ``is_current=true``; ``CREATE OR REPLACE VIEW``
-    (owner-rights, explicit columns via ``view_name``/``VIEW_COLUMNS``); and issue
-    the RO grants from *grant* so a first-create view is readable atomically with
-    publication. The current-pointer unique index enforces the single-current
-    invariant. Design-lock stub: assembly lands in Slice 2.
-    """
-    raise NotImplementedError("version activation is built in Slice 2")
-
-
-def rollback_version_sql(logical_name: str, target_version: int) -> list[sql.Composed]:
-    """Return the composables that re-point the active version to a prior one.
-
-    Non-destructive: prior physical tables are retained, so rollback re-points
-    the ledger + view under the advisory lock. Design-lock stub: built in Slice 2.
-    """
-    validate_version(target_version)
-    raise NotImplementedError("version rollback is built in Slice 2")
-
-
-def read_grant_sql(grant: ReadGrantSpec) -> list[sql.Composed]:
-    """Return the ``GRANT USAGE``/``GRANT SELECT`` composables for the RO role.
-
-    Issued on first view creation (see ReadGrantSpec). Design-lock stub: built
-    in Slice 2.
-    """
-    raise NotImplementedError("RO grant assembly is built in Slice 2")
