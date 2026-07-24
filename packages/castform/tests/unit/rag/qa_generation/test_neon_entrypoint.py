@@ -109,6 +109,37 @@ def test_neon_llm_url_pinned_regardless_of_ambient_domain(monkeypatch) -> None:
     assert neon_llm_url() == PINNED_LLM_URL
 
 
+def test_neon_llm_url_allows_approved_domains() -> None:
+    assert neon_llm_url("castform.dev") == "https://llm.castform.dev/v1"
+    assert neon_llm_url("castform.com") == "https://llm.castform.com/v1"
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "castform.dev@attacker.example",  # authority-capture via userinfo
+        "attacker.example",  # bare non-approved host
+        "castform.dev.attacker.example",  # subdomain suffix trick
+        "castform.dev/../attacker.example",
+        "",
+    ],
+)
+def test_neon_llm_url_rejects_non_allowlisted_domains(hostile: str) -> None:
+    # A hostile base_domain must never build a credential-bearing URL: the api key
+    # rides base_url, so a captured authority would route it to the attacker.
+    with pytest.raises(ValueError, match="not an approved platform domain"):
+        neon_llm_url(hostile)
+
+
+def test_hostile_base_domain_never_routes_api_key(monkeypatch) -> None:
+    # The whole factory path must refuse a hostile base_domain before any embed_fn
+    # (which carries the api key) is bound to a non-allowlisted host.
+    with pytest.raises(ValueError, match="not an approved platform domain"):
+        neon_source_factory(base_domain="castform.dev@attacker.example")(_cfg())
+    with pytest.raises(ValueError, match="not an approved platform domain"):
+        run_qa_gen_on_neon(_cfg(), base_domain="attacker.example")
+
+
 def test_default_embed_fn_pinned_to_castform_dev() -> None:
     source = neon_source_factory()(_cfg())
     # PlatformEmbedFn resolves config at call time; the base_url is pinned here.

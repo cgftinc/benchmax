@@ -15,14 +15,15 @@ Two pins live here on purpose (Slice 6):
   ``load_pipeline_config``) and the embeddings base URL (via the ``embed_fn``)
   are pinned to ``base_domain`` (default ``castform.dev``) so the Neon path hits
   the correct host regardless of the ambient default.
-* **DSN resolution (NB5).** Ingest/reads use only the explicit Neon DSN seam
-  (``NEON_CORPUS_DSN_RO`` / ``NEON_CORPUS_DSN_RW`` via ``read_dsn_provider`` /
-  ``write_dsn_provider``); a bare ``DATABASE_URL`` never satisfies a Neon DSN
-  (see ``rag/corpus/neon/credentials.py``).
+* **DSN resolution (NB5).** qa-gen reads only through the explicit RO Neon DSN
+  seam (``NEON_CORPUS_DSN_RO`` via ``read_dsn_provider``); a bare ``DATABASE_URL``
+  never satisfies a Neon DSN (see ``rag/corpus/neon/credentials.py``). It never
+  ingests, so no RW provider is bound here.
 
-Ingestion stays programmatic (``ChunkSource.populate_from_*``); the factory here
-binds a reader to the already-active corpus version by ``logical_name`` and does
-not populate — the corpus is expected to exist before qa-gen runs.
+Ingestion stays programmatic (``ChunkSource.populate_from_*``, e.g. the
+``build_corpus`` example); the factory here binds a read-only reader to the
+already-active corpus version by ``logical_name`` and does not populate — the
+corpus is expected to exist before qa-gen runs.
 """
 
 from __future__ import annotations
@@ -39,21 +40,34 @@ if TYPE_CHECKING:
 # path reaches llm.castform.dev, not the ambient CASTFORM_BASE_DOMAIN default.
 PLATFORM_BASE_DOMAIN = "castform.dev"
 
+# base_domain flows into a credential-bearing URL (the platform api key rides the
+# pinned base_url as the embed/generator/judge api key), so it is allowlisted to
+# these exact hosts. A value like ``castform.dev@attacker.example`` would make
+# ``attacker.example`` the URL authority (userinfo trick) and route the api key to
+# it; a bare ``attacker.example`` is likewise rejected.
+ALLOWED_BASE_DOMAINS: frozenset[str] = frozenset({"castform.dev", "castform.com"})
+
 
 def neon_llm_url(base_domain: str = PLATFORM_BASE_DOMAIN) -> str:
     """Return the pinned OpenAI-compatible LLM base URL for the Neon qa-gen path.
 
     Independent of ``config.llm_url()`` / ``CASTFORM_BASE_DOMAIN`` on purpose:
     the Neon path must reach ``llm.castform.dev`` even when the ambient default
-    resolves elsewhere (NB2).
+    resolves elsewhere (NB2). ``base_domain`` is allowlisted before it is
+    interpolated (ALLOWED_BASE_DOMAINS) so a hostile authority cannot capture the
+    credential-bearing URL; a non-approved domain raises ``ValueError``.
     """
+    if base_domain not in ALLOWED_BASE_DOMAINS:
+        raise ValueError(
+            f"base_domain {base_domain!r} is not an approved platform domain "
+            f"{sorted(ALLOWED_BASE_DOMAINS)}"
+        )
     return f"https://llm.{base_domain}/v1"
 
 
 def neon_source_factory(
     *,
     read_dsn_provider: str | TokenProvider | None = None,
-    write_dsn_provider: str | TokenProvider | None = None,
     embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
     base_domain: str = PLATFORM_BASE_DOMAIN,
     schema: str | None = None,
@@ -66,11 +80,13 @@ def neon_source_factory(
     its base URL pinned to ``base_domain`` (so vector/hybrid retrieval hits the
     correct embeddings host); pass an explicit ``embed_fn`` to override.
 
+    Read-only: qa-gen reads an already-active corpus version and never populates,
+    so only the RO DSN seam is bound — no RW provider crosses the picklable
+    pipeline boundary.
+
     Args:
         read_dsn_provider: Read-only Neon DSN seam; ``None`` reads
             ``NEON_CORPUS_DSN_RO`` from the environment per connection.
-        write_dsn_provider: Read-write Neon DSN seam (ingest); ``None`` reads
-            ``NEON_CORPUS_DSN_RW``.
         embed_fn: Embedding function for vector/hybrid modes; defaults to a
             platform ``embed_fn`` pinned to ``base_domain``.
         base_domain: Platform endpoint domain for the default ``embed_fn``.
@@ -91,7 +107,6 @@ def neon_source_factory(
         kwargs: dict[str, Any] = {
             "embed_fn": fn,
             "read_dsn_provider": read_dsn_provider,
-            "write_dsn_provider": write_dsn_provider,
         }
         if schema is not None:
             kwargs["schema"] = schema
@@ -104,7 +119,6 @@ def run_qa_gen_on_neon(
     cfg: PipelineConfig,
     *,
     read_dsn_provider: str | TokenProvider | None = None,
-    write_dsn_provider: str | TokenProvider | None = None,
     embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
     base_domain: str = PLATFORM_BASE_DOMAIN,
     schema: str | None = None,
@@ -116,15 +130,15 @@ def run_qa_gen_on_neon(
     :func:`neon_source_factory`, so the pipeline never touches the Postgres
     default path. The pin is authoritative — it overwrites generator/judge URLs
     even in a config already resolved to another domain by
-    ``load_pipeline_config`` — via :meth:`PipelineConfig.pin_llm_base_url`. All
-    other config comes from ``cfg``.
+    ``load_pipeline_config`` — via :meth:`PipelineConfig.pin_llm_base_url`. Reads
+    are RO-only (see :func:`neon_source_factory`). All other config comes from
+    ``cfg``.
     """
     from castform.rag.qa_generation.pipeline import run_pipeline
 
     cfg.pin_llm_base_url(neon_llm_url(base_domain))
     factory = neon_source_factory(
         read_dsn_provider=read_dsn_provider,
-        write_dsn_provider=write_dsn_provider,
         embed_fn=embed_fn,
         base_domain=base_domain,
         schema=schema,
