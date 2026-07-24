@@ -1,0 +1,19 @@
+[project]
+name = "benchmax-example-neon-rag-smoke"
+version = "0.1.0"
+description = "Local no-GPU integration smoke: neon corpus -> SearchEnv -> rollout -> reward"
+requires-python = "==3.12.*"
+dependencies = ["benchmax", "castform[rag,neon]"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = []
+
+[dependency-groups]
+dev = [
+    "cloudpickle>=3.0.0",
+    "ruff>=0.14.2",
+]

@@ -16,6 +16,7 @@ members = [
     "benchmax-example-gitlab-handbook-bm25-neon",
     "benchmax-example-harvey",
     "benchmax-example-math",
+    "benchmax-example-neon-rag-smoke",
     "benchmax-example-postgres-search",
     "benchmax-example-qwen3-ocr",
     "benchmax-example-telestich",
@@ -394,6 +395,33 @@ requires-dist = [
 dev = [
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
+[[package]]
+name = "benchmax-example-neon-rag-smoke"
+version = "0.1.0"
+source = { editable = "examples/neon_rag_smoke" }
+dependencies = [
+    { name = "benchmax" },
+    { name = "castform", extra = ["neon", "rag"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "cloudpickle" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "benchmax", editable = "packages/benchmax" },
+    { name = "castform", extras = ["rag", "neon"], editable = "packages/castform" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "cloudpickle", specifier = ">=3.0.0" },
     { name = "ruff", specifier = ">=0.14.2" },
 ]
 
