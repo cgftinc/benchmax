@@ -51,6 +51,39 @@ JUDGE_MODEL = "gpt-5.4-mini"
 MAX_SEARCH_CALLS = 6
 
 
+class NeonRagEnv(SearchEnv):
+    """SearchEnv bound to the live gitlab_handbook_neon bm25 corpus.
+
+    A named, self-contained env class in THIS example so the trainer's bundle is
+    self-describing and does not top-level on postgres-search's ``SearchEnv``.
+    The judge endpoint, model, search budget and system prompt are baked as class
+    config; the only constructor arg is the ``NeonSearch`` client (which carries
+    the baked RO DSN). Pickled BY VALUE alongside the ``main`` module (see run.py).
+    """
+
+    system_prompt = SearchEnv.render_system_prompt(
+        corpus_description=CORPUS_DESCRIPTION, max_search_calls=MAX_SEARCH_CALLS
+    )
+
+    def __init__(self, search: Any, **overrides: Any) -> None:
+        overrides.setdefault("judge_base_url", JUDGE_BASE_URL)
+        overrides.setdefault("judge_model", JUDGE_MODEL)
+        overrides.setdefault("max_search_calls", MAX_SEARCH_CALLS)
+        overrides.setdefault("system_prompt", self.system_prompt)
+        super().__init__(search, **overrides)
+
+
+def neon_env_constructor_args(dsn: str) -> dict[str, Any]:
+    """`constructor_args` for :class:`NeonRagEnv` — just the baked-DSN search client.
+
+    Judge / prompt / budget are baked into the class, so the bundle's
+    ``constructor_args`` is a single ``NeonSearch`` carrying the RO DSN string.
+    """
+    if not isinstance(dsn, str) or not dsn:
+        raise ValueError("dsn must be a non-empty read-only dsn string")
+    return {"search": NeonSearch(CORPUS_TABLE, dsn_provider=dsn, embed_fn=None)}
+
+
 def neon_search_constructor_args(dsn: str) -> dict[str, Any]:
     """Build the `SearchEnv` `constructor_args` with the RO DSN baked as a str.
 
