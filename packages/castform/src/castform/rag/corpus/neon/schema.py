@@ -16,8 +16,10 @@ stable owner-rights view under the logical name. A per-version *ledger*
 activated -> retired) with timestamps, so concurrent ingest, enumerate, prune,
 and build-vs-ready are all well-defined. Activation flips the ledger's active
 row AND re-points the view in one transaction under a per-logical advisory lock;
-rollback re-points to any prior ``ready``/``activated`` version (old physical
-tables are retained until pruned, so rollback is O(1) and non-destructive).
+rollback re-points to any prior ``activated`` version (a ``ready``-only version
+was never published and cannot be a rollback target — the impl row-locks
+``state = 'activated'``; old physical tables are retained until pruned, so
+rollback is O(1) and non-destructive).
 
 Chunk identity is content+metadata derived (``rag/chunkers/models.py``:
 ``hash = sha256(metadata_str + "\\n" + content)``), so re-ingesting changed
@@ -206,11 +208,18 @@ DEFAULT_RETENTION = RetentionPolicy()
 class ReadGrantSpec:
     """RO grant the ingest role must issue so the search role can read (B5).
 
-    The stable view is owner-rights (``security_invoker = false``), so the RO
-    role needs only schema ``USAGE`` and ``SELECT`` on the view — never on the
-    physical version tables. These grants must be (re)issued on FIRST view
-    creation (``CREATE OR REPLACE VIEW`` preserves an existing ACL but the
-    first create has none).
+    The stable view is owner-rights (``security_invoker = false``), so the vector
+    + filter read paths need only schema ``USAGE`` and ``SELECT`` on the view.
+    These grants must be (re)issued on FIRST view creation (``CREATE OR REPLACE
+    VIEW`` preserves an existing ACL but the first create has none).
+
+    BM25 exception (proven Slice 3): ``to_bm25query`` runs with the RO invoker's
+    rights and reads the bm25 index's base-table stats, so the RO role ALSO needs
+    ``SELECT`` on the physical version tables — granted narrowly by the writer's
+    ``ALTER DEFAULT PRIVILEGES`` + ``GRANT SELECT ON ALL TABLES`` (see
+    ``provision.py``), never any write/DDL privilege. So "RO never touches physical
+    tables" holds for the view reads; bm25 is the one read that needs the
+    base-table SELECT. See CONTRACT.md §1.
 
     Args:
         schema: Schema holding the corpus objects.
