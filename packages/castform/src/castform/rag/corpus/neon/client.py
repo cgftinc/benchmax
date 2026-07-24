@@ -23,9 +23,11 @@ the client cheap to pickle and decoupled from the chunk model (per the contract)
 
 Lifecycle order (B14)
 ---------------------
-``CREATE EXTENSION ... CASCADE`` (so the vector type + Lakebase BM25 access
-method exist) -> **register pgvector types on the connection, only after the
-extension exists** -> ledger + current-pointer index -> allocate a version and
+**verify the required extensions are installed** (they are provisioned
+out-of-band by ``provision.py`` under admin rights — the writer cannot ``CREATE
+EXTENSION``; the build only checks presence) -> **register pgvector types on the
+connection, only after the extension exists** -> ledger + current-pointer index
+-> allocate a version and
 build its physical table -> populate -> **build the ANN + BM25 indexes after the
 load** (an empty-then-filled index is wasteful, and BM25 corpus statistics need
 the rows present) -> ``VACUUM ANALYZE`` in **autocommit, outside any
@@ -153,6 +155,17 @@ class InDoubtTransactionError(RuntimeError):
     unguarded ``INSERT ... 'building'`` would raise a duplicate-key on a re-run if
     the in-doubt commit landed, so reconciling allocation means checking whether the
     ``building`` row already exists before retrying.
+    """
+
+
+class MissingExtensionError(RuntimeError):
+    """A required Lakebase extension is not installed on the target database.
+
+    Extension INSTALLATION is an admin/superuser step owned exclusively by
+    ``provision.py``; the writer role that runs the build cannot ``CREATE
+    EXTENSION``. The build verifies presence and raises this rather than running
+    against an unprovisioned database (where a missing extension would otherwise
+    surface later as an opaque missing-type / missing-access-method error).
     """
 
 
@@ -455,21 +468,33 @@ class NeonClient:
 
     # --- DDL assembly: extensions, ledger, table, indexes (B14) --------------
 
-    def create_extensions_sql(self) -> list[sql.Composed]:
-        """Return the ``CREATE EXTENSION IF NOT EXISTS <e> CASCADE`` statements (B14).
+    def require_extensions(self) -> None:
+        """Fail fast unless every required Lakebase extension is already installed.
 
-        CASCADE so a not-yet-installed dependency of the BM25/ANN surface is
-        pulled in automatically. Emitted first in the build so the vector type and
-        Lakebase access methods exist before anything references them.
+        Extension INSTALLATION is an admin/superuser step owned exclusively by
+        ``provision.py`` (see REQUIRED_EXTENSIONS); the writer role that runs the
+        build cannot ``CREATE EXTENSION``. The build therefore only checks presence
+        against ``pg_extension`` and raises :class:`MissingExtensionError` on an
+        unprovisioned database, rather than issuing a privileged (and duplicative)
+        ``CREATE EXTENSION`` through the writer connection.
         """
         from psycopg import sql
 
-        return [
-            sql.SQL("CREATE EXTENSION IF NOT EXISTS {} CASCADE").format(
-                sql.Identifier(ext)
+        present = {
+            row[0]
+            for row in self.execute(
+                sql.SQL(
+                    "SELECT extname FROM pg_extension WHERE extname = ANY(%(names)s)"
+                ),
+                {"names": list(REQUIRED_EXTENSIONS)},
             )
-            for ext in REQUIRED_EXTENSIONS
-        ]
+        }
+        missing = [ext for ext in REQUIRED_EXTENSIONS if ext not in present]
+        if missing:
+            raise MissingExtensionError(
+                f"required neon extensions not installed: {missing}; run "
+                "python -m castform.rag.corpus.neon.provision first"
+            )
 
     def create_ledger_sql(self) -> list[sql.Composed]:
         """Return the per-version ledger table + current-pointer index DDL (B5).
@@ -1236,18 +1261,18 @@ class NeonClient:
     ) -> None:
         """Build one physical corpus version in the frozen lifecycle order (B14).
 
-        Extensions (CASCADE) -> register pgvector types (only now the extension
-        exists) -> ledger + current-pointer index -> allocate the version
-        (``building``, under the advisory lock) -> create the table -> populate ->
-        build the ANN + BM25 + auxiliary indexes (after the load) -> ``VACUUM
-        ANALYZE`` in autocommit outside any transaction -> mark ``ready``.
+        Verify extensions present (installed out-of-band by ``provision.py``) ->
+        register pgvector types (the extension exists) -> ledger + current-pointer
+        index -> allocate the version (``building``, under the advisory lock) ->
+        create the table -> populate -> build the ANN + BM25 + auxiliary indexes
+        (after the load) -> ``VACUUM ANALYZE`` in autocommit outside any
+        transaction -> mark ``ready``.
 
         Activation is a separate, explicitly-triggered step (:meth:`activate`) so a
         freshly-built ``ready`` version is staged, then published atomically with
         its RO grants.
         """
-        for statement in self.create_extensions_sql():
-            self.execute(statement)
+        self.require_extensions()
         self.register_vector_types()
         for statement in self.create_ledger_sql():
             self.execute(statement)

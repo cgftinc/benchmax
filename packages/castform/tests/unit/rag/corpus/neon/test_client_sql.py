@@ -30,6 +30,7 @@ from psycopg import sql
 from castform.rag.corpus.neon import client as client_mod
 from castform.rag.corpus.neon.client import (
     InDoubtTransactionError,
+    MissingExtensionError,
     NeonClient,
     VersionStateError,
 )
@@ -189,7 +190,15 @@ def test_advisory_lock_stmt_is_shared_keyed_form() -> None:
 
 
 def test_build_version_lifecycle_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    conn = _FakeConn()
+    # Extensions are provisioned out-of-band; the build only checks presence.
+    conn = _FakeConn(
+        responses={
+            "FROM pg_extension": (
+                [("lakebase_vector",), ("lakebase_text",)],
+                [("extname",)],
+            )
+        }
+    )
     c = NeonClient(lambda: "dsn")
     c._conn = conn
     # Isolate pgvector registration into an ordered marker (no real adapters).
@@ -200,7 +209,7 @@ def test_build_version_lifecycle_order(monkeypatch: pytest.MonkeyPatch) -> None:
     c.build_version(SPEC, rows=[("id0", "text", {}, [0.1], "a.md", 0)])
 
     order = _rendered(conn)
-    ext_last = max(i for i, s in enumerate(order) if "CREATE EXTENSION" in s)
+    ext_check = _first_index(order, "FROM pg_extension")
     reg = _first_index(order, "REGISTER_VECTOR")
     tbl = _first_index(order, 'CREATE TABLE "')  # the physical table, not the ledger
     load = _first_index(order, 'INSERT INTO "mycorpus__v2"')  # populate (executemany)
@@ -209,9 +218,10 @@ def test_build_version_lifecycle_order(monkeypatch: pytest.MonkeyPatch) -> None:
     vac = _first_index(order, "VACUUM")
     ready = _first_index(order, "state = 'ready'")
 
-    # BOTH extension statements precede pgvector registration.
-    assert ext_last < reg
-    # extensions -> register vector -> table -> load -> ann/bm25 -> vacuum -> ready
+    # The presence check precedes pgvector registration; no CREATE EXTENSION issued.
+    assert ext_check < reg
+    assert not any("CREATE EXTENSION" in s for s in order)
+    # check extensions -> register vector -> table -> load -> ann/bm25 -> vacuum -> ready
     assert reg < tbl < load < ann
     assert load < bm25
     assert max(ann, bm25) < vac < ready
@@ -219,12 +229,31 @@ def test_build_version_lifecycle_order(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _first_index(order, "INSERT INTO neon_corpus_versions") < tbl
 
 
-def test_create_extensions_cascade() -> None:
+def test_require_extensions_checks_presence_not_install() -> None:
+    conn = _FakeConn(
+        responses={
+            "FROM pg_extension": (
+                [("lakebase_vector",), ("lakebase_text",)],
+                [("extname",)],
+            )
+        }
+    )
     c = NeonClient(lambda: "dsn")
-    stmts = [render(s) for s in c.create_extensions_sql()]
-    assert any("lakebase_vector" in s and "CASCADE" in s for s in stmts)
-    assert any("lakebase_text" in s and "CASCADE" in s for s in stmts)
-    assert all("IF NOT EXISTS" in s for s in stmts)
+    c._conn = conn
+    c.require_extensions()  # both present => no raise
+    stmts = _rendered(conn)
+    assert any("SELECT extname FROM pg_extension" in s for s in stmts)
+    assert not any("CREATE EXTENSION" in s for s in stmts)  # writer never installs
+
+
+def test_require_extensions_raises_on_unprovisioned_db() -> None:
+    conn = _FakeConn(  # only one of the two required extensions present
+        responses={"FROM pg_extension": ([("lakebase_vector",)], [("extname",)])}
+    )
+    c = NeonClient(lambda: "dsn")
+    c._conn = conn
+    with pytest.raises(MissingExtensionError, match="lakebase_text"):
+        c.require_extensions()
 
 
 def test_register_vector_only_flagged_after_call() -> None:
