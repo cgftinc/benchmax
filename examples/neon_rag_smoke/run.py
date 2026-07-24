@@ -20,6 +20,7 @@ Run inside the neon_rag_smoke uv env:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,10 @@ from castform.platform.training_run import upload_training_run  # noqa: E402
 
 CREDS = Path.home() / ".config" / "neon-benchmax.env"
 RUN_NAME = "neon-rag-gitlab-smoke"
+# Dataset files under datasets/; override to the validity-filtered large set
+# (train_large.jsonl=400 / eval_large.jsonl=30) via env vars.
+TRAIN_FILE = os.environ.get("NEON_TRAIN_FILE", "train.jsonl")
+EVAL_FILE = os.environ.get("NEON_EVAL_FILE", "eval.jsonl")
 # The CASTFORM_API_KEY is a STAGING key (api.castform.dev 200 / api.castform.com
 # 401). The SDK default profile is prod, so target staging explicitly.
 STAGING_BASE_URL = "https://api.castform.dev"
@@ -130,8 +135,8 @@ def main() -> None:
     print("\n" + "=" * 72)
     print(f"STEP 3: upload to STAGING ({STAGING_BASE_URL})")
     print("=" * 72)
-    train = load_jsonl(_HERE / "datasets" / "train.jsonl")
-    eval_ = load_jsonl(_HERE / "datasets" / "eval.jsonl")
+    train = load_jsonl(_HERE / "datasets" / TRAIN_FILE)
+    eval_ = load_jsonl(_HERE / "datasets" / EVAL_FILE)
     print(f"  train rows / eval rows : {len(train)} / {len(eval_)}")
     uploaded = upload_training_run(
         bundle=bundle,
