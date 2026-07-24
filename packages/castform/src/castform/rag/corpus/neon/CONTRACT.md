@@ -206,13 +206,25 @@ ambiguity; the keyset cursor is `(source_file, chunk_index, id) > (%s, %s, %s)`.
 gold_chunk_hashes (exact — carried explicitly because `Chunk.to_dict` omits
 `hash`), decoy_chunk_hashes}`. per-mode thresholds + lexical-ablation delta frozen:
 
-| mode | hit@5 | mrr@5 |
-|---|---|---|
-| lexical | 0.80 | 0.65 |
-| vector | 0.85 | 0.70 |
-| hybrid | 0.90 | 0.75 |
+| mode | hit@5 | mrr@5 | notes |
+|---|---|---|---|
+| lexical | 0.80 | 0.65 | fixed floor |
+| vector | 0.85 | 0.70 | BM25 baseline + measured margin |
+| hybrid | 0.80 | 0.50 | loose SMOKE floor (amended, see below) |
 
-`LEXICAL_ABLATION_MIN_DELTA = 0.05`. schema only; data built later.
+**hybrid smoke-floor amendment (reviewed, slice 7).** the frozen hybrid bar was
+originally `0.90/0.75` as a fusion-necessity gate. that gate is **unbuildable on
+this corpus**: the 31,665-chunk handbook is BOTH lexical-strong and vector-strong
+(vector-only hit@5 ≈ 0.96), so the `lexical>5 AND vector>5` both-legs-miss
+precondition holds 0/28 across blind candidates — isolating RRF fusion needs a
+retrieval-CONFIG change (weaker/lower-dim embedder or starved top-k), not more
+data. RRF is real and unit-tested in slice 4. hybrid therefore ships as a
+**DEFERRED capability (Path X)** with a loose smoke floor `0.80/0.50`
+(`eval_schema.DEFAULT_THRESHOLDS["hybrid"]`), NOT a fusion-beats-both-legs claim.
+re-attempting a fusion-necessity gate must change the retrieval config first.
+
+`LEXICAL_ABLATION_MIN_DELTA = 0.05`. measured provenance thresholds override the
+fallbacks above at gate time.
 
 ## 7. embedding dim/metric + internal query interface
 
