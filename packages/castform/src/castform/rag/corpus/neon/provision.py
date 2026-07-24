@@ -36,6 +36,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -284,10 +285,14 @@ DEFAULT_ENV_FILE = "~/.config/neon-benchmax.env"
 def write_env_file(path: str, updates: dict[str, str]) -> None:
     """Merge *updates* into the KEY="VALUE" env file at *path*, enforcing mode 0600.
 
-    Atomic (temp file + ``os.replace``) and secret-safe: the file is created 0600 if
-    new, re-chmodded 0600 if it existed, and values are double-quoted (a Neon DSN
-    contains ``&``, which unquoted breaks ``source``). Existing keys are updated in
-    place; unrelated lines are preserved. Never logs the values it writes.
+    Atomic (temp file + ``os.replace``) and secret-safe: the temp file is created
+    with :func:`tempfile.mkstemp` in the DESTINATION directory (a fresh random name,
+    ``O_EXCL`` + 0600 — so a symlink/pre-create at a predictable ``.tmp`` path can
+    never redirect or truncate the write), forced 0600, flushed + ``fsync``ed, then
+    ``os.replace``d over the target (atomic on the same filesystem). Values are
+    double-quoted (a Neon DSN contains ``&``, which unquoted breaks ``source``).
+    Existing keys are updated in place; unrelated lines are preserved. Never logs
+    the values it writes.
     """
     resolved = os.path.expanduser(path)
     lines: list[str] = []
@@ -303,12 +308,22 @@ def write_env_file(path: str, updates: dict[str, str]) -> None:
     for key, value in updates.items():
         if key not in seen:
             lines.append(f'{key}="{value}"')
-    fd = os.open(
-        f"{resolved}.tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
-    )
-    with os.fdopen(fd, "w") as handle:
-        handle.write("\n".join(lines) + "\n")
-    os.replace(f"{resolved}.tmp", resolved)
+    dest_dir = os.path.dirname(resolved) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=dest_dir, prefix=".neon-env-", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)  # enforce 0600 on the fd regardless of umask
+        with os.fdopen(fd, "w") as handle:
+            handle.write("\n".join(lines) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, resolved)
+    except BaseException:
+        # never leave a secret-bearing temp file behind on failure
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
     os.chmod(resolved, 0o600)
 
 
