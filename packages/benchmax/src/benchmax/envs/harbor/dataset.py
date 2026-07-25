@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import shutil
+from builtins import ExceptionGroup
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -16,6 +18,11 @@ if TYPE_CHECKING:
     from harbor.models.trial.config import TaskConfig
 
 __all__ = ["HarborDataset"]
+
+logger = logging.getLogger(__name__)
+
+_TASK_DOWNLOAD_MAX_ATTEMPTS = 3
+_TASK_DOWNLOAD_RETRY_BASE_DELAY_SECS = 1.0
 
 
 class HarborDataset(Dataset[Any]):
@@ -59,7 +66,8 @@ class HarborDataset(Dataset[Any]):
             raise ValueError("Harbor dataset resolved to no tasks")
 
         task_ids = [task_config.get_task_id() for task_config in task_configs]
-        downloads = await TaskClient().download_tasks(
+        downloads = await _download_tasks_with_retries(
+            TaskClient(),
             task_ids,
             overwrite=resolved_config.overwrite,
             output_dir=downloads_dir,
@@ -128,6 +136,39 @@ class HarborDataset(Dataset[Any]):
         return HarborDataset(examples[eval_count:]), HarborDataset(
             examples[:eval_count]
         )
+
+
+async def _download_tasks_with_retries(
+    client: Any,
+    task_ids: list[Any],
+    *,
+    overwrite: bool,
+    output_dir: Path,
+) -> Any:
+    """Retry failed Harbor download batches while preserving completed task caches."""
+
+    for attempt in range(1, _TASK_DOWNLOAD_MAX_ATTEMPTS + 1):
+        try:
+            return await client.download_tasks(
+                task_ids,
+                overwrite=overwrite,
+                output_dir=output_dir,
+            )
+        except ExceptionGroup:
+            if attempt == _TASK_DOWNLOAD_MAX_ATTEMPTS:
+                raise
+            delay = _TASK_DOWNLOAD_RETRY_BASE_DELAY_SECS * 2 ** (attempt - 1)
+            logger.warning(
+                "Harbor task download batch failed; retrying cached batch "
+                "in %.1fs (attempt %d/%d)",
+                delay,
+                attempt + 1,
+                _TASK_DOWNLOAD_MAX_ATTEMPTS,
+                exc_info=True,
+            )
+            await asyncio.sleep(delay)
+
+    raise AssertionError("unreachable")
 
 
 def _copy_content_addressed_snapshot(

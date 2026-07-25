@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from builtins import ExceptionGroup
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,47 @@ from harbor.models.trial.config import TaskConfig
 
 from benchmax.envs import Dataset
 from benchmax.envs.harbor import HarborDataset, HarborEnv, HarborTrialTemplate
+from benchmax.envs.harbor.dataset import _download_tasks_with_retries
+
+
+@pytest.mark.asyncio
+async def test_harbor_dataset_retries_failed_download_batches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = object()
+
+    class FlakyTaskClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def download_tasks(self, *args: object, **kwargs: object) -> object:
+            self.calls += 1
+            if self.calls == 1:
+                raise ExceptionGroup("download failed", [TimeoutError()])
+            return expected
+
+    delays: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(
+        "benchmax.envs.harbor.dataset.asyncio.sleep",
+        record_sleep,
+    )
+    client = FlakyTaskClient()
+
+    result = await _download_tasks_with_retries(
+        client,
+        ["harveyai/task"],
+        overwrite=False,
+        output_dir=tmp_path,
+    )
+
+    assert result is expected
+    assert client.calls == 2
+    assert delays == [1.0]
 
 
 @pytest.mark.asyncio
