@@ -84,7 +84,6 @@ def test_harvey_constructor_rejects_empty_verifier_environment() -> None:
 @pytest.mark.parametrize(
     "verifier_env",
     [
-        {"CASTFORM_AUTH_TOKEN": "bootstrap-token"},
         {"REWARDKIT_JUDGE": "anthropic/model"},
         {"JUDGE_CONCURRENCY": "2"},
         {"INVALID-NAME": "value"},
@@ -98,18 +97,6 @@ def test_harvey_constructor_rejects_invalid_verifier_environment(
         HarveyLabHarborEnv(
             sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
             verifier_env=verifier_env,
-            judge_model="anthropic/claude-sonnet-4-6",
-        )
-
-
-def test_harvey_constructor_rejects_bootstrap_token_alias(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("CASTFORM_AUTH_TOKEN", "bootstrap-token")
-    with pytest.raises(ValueError, match="must not reuse CASTFORM_AUTH_TOKEN"):
-        HarveyLabHarborEnv(
-            sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
-            verifier_env={"ANTHROPIC_API_KEY": "bootstrap-token"},
             judge_model="anthropic/claude-sonnet-4-6",
         )
 

@@ -79,8 +79,10 @@ export HARVEY_VERIFIER_ENV_VARS=OPENAI_API_KEY,OPENAI_BASE_URL,OPENAI_API_BASE,A
 ```
 
 `CASTFORM_AUTH_TOKEN` is a short-lived Castform CLI/bootstrap credential, not a
-model-provider API key. The Harvey adapter rejects both passing that variable
-and aliasing its current value into another verifier variable.
+model-provider API key. Do not include it—or copy its value under another
+name—in `HARVEY_VERIFIER_ENV_VARS` or `verifier_env`. The provider-neutral
+adapter passes through the variables selected by the caller and cannot reliably
+identify credentials by their values or formats.
 
 The agent defaults to 30 Harvey turns and a one-hour harness timeout. Override
 them with `HARBOR_HARVEY_*` agent environment values when constructing a custom

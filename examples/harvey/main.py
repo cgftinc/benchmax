@@ -45,16 +45,13 @@ _AGENT_SOURCE = BundledAgentSource.from_directory(
     files=("harvey_agent.py", "harvey_runtime.py"),
 )
 _ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_RESERVED_VERIFIER_ENV = frozenset(
-    {"CASTFORM_AUTH_TOKEN", "JUDGE_CONCURRENCY", "REWARDKIT_JUDGE"}
-)
+_RESERVED_VERIFIER_ENV = frozenset({"JUDGE_CONCURRENCY", "REWARDKIT_JUDGE"})
 
 
 def _validated_verifier_env(verifier_env: Mapping[str, str]) -> dict[str, str]:
     if not isinstance(verifier_env, Mapping):
         raise TypeError("verifier_env must be a mapping")
     environment: dict[str, str] = {}
-    bootstrap_token = os.environ.get("CASTFORM_AUTH_TOKEN")
     for key, value in verifier_env.items():
         if not isinstance(key, str) or not _ENV_NAME_PATTERN.fullmatch(key):
             raise ValueError(f"invalid verifier environment variable name: {key!r}")
@@ -62,11 +59,6 @@ def _validated_verifier_env(verifier_env: Mapping[str, str]) -> dict[str, str]:
             raise ValueError(f"{key} cannot be supplied through verifier_env")
         if not isinstance(value, str) or not value:
             raise ValueError(f"verifier environment variable {key!r} must be non-empty")
-        if bootstrap_token and value == bootstrap_token:
-            raise ValueError(
-                f"{key} must not reuse CASTFORM_AUTH_TOKEN; use a dedicated provider "
-                "credential"
-            )
         environment[key] = value
     if not environment:
         raise ValueError("verifier_env must contain at least one value")
