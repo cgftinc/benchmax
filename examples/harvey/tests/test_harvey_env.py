@@ -58,6 +58,14 @@ def test_harvey_constructor_rejects_empty_judge_key() -> None:
         )
 
 
+def test_harvey_constructor_rejects_short_lived_jwt_judge_key() -> None:
+    with pytest.raises(ValueError, match="short-lived JWTs expire"):
+        HarveyLabHarborEnv(
+            sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+            judge_api_key="header.payload.signature",
+        )
+
+
 def test_harvey_agent_builds_harbor_task_command(tmp_path: Path) -> None:
     agent = HarveyHarnessAgent(
         logs_dir=tmp_path / "trial" / "agent",

@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import sys
 import tempfile
 import tomllib
@@ -43,6 +44,17 @@ _AGENT_SOURCE = BundledAgentSource.from_directory(
     Path(__file__).parent,
     files=("harvey_agent.py", "harvey_runtime.py"),
 )
+_JWT_PATTERN = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
+
+
+def _validate_fixed_judge_key(judge_api_key: str) -> None:
+    if not isinstance(judge_api_key, str) or not judge_api_key:
+        raise ValueError("judge_api_key must be a non-empty string")
+    if _JWT_PATTERN.fullmatch(judge_api_key):
+        raise ValueError(
+            "judge_api_key must be a durable opaque API or session key; "
+            "short-lived JWTs expire before long Harvey trials reach the verifier"
+        )
 
 
 class HarveyLabHarborEnv(HarborEnv):
@@ -62,8 +74,7 @@ class HarveyLabHarborEnv(HarborEnv):
         max_concurrent_trials: int | None = 1000,
         eval_ratio: float = 0.1,
     ) -> None:
-        if not isinstance(judge_api_key, str) or not judge_api_key:
-            raise ValueError("judge_api_key must be a non-empty string")
+        _validate_fixed_judge_key(judge_api_key)
         if judge_concurrency < 1:
             raise ValueError("judge_concurrency must be positive")
         if not 0 < eval_ratio < 1:
@@ -118,6 +129,10 @@ def _constructor_args() -> dict[str, Any]:
         raise SystemExit(
             "set HARVEY_JUDGE_API_KEY (or PLATFORM_API_KEY) for the sandbox verifier"
         )
+    try:
+        _validate_fixed_judge_key(judge_api_key)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     return {
         "sandbox_credentials": ModalCredentials(
             token_id=data["token_id"], token_secret=data["token_secret"]
