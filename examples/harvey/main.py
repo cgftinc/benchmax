@@ -4,8 +4,9 @@
 (harveyai/lab@latest) resolves through Harbor at trainer runtime, so the data
 stage has nothing to download. Validation runs two real Modal sandbox trials.
 Launch uploads the bundle and starts a GPU run (explicit, confirmed — it
-spends credits). Credentials: Modal from ~/.modal.toml, the judge key from
-HARVEY_JUDGE_API_KEY (falls back to PLATFORM_API_KEY).
+spends credits). Credentials: Modal from ~/.modal.toml; the verifier model and
+the names of its explicitly supplied environment variables come from
+HARVEY_JUDGE_MODEL and HARVEY_VERIFIER_ENV_VARS.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -20,10 +21,9 @@ import sys
 import tempfile
 import tomllib
 import uuid
-from typing import Any
-
-
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from benchmax.envs.harbor import (
     BundledAgentSource,
@@ -44,17 +44,49 @@ _AGENT_SOURCE = BundledAgentSource.from_directory(
     Path(__file__).parent,
     files=("harvey_agent.py", "harvey_runtime.py"),
 )
-_JWT_PATTERN = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
+_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESERVED_VERIFIER_ENV = frozenset(
+    {"CASTFORM_AUTH_TOKEN", "JUDGE_CONCURRENCY", "REWARDKIT_JUDGE"}
+)
 
 
-def _validate_fixed_judge_key(judge_api_key: str) -> None:
-    if not isinstance(judge_api_key, str) or not judge_api_key:
-        raise ValueError("judge_api_key must be a non-empty string")
-    if _JWT_PATTERN.fullmatch(judge_api_key):
+def _validated_verifier_env(verifier_env: Mapping[str, str]) -> dict[str, str]:
+    if not isinstance(verifier_env, Mapping):
+        raise TypeError("verifier_env must be a mapping")
+    environment: dict[str, str] = {}
+    bootstrap_token = os.environ.get("CASTFORM_AUTH_TOKEN")
+    for key, value in verifier_env.items():
+        if not isinstance(key, str) or not _ENV_NAME_PATTERN.fullmatch(key):
+            raise ValueError(f"invalid verifier environment variable name: {key!r}")
+        if key in _RESERVED_VERIFIER_ENV:
+            raise ValueError(f"{key} cannot be supplied through verifier_env")
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"verifier environment variable {key!r} must be non-empty")
+        if bootstrap_token and value == bootstrap_token:
+            raise ValueError(
+                f"{key} must not reuse CASTFORM_AUTH_TOKEN; use a dedicated provider "
+                "credential"
+            )
+        environment[key] = value
+    if not environment:
+        raise ValueError("verifier_env must contain at least one value")
+    return environment
+
+
+def _verifier_env_from_process(variable_names: str) -> dict[str, str]:
+    names = [name.strip() for name in variable_names.split(",")]
+    if not variable_names or any(not name for name in names):
         raise ValueError(
-            "judge_api_key must be a durable opaque API or session key; "
-            "short-lived JWTs expire before long Harvey trials reach the verifier"
+            "HARVEY_VERIFIER_ENV_VARS must be a comma-separated list of names"
         )
+    if len(names) != len(set(names)):
+        raise ValueError("HARVEY_VERIFIER_ENV_VARS must not contain duplicate names")
+    missing = [name for name in names if not os.environ.get(name)]
+    if missing:
+        raise ValueError(
+            "missing verifier environment variable(s): " + ", ".join(missing)
+        )
+    return _validated_verifier_env({name: os.environ[name] for name in names})
 
 
 class HarveyLabHarborEnv(HarborEnv):
@@ -64,31 +96,24 @@ class HarveyLabHarborEnv(HarborEnv):
         self,
         *,
         sandbox_credentials: ModalCredentials,
-        # A fixed credential carried in bundles, exactly like the Modal pair;
-        # the sandboxed verifier only accepts static environment variables.
-        judge_api_key: str,
-        judge_model: str = "openai/gpt-5.4-nano",
-        judge_base_url: str = "https://llm.castform.dev/v1",
+        verifier_env: Mapping[str, str],
+        judge_model: str,
         judge_concurrency: int = 1,
         max_agent_timeout_secs: float | None = None,
         max_concurrent_trials: int | None = 1000,
         eval_ratio: float = 0.1,
     ) -> None:
-        _validate_fixed_judge_key(judge_api_key)
+        if not isinstance(judge_model, str) or not judge_model:
+            raise ValueError("judge_model must be a non-empty string")
+        validated_verifier_env = _validated_verifier_env(verifier_env)
         if judge_concurrency < 1:
             raise ValueError("judge_concurrency must be positive")
         if not 0 < eval_ratio < 1:
             raise ValueError("eval_ratio must be in (0, 1)")
 
-        normalized_judge_base_url = judge_base_url.rstrip("/")
         verifier_env = {
+            **validated_verifier_env,
             "REWARDKIT_JUDGE": judge_model,
-            "OPENAI_API_KEY": judge_api_key,
-            "OPENAI_BASE_URL": normalized_judge_base_url,
-            "OPENAI_API_BASE": normalized_judge_base_url,
-            # The published tasks declare this placeholder even when RewardKit
-            # is overridden to an OpenAI-compatible judge.
-            "ANTHROPIC_API_KEY": judge_api_key,
             "JUDGE_CONCURRENCY": str(judge_concurrency),
         }
         super().__init__(
@@ -122,22 +147,30 @@ MODAL_PROFILE = os.environ.get("MODAL_PROFILE", "castform")
 
 def _constructor_args() -> dict[str, Any]:
     data = tomllib.loads((Path.home() / ".modal.toml").read_text())[MODAL_PROFILE]
-    judge_api_key = os.environ.get("HARVEY_JUDGE_API_KEY") or os.environ.get(
-        "PLATFORM_API_KEY"
-    )
-    if not judge_api_key:
+    judge_model = os.environ.get("HARVEY_JUDGE_MODEL")
+    variable_names = os.environ.get("HARVEY_VERIFIER_ENV_VARS")
+    if not judge_model:
+        raise SystemExit("set HARVEY_JUDGE_MODEL for the sandbox verifier")
+    if not variable_names:
         raise SystemExit(
-            "set HARVEY_JUDGE_API_KEY (or PLATFORM_API_KEY) for the sandbox verifier"
+            "set HARVEY_VERIFIER_ENV_VARS to the verifier environment variable names"
         )
     try:
-        _validate_fixed_judge_key(judge_api_key)
+        verifier_env = _verifier_env_from_process(variable_names)
     except ValueError as error:
         raise SystemExit(str(error)) from None
+    concurrency_value = os.environ.get("HARVEY_JUDGE_CONCURRENCY", "1")
+    try:
+        judge_concurrency = int(concurrency_value)
+    except ValueError:
+        raise SystemExit("HARVEY_JUDGE_CONCURRENCY must be an integer") from None
     return {
         "sandbox_credentials": ModalCredentials(
             token_id=data["token_id"], token_secret=data["token_secret"]
         ),
-        "judge_api_key": judge_api_key,
+        "verifier_env": verifier_env,
+        "judge_model": judge_model,
+        "judge_concurrency": judge_concurrency,
     }
 
 
