@@ -14,7 +14,7 @@ from harvey_agent import HarveyHarnessAgent
 from main import (
     HarveyLabHarborEnv,
     _modal_credentials_from_process,
-    _verifier_env_from_process,
+    _verifier_env_for_provider,
 )
 
 
@@ -106,38 +106,46 @@ def test_harvey_constructor_rejects_invalid_verifier_environment(
         )
 
 
-def test_verifier_env_from_process_copies_only_named_values(
+def test_verifier_env_for_anthropic_copies_only_anthropic_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
 
-    assert _verifier_env_from_process([" ANTHROPIC_API_KEY "]) == {
+    assert _verifier_env_for_provider("anthropic") == {
         "ANTHROPIC_API_KEY": "anthropic-key"
     }
 
 
+def test_verifier_env_for_openai_copies_standard_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://llm.castform.com/v1")
+    monkeypatch.setenv("OPENAI_API_BASE", "https://llm.castform.com/v1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "unrelated-anthropic-key")
+
+    assert _verifier_env_for_provider("openai") == {
+        "OPENAI_API_KEY": "openai-key",
+        "OPENAI_BASE_URL": "https://llm.castform.com/v1",
+        "OPENAI_API_BASE": "https://llm.castform.com/v1",
+        "ANTHROPIC_API_KEY": "unused-for-openai-judge",
+    }
+
+
 @pytest.mark.parametrize(
-    "variable_names",
-    [[], [""], ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"]],
+    ("provider", "missing_name"),
+    [("anthropic", "ANTHROPIC_API_KEY"), ("openai", "OPENAI_API_KEY")],
 )
-def test_verifier_env_from_process_rejects_invalid_name_list(
+def test_verifier_env_for_provider_requires_api_key(
     monkeypatch: pytest.MonkeyPatch,
-    variable_names: list[str],
+    provider: str,
+    missing_name: str,
 ) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.delenv(missing_name, raising=False)
 
-    with pytest.raises(ValueError):
-        _verifier_env_from_process(variable_names)
-
-
-def test_verifier_env_from_process_rejects_missing_value(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-
-    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
-        _verifier_env_from_process(["ANTHROPIC_API_KEY"])
+    with pytest.raises(ValueError, match=missing_name):
+        _verifier_env_for_provider(provider)  # type: ignore[arg-type]
 
 
 def test_modal_credentials_from_process_prefers_explicit_environment(
@@ -198,18 +206,18 @@ def test_main_passes_explicit_verifier_options_to_launch(
         [
             "launch",
             "--yes",
+            "--judge-provider",
+            "anthropic",
             "--judge-model",
             "anthropic/claude-sonnet-4-6",
-            "--verifier-env-var",
-            "ANTHROPIC_API_KEY",
         ]
     )
 
     assert result == 0
     assert captured == {
         "assume_yes": True,
+        "judge_provider": "anthropic",
         "judge_model": "anthropic/claude-sonnet-4-6",
-        "verifier_env_vars": ["ANTHROPIC_API_KEY"],
         "judge_concurrency": 1,
     }
 

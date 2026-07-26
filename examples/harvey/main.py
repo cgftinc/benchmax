@@ -5,8 +5,7 @@
 stage has nothing to download. Validation runs two real Modal sandbox trials.
 Launch uploads the bundle and starts a GPU run (explicit, confirmed — it
 spends credits). Credentials: Modal from MODAL_TOKEN_ID/MODAL_TOKEN_SECRET; the
-verifier model and the names of its explicitly supplied environment variables
-come from --judge-model and repeated --verifier-env-var options.
+verifier provider and model come from --judge-provider and --judge-model.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -20,9 +19,9 @@ import re
 import sys
 import tempfile
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from benchmax.envs.harbor import (
     BundledAgentSource,
@@ -64,18 +63,32 @@ def _validated_verifier_env(verifier_env: Mapping[str, str]) -> dict[str, str]:
     return environment
 
 
-def _verifier_env_from_process(variable_names: Sequence[str]) -> dict[str, str]:
-    names = [name.strip() for name in variable_names]
-    if not names or any(not name for name in names):
-        raise ValueError("provide at least one non-empty --verifier-env-var name")
-    if len(names) != len(set(names)):
-        raise ValueError("--verifier-env-var must not contain duplicate names")
-    missing = [name for name in names if not os.environ.get(name)]
-    if missing:
-        raise ValueError(
-            "missing verifier environment variable(s): " + ", ".join(missing)
-        )
-    return _validated_verifier_env({name: os.environ[name] for name in names})
+JudgeProvider = Literal["anthropic", "openai"]
+
+
+def _verifier_env_for_provider(provider: JudgeProvider) -> dict[str, str]:
+    if provider == "anthropic":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("set ANTHROPIC_API_KEY for the Anthropic judge")
+        return {"ANTHROPIC_API_KEY": api_key}
+
+    if provider == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("set OPENAI_API_KEY for the OpenAI-compatible judge")
+        environment = {
+            "OPENAI_API_KEY": api_key,
+            # harveyai/lab declares this variable even when RewardKit is
+            # explicitly overridden to use an OpenAI-compatible judge.
+            "ANTHROPIC_API_KEY": "unused-for-openai-judge",
+        }
+        for name in ("OPENAI_BASE_URL", "OPENAI_API_BASE"):
+            if value := os.environ.get(name):
+                environment[name] = value
+        return environment
+
+    raise ValueError(f"unsupported judge provider: {provider}")
 
 
 class HarveyLabHarborEnv(HarborEnv):
@@ -143,12 +156,12 @@ def _modal_credentials_from_process() -> ModalCredentials:
 
 def _constructor_args(
     *,
+    judge_provider: JudgeProvider,
     judge_model: str,
-    verifier_env_vars: Sequence[str],
     judge_concurrency: int,
 ) -> dict[str, Any]:
     try:
-        verifier_env = _verifier_env_from_process(verifier_env_vars)
+        verifier_env = _verifier_env_for_provider(judge_provider)
     except ValueError as error:
         raise SystemExit(str(error)) from None
     try:
@@ -172,16 +185,16 @@ def generate_data(*, force: bool) -> None:
 
 def validate(
     *,
+    judge_provider: JudgeProvider,
     judge_model: str,
-    verifier_env_vars: Sequence[str],
     judge_concurrency: int,
 ) -> Any:
     from castform import validate_environment
 
     env = HarveyLabHarborEnv(
         **_constructor_args(
+            judge_provider=judge_provider,
             judge_model=judge_model,
-            verifier_env_vars=verifier_env_vars,
             judge_concurrency=judge_concurrency,
         )
     )
@@ -203,8 +216,8 @@ def validate(
 def launch(
     *,
     assume_yes: bool,
+    judge_provider: JudgeProvider,
     judge_model: str,
-    verifier_env_vars: Sequence[str],
     judge_concurrency: int,
 ) -> str | None:
     from benchmax.bundle import dump_bundle
@@ -225,8 +238,8 @@ def launch(
     bundle = dump_bundle(
         HarveyLabHarborEnv,
         constructor_args=_constructor_args(
+            judge_provider=judge_provider,
             judge_model=judge_model,
-            verifier_env_vars=verifier_env_vars,
             judge_concurrency=judge_concurrency,
         ),
         pip_dependencies=RUNTIME_DEPENDENCIES,
@@ -266,15 +279,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip the launch confirmation (it spends GPU credits).",
     )
     parser.add_argument(
-        "--judge-model",
-        help="RewardKit/LiteLLM model name used by the verifier.",
+        "--judge-provider",
+        choices=["anthropic", "openai"],
+        help="Credential convention used by the verifier.",
     )
     parser.add_argument(
-        "--verifier-env-var",
-        action="append",
-        default=[],
-        metavar="NAME",
-        help="Copy NAME from the current environment into the verifier; repeat as needed.",
+        "--judge-model",
+        help="RewardKit/LiteLLM model name used by the verifier.",
     )
     parser.add_argument(
         "--judge-concurrency",
@@ -284,12 +295,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.stage in ("validate", "launch", "all"):
+        if not args.judge_provider:
+            parser.error("--judge-provider is required for validate and launch")
         if not args.judge_model:
             parser.error("--judge-model is required for validate and launch")
-        if not args.verifier_env_var:
-            parser.error(
-                "at least one --verifier-env-var is required for validate and launch"
-            )
 
     from castform.platform import ensure_session
 
@@ -299,8 +308,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.stage in ("validate", "all"):
         ensure_session()
         report = validate(
+            judge_provider=args.judge_provider,
             judge_model=args.judge_model,
-            verifier_env_vars=args.verifier_env_var,
             judge_concurrency=args.judge_concurrency,
         )
         ok = report is not None and report.ok
@@ -309,8 +318,8 @@ def main(argv: list[str] | None = None) -> int:
         ok = (
             launch(
                 assume_yes=args.yes,
+                judge_provider=args.judge_provider,
                 judge_model=args.judge_model,
-                verifier_env_vars=args.verifier_env_var,
                 judge_concurrency=args.judge_concurrency,
             )
             is not None
