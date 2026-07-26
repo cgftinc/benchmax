@@ -37,6 +37,4 @@ uv run python main.py launch \
 ```
 
 The launcher reads each `--verifier-env-var` value from the current environment,
-so secrets do not appear in command-line arguments. It uses an existing
-Castform session or starts interactive login; `castform with-auth` is not
-required.
+so secrets do not appear in command-line arguments.

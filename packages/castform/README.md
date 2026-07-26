@@ -56,9 +56,7 @@ The generated script makes every boundary visible:
 
 The CLI does not duplicate that orchestration. Use it for `login`, `setup`,
 `doctor`, `guide`, `runs` inspection and cancelling a run with `castform stop`.
-`castform whoami` and `castform logout` manage the active session, and
-`castform with-auth -- <cmd>` runs an external command with the profile's
-credential injected as `CASTFORM_AUTH_TOKEN`.
+`castform whoami` and `castform logout` manage the active session.
 
 ## Optional libraries
 
