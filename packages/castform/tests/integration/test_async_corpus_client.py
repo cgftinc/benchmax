@@ -12,8 +12,8 @@ Run against staging with the local CLI session (after ``castform login``):
     CASTFORM_CREDENTIALS_PATH=~/.castform/staging-credentials.json \
         uv run pytest -m integration tests/integration/test_async_corpus_client.py -v
 
-Auth: ``token_provider`` defaults to ``castform.platform.credentials.platform_bearer``,
-which resolves ``PLATFORM_API_KEY`` / ``ACT_AS_TOKEN_PATH`` or the cached ``~/.castform``
+Auth: ``token_provider`` defaults to ``runtime_platform_bearer``, which resolves
+``PLATFORM_API_KEY`` / ``ACT_AS_TOKEN_PATH`` or the cached ``~/.castform``
 session (session support requires the current ``platform.credentials`` — present on main).
 Skips if no creds resolve. Corpus: auto-discovered via ``list_corpora()`` (override with
 ``BENCHMAX_TEST_CORPUS_ID``; query via ``BENCHMAX_TEST_QUERY``, default ``"the"``).
@@ -27,7 +27,7 @@ import os
 import pytest
 
 from castform import config
-from castform.platform.credentials import platform_bearer
+from castform.platform.credentials import runtime_platform_bearer
 from castform.rag.corpus.postgres.client import CorpusClient
 
 _base_url = os.environ.get("CASTFORM_CORPORA_URL") or config.platform_url()
@@ -37,9 +37,9 @@ pytestmark = pytest.mark.integration
 
 
 def _skip_if_no_creds() -> None:
-    """Skip unless ``platform_bearer`` resolves a token (env key or local CLI session)."""
+    """Skip unless the runtime bearer resolves an env key or local CLI session."""
     try:
-        token = platform_bearer()
+        token = runtime_platform_bearer()
     except Exception as exc:  # noqa: BLE001 — any failure means no usable creds
         pytest.skip(f"no platform creds ({exc}); run `castform login`")
     if not token:
@@ -47,7 +47,7 @@ def _skip_if_no_creds() -> None:
 
 
 def _client() -> CorpusClient:
-    return CorpusClient(base_url=_base_url, token_provider=platform_bearer)
+    return CorpusClient(base_url=_base_url, token_provider=runtime_platform_bearer)
 
 
 def _resolve_corpus_id(client: CorpusClient) -> str | None:

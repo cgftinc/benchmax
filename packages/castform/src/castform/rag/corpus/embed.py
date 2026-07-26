@@ -1,54 +1,82 @@
-"""Platform-backed query/document embedding for RAG provider search clients.
+"""OpenAI-compatible query/document embedding for RAG search clients.
 
 The provider search clients and chunk sources (Turbopuffer / Pinecone / Chroma) accept an
 optional ``embed_fn: Callable[[list[str]], list[list[float]]]``. Wiring one in makes vector /
 hybrid retrieval work regardless of how the user's index was built — turbopuffer vector/hybrid
 (no server-side embed), a pinecone index NOT on the hosted model, or a non-cloud chroma
-collection. This builds that ``embed_fn`` over the platform's ``/v1/embeddings`` endpoint
-(``text-embedding-3-large``), the same llm-proxy the LLM judge uses.
+collection.
 
 ``qa-gen`` does NOT need this (it reads chunks directly); it's only for retrieval.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from dataclasses import dataclass
 
-from castform import config
-from castform.platform.credentials import resolve_judge_key
+from benchmax.auth import ModelAuth
+from castform.model_auth import create_openai_client
 
 # The served, non-hidden embeddings model in the llm-proxy catalog.
 DEFAULT_EMBED_MODEL = "text-embedding-3-large"
 
 
-def platform_embed_fn(
-    *,
-    model: str = DEFAULT_EMBED_MODEL,
-    base_url: str | None = None,
-    api_key: str = "",
-) -> Callable[[list[str]], list[list[float]]]:
-    """Build a sync, batched ``embed_fn`` over the platform ``/v1/embeddings``.
+@dataclass(frozen=True, slots=True)
+class OpenAIEmbedder:
+    """Pickle-safe embedding callable with explicit call-time model auth.
 
-    Returns ``Callable[[list[str]], list[list[float]]]`` — the shape every provider search
-    client / chunk source expects. The OpenAI client is built lazily on first call so that
-    (a) the closure stays cloudpickle-safe — no live httpx client is ever serialized into the
-    env bundle — and (b) ``base_url`` and credentials resolve in the *sandbox* where the env
-    runs, picking up its ``CASTFORM_BASE_DOMAIN`` rather than the authoring host's.
-
-    Auth mirrors the LLM judge (``resolve_judge_key``): an explicit ``api_key`` wins, else the
-    platform credential seam (``ACT_AS_TOKEN_PATH`` in training, ``PLATFORM_API_KEY`` / session
-    JWT otherwise). ``base_url`` defaults to ``config.llm_url()`` and may be overridden.
+    ``auth`` follows the same contract as :class:`benchmax.rewards.Judge`.
+    Managed environments use ``InjectedAuth("embedding")``; customer-owned
+    endpoints use ``StaticBearerAuth``. No platform or SDK environment
+    credential is inferred.
     """
-    client = None  # built on first call; keeps the closure picklable + env-correct
 
-    def embed(texts: list[str]) -> list[list[float]]:
-        nonlocal client
-        if client is None:
-            from openai import OpenAI
+    model: str
+    base_url: str
+    auth: ModelAuth
+    timeout: float | None = 60.0
+    max_retries: int = 2
 
-            url = base_url or config.llm_url()
-            client = OpenAI(base_url=url, api_key=resolve_judge_key(api_key, url))
-        resp = client.embeddings.create(model=model, input=texts)
-        return [item.embedding for item in resp.data]
+    def __post_init__(self) -> None:
+        if not isinstance(self.auth, ModelAuth):
+            raise TypeError("embedding auth must implement ModelAuth")
+        if not isinstance(self.model, str) or not self.model.strip():
+            raise ValueError("embedding model must be non-empty")
+        if not isinstance(self.base_url, str) or not self.base_url.strip():
+            raise ValueError("embedding base_url must be non-empty")
+        if self.timeout is not None and (
+            isinstance(self.timeout, bool)
+            or not isinstance(self.timeout, (int, float))
+            or self.timeout <= 0
+        ):
+            raise ValueError("embedding timeout must be positive or None")
+        if (
+            isinstance(self.max_retries, bool)
+            or not isinstance(self.max_retries, int)
+            or self.max_retries < 0
+        ):
+            raise ValueError("embedding max_retries must be non-negative")
 
-    return embed
+    def __call__(self, texts: list[str]) -> list[list[float]]:
+        if not isinstance(texts, list) or any(
+            not isinstance(text, str) for text in texts
+        ):
+            raise TypeError("embedding input must be a list of strings")
+        if not texts:
+            return []
+
+        client = create_openai_client(
+            model=self.model,
+            base_url=self.base_url,
+            auth=self.auth,
+            request_id="rag-embedding",
+            max_retries=self.max_retries,
+        )
+        try:
+            response = client.embeddings.create(
+                model=self.model,
+                input=texts,
+                timeout=self.timeout,
+            )
+            return [item.embedding for item in response.data]
+        finally:
+            client.close()

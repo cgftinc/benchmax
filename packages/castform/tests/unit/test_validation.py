@@ -157,7 +157,8 @@ async def test_custom_rollout_auth_does_not_replace_default_judge_auth(
         "castform.model_auth.config.llm_url", lambda: "https://llm.test/v1"
     )
     monkeypatch.setattr(
-        "castform.model_auth.platform_bearer", lambda: "castform-judge-token"
+        "castform.model_auth.castform_model_bearer",
+        lambda: "castform-judge-token",
     )
 
     class JudgeEnvironment(RecordingEnvironment):
@@ -242,7 +243,9 @@ async def test_castform_auth_resolves_the_session_for_each_model_call(
     monkeypatch.setattr(
         "castform.model_auth.config.llm_url", lambda: "https://llm.test/v1"
     )
-    monkeypatch.setattr("castform.model_auth.platform_bearer", lambda: next(tokens))
+    monkeypatch.setattr(
+        "castform.model_auth.castform_model_bearer", lambda: next(tokens)
+    )
     context = ModelRequestContext(
         base_url="https://llm.test/v1",
         model="test-model",
@@ -268,7 +271,9 @@ async def test_default_validation_auth_resolves_per_call_for_rollout_and_judge(
     monkeypatch.setattr(
         "castform.model_auth.config.llm_url", lambda: "https://llm.test/v1"
     )
-    monkeypatch.setattr("castform.model_auth.platform_bearer", lambda: next(tokens))
+    monkeypatch.setattr(
+        "castform.model_auth.castform_model_bearer", lambda: next(tokens)
+    )
 
     class AuthEnvironment(RecordingEnvironment):
         async def run_group(self, requests):

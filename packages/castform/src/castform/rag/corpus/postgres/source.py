@@ -7,7 +7,10 @@ import warnings
 from typing import TYPE_CHECKING
 
 from castform import config
-from castform.platform.credentials import resolve_token_provider
+from castform.platform.credentials import (
+    resolve_token_provider,
+    runtime_platform_bearer,
+)
 from castform.rag.chunkers.models import Chunk, ChunkCollection
 from castform.rag.corpus.search_schema.search_exceptions import (
     InvalidSearchSpecError,
@@ -61,7 +64,10 @@ class PostgresChunkSource:
         # base_url defaults to the session-derived platform URL.
         self._client = CorpusClient(
             base_url=base_url if base_url is not None else config.platform_url(),
-            token_provider=resolve_token_provider(api_key),
+            token_provider=resolve_token_provider(
+                api_key,
+                runtime_platform_bearer,
+            ),
         )
         self._corpus_name = corpus_name
         self._corpus: Corpus | None = None

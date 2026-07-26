@@ -16,9 +16,14 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from openai import AsyncOpenAI, OpenAI
+from benchmax.auth import StaticBearerAuth
+from openai import AsyncOpenAI
 
-from castform.platform.credentials import resolve_judge_key
+from castform.model_auth import (
+    create_async_openai_client,
+    create_openai_client,
+    model_auth_for_endpoint,
+)
 from castform.rag.qa_generation.batch_processor import batch_process_async
 from castform.rag.qa_generation.pipeline_config import PipelineContext
 from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
@@ -125,15 +130,20 @@ class HopCountValidityFilter:
                     "Without it, requests go to the OpenAI default endpoint, which does not "
                     "recognise the default judge_model."
                 )
-            # Empty judge_api_key resolves the platform bearer via the credential
-            # seam (raises loudly if no credential is available at all).
-            api_key = resolve_judge_key(cfg.judge_api_key, cfg.judge_base_url)
+            judge_auth = model_auth_for_endpoint(
+                api_key=cfg.judge_api_key,
+                base_url=cfg.judge_base_url,
+                purpose="hop-count judge",
+            )
         else:
-            api_key = cfg.judge_api_key or "disabled"
-        self._judge_api_key = api_key
-        self.judge_client = OpenAI(
-            api_key=api_key,
-            base_url=cfg.judge_base_url or None,
+            judge_auth = StaticBearerAuth(cfg.judge_api_key or "disabled")
+        self._judge_auth = judge_auth
+        judge_base_url = cfg.judge_base_url or "https://disabled.invalid/v1"
+        self.judge_client = create_openai_client(
+            model=cfg.judge_model,
+            base_url=judge_base_url,
+            auth=judge_auth,
+            request_id="hop-count-judge",
         )
         # Lazily-built loop-bound AsyncOpenAI judge client (see _get_async_judge_client).
         self._async_judge_client: AsyncOpenAI | None = None
@@ -151,9 +161,11 @@ class HopCountValidityFilter:
             or self._async_judge_client_loop is not loop
         )
         if stale:
-            client = AsyncOpenAI(
-                api_key=self._judge_api_key,
-                base_url=self.cfg.judge_base_url or None,
+            client = create_async_openai_client(
+                model=self.cfg.judge_model,
+                base_url=self.cfg.judge_base_url,
+                auth=self._judge_auth,
+                request_id="hop-count-judge",
             )
             self._async_judge_client = client
             self._async_judge_client_loop = loop

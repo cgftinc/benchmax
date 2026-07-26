@@ -7,12 +7,15 @@ import logging
 import re
 from typing import Any
 
-from openai import OpenAI
+from benchmax.auth import StaticBearerAuth
 
-from castform.rag.qa_generation.pipeline_config import PipelineContext, LLMEnvFilterConfig
+from castform.model_auth import create_openai_client, model_auth_for_endpoint
+from castform.rag.qa_generation.pipeline_config import (
+    PipelineContext,
+    LLMEnvFilterConfig,
+)
 from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 from castform.platform.client import RolloutClient
-from castform.platform.credentials import resolve_judge_key
 
 logger = logging.getLogger(__name__)
 
@@ -66,16 +69,20 @@ class EnvRolloutFilter:
     ) -> None:
         self.rollout_client = rollout_client
         self.cfg = cfg
-        # Empty judge_api_key → credential seam (the rollout leg already resolves
-        # the seam in stream_rollout); gated on `enabled` so a listed-but-disabled
-        # filter without a credential still constructs.
-        self.judge_client = OpenAI(
-            api_key=(
-                resolve_judge_key(cfg.judge_api_key, cfg.judge_base_url)
-                if cfg.enabled
-                else (cfg.judge_api_key or "disabled")
-            ),
+        judge_auth = (
+            model_auth_for_endpoint(
+                api_key=cfg.judge_api_key,
+                base_url=cfg.judge_base_url,
+                purpose="environment rollout judge",
+            )
+            if cfg.enabled
+            else StaticBearerAuth(cfg.judge_api_key or "disabled")
+        )
+        self.judge_client = create_openai_client(
+            model=cfg.judge_model,
             base_url=cfg.judge_base_url,
+            auth=judge_auth,
+            request_id="environment-rollout-judge",
         )
 
     def _run_rollout(self, raw_example: dict[str, Any], *, idx: int) -> dict[str, Any]:
@@ -99,7 +106,9 @@ class EnvRolloutFilter:
             )
 
         if cls_bytes is None or meta_bytes is None:
-            raise ValueError("LLM env filter requires env bundle paths or env bundle files.")
+            raise ValueError(
+                "LLM env filter requires env bundle paths or env bundle files."
+            )
         return self.rollout_client.stream_rollout(
             raw_example=raw_example,
             env_cls_bytes=cls_bytes,
@@ -115,7 +124,9 @@ class EnvRolloutFilter:
             example_index=idx,
         )
 
-    def evaluate(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]:
+    def evaluate(
+        self, items: list[GeneratedQA], context: PipelineContext
+    ) -> list[GeneratedQA]:
         if not self.cfg.enabled:
             return items
 
@@ -130,7 +141,9 @@ class EnvRolloutFilter:
                 continue
 
             try:
-                verdict = self._evaluate_item(item, idx=idx, max_refinements=max_refinements)
+                verdict = self._evaluate_item(
+                    item, idx=idx, max_refinements=max_refinements
+                )
             except Exception:
                 logger.exception("EnvRolloutFilter failed for one item")
                 verdict = FilterVerdict(
@@ -158,7 +171,9 @@ class EnvRolloutFilter:
                 stats["rejected"] = int(stats.get("rejected", 0)) + 1
         return items
 
-    def _evaluate_item(self, item: GeneratedQA, *, idx: int, max_refinements: int) -> FilterVerdict:
+    def _evaluate_item(
+        self, item: GeneratedQA, *, idx: int, max_refinements: int
+    ) -> FilterVerdict:
         question = str(item.qa.get("question", "")).strip()
         answer = str(item.qa.get("answer", "")).strip()
         if not question:
@@ -260,7 +275,9 @@ class EnvRolloutFilter:
             metadata=metadata,
         )
 
-    def _judge_equivalence(self, *, reference: str, candidate: str) -> tuple[bool, float, str]:
+    def _judge_equivalence(
+        self, *, reference: str, candidate: str
+    ) -> tuple[bool, float, str]:
         if not candidate:
             return False, 0.0, "No candidate answer."
         response = self.judge_client.chat.completions.create(
@@ -269,7 +286,9 @@ class EnvRolloutFilter:
                 {"role": "system", "content": _JUDGE_SYSTEM},
                 {
                     "role": "user",
-                    "content": _JUDGE_USER.format(reference=reference, candidate=candidate),
+                    "content": _JUDGE_USER.format(
+                        reference=reference, candidate=candidate
+                    ),
                 },
             ],
             temperature=0.0,

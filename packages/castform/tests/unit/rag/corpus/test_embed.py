@@ -1,4 +1,4 @@
-"""Tests for the platform-backed ``embed_fn`` helper."""
+"""Tests for the explicit-auth OpenAI embedding callable."""
 
 from __future__ import annotations
 
@@ -7,97 +7,112 @@ from types import SimpleNamespace
 
 import cloudpickle
 
-from castform.rag.corpus.embed import DEFAULT_EMBED_MODEL, platform_embed_fn
+from benchmax.auth import InjectedAuth, StaticBearerAuth, bind_model_auth
+from castform.rag.corpus.embed import DEFAULT_EMBED_MODEL, OpenAIEmbedder
 
 
-class _FakeOpenAI:
-    """Records construction args + embeddings calls; returns a vector per input."""
-
-    instances: list["_FakeOpenAI"] = []
-
-    def __init__(self, *, base_url, api_key):
-        self.base_url = base_url
-        self.api_key = api_key
+class _FakeClient:
+    def __init__(self) -> None:
         self.calls: list[dict] = []
         self.embeddings = SimpleNamespace(create=self._create)
-        _FakeOpenAI.instances.append(self)
+        self.closed = False
 
-    def _create(self, *, model, input):
-        self.calls.append({"model": model, "input": list(input)})
-        # one vector per input row, length = len(text) so we can assert ordering
-        data = [SimpleNamespace(embedding=[float(len(t))]) for t in input]
+    def _create(self, *, model, input, timeout):
+        self.calls.append({"model": model, "input": list(input), "timeout": timeout})
+        data = [SimpleNamespace(embedding=[float(len(text))]) for text in input]
         return SimpleNamespace(data=data)
 
+    def close(self) -> None:
+        self.closed = True
 
-def _patch(monkeypatch, *, key="tok-seam"):
-    _FakeOpenAI.instances.clear()
-    monkeypatch.setattr("openai.OpenAI", _FakeOpenAI)
-    # bypass the credential seam (no network / no real token needed)
-    monkeypatch.setattr(
-        "castform.rag.corpus.embed.resolve_judge_key",
-        lambda api_key, base_url: api_key or key,
+
+def _patch_client(monkeypatch):
+    created: list[tuple[dict, _FakeClient]] = []
+
+    def create(**kwargs):
+        client = _FakeClient()
+        created.append((kwargs, client))
+        return client
+
+    monkeypatch.setattr("castform.rag.corpus.embed.create_openai_client", create)
+    return created
+
+
+def test_returns_one_vector_per_input_with_explicit_auth(monkeypatch):
+    created = _patch_client(monkeypatch)
+    auth = StaticBearerAuth("sk-explicit")
+    embedder = OpenAIEmbedder(
+        model=DEFAULT_EMBED_MODEL,
+        base_url="https://model.example/v1",
+        auth=auth,
     )
 
+    assert embedder(["a", "bbb"]) == [[1.0], [3.0]]
 
-def test_returns_one_vector_per_input_in_order(monkeypatch):
-    monkeypatch.setenv("CASTFORM_LLM_URL", "https://llm.test.example/v1")
-    _patch(monkeypatch)
-
-    fn = platform_embed_fn()
-    out = fn(["a", "bbb"])
-
-    assert out == [[1.0], [3.0]]
-    client = _FakeOpenAI.instances[0]
-    assert client.base_url == "https://llm.test.example/v1"
-    assert client.api_key == "tok-seam"
-    assert client.calls[0]["model"] == DEFAULT_EMBED_MODEL
-    assert client.calls[0]["input"] == ["a", "bbb"]
-
-
-def test_client_built_lazily_and_once(monkeypatch):
-    monkeypatch.setenv("CASTFORM_LLM_URL", "https://llm.test.example/v1")
-    _patch(monkeypatch)
-
-    fn = platform_embed_fn()
-    assert _FakeOpenAI.instances == []  # nothing constructed until first call
-
-    fn(["x"])
-    fn(["y"])
-    assert len(_FakeOpenAI.instances) == 1  # reused across calls
+    kwargs, client = created[0]
+    assert kwargs["auth"] is auth
+    assert kwargs["base_url"] == "https://model.example/v1"
+    assert kwargs["model"] == DEFAULT_EMBED_MODEL
+    assert client.calls == [
+        {
+            "model": DEFAULT_EMBED_MODEL,
+            "input": ["a", "bbb"],
+            "timeout": 60.0,
+        }
+    ]
+    assert client.closed
 
 
-def test_base_url_resolves_at_call_time_from_config(monkeypatch):
-    # Cross-env story: a sandbox sets CASTFORM_BASE_DOMAIN, which must be read when the
-    # fn runs, not when it was authored.
-    _patch(monkeypatch)
-    fn = platform_embed_fn()  # authored with no base_url
-
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.dev")
-    monkeypatch.delenv("CASTFORM_LLM_URL", raising=False)
-    fn(["q"])
-
-    assert _FakeOpenAI.instances[0].base_url == "https://llm.castform.dev/v1"
-
-
-def test_explicit_overrides_win(monkeypatch):
-    _patch(monkeypatch)
-    fn = platform_embed_fn(
-        model="custom-embed", base_url="https://override/v1", api_key="sk-explicit"
+def test_uses_one_request_scoped_client_per_call(monkeypatch):
+    created = _patch_client(monkeypatch)
+    embedder = OpenAIEmbedder(
+        model=DEFAULT_EMBED_MODEL,
+        base_url="https://model.example/v1",
+        auth=StaticBearerAuth("sk-explicit"),
     )
-    fn(["q"])
 
-    client = _FakeOpenAI.instances[0]
-    assert client.base_url == "https://override/v1"
-    assert client.api_key == "sk-explicit"
-    assert client.calls[0]["model"] == "custom-embed"
+    embedder(["x"])
+    embedder(["y"])
+
+    assert len(created) == 2
+    assert all(client.closed for _, client in created)
 
 
-def test_cloudpickle_roundtrip_before_first_call(monkeypatch):
-    # The env bundle is cloudpickled before it ever runs; the fn must survive with no
-    # live client captured.
-    fn = platform_embed_fn(api_key="tok-seam")
-    restored = pickle.loads(cloudpickle.dumps(fn))
+def test_injected_auth_remains_bound_at_call_time(monkeypatch):
+    created = _patch_client(monkeypatch)
+    embedder = OpenAIEmbedder(
+        model=DEFAULT_EMBED_MODEL,
+        base_url="https://llm.castform.dev/v1",
+        auth=InjectedAuth("embedding"),
+    )
 
-    monkeypatch.setenv("CASTFORM_LLM_URL", "https://llm.test.example/v1")
-    _patch(monkeypatch)
+    with bind_model_auth({"embedding": StaticBearerAuth("runtime-token")}):
+        embedder(["q"])
+
+    assert created[0][0]["auth"] == InjectedAuth("embedding")
+
+
+def test_empty_input_skips_client_creation(monkeypatch):
+    created = _patch_client(monkeypatch)
+    embedder = OpenAIEmbedder(
+        model=DEFAULT_EMBED_MODEL,
+        base_url="https://model.example/v1",
+        auth=StaticBearerAuth("sk-explicit"),
+    )
+
+    assert embedder([]) == []
+    assert created == []
+
+
+def test_cloudpickle_roundtrip_contains_auth_declaration_not_client(monkeypatch):
+    created = _patch_client(monkeypatch)
+    embedder = OpenAIEmbedder(
+        auth=StaticBearerAuth("sk-explicit"),
+        model="custom-embed",
+        base_url="https://model.example/v1",
+    )
+    restored = pickle.loads(cloudpickle.dumps(embedder))
+
     assert restored(["zz"]) == [[2.0]]
+    assert created[0][0]["auth"] == StaticBearerAuth("sk-explicit")
+    assert created[0][0]["model"] == "custom-embed"

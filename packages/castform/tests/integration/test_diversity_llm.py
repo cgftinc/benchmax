@@ -3,7 +3,7 @@
 Hits real LLM endpoints — requires API credentials.
 Run with: uv run pytest tests/integration/test_diversity_llm.py -v
 
-Credentials: set CASTFORM_LLM_URL and PLATFORM_API_KEY (or load via .env.test).
+Credentials: set CASTFORM_LLM_URL and CASTFORM_API_KEY (or load via .env.test).
 """
 
 import os
@@ -20,7 +20,7 @@ from benchmax.rewards import (
 )
 
 _base_url = os.environ.get("CASTFORM_LLM_URL", "https://llm.castform.dev/v1")
-_api_key = os.environ.get("PLATFORM_API_KEY", "")
+_api_key = os.environ.get("CASTFORM_API_KEY", "")
 
 LLM_CONFIG = LLMDiversityConfig(
     judge=Judge(
@@ -38,7 +38,7 @@ CONTEXT = "Cluster these negotiation strategies by underlying approach."
 def _skip_if_no_creds() -> None:
     if not _api_key:
         pytest.skip(
-            "PLATFORM_API_KEY required for live LLM diversity integration tests"
+            "CASTFORM_API_KEY required for live LLM diversity integration tests"
         )
 
 

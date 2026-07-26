@@ -8,9 +8,14 @@ import logging
 from dataclasses import dataclass
 from typing import Any, cast
 
-from openai import AsyncOpenAI, OpenAI
+from benchmax.auth import StaticBearerAuth
+from openai import AsyncOpenAI
 
-from castform.platform.credentials import resolve_judge_key
+from castform.model_auth import (
+    create_async_openai_client,
+    create_openai_client,
+    model_auth_for_endpoint,
+)
 from castform.rag.qa_generation.batch_processor import batch_process_async
 from castform.rag.qa_generation.pipeline_config import (
     DEFAULT_GROUNDING_JUDGE_SYSTEM_PROMPT,
@@ -54,17 +59,20 @@ class GroundingLLMFilter:
     ) -> None:
         self.chunk_source = chunk_source
         self.cfg = cfg
-        # An empty judge_api_key resolves the platform bearer via the credential
-        # seam; gated on `enabled` so a listed-but-disabled filter with no
-        # credential still constructs (the client is never called when disabled).
-        self._judge_api_key = (
-            resolve_judge_key(cfg.judge_api_key, cfg.judge_base_url)
+        self._judge_auth = (
+            model_auth_for_endpoint(
+                api_key=cfg.judge_api_key,
+                base_url=cfg.judge_base_url,
+                purpose="grounding judge",
+            )
             if cfg.enabled
-            else (cfg.judge_api_key or "disabled")
+            else StaticBearerAuth(cfg.judge_api_key or "disabled")
         )
-        self.judge_client = OpenAI(
-            api_key=self._judge_api_key,
+        self.judge_client = create_openai_client(
+            model=cfg.judge_model,
             base_url=cfg.judge_base_url,
+            auth=self._judge_auth,
+            request_id="grounding-judge",
         )
         # Lazily-built loop-bound AsyncOpenAI judge client (see _get_async_judge_client).
         self._async_judge_client: AsyncOpenAI | None = None
@@ -82,9 +90,11 @@ class GroundingLLMFilter:
             or self._async_judge_client_loop is not loop
         )
         if stale:
-            client = AsyncOpenAI(
-                api_key=self._judge_api_key,
+            client = create_async_openai_client(
+                model=self.cfg.judge_model,
                 base_url=self.cfg.judge_base_url,
+                auth=self._judge_auth,
+                request_id="grounding-judge",
             )
             self._async_judge_client = client
             self._async_judge_client_loop = loop

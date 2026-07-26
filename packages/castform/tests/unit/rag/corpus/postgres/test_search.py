@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import cloudpickle
 import pytest
 
-from castform.platform.credentials import platform_bearer
+from castform.platform.credentials import runtime_platform_bearer
 from castform.rag.corpus.postgres.search import PostgresSearch
 from castform.rag.corpus.search_client import SearchClient
 
@@ -39,9 +39,9 @@ class TestConformance:
         cs = PostgresSearch(corpus_name="t", base_url="http://t")
         assert isinstance(cs, SearchClient)
 
-    def test_defaults_to_platform_bearer(self):
+    def test_defaults_to_runtime_platform_bearer(self):
         cs = PostgresSearch(corpus_name="t", base_url="http://t")
-        assert cs._token_provider is platform_bearer
+        assert cs._token_provider is runtime_platform_bearer
 
     def test_pickle_roundtrip(self):
         cs = PostgresSearch(corpus_name="cn", base_url="http://b")

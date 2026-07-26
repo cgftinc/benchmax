@@ -336,6 +336,7 @@ def test_rollout_client_targets_platform_service_v1(monkeypatch):
             raw_example={"prompt": "hi"},
             env_cls_path="a",
             env_metadata_path="b",
+            llm_api_key="model-key",
         )
 
     assert captured["url"] == "https://api.castform.com/v1/rollout/stream"
@@ -352,7 +353,7 @@ def test_stream_rollout_refuses_to_forward_platform_key_to_third_party_llm(monke
     monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
 
     client = RolloutClient(api_key="platform-key")
-    with pytest.raises(ValueError, match="third-party host"):
+    with pytest.raises(ValueError, match="llm_api_key is required"):
         client.stream_rollout(
             raw_example={"prompt": "hi"},
             env_cls_path="a",
@@ -362,46 +363,18 @@ def test_stream_rollout_refuses_to_forward_platform_key_to_third_party_llm(monke
         )
 
 
-def test_stream_rollout_allows_platform_key_for_platform_llm_endpoint(monkeypatch):
-    """When llm_base_url is None (uses platform default), the platform key
-    is auto-forwarded — should not raise."""
+def test_stream_rollout_requires_explicit_key_for_platform_llm_endpoint(monkeypatch):
+    """A platform bootstrap key is never silently reused as a model key."""
     monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
 
     client = RolloutClient(api_key="platform-key", server_url="https://rollout.example")
 
-    # Stub httpx.stream so we don't hit the network. We only care that the
-    # pre-flight key-forwarding check passes; we raise inside the context to
-    # avoid exercising the SSE loop in this test.
-    import httpx as httpx_mod
-
-    captured: dict[str, Any] = {}
-
-    class _StubCM:
-        def __init__(self, payload):
-            captured["payload"] = payload
-
-        def __enter__(self):
-            raise RuntimeError("stub: skipping SSE loop")
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(
-        httpx_mod,
-        "stream",
-        lambda method, url, json=None, **kw: _StubCM(json),
-    )
-
-    with pytest.raises(RuntimeError, match="stub"):
+    with pytest.raises(ValueError, match="never reused as model credentials"):
         client.stream_rollout(
             raw_example={"prompt": "hi"},
             env_cls_path="a",
             env_metadata_path="b",
-            # llm_base_url=None → resolves to platform default → key forwarding allowed
         )
-
-    assert captured["payload"]["llm"]["api_key"] == "platform-key"
-    assert captured["payload"]["llm"]["base_url"].endswith("/v1")
 
 
 # ---------------------------------------------------------------------------
@@ -457,10 +430,9 @@ def test_trainer_client_resolves_bearer_per_request():
     assert seen == ["Bearer tok-1", "Bearer tok-2"]
 
 
-def test_stream_rollout_resolves_bearer_and_llm_key_via_seam(monkeypatch):
-    """api_key unset → BOTH the platform-service header and the platform-LLM
-    leg key resolve via the seam (PLATFORM_API_KEY here). Guards the LLM-leg
-    fix: the rollout's own completion call must not go out with an empty key."""
+def test_stream_rollout_keeps_platform_and_model_credentials_separate(monkeypatch):
+    """The platform seam authenticates only platform-service; the model key is
+    explicit and independent."""
     monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
     monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
     monkeypatch.setenv("PLATFORM_API_KEY", "sk_seam")
@@ -492,10 +464,11 @@ def test_stream_rollout_resolves_bearer_and_llm_key_via_seam(monkeypatch):
             raw_example={"prompt": "hi"},
             env_cls_path="a",
             env_metadata_path="b",
+            llm_api_key="explicit-model-key",
         )
 
     assert captured["headers"]["Authorization"] == "Bearer sk_seam"
-    assert captured["payload"]["llm"]["api_key"] == "sk_seam"
+    assert captured["payload"]["llm"]["api_key"] == "explicit-model-key"
 
 
 def test_stream_rollout_raises_without_any_credential(monkeypatch, tmp_path):
@@ -512,6 +485,7 @@ def test_stream_rollout_raises_without_any_credential(monkeypatch, tmp_path):
             raw_example={"prompt": "hi"},
             env_cls_path="a",
             env_metadata_path="b",
+            llm_api_key="model-key",
         )
 
 
@@ -544,6 +518,7 @@ def test_stream_rollout_raises_authentication_error_on_401(monkeypatch):
             raw_example={"prompt": "hi"},
             env_cls_path="a",
             env_metadata_path="b",
+            llm_api_key="model-key",
         )
     assert exc_info.value.status_code == 401
 
@@ -560,6 +535,7 @@ def test_stream_rollout_raises_authentication_error_on_403(monkeypatch):
             raw_example={"prompt": "hi"},
             env_cls_path="a",
             env_metadata_path="b",
+            llm_api_key="model-key",
         )
     assert exc_info.value.status_code == 403
 
@@ -574,6 +550,7 @@ def test_stream_rollout_raises_rollout_not_found_on_404(monkeypatch):
             raw_example={"prompt": "hi"},
             env_cls_path="a",
             env_metadata_path="b",
+            llm_api_key="model-key",
         )
 
 
@@ -587,6 +564,7 @@ def test_stream_rollout_raises_rollout_server_error_on_5xx(monkeypatch):
             raw_example={"prompt": "hi"},
             env_cls_path="a",
             env_metadata_path="b",
+            llm_api_key="model-key",
         )
 
 
@@ -642,6 +620,7 @@ def test_run_group_parses_batch_sse(monkeypatch):
         samples=2,
         env_cls_bytes=b"x",
         env_metadata_bytes=b"y",
+        llm_api_key="model-key",
         verbose=False,
     )
 
@@ -697,6 +676,7 @@ def test_run_group_ignores_worker_error(monkeypatch):
         samples=2,
         env_cls_bytes=b"x",
         env_metadata_bytes=b"y",
+        llm_api_key="model-key",
         verbose=False,
     )
     # worker_error didn't raise; both real rollouts came through.

@@ -532,7 +532,10 @@ class PipelineConfig:
 
     def resolve_api_keys(self) -> None:
         """Fill unset component API keys/base URLs with shared platform LLM settings."""
-        shared_llm_key = self.platform.llm_api_key or self.platform.api_key
+        # Control-plane credentials are never model credentials. A customer who
+        # wants one provisioned key to serve both roles must assign it to both
+        # fields explicitly.
+        shared_llm_key = self.platform.llm_api_key
         shared_llm_base_url = self.platform.llm_base_url.strip() or config.llm_url()
 
         if not self.generation.llm_direct.api_key:
@@ -883,8 +886,8 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         )
 
     platform_raw = raw.get("platform", {}) or {}
-    # api_key is optional: an empty key resolves per request via the credential
-    # seam (cached device-auth session / ACT_AS_TOKEN_PATH / PLATFORM_API_KEY).
+    # api_key authenticates platform/corpus operations only. Model calls use
+    # llm_api_key or the local Castform login exchange.
     api_key = str(platform_raw.get("api_key", "")).strip()
     platform = PlatformConfig(
         api_key=api_key,

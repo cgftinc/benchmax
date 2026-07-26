@@ -1,13 +1,12 @@
 """Integration smoke for per-request credential resolution (device-auth Phase 1).
 
-Constructs a ``RolloutClient`` with **no** ``api_key``, so the platform-service
-bearer — and the rollout's own platform-LLM leg key — both resolve via the
-credential seam (``PLATFORM_API_KEY``). This exercises the path mocks can't:
-platform-service validates the seam-resolved key, mints the act_as JWT, reaches
-rollout-service, and the rollout's LLM completion succeeds.
+Constructs a ``RolloutClient`` with **no** control-plane ``api_key``, so the
+platform-service bearer resolves via the ``PLATFORM_API_KEY`` seam. The rollout
+model receives a separate, explicitly provided ``CASTFORM_API_KEY``.
 
-Hits staging. Requires ``PLATFORM_API_KEY`` (from env / ``.env.test``); targets
-``castform.dev`` unless ``CASTFORM_BASE_DOMAIN`` is already set.
+Hits staging. Requires ``PLATFORM_API_KEY`` and ``CASTFORM_API_KEY`` (from env /
+``.env.test``); targets ``castform.dev`` unless ``CASTFORM_BASE_DOMAIN`` is
+already set.
 
 Run: uv run pytest tests/integration/platform/test_seam_smoke.py -v
 """
@@ -23,7 +22,8 @@ from castform.platform.exceptions import RolloutError
 
 pytestmark = pytest.mark.integration
 
-_API_KEY = os.environ.get("PLATFORM_API_KEY", "")
+_PLATFORM_API_KEY = os.environ.get("PLATFORM_API_KEY", "")
+_MODEL_API_KEY = os.environ.get("CASTFORM_API_KEY", "")
 _AUTH_MARKERS = ("401", "403", "authentication", "Authentication", "Unauthorized")
 
 
@@ -55,7 +55,10 @@ def _make_echo_env():
     return _EchoEnv
 
 
-@pytest.mark.skipif(not _API_KEY, reason="PLATFORM_API_KEY not set (the seam source)")
+@pytest.mark.skipif(
+    not (_PLATFORM_API_KEY and _MODEL_API_KEY),
+    reason="PLATFORM_API_KEY and CASTFORM_API_KEY are required",
+)
 def test_rollout_client_resolves_bearer_via_seam(monkeypatch):
     """A client built with no api_key authenticates and rolls out via the seam.
 
@@ -72,7 +75,7 @@ def test_rollout_client_resolves_bearer_via_seam(monkeypatch):
     )
 
     bundle = dump_bundle(_make_echo_env())
-    client = RolloutClient()  # no api_key → bearer + LLM-leg key resolve via the seam
+    client = RolloutClient()  # no api_key → platform bearer resolves via the seam
     outcomes: list[dict] = []
     errors: list[str] = []
     for index, example in enumerate(({"prompt": "hi"}, {"prompt": "yo"})):
@@ -83,6 +86,7 @@ def test_rollout_client_resolves_bearer_via_seam(monkeypatch):
                     env_cls_bytes=bundle.pickled,
                     env_metadata_bytes=bundle.metadata.to_json_bytes(),
                     example_index=index,
+                    llm_api_key=_MODEL_API_KEY,
                 )
             )
         except (RolloutError, RuntimeError) as exc:

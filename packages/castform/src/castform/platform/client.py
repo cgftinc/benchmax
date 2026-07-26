@@ -989,6 +989,8 @@ class RolloutClient:
             example_index:         Display index used in printed output.
             llm_base_url:          Base URL for the LLM API.
             llm_model:             Model name to use for the rollout.
+            llm_api_key:           Explicit credential for the rollout model.
+                                   Platform/login credentials are never reused.
             max_turns:             Max conversation turns.
             max_tool_calls:        Max tool calls per rollout.
             max_completion_tokens: Max tokens per completion.
@@ -1016,25 +1018,15 @@ class RolloutClient:
 
         # Resolve the platform bearer once, per request (never frozen at
         # construction): a rotating/expiring device or act-as token is picked
-        # up each call. Used for the platform-service header below AND, when the
-        # LLM leg hits the platform's own endpoint, as that leg's key.
+        # up for the platform-service request only.
         bearer = self._token_provider()
 
-        # Resolve LLM URL lazily. The platform key is only auto-forwarded when
-        # the LLM endpoint is the platform's own LLM service — pointing at a
-        # third-party host (Azure OpenAI, Anthropic) requires an explicit
-        # llm_api_key so we don't silently leak the platform credential.
-        platform_llm_url = config.llm_url()
-        resolved_llm_url = llm_base_url or platform_llm_url
         if not llm_api_key:
-            if resolved_llm_url == platform_llm_url:
-                llm_api_key = bearer
-            else:
-                raise ValueError(
-                    "llm_api_key is required when llm_base_url points outside the "
-                    f"platform LLM endpoint ({platform_llm_url}). Refusing to "
-                    "forward the platform API key to a third-party host."
-                )
+            raise ValueError(
+                "llm_api_key is required for rollout model calls. Platform and "
+                "login credentials are never reused as model credentials."
+            )
+        resolved_llm_url = llm_base_url or config.llm_url()
 
         payload = {
             "standardized_example": None,
@@ -1159,24 +1151,16 @@ class RolloutClient:
         env = self._build_env(
             env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes
         )
-        # Resolve the platform bearer once, per request (never frozen at
-        # construction) — used for the request header below AND, when the LLM leg
-        # hits the platform's own endpoint, as that leg's key. Mirrors stream_rollout.
+        # Resolve the platform bearer once, per request for the platform-service
+        # request only.
         bearer = self._token_provider()
 
-        # The platform key is only auto-forwarded to the platform's own LLM host
-        # (see stream_rollout for the no-leak rationale).
-        platform_llm_url = config.llm_url()
-        resolved_llm_url = llm_base_url or platform_llm_url
         if not llm_api_key:
-            if resolved_llm_url == platform_llm_url:
-                llm_api_key = bearer
-            else:
-                raise ValueError(
-                    "llm_api_key is required when llm_base_url points outside the "
-                    f"platform LLM endpoint ({platform_llm_url}). Refusing to "
-                    "forward the platform API key to a third-party host."
-                )
+            raise ValueError(
+                "llm_api_key is required for rollout model calls. Platform and "
+                "login credentials are never reused as model credentials."
+            )
+        resolved_llm_url = llm_base_url or config.llm_url()
 
         payload = {
             "dataset_bytes": base64.b64encode(json.dumps(example).encode()).decode(),

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from castform.platform.credentials import TokenProvider, platform_bearer
+from castform.platform.credentials import TokenProvider, runtime_platform_bearer
 
 from .exceptions import (
     AuthenticationError,
@@ -39,9 +39,10 @@ class CorpusClient:
         >>> print(f"Uploaded {result.inserted_count} chunks")
 
     The bearer token is resolved **per request** via ``token_provider`` (default:
-    the platform credential resolver), so a rotating act-as token stays valid
-    across a long run and is never frozen into a pickled env. Callers with an
-    explicit key inject one, e.g. ``token_provider=lambda: my_key``.
+    the runtime credential resolver, which excludes bootstrap authentication),
+    so a rotating act-as token stays valid across a long run and is never
+    frozen into a pickled env. Callers with an explicit key inject one, e.g.
+    ``token_provider=lambda: my_key``.
     """
 
     base_url: str = "http://localhost:3000"
@@ -51,7 +52,7 @@ class CorpusClient:
     # throttled more than once — give it enough attempts to ride them out.
     max_retries: int = 5
     retry_backoff_seconds: float = 0.5
-    token_provider: TokenProvider = platform_bearer
+    token_provider: TokenProvider = runtime_platform_bearer
     # Enable HTTP/2 multiplexing on the async client. Safe there (one client
     # bound to one event loop), unlike the shared sync client across threads.
     async_http2: bool = True
@@ -129,7 +130,7 @@ class CorpusClient:
         try:
             bearer = self.token_provider()
         except RuntimeError as exc:
-            # The seam (platform_bearer) raises when no credential resolves; surface
+            # The runtime seam raises when no credential resolves; surface
             # it as an auth error so callers catch it like any other Corpora failure.
             raise AuthenticationError(
                 f"No Castform platform credential available for the Corpora API: {exc}"
@@ -239,7 +240,7 @@ class CorpusClient:
         try:
             bearer = self.token_provider()
         except RuntimeError as exc:
-            # The seam (platform_bearer) raises when no credential resolves; surface
+            # The runtime seam raises when no credential resolves; surface
             # it as an auth error so callers catch it like any other Corpora failure.
             raise AuthenticationError(
                 f"No Castform platform credential available for the Corpora API: {exc}"

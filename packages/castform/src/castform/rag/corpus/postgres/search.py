@@ -10,7 +10,7 @@ from typing import Any
 from castform.platform.credentials import (
     TokenProvider,
     as_token_provider,
-    platform_bearer,
+    runtime_platform_bearer,
 )
 
 from .client import CorpusClient
@@ -23,7 +23,7 @@ class PostgresSearch:
 
     The bearer token is resolved per request via ``token_provider`` (default:
     the platform credential resolver — rotating act-as token in training, or
-    ``PLATFORM_API_KEY`` in playground / self-serve). No credential is stored,
+    ``PLATFORM_API_KEY`` in legacy hosted workers). No credential is stored,
     so nothing is frozen into the pickled env.
 
     Args:
@@ -31,7 +31,8 @@ class PostgresSearch:
         base_url: Corpora API base URL.
         corpus_id: Optional corpus ID (skips name lookup).
         token_provider: Optional override — a callable resolving the bearer per
-            call, or a literal key (string sugar). Defaults to ``platform_bearer``.
+            call, or a literal key (string sugar). Defaults to
+            ``runtime_platform_bearer``, which excludes bootstrap auth.
     """
 
     def __init__(
@@ -45,7 +46,10 @@ class PostgresSearch:
         self._corpus_name = corpus_name
         self._base_url = base_url
         self._corpus_id = corpus_id
-        self._token_provider = as_token_provider(token_provider, platform_bearer)
+        self._token_provider = as_token_provider(
+            token_provider,
+            runtime_platform_bearer,
+        )
         self._client: CorpusClient | None = None
 
     def _get_client(self) -> CorpusClient:

@@ -13,11 +13,13 @@ import pytest
 from castform.platform import credentials
 from castform.platform.credentials import (
     as_token_provider,
+    castform_model_bearer,
     clear_castform_session,
     env_token,
     platform_bearer,
     read_castform_session,
     resolve_token_provider,
+    runtime_platform_bearer,
     write_castform_session,
 )
 
@@ -121,6 +123,41 @@ def test_platform_bearer_mints_jwt_from_cached_session(tmp_path, monkeypatch):
     monkeypatch.setattr(credentials, "_mint_session_jwt", lambda _t, _p=None: jwt)
     _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
     assert platform_bearer() == jwt
+
+
+def test_model_bearer_uses_only_login_exchange(tmp_path, monkeypatch):
+    jwt = _fake_jwt(time.time() + 300)
+    monkeypatch.setenv(_AUTH_TOKEN_ENV, "forbidden-auth-token")
+    monkeypatch.setenv(_API_KEY_ENV, "forbidden-platform-key")
+    token_file = tmp_path / "act-as-token"
+    token_file.write_text("forbidden-act-as-token")
+    monkeypatch.setenv(_TOKEN_PATH_ENV, str(token_file))
+    monkeypatch.setattr(credentials, "_mint_session_jwt", lambda _t, _p=None: jwt)
+    _write_session(tmp_path, monkeypatch, {"access_token": "login-session"})
+
+    assert castform_model_bearer() == jwt
+
+
+def test_model_bearer_does_not_fall_back_to_platform_credentials(monkeypatch):
+    monkeypatch.setenv(_AUTH_TOKEN_ENV, "forbidden-auth-token")
+    monkeypatch.setenv(_API_KEY_ENV, "forbidden-platform-key")
+
+    with pytest.raises(RuntimeError, match="No local Castform model credential"):
+        castform_model_bearer()
+
+
+def test_runtime_bearer_never_uses_bootstrap_auth_token(monkeypatch):
+    monkeypatch.setenv(_AUTH_TOKEN_ENV, "forbidden-auth-token")
+
+    with pytest.raises(RuntimeError, match="No Castform runtime credential"):
+        runtime_platform_bearer()
+
+
+def test_runtime_bearer_accepts_rotating_hosted_worker_token(monkeypatch):
+    monkeypatch.setenv(_AUTH_TOKEN_ENV, "forbidden-auth-token")
+    monkeypatch.setenv(_API_KEY_ENV, "runtime-act-as-token")
+
+    assert runtime_platform_bearer() == "runtime-act-as-token"
 
 
 def test_env_key_takes_precedence_over_session(tmp_path, monkeypatch):
@@ -292,7 +329,9 @@ def test_mint_handles_non_json_200(monkeypatch):
     assert credentials._mint_session_jwt("sess_abc") is None
 
 
-def test_session_jwt_falls_back_to_cached_on_transient_mint_failure(tmp_path, monkeypatch):
+def test_session_jwt_falls_back_to_cached_on_transient_mint_failure(
+    tmp_path, monkeypatch
+):
     """A transient mint failure reuses a still-valid cached JWT instead of failing."""
     good = _fake_jwt(time.time() + 300)
     minted = {"v": good}
@@ -320,19 +359,29 @@ def test_session_jwt_floors_ttl_when_exp_unparseable(tmp_path, monkeypatch):
     _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
     assert platform_bearer() == "opaque-token-without-exp"
     assert platform_bearer() == "opaque-token-without-exp"
-    assert calls["n"] == 1  # floored TTL keeps it cached instead of re-minting each call
+    assert (
+        calls["n"] == 1
+    )  # floored TTL keeps it cached instead of re-minting each call
 
 
 def test_session_jwt_remints_on_session_change(tmp_path, monkeypatch):
     """A re-login (new access_token in the same process) doesn't serve the prior
     identity's cached JWT."""
-    tokens = {"sess_a": _fake_jwt(time.time() + 300), "sess_b": _fake_jwt(time.time() + 300)}
+    tokens = {
+        "sess_a": _fake_jwt(time.time() + 300),
+        "sess_b": _fake_jwt(time.time() + 300),
+    }
     monkeypatch.setattr(credentials, "_mint_session_jwt", lambda t, _p=None: tokens[t])
     f = _write_session(tmp_path, monkeypatch, {"access_token": "sess_a"})
     assert platform_bearer() == tokens["sess_a"]
 
     f.write_text(
-        json.dumps({"version": 2, "profiles": {"prod": {"session": {"access_token": "sess_b"}}}})
+        json.dumps(
+            {
+                "version": 2,
+                "profiles": {"prod": {"session": {"access_token": "sess_b"}}},
+            }
+        )
     )
     f.chmod(0o600)
     assert platform_bearer() == tokens["sess_b"]  # not the cached sess_a JWT
