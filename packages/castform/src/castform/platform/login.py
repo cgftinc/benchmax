@@ -73,7 +73,7 @@ def _login(
 def ensure_session(*, interactive: bool | None = None) -> None:
     """Make sure a platform credential is available; auto-login if interactive.
 
-    No-op when one already resolves (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY`` /
+    No-op when one already resolves (``ACT_AS_TOKEN_PATH`` / ``CASTFORM_API_KEY`` /
     a valid ``~/.castform`` session). Otherwise, on an interactive TTY (and unless
     ``CASTFORM_NO_AUTO_LOGIN`` is set), run the device flow. Headless callers fall
     through untouched so the downstream request fails with its own loud error.

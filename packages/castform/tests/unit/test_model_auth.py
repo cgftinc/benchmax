@@ -22,7 +22,7 @@ def test_external_endpoint_never_falls_back_to_platform_environment(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("CASTFORM_AUTH_TOKEN", "forbidden-auth-token")
-    monkeypatch.setenv("PLATFORM_API_KEY", "forbidden-platform-key")
+    monkeypatch.setenv("CASTFORM_API_KEY", "forbidden-platform-key")
     monkeypatch.setenv("OPENAI_API_KEY", "implicit-openai-key")
 
     with pytest.raises(ValueError, match="requires an explicit API key"):

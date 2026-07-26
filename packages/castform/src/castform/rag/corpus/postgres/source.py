@@ -43,7 +43,7 @@ class PostgresChunkSource:
         corpus_name: Name of the corpus to create or reuse
         api_key: Corpora API key. Optional — an empty string (the default)
             resolves the bearer per request via the credential seam (cached
-            device-auth session / ACT_AS_TOKEN_PATH / PLATFORM_API_KEY).
+            device-auth session / ACT_AS_TOKEN_PATH / CASTFORM_API_KEY).
         base_url: Corpora API base URL. Optional — defaults to the
             session-derived platform URL (``config.platform_url()``).
 

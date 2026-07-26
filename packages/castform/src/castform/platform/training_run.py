@@ -106,7 +106,7 @@ def upload_training_run(
         run_name: Training run identifier; used as the storage path segment.
         api_key: Platform API key. Optional — when omitted (and no
             ``storage_client`` is passed) the bearer resolves per request via
-            the credential seam (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``).
+            the credential seam (``ACT_AS_TOKEN_PATH`` / ``CASTFORM_API_KEY``).
         base_url: Platform base URL. Defaults to ``config.platform_url()``.
         env_prefix: Override the default env directory. When set, env files
             land at ``<env_prefix>/{env-cls.pkl, env-metadata.json}``.
@@ -130,7 +130,7 @@ def upload_training_run(
 
     if storage_client is None:
         # api_key optional: StorageClient resolves the bearer per request via
-        # the credential seam (ACT_AS_TOKEN_PATH / PLATFORM_API_KEY) when unset.
+        # the credential seam (ACT_AS_TOKEN_PATH / CASTFORM_API_KEY) when unset.
         storage_client = StorageClient(
             api_key=api_key,
             base_url=base_url or config.platform_url(),

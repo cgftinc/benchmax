@@ -1,12 +1,11 @@
 """Integration smoke for per-request credential resolution (device-auth Phase 1).
 
 Constructs a ``RolloutClient`` with **no** control-plane ``api_key``, so the
-platform-service bearer resolves via the ``PLATFORM_API_KEY`` seam. The rollout
-model receives a separate, explicitly provided ``CASTFORM_API_KEY``.
+platform-service bearer resolves via the ``CASTFORM_API_KEY`` seam. The rollout
+model receives that provisioned key through a separate, explicit argument.
 
-Hits staging. Requires ``PLATFORM_API_KEY`` and ``CASTFORM_API_KEY`` (from env /
-``.env.test``); targets ``castform.dev`` unless ``CASTFORM_BASE_DOMAIN`` is
-already set.
+Hits staging. Requires ``CASTFORM_API_KEY`` (from env / ``.env.test``); targets
+``castform.dev`` unless ``CASTFORM_BASE_DOMAIN`` is already set.
 
 Run: uv run pytest tests/integration/platform/test_seam_smoke.py -v
 """
@@ -22,8 +21,7 @@ from castform.platform.exceptions import RolloutError
 
 pytestmark = pytest.mark.integration
 
-_PLATFORM_API_KEY = os.environ.get("PLATFORM_API_KEY", "")
-_MODEL_API_KEY = os.environ.get("CASTFORM_API_KEY", "")
+_API_KEY = os.environ.get("CASTFORM_API_KEY", "")
 _AUTH_MARKERS = ("401", "403", "authentication", "Authentication", "Unauthorized")
 
 
@@ -56,8 +54,8 @@ def _make_echo_env():
 
 
 @pytest.mark.skipif(
-    not (_PLATFORM_API_KEY and _MODEL_API_KEY),
-    reason="PLATFORM_API_KEY and CASTFORM_API_KEY are required",
+    not _API_KEY,
+    reason="CASTFORM_API_KEY is required",
 )
 def test_rollout_client_resolves_bearer_via_seam(monkeypatch):
     """A client built with no api_key authenticates and rolls out via the seam.
@@ -86,7 +84,7 @@ def test_rollout_client_resolves_bearer_via_seam(monkeypatch):
                     env_cls_bytes=bundle.pickled,
                     env_metadata_bytes=bundle.metadata.to_json_bytes(),
                     example_index=index,
-                    llm_api_key=_MODEL_API_KEY,
+                    llm_api_key=_API_KEY,
                 )
             )
         except (RolloutError, RuntimeError) as exc:

@@ -30,6 +30,16 @@ def test_bootstrap_auth_stays_outside_model_and_environment_code() -> None:
     assert not violations, "\n".join(map(str, violations))
 
 
+def test_legacy_platform_api_key_is_absent_from_runtime_source() -> None:
+    violations = [
+        source_file
+        for source_file in CASTFORM_SOURCE.rglob("*.py")
+        if "PLATFORM_API_KEY" in source_file.read_text(encoding="utf-8")
+    ]
+
+    assert not violations, "\n".join(map(str, violations))
+
+
 def test_retired_credential_resolvers_are_not_reintroduced() -> None:
     retired = ("resolve_judge_key", "platform_embed_fn")
     violations: list[str] = []

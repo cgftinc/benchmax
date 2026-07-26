@@ -117,7 +117,7 @@ class StorageClient:
     upload URL, then PUTs the file content directly to that URL.
 
     ``api_key`` is optional: when omitted the bearer resolves per request via
-    the credential seam (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``). Pass
+    the credential seam (``ACT_AS_TOKEN_PATH`` / ``CASTFORM_API_KEY``). Pass
     ``api_key`` to override, or ``token_provider`` for a custom per-call source.
 
     Example:
@@ -301,7 +301,7 @@ class TrainerClient:
     """Client for launching and managing training runs.
 
     ``api_key`` is optional: when omitted the bearer resolves per request via
-    the credential seam (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``). Pass
+    the credential seam (``ACT_AS_TOKEN_PATH`` / ``CASTFORM_API_KEY``). Pass
     ``api_key`` to override, or ``token_provider`` for a custom per-call source.
 
     Example:
@@ -890,7 +890,7 @@ class RolloutClient:
         api_key:    Platform API key forwarded as the Bearer token
                     platform-service validates. Optional — when omitted the
                     bearer resolves per request via the credential seam
-                    (``ACT_AS_TOKEN_PATH`` / ``PLATFORM_API_KEY``).
+                    (``ACT_AS_TOKEN_PATH`` / ``CASTFORM_API_KEY``).
         server_url: Base URL of platform-service. Defaults to
                     ``config.platform_url()``; the ``/v1/rollout/stream`` path is
                     appended per request.

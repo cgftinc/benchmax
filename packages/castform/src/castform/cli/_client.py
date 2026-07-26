@@ -2,7 +2,7 @@
 
 Read/control commands resolve their bearer through the credential seam
 (:func:`castform.platform.credentials.platform_bearer`) — ``ACT_AS_TOKEN_PATH``
-→ ``PLATFORM_API_KEY`` → cached ``~/.castform`` session — against the host from
+→ ``CASTFORM_API_KEY`` → cached ``~/.castform`` session — against the host from
 :mod:`castform.config`. ``handle_errors`` keeps tracebacks out of normal failures.
 """
 

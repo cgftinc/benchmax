@@ -1,6 +1,6 @@
 """Integration tests for the async Postgres corpus client (asearch / _arequest / HTTP2).
 
-Hits the real Corpora API using the local castform CLI session (or PLATFORM_API_KEY).
+Hits the real Corpora API using the local castform CLI session (or CASTFORM_API_KEY).
 Exercises the async provider interaction added on qa-gen-async-refactor: real-``await``
 ``_arequest`` over the HTTP/2 client, ``asearch`` query construction + response parse, and
 sync/async parity vs ``search``. ``asearch_with_chunks`` / ``asearch_related`` ride the same
@@ -13,7 +13,7 @@ Run against staging with the local CLI session (after ``castform login``):
         uv run pytest -m integration tests/integration/test_async_corpus_client.py -v
 
 Auth: ``token_provider`` defaults to ``runtime_platform_bearer``, which resolves
-``PLATFORM_API_KEY`` / ``ACT_AS_TOKEN_PATH`` or the cached ``~/.castform``
+``CASTFORM_API_KEY`` / ``ACT_AS_TOKEN_PATH`` or the cached ``~/.castform``
 session (session support requires the current ``platform.credentials`` — present on main).
 Skips if no creds resolve. Corpus: auto-discovered via ``list_corpora()`` (override with
 ``BENCHMAX_TEST_CORPUS_ID``; query via ``BENCHMAX_TEST_QUERY``, default ``"the"``).
@@ -43,7 +43,7 @@ def _skip_if_no_creds() -> None:
     except Exception as exc:  # noqa: BLE001 — any failure means no usable creds
         pytest.skip(f"no platform creds ({exc}); run `castform login`")
     if not token:
-        pytest.skip("no platform creds; run `castform login` or set PLATFORM_API_KEY")
+        pytest.skip("no platform creds; run `castform login` or set CASTFORM_API_KEY")
 
 
 def _client() -> CorpusClient:

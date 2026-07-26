@@ -48,7 +48,7 @@ def test_external_judge_requires_an_explicit_model_key(monkeypatch):
     from castform.rag.qa_generation.pipeline_config import GroundingLLMFilterConfig
 
     monkeypatch.setenv("CASTFORM_AUTH_TOKEN", "forbidden-auth-token")
-    monkeypatch.setenv("PLATFORM_API_KEY", "sk_seam")
+    monkeypatch.setenv("CASTFORM_API_KEY", "sk_seam")
     cfg = GroundingLLMFilterConfig(
         enabled=True,
         judge_api_key="",

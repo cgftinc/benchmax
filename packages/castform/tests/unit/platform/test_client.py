@@ -397,9 +397,9 @@ def test_bearer_auth_resolves_per_request():
 
 
 def test_storage_client_optional_api_key_resolves_via_seam(monkeypatch):
-    """No api_key → StorageClient resolves the bearer from PLATFORM_API_KEY."""
+    """No api_key → StorageClient resolves the bearer from CASTFORM_API_KEY."""
     monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
-    monkeypatch.setenv("PLATFORM_API_KEY", "sk_seam")
+    monkeypatch.setenv("CASTFORM_API_KEY", "sk_seam")
     client = StorageClient(base_url="https://example.invalid")
     assert client._token_provider() == "sk_seam"
 
@@ -435,7 +435,7 @@ def test_stream_rollout_keeps_platform_and_model_credentials_separate(monkeypatc
     explicit and independent."""
     monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
     monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
-    monkeypatch.setenv("PLATFORM_API_KEY", "sk_seam")
+    monkeypatch.setenv("CASTFORM_API_KEY", "sk_seam")
 
     import httpx as httpx_mod
 
@@ -474,7 +474,7 @@ def test_stream_rollout_keeps_platform_and_model_credentials_separate(monkeypatc
 def test_stream_rollout_raises_without_any_credential(monkeypatch, tmp_path):
     """No explicit key and no seam credential → fail loudly before the network."""
     monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
-    monkeypatch.delenv("PLATFORM_API_KEY", raising=False)
+    monkeypatch.delenv("CASTFORM_API_KEY", raising=False)
     # Isolate from a logged-in dev's ~/.castform/credentials.json fallback — else the
     # resolver mints a real token and hits the network instead of failing loudly.
     monkeypatch.setenv("CASTFORM_CREDENTIALS_PATH", str(tmp_path / "none.json"))

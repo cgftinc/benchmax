@@ -22,9 +22,9 @@ class PostgresSearch:
     Supports lexical (BM25) search only.
 
     The bearer token is resolved per request via ``token_provider`` (default:
-    the platform credential resolver — rotating act-as token in training, or
-    ``PLATFORM_API_KEY`` in legacy hosted workers). No credential is stored,
-    so nothing is frozen into the pickled env.
+    the platform credential resolver — rotating act-as token in training, a
+    provisioned ``CASTFORM_API_KEY``, or a local login session). No credential
+    is stored, so nothing is frozen into the pickled env.
 
     Args:
         corpus_name: Name of the corpus.

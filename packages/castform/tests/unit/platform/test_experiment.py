@@ -240,7 +240,7 @@ def test_upload_training_run_writes_jsonl_one_object_per_line():
 def test_upload_training_run_api_key_optional_resolves_via_seam(monkeypatch):
     """api_key is optional: with neither api_key nor storage_client, the built
     StorageClient gets api_key=None and resolves the bearer per request via the
-    seam (ACT_AS_TOKEN_PATH / PLATFORM_API_KEY) — no upfront guard."""
+    seam (ACT_AS_TOKEN_PATH / CASTFORM_API_KEY) — no upfront guard."""
     captured: dict[str, Any] = {}
 
     def _fake_storage_client(*, api_key, base_url):
