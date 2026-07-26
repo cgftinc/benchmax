@@ -261,7 +261,7 @@ class RetrievalLLMFilter:
 
             try:
                 async with context.search_semaphore():
-                    search_results = await self.chunk_source.asearch_related(
+                    search_results = await self.chunk_source.search_related(
                         source=_DUMMY_CHUNK,
                         queries=[query],
                         top_k=self.cfg.top_k,

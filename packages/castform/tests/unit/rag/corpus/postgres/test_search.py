@@ -66,7 +66,7 @@ class TestConformance:
             def __init__(self) -> None:
                 self.resolved: list[str] = []
 
-            async def aget_corpus_by_name(self, name: str):
+            async def get_corpus_by_name(self, name: str):
                 self.resolved.append(name)
                 return SimpleNamespace(id="corpus-id")
 
@@ -91,11 +91,11 @@ class TestSearch:
     @pytest.mark.asyncio
     async def test_uses_async_name_resolution_and_search_only(self):
         class AsyncOnlyClient:
-            async def aget_corpus_by_name(self, name: str):
+            async def get_corpus_by_name(self, name: str):
                 assert name == "existing"
                 return SimpleNamespace(id="corpus-id")
 
-            async def asearch(self, **kwargs):
+            async def search(self, **kwargs):
                 assert kwargs == {
                     "corpus_id": "corpus-id",
                     "query": "needle",
@@ -113,12 +113,6 @@ class TestSearch:
                     total=1,
                     query="needle",
                 )
-
-            def get_corpus_by_name(self, name: str):
-                raise AssertionError("sync corpus resolution was used")
-
-            def search(self, **kwargs):
-                raise AssertionError("sync search was used")
 
         search = PostgresSearch(corpus_name="existing", base_url="http://t")
         search._client = AsyncOnlyClient()  # type: ignore[assignment]

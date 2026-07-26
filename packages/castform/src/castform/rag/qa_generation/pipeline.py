@@ -175,27 +175,35 @@ def _chat_completion_with_retry(
     raise RuntimeError("Completion retry loop exited unexpectedly.")
 
 
-def _load_source(cfg: PipelineConfig) -> PostgresChunkSource:
+async def _load_source(cfg: PipelineConfig) -> PostgresChunkSource:
     source = PostgresChunkSource(
         api_key=cfg.platform.api_key,
         corpus_name=cfg.corpus.corpus_name,
         base_url=cfg.platform.base_url,
     )
-    if cfg.corpus.docs_path:
-        source.populate_from_folder(
-            cfg.corpus.docs_path, show_summary=cfg.corpus.show_summary
+    try:
+        if cfg.corpus.docs_path:
+            await source.populate_from_folder(
+                cfg.corpus.docs_path,
+                show_summary=cfg.corpus.show_summary,
+            )
+            return source
+        if cfg.corpus.corpus_id:
+            await source.populate_from_existing_corpus(
+                cfg.corpus.corpus_id,
+                show_summary=cfg.corpus.show_summary,
+            )
+            return source
+        await source.populate_from_existing_corpus_name(
+            cfg.corpus.corpus_name,
+            show_summary=cfg.corpus.show_summary,
         )
         return source
-    if cfg.corpus.corpus_id:
-        source.populate_from_existing_corpus(
-            cfg.corpus.corpus_id, show_summary=cfg.corpus.show_summary
-        )
-        return source
-    source.populate_from_existing_corpus_name(
-        cfg.corpus.corpus_name,
-        show_summary=cfg.corpus.show_summary,
-    )
-    return source
+    finally:
+        # ``_prepare_context`` bridges this coroutine from synchronous pipeline
+        # setup. Close the transport bound to that temporary event loop; later
+        # retrieval lazily opens a client on the work queue's event loop.
+        await source.close()
 
 
 def _build_rollout_client(cfg: PipelineConfig) -> RolloutClient:
@@ -1327,6 +1335,8 @@ class Pipeline:
         cfg.resolve_api_keys()
 
         source = self.source_factory(cfg)
+        if inspect.isawaitable(source):
+            source = self._run_coro(source)
         rng = random.Random(cfg.random_seed)
         context = PipelineContext(config=cfg, source=source, rng=rng)
 
@@ -1814,11 +1824,13 @@ class Pipeline:
             )
         finally:
             for comp in (generator, transformer, guard_filter, *filter_chain, source):
-                aclose = getattr(comp, "aclose", None)
-                if aclose is None:
+                close = getattr(comp, "aclose", None) or getattr(comp, "close", None)
+                if close is None:
                     continue
                 try:
-                    await aclose()
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
                 except Exception:  # noqa: BLE001 — best-effort cleanup
                     logger.debug(
                         "Error closing async client during cleanup", exc_info=True

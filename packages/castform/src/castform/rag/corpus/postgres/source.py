@@ -49,7 +49,7 @@ class PostgresChunkSource:
 
     Example:
         >>> source = PostgresChunkSource(corpus_name="my-docs")
-        >>> source.populate_from_folder("./docs")
+        >>> await source.populate_from_folder("./docs")
         >>> chunks = source.sample_chunks(n=10, min_chars=400)
     """
 
@@ -86,7 +86,7 @@ class PostgresChunkSource:
             "graph_expansion": True,
         }
 
-    def populate_from_folder(
+    async def populate_from_folder(
         self,
         docs_path: str,
         min_chars: int = 1024,
@@ -132,14 +132,14 @@ class PostgresChunkSource:
             inspector = ChunkInspector(collection)
             inspector.summary(max_depth=3, max_files_per_folder=4)
 
-        self.populate_from_chunks(
+        await self.populate_from_chunks(
             collection,
             batch_size=batch_size,
             show_summary=show_summary,
             on_limit=on_limit,
         )
 
-    def populate_from_chunks(
+    async def populate_from_chunks(
         self,
         collection: ChunkCollection,
         batch_size: int = 100,
@@ -158,7 +158,7 @@ class PostgresChunkSource:
         """
         self.collection = collection
 
-        self._corpus = self._client.get_or_create_corpus(
+        self._corpus = await self._client.get_or_create_corpus(
             self._corpus_name, on_limit=on_limit
         )
 
@@ -166,7 +166,7 @@ class PostgresChunkSource:
             print(f"Using corpus: {self._corpus.name} (ID: {self._corpus.id})")
             print(f"Uploading {len(self.collection)} chunks to corpus...")
 
-        upload_result = self._client.upload_chunks(
+        upload_result = await self._client.upload_chunks(
             corpus_id=self._corpus.id,
             collection=self.collection,
             batch_size=batch_size,
@@ -176,7 +176,7 @@ class PostgresChunkSource:
         if show_summary:
             print(f"\nUpload complete! Inserted: {upload_result.inserted_count}")
 
-    def populate_from_existing_corpus(
+    async def populate_from_existing_corpus(
         self,
         corpus_id: str,
         page_size: int = 500,
@@ -193,7 +193,7 @@ class PostgresChunkSource:
         """
         from castform.rag.chunkers.inspector import ChunkInspector
 
-        self._corpus = self._client.get_corpus(corpus_id)
+        self._corpus = await self._client.get_corpus(corpus_id)
         self._corpus_name = self._corpus.name
 
         if show_summary:
@@ -204,7 +204,7 @@ class PostgresChunkSource:
         chunks: list[Chunk] = []
         cursor: str | None = None
         while True:
-            results, next_cursor = self._client.list_corpus_chunks(
+            results, next_cursor = await self._client.list_corpus_chunks(
                 corpus_id=corpus_id,
                 limit=page_size,
                 cursor=cursor,
@@ -234,7 +234,7 @@ class PostgresChunkSource:
             inspector.summary(max_depth=3, max_files_per_folder=4)
             print(f"\nLoaded {len(self.collection)} chunks from existing corpus.")
 
-    def populate_from_existing_corpus_name(
+    async def populate_from_existing_corpus_name(
         self,
         corpus_name: str | None = None,
         page_size: int = 500,
@@ -248,13 +248,15 @@ class PostgresChunkSource:
             show_summary: Print load summary (default True)
         """
         target_name = corpus_name or self._corpus_name
-        matched = [c for c in self._client.list_corpora() if c.name == target_name]
+        matched = [
+            c for c in await self._client.list_corpora() if c.name == target_name
+        ]
         if not matched:
             raise ValueError(f"Could not find existing corpus named '{target_name}'.")
 
         # Keep behavior deterministic if duplicate names exist.
         selected = sorted(matched, key=lambda c: c.created_at)[-1]
-        self.populate_from_existing_corpus(
+        await self.populate_from_existing_corpus(
             corpus_id=selected.id,
             page_size=page_size,
             show_summary=show_summary,
@@ -298,7 +300,7 @@ class PostgresChunkSource:
         self._assert_ready()
         return self.collection.get_top_level_chunks()
 
-    def search_related(
+    async def search_related(
         self,
         source: Chunk,
         queries: list[str],
@@ -306,15 +308,7 @@ class PostgresChunkSource:
         mode: SearchMode | None = None,
         hybrid: HybridOptions | None = None,
     ) -> list[dict]:
-        """Search for chunks related to source using BM25 queries via the Corpora API.
-
-        Runs each query, deduplicates results by chunk hash, skips the source chunk
-        and its immediate neighbors in the same file, and aggregates scores across queries.
-
-        Returns:
-            List of dicts sorted by relevance (num matching queries DESC, cross-file first,
-            max BM25 score DESC), each containing: chunk, queries, same_file, max_score
-        """
+        """Search with async corpus I/O and deterministic result aggregation."""
         if hybrid is not None:
             warnings.warn(
                 "PostgresChunkSource does not support hybrid search; 'hybrid' parameter is ignored.",
@@ -329,7 +323,7 @@ class PostgresChunkSource:
         related_map: dict[str, dict] = {}
 
         for query in queries:
-            matched_chunks = self._client.search_with_chunks(
+            matched_chunks = await self._client.search_with_chunks(
                 corpus_id=self._corpus.id,
                 query=query,
                 collection=self.collection,
@@ -339,45 +333,10 @@ class PostgresChunkSource:
 
         return self._sorted_related(related_map)
 
-    async def asearch_related(
-        self,
-        source: Chunk,
-        queries: list[str],
-        top_k: int = 5,
-        mode: SearchMode | None = None,
-        hybrid: HybridOptions | None = None,
-    ) -> list[dict]:
-        """Async twin of ``search_related`` — identical dedup/neighbor-skip/scoring,
-        async corpus I/O. Queries run sequentially for parity with the sync path;
-        cross-batch search concurrency comes from the async work queue."""
-        if hybrid is not None:
-            warnings.warn(
-                "PostgresChunkSource does not support hybrid search; 'hybrid' parameter is ignored.",
-                stacklevel=2,
-            )
-        if mode is not None and mode != "lexical":
-            warnings.warn(
-                f"PostgresChunkSource only supports 'lexical' mode; '{mode}' will be ignored.",
-                stacklevel=2,
-            )
-        self._assert_ready()
-        related_map: dict[str, dict] = {}
-
-        for query in queries:
-            matched_chunks = await self._client.asearch_with_chunks(
-                corpus_id=self._corpus.id,
-                query=query,
-                collection=self.collection,
-                limit=top_k,
-            )
-            self._accumulate_related(related_map, source, query, matched_chunks, top_k)
-
-        return self._sorted_related(related_map)
-
-    async def aclose(self) -> None:
+    async def close(self) -> None:
         """Close the underlying corpus client's async transport (best-effort).
         Call from within the event loop that used it."""
-        await self._client.aclose()
+        await self._client.close()
 
     @staticmethod
     def _accumulate_related(
@@ -428,7 +387,7 @@ class PostgresChunkSource:
             reverse=True,
         )
 
-    def search(self, spec: SearchSpec) -> list[Chunk]:
+    async def search(self, spec: SearchSpec) -> list[Chunk]:
         """Search chunks using a structured search spec."""
         mode = spec.get("mode")
         supported_modes = set(self._search_capabilities.get("modes", set()))
@@ -449,7 +408,7 @@ class PostgresChunkSource:
 
         self._assert_ready()
         filters = to_corpora_filters(spec.get("filter"), self._search_capabilities)
-        matched = self._client.search_with_chunks(
+        matched = await self._client.search_with_chunks(
             corpus_id=self._corpus.id,
             query=str(spec.get("text_query") or ""),
             collection=self.collection,
@@ -458,22 +417,22 @@ class PostgresChunkSource:
         )
         return [chunk for chunk, _score in matched]
 
-    def search_text(
+    async def search_text(
         self,
         text_query: str,
         top_k: int = 10,
         filter: FilterPredicate | None = None,
     ) -> list[Chunk]:
         """Search chunks with a text query and optional filter."""
-        return self.search(
+        return await self.search(
             SearchSpec(
                 mode="lexical", text_query=text_query, top_k=top_k, filter=filter
             )
         )
 
-    def search_content(self, spec: SearchSpec) -> list[str]:
+    async def search_content(self, spec: SearchSpec) -> list[str]:
         """Search and return content strings without Chunk construction."""
-        chunks = self.search(spec)
+        chunks = await self.search(spec)
         return [chunk.content for chunk in chunks]
 
     def embed_query(self, text: str) -> list[float] | None:

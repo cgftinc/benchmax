@@ -1,10 +1,8 @@
-"""Integration tests for the async Postgres corpus client (asearch / _arequest / HTTP2).
+"""Integration tests for the async-only Postgres corpus client.
 
 Hits the real Corpora API using the local castform CLI session (or CASTFORM_API_KEY).
-Exercises the async provider interaction added on qa-gen-async-refactor: real-``await``
-``_arequest`` over the HTTP/2 client, ``asearch`` query construction + response parse, and
-sync/async parity vs ``search``. ``asearch_with_chunks`` / ``asearch_related`` ride the same
-``_arequest`` transport, so they are covered transitively.
+Exercises real awaited requests over the HTTP/2 client, search request/response
+handling, and concurrent retrieval through the sole public async API.
 
 Run against staging with the local CLI session (after ``castform login``):
 
@@ -50,11 +48,11 @@ def _client() -> CorpusClient:
     return CorpusClient(base_url=_base_url, token_provider=runtime_platform_bearer)
 
 
-def _resolve_corpus_id(client: CorpusClient) -> str | None:
+async def _resolve_corpus_id(client: CorpusClient) -> str | None:
     override = os.environ.get("BENCHMAX_TEST_CORPUS_ID")
     if override:
         return override
-    corpora = client.list_corpora()
+    corpora = await client.list_corpora()
     return corpora[0].id if corpora else None
 
 
@@ -65,12 +63,12 @@ class TestAsyncCorpusClient:
         _skip_if_no_creds()
         client = _client()
         try:
-            corpus_id = _resolve_corpus_id(client)
+            corpus_id = await _resolve_corpus_id(client)
             if not corpus_id:
                 pytest.skip("no corpus available to search")
-            result = await client.asearch(corpus_id, _query, limit=5)
+            result = await client.search(corpus_id, _query, limit=5)
         finally:
-            await client.aclose()
+            await client.close()
 
         assert result.query == _query
         assert result.total >= 0
@@ -79,44 +77,22 @@ class TestAsyncCorpusClient:
             assert chunk.id
             assert isinstance(chunk.content, str)
 
-    async def test_asearch_matches_sync_search(self):
-        """Parity: the async path returns the same ids/order/total as the sync path
-        for an identical query (same endpoint, same BM25 backend)."""
-        _skip_if_no_creds()
-        client = _client()
-        try:
-            corpus_id = _resolve_corpus_id(client)
-            if not corpus_id:
-                pytest.skip("no corpus available to search")
-            sync_result = client.search(corpus_id, _query, limit=5)
-            async_result = await client.asearch(corpus_id, _query, limit=5)
-        finally:
-            await client.aclose()
-            client.close()
-
-        assert async_result.total == sync_result.total
-        # If the backend tie-breaks equal BM25 scores nondeterministically, relax this
-        # to comparing sorted id sets.
-        assert [c.id for c in async_result.results] == [
-            c.id for c in sync_result.results
-        ]
-
-    async def test_asearch_http2_concurrency_no_errors(self):
-        """Fire concurrent asearch calls over the shared HTTP/2 client and expect 0
+    async def test_search_http2_concurrency_no_errors(self):
+        """Fire concurrent search calls over the shared HTTP/2 client and expect 0
         errors — regression guard for the RemoteProtocolError seen under the old
         sync-per-thread path."""
         _skip_if_no_creds()
         client = _client()
         try:
-            corpus_id = _resolve_corpus_id(client)
+            corpus_id = await _resolve_corpus_id(client)
             if not corpus_id:
                 pytest.skip("no corpus available to search")
             queries = [f"{_query} {i}" for i in range(10)]
             results = await asyncio.gather(
-                *(client.asearch(corpus_id, q, limit=3) for q in queries)
+                *(client.search(corpus_id, q, limit=3) for q in queries)
             )
         finally:
-            await client.aclose()
+            await client.close()
 
         assert len(results) == len(queries)
         assert all(r.query == q for r, q in zip(results, queries))

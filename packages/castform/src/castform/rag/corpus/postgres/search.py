@@ -63,7 +63,7 @@ class PostgresSearch:
     async def _get_corpus_id(self) -> str:
         if self._corpus_id is None:
             client = self._get_client()
-            corpus = await client.aget_corpus_by_name(self._corpus_name)
+            corpus = await client.get_corpus_by_name(self._corpus_name)
             self._corpus_id = corpus.id
         return self._corpus_id
 
@@ -81,7 +81,7 @@ class PostgresSearch:
             )
         client = self._get_client()
         corpus_id = await self._get_corpus_id()
-        result = await client.asearch(
+        result = await client.search(
             corpus_id=corpus_id,
             query=query,
             limit=top_k,
