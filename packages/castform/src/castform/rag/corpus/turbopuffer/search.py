@@ -6,7 +6,8 @@ No Chunk or Pydantic dependency at import time.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from castform.platform.credentials import TokenProvider, as_token_provider, env_token
@@ -36,7 +37,7 @@ class TpufSearch:
             canonical single-column param. Must be BM25-indexed for lexical
             search. Raises if ``content_attr`` is also supplied with a
             different value.
-        embed_fn: Custom embedding function. Required for vector/hybrid.
+        embed_fn: Async custom embedding function. Required for vector/hybrid.
         vector_attr: Vector attribute name (default ``"vector"``).
         distance_metric: Distance metric (default ``"cosine_distance"``).
         token_provider: Optional override — a callable resolving the key per
@@ -50,7 +51,7 @@ class TpufSearch:
         *,
         region: str = "aws-us-east-1",
         content_attr: list[str] | None = None,
-        embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
+        embed_fn: Callable[[list[str]], Awaitable[list[list[float]]]] | None = None,
         vector_attr: str = "vector",
         distance_metric: str = "cosine_distance",
         content_field: str | None = None,
@@ -93,7 +94,7 @@ class TpufSearch:
         content = extras.get("content") or getattr(row, "content", None)
         return str(content) if content else ""
 
-    def search(
+    async def search(
         self,
         query: str,
         mode: str = "auto",
@@ -121,17 +122,24 @@ class TpufSearch:
         # Validate the request before constructing the client — an invalid
         # mode should fail as such, not as a missing-credential error from
         # the token provider.
-        ns = self._get_client()
+        ns = await asyncio.to_thread(self._get_client)
 
         if mode == "lexical":
             rank_by = [content_fields[0], "BM25", query]
-            result = ns.query(rank_by=rank_by, top_k=top_k, include_attributes=True)
+            result = await asyncio.to_thread(
+                ns.query,
+                rank_by=rank_by,
+                top_k=top_k,
+                include_attributes=True,
+            )
             return [self._row_to_result(row) for row in (result.rows or [])]
 
         if mode == "vector":
-            vec = self._embed_fn([query])[0]
+            assert self._embed_fn is not None
+            vec = (await self._embed_fn([query]))[0]
             rank_by = [self._vector_attr, "ANN", vec]
-            result = ns.query(
+            result = await asyncio.to_thread(
+                ns.query,
                 rank_by=rank_by,
                 top_k=top_k,
                 include_attributes=True,
@@ -140,15 +148,20 @@ class TpufSearch:
             return [self._row_to_result(row) for row in (result.rows or [])]
 
         # hybrid: client-side RRF
-        vec = self._embed_fn([query])[0]
+        assert self._embed_fn is not None
+        vec = (await self._embed_fn([query]))[0]
         lex_rank = [content_fields[0], "BM25", query]
         vec_rank = [self._vector_attr, "ANN", vec]
         oversample_k = min(top_k * 2, 10000)
 
-        lex_result = ns.query(
-            rank_by=lex_rank, top_k=oversample_k, include_attributes=True
+        lex_result = await asyncio.to_thread(
+            ns.query,
+            rank_by=lex_rank,
+            top_k=oversample_k,
+            include_attributes=True,
         )
-        vec_result = ns.query(
+        vec_result = await asyncio.to_thread(
+            ns.query,
             rank_by=vec_rank,
             top_k=oversample_k,
             include_attributes=True,
@@ -186,10 +199,10 @@ class TpufSearch:
             ),
         }
 
-    def embed(self, text: str) -> list[float] | None:
+    async def embed(self, text: str) -> list[float] | None:
         if self._embed_fn is None:
             return None
-        return self._embed_fn([text])[0]
+        return (await self._embed_fn([text]))[0]
 
     @property
     def available_modes(self) -> list[str]:

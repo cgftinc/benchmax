@@ -60,14 +60,14 @@ class PostgresSearch:
             )
         return self._client
 
-    def _get_corpus_id(self) -> str:
+    async def _get_corpus_id(self) -> str:
         if self._corpus_id is None:
             client = self._get_client()
-            corpus = client.get_corpus_by_name(self._corpus_name)
+            corpus = await client.aget_corpus_by_name(self._corpus_name)
             self._corpus_id = corpus.id
         return self._corpus_id
 
-    def search(
+    async def search(
         self,
         query: str,
         mode: str = "auto",
@@ -80,8 +80,12 @@ class PostgresSearch:
                 f"The Corpora API uses BM25 search only."
             )
         client = self._get_client()
-        corpus_id = self._get_corpus_id()
-        result = client.search(corpus_id=corpus_id, query=query, limit=top_k)
+        corpus_id = await self._get_corpus_id()
+        result = await client.asearch(
+            corpus_id=corpus_id,
+            query=query,
+            limit=top_k,
+        )
         return [
             {
                 "content": chunk.content,
@@ -92,7 +96,7 @@ class PostgresSearch:
             for chunk in result.results
         ]
 
-    def embed(self, text: str) -> list[float] | None:
+    async def embed(self, text: str) -> list[float] | None:
         """Corpora API does not support embeddings."""
         return None
 

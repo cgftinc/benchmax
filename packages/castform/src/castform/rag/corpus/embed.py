@@ -1,10 +1,10 @@
-"""OpenAI-compatible query/document embedding for RAG search clients.
+"""OpenAI-compatible query/document embedding for async RAG search clients.
 
-The provider search clients and chunk sources (Turbopuffer / Pinecone / Chroma) accept an
-optional ``embed_fn: Callable[[list[str]], list[list[float]]]``. Wiring one in makes vector /
-hybrid retrieval work regardless of how the user's index was built — turbopuffer vector/hybrid
-(no server-side embed), a pinecone index NOT on the hosted model, or a non-cloud chroma
-collection.
+The rollout-facing provider search clients (Turbopuffer / Pinecone / Chroma)
+accept an optional async ``embed_fn``. Wiring one in makes vector / hybrid
+retrieval work regardless of how the user's index was built — turbopuffer
+vector/hybrid (no server-side embed), a pinecone index NOT on the hosted model,
+or a non-cloud chroma collection.
 
 ``qa-gen`` does NOT need this (it reads chunks directly); it's only for retrieval.
 """
@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from benchmax.auth import ModelAuth
-from castform.model_auth import create_openai_client
+from castform.model_auth import create_async_openai_client
 
 # The served, non-hidden embeddings model in the llm-proxy catalog.
 DEFAULT_EMBED_MODEL = "text-embedding-3-large"
@@ -56,7 +56,7 @@ class OpenAIEmbedder:
         ):
             raise ValueError("embedding max_retries must be non-negative")
 
-    def __call__(self, texts: list[str]) -> list[list[float]]:
+    async def __call__(self, texts: list[str]) -> list[list[float]]:
         if not isinstance(texts, list) or any(
             not isinstance(text, str) for text in texts
         ):
@@ -64,7 +64,7 @@ class OpenAIEmbedder:
         if not texts:
             return []
 
-        client = create_openai_client(
+        client = create_async_openai_client(
             model=self.model,
             base_url=self.base_url,
             auth=self.auth,
@@ -72,11 +72,11 @@ class OpenAIEmbedder:
             max_retries=self.max_retries,
         )
         try:
-            response = client.embeddings.create(
+            response = await client.embeddings.create(
                 model=self.model,
                 input=texts,
                 timeout=self.timeout,
             )
             return [item.embedding for item in response.data]
         finally:
-            client.close()
+            await client.close()

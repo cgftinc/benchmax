@@ -409,6 +409,21 @@ class CorpusClient:
                 return corpus
         raise CorpusNotFoundError(name)
 
+    async def alist_corpora(self) -> list[Corpus]:
+        """Async list of corpora for the authenticated user."""
+
+        response = await self._arequest("GET", "/v1/corpora")
+        self._handle_response_errors(response)
+        return [Corpus.from_api_response(c) for c in response.json()]
+
+    async def aget_corpus_by_name(self, name: str) -> Corpus:
+        """Resolve an existing corpus by name using async I/O."""
+
+        for corpus in await self.alist_corpora():
+            if corpus.name == name:
+                return corpus
+        raise CorpusNotFoundError(name)
+
     def delete_corpus(self, corpus_id: str) -> bool:
         """Delete a corpus and all its chunks.
 

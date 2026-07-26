@@ -13,7 +13,9 @@ from castform.rag.corpus.search_schema.search_exceptions import (
 )
 
 
-def _make_search(modes=None, embed_fn=None, ef_name="chroma-cloud-qwen") -> ChromaSearch:
+def _make_search(
+    modes=None, embed_fn=None, ef_name="chroma-cloud-qwen"
+) -> ChromaSearch:
     """Build a ChromaSearch with a fake ChromaClient injected.
 
     ``ef_name`` is the collection's configured embedding function: defaults to a
@@ -39,7 +41,7 @@ def _make_search(modes=None, embed_fn=None, ef_name="chroma-cloud-qwen") -> Chro
     client.host = "localhost"
     client.port = 8000
     client.path = None
-    client.embed_fn = embed_fn
+    client.embed_fn = None
     client.content_attr = ["content"]
     client.distance_metric = "cosine"
     client.enable_bm25 = False
@@ -48,9 +50,7 @@ def _make_search(modes=None, embed_fn=None, ef_name="chroma-cloud-qwen") -> Chro
     client.rrf_max_candidates = 200
     client._raw_client = None
     cfg = {"embedding_function": {"name": ef_name}} if ef_name is not None else {}
-    client._collection = SimpleNamespace(
-        _model=SimpleNamespace(configuration_json=cfg)
-    )
+    client._collection = SimpleNamespace(_model=SimpleNamespace(configuration_json=cfg))
     client.get_collection = lambda: client._collection
     client._embed_dim = None
     client._total_count = None
@@ -70,43 +70,49 @@ def _make_search(modes=None, embed_fn=None, ef_name="chroma-cloud-qwen") -> Chro
 
 
 class TestSearch:
-    def test_returns_dicts(self):
+    @pytest.mark.asyncio
+    async def test_returns_dicts(self):
         cs = _make_search()
-        results = cs.search("query")
+        results = await cs.search("query")
         assert isinstance(results, list)
         assert all(isinstance(r, dict) for r in results)
         assert results[0]["content"] == "result one"
         assert results[1]["content"] == "result two"
 
-    def test_mode_auto_picks_vector_when_only_vector(self):
+    @pytest.mark.asyncio
+    async def test_mode_auto_picks_vector_when_only_vector(self):
         cs = _make_search(modes={"vector"})
-        results = cs.search("query", mode="auto")
+        results = await cs.search("query", mode="auto")
         assert len(results) == 2
 
-    def test_mode_auto_picks_hybrid_when_available(self):
+    @pytest.mark.asyncio
+    async def test_mode_auto_picks_hybrid_when_available(self):
         cs = _make_search(modes={"vector", "lexical", "hybrid"})
         cs._client.search_api = True
         cs._client.search_api_raw = lambda **kw: [
             {"id": "1", "content": "hybrid result", "metadata": {}, "score": 0.9},
         ]
-        results = cs.search("query", mode="auto")
+        results = await cs.search("query", mode="auto")
         assert results[0]["content"] == "hybrid result"
 
-    def test_mode_auto_picks_lexical_over_vector(self):
+    @pytest.mark.asyncio
+    async def test_mode_auto_picks_lexical_over_vector(self):
         cs = _make_search(modes={"vector", "lexical"})
         cs._client.search_api = True
         cs._client.search_api_raw = lambda **kw: [
             {"id": "1", "content": "lexical result", "metadata": {}, "score": 0.9},
         ]
-        results = cs.search("query", mode="auto")
+        results = await cs.search("query", mode="auto")
         assert results[0]["content"] == "lexical result"
 
-    def test_invalid_mode_raises(self):
+    @pytest.mark.asyncio
+    async def test_invalid_mode_raises(self):
         cs = _make_search(modes={"vector"})
         with pytest.raises(ValueError, match="does not support mode 'hybrid'"):
-            cs.search("query", mode="hybrid")
+            await cs.search("query", mode="hybrid")
 
-    def test_unsafe_dense_uses_lexical_at_inference(self):
+    @pytest.mark.asyncio
+    async def test_unsafe_dense_uses_lexical_at_inference(self):
         """Default-EF collection + BM25: the search tool uses BM25, no download.
 
         Mirrors a rollout/inference search against a default (all-MiniLM)
@@ -115,40 +121,47 @@ class TestSearch:
         cs = _make_search(modes={"vector", "lexical", "hybrid"}, ef_name="default")
         cs._client.search_api = True
         seen = {}
-        cs._client.search_api_raw = lambda **kw: seen.update(kw) or [
-            {"id": "1", "content": "bm25 result", "metadata": {}, "score": 0.9},
-        ]
-        results = cs.search("query", mode="auto")
+        cs._client.search_api_raw = lambda **kw: (
+            seen.update(kw)
+            or [
+                {"id": "1", "content": "bm25 result", "metadata": {}, "score": 0.9},
+            ]
+        )
+        results = await cs.search("query", mode="auto")
         assert results[0]["content"] == "bm25 result"
         assert seen["mode"] == "lexical"  # never vector/hybrid -> no embed
 
-    def test_unsafe_dense_without_bm25_raises_at_inference(self):
+    @pytest.mark.asyncio
+    async def test_unsafe_dense_without_bm25_raises_at_inference(self):
         """Default-EF, vector-only collection: refuse rather than download."""
         cs = _make_search(modes={"vector"}, ef_name="default")
         with pytest.raises(LocalEmbeddingDownloadDisallowedError):
-            cs.search("query", mode="auto")
+            await cs.search("query", mode="auto")
 
-    def test_explicit_vector_on_unsafe_collection_degrades(self):
+    @pytest.mark.asyncio
+    async def test_explicit_vector_on_unsafe_collection_degrades(self):
         """Even an explicit vector request degrades to BM25 when unsafe."""
         cs = _make_search(modes={"vector", "lexical"}, ef_name="default")
         cs._client.search_api = True
         seen = {}
         cs._client.search_api_raw = lambda **kw: seen.update(kw) or []
-        cs.search("query", mode="vector")
+        await cs.search("query", mode="vector")
         assert seen["mode"] == "lexical"
 
 
 class TestEmbed:
-    def test_returns_none_without_embed_fn(self):
+    @pytest.mark.asyncio
+    async def test_returns_none_without_embed_fn(self):
         cs = _make_search(embed_fn=None)
-        cs._client.embed = lambda text: None
-        assert cs.embed("test") is None
+        assert await cs.embed("test") is None
 
-    def test_returns_vector_with_embed_fn(self):
-        fn = lambda texts: [[1.0, 2.0]] * len(texts)  # noqa: E731
+    @pytest.mark.asyncio
+    async def test_returns_vector_with_embed_fn(self):
+        async def fn(texts):
+            return [[1.0, 2.0]] * len(texts)
+
         cs = _make_search(embed_fn=fn)
-        cs._client.embed = lambda text: fn([text])[0]
-        assert cs.embed("test") == [1.0, 2.0]
+        assert await cs.embed("test") == [1.0, 2.0]
 
 
 class TestAvailableModes:

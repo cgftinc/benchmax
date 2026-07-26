@@ -1,6 +1,8 @@
-"""SearchClient protocol — pickle-safe search interface for RL environments.
+"""Async SearchClient protocol — pickle-safe retrieval for RL environments.
 
-No Pydantic, no Chunk objects. Designed to survive cloudpickle roundtrips for remote training.
+No Pydantic, no Chunk objects. Designed to survive cloudpickle roundtrips for
+remote training and to keep model authentication and network I/O on the
+caller's event loop.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ from typing import Any, Protocol, runtime_checkable
 
 @runtime_checkable
 class SearchClient(Protocol):
-    """Minimal search interface for RL training environments.
+    """Minimal async search interface for RL training environments.
 
     Implementations store only serializable connection parameters and
     reconstruct SDK clients lazily.  No Chunk or Pydantic dependency.
@@ -20,7 +22,7 @@ class SearchClient(Protocol):
     :class:`ChunkSource`.
     """
 
-    def search(
+    async def search(
         self,
         query: str,
         mode: str = "auto",
@@ -40,7 +42,7 @@ class SearchClient(Protocol):
         """
         ...
 
-    def embed(self, text: str) -> list[float] | None:
+    async def embed(self, text: str) -> list[float] | None:
         """Return an embedding vector for *text*, or ``None`` if the
         backend auto-embeds.
         """

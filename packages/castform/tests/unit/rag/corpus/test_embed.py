@@ -6,6 +6,7 @@ import pickle
 from types import SimpleNamespace
 
 import cloudpickle
+import pytest
 
 from benchmax.auth import InjectedAuth, StaticBearerAuth, bind_model_auth
 from castform.rag.corpus.embed import DEFAULT_EMBED_MODEL, OpenAIEmbedder
@@ -17,12 +18,12 @@ class _FakeClient:
         self.embeddings = SimpleNamespace(create=self._create)
         self.closed = False
 
-    def _create(self, *, model, input, timeout):
+    async def _create(self, *, model, input, timeout):
         self.calls.append({"model": model, "input": list(input), "timeout": timeout})
         data = [SimpleNamespace(embedding=[float(len(text))]) for text in input]
         return SimpleNamespace(data=data)
 
-    def close(self) -> None:
+    async def close(self) -> None:
         self.closed = True
 
 
@@ -34,11 +35,15 @@ def _patch_client(monkeypatch):
         created.append((kwargs, client))
         return client
 
-    monkeypatch.setattr("castform.rag.corpus.embed.create_openai_client", create)
+    monkeypatch.setattr(
+        "castform.rag.corpus.embed.create_async_openai_client",
+        create,
+    )
     return created
 
 
-def test_returns_one_vector_per_input_with_explicit_auth(monkeypatch):
+@pytest.mark.asyncio
+async def test_returns_one_vector_per_input_with_explicit_auth(monkeypatch):
     created = _patch_client(monkeypatch)
     auth = StaticBearerAuth("sk-explicit")
     embedder = OpenAIEmbedder(
@@ -47,7 +52,7 @@ def test_returns_one_vector_per_input_with_explicit_auth(monkeypatch):
         auth=auth,
     )
 
-    assert embedder(["a", "bbb"]) == [[1.0], [3.0]]
+    assert await embedder(["a", "bbb"]) == [[1.0], [3.0]]
 
     kwargs, client = created[0]
     assert kwargs["auth"] is auth
@@ -63,7 +68,8 @@ def test_returns_one_vector_per_input_with_explicit_auth(monkeypatch):
     assert client.closed
 
 
-def test_uses_one_request_scoped_client_per_call(monkeypatch):
+@pytest.mark.asyncio
+async def test_uses_one_request_scoped_client_per_call(monkeypatch):
     created = _patch_client(monkeypatch)
     embedder = OpenAIEmbedder(
         model=DEFAULT_EMBED_MODEL,
@@ -71,14 +77,15 @@ def test_uses_one_request_scoped_client_per_call(monkeypatch):
         auth=StaticBearerAuth("sk-explicit"),
     )
 
-    embedder(["x"])
-    embedder(["y"])
+    await embedder(["x"])
+    await embedder(["y"])
 
     assert len(created) == 2
     assert all(client.closed for _, client in created)
 
 
-def test_injected_auth_remains_bound_at_call_time(monkeypatch):
+@pytest.mark.asyncio
+async def test_injected_auth_remains_bound_at_call_time(monkeypatch):
     created = _patch_client(monkeypatch)
     embedder = OpenAIEmbedder(
         model=DEFAULT_EMBED_MODEL,
@@ -87,12 +94,13 @@ def test_injected_auth_remains_bound_at_call_time(monkeypatch):
     )
 
     with bind_model_auth({"embedding": StaticBearerAuth("runtime-token")}):
-        embedder(["q"])
+        await embedder(["q"])
 
     assert created[0][0]["auth"] == InjectedAuth("embedding")
 
 
-def test_empty_input_skips_client_creation(monkeypatch):
+@pytest.mark.asyncio
+async def test_empty_input_skips_client_creation(monkeypatch):
     created = _patch_client(monkeypatch)
     embedder = OpenAIEmbedder(
         model=DEFAULT_EMBED_MODEL,
@@ -100,11 +108,12 @@ def test_empty_input_skips_client_creation(monkeypatch):
         auth=StaticBearerAuth("sk-explicit"),
     )
 
-    assert embedder([]) == []
+    assert await embedder([]) == []
     assert created == []
 
 
-def test_cloudpickle_roundtrip_contains_auth_declaration_not_client(monkeypatch):
+@pytest.mark.asyncio
+async def test_cloudpickle_roundtrip_contains_auth_declaration_not_client(monkeypatch):
     created = _patch_client(monkeypatch)
     embedder = OpenAIEmbedder(
         auth=StaticBearerAuth("sk-explicit"),
@@ -113,6 +122,6 @@ def test_cloudpickle_roundtrip_contains_auth_declaration_not_client(monkeypatch)
     )
     restored = pickle.loads(cloudpickle.dumps(embedder))
 
-    assert restored(["zz"]) == [[2.0]]
+    assert await restored(["zz"]) == [[2.0]]
     assert created[0][0]["auth"] == StaticBearerAuth("sk-explicit")
     assert created[0][0]["model"] == "custom-embed"
