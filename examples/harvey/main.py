@@ -4,9 +4,10 @@
 (harveyai/lab@latest) resolves through Harbor at trainer runtime, so the data
 stage has nothing to download. Validation runs two real Modal sandbox trials.
 Launch uploads the bundle and starts a GPU run (explicit, confirmed — it
-spends credits). Credentials: Modal from ~/.modal.toml; the verifier model and
-the names of its explicitly supplied environment variables come from
-HARVEY_JUDGE_MODEL and HARVEY_VERIFIER_ENV_VARS.
+spends credits). Credentials: Modal from MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or
+~/.modal.toml; the verifier model and the names of its explicitly supplied
+environment variables come from HARVEY_JUDGE_MODEL and
+HARVEY_VERIFIER_ENV_VARS.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -134,11 +135,26 @@ class HarveyLabHarborEnv(HarborEnv):
 MODEL = "Qwen/Qwen3.5-35B-A3B"
 VALIDATE_MODEL = "gpt-5.4-mini"
 RUNTIME_DEPENDENCIES = ["harbor[modal]>=0.18.0,<0.19"]
-MODAL_PROFILE = os.environ.get("MODAL_PROFILE", "castform")
+
+
+def _modal_credentials_from_process() -> ModalCredentials:
+    token_id = os.environ.get("MODAL_TOKEN_ID")
+    token_secret = os.environ.get("MODAL_TOKEN_SECRET")
+    if token_id is not None or token_secret is not None:
+        if not token_id or not token_secret:
+            raise ValueError(
+                "set both MODAL_TOKEN_ID and MODAL_TOKEN_SECRET, or neither"
+            )
+        return ModalCredentials(token_id=token_id, token_secret=token_secret)
+
+    profile = os.environ.get("MODAL_PROFILE", "castform")
+    data = tomllib.loads((Path.home() / ".modal.toml").read_text())[profile]
+    return ModalCredentials(
+        token_id=data["token_id"], token_secret=data["token_secret"]
+    )
 
 
 def _constructor_args() -> dict[str, Any]:
-    data = tomllib.loads((Path.home() / ".modal.toml").read_text())[MODAL_PROFILE]
     judge_model = os.environ.get("HARVEY_JUDGE_MODEL")
     variable_names = os.environ.get("HARVEY_VERIFIER_ENV_VARS")
     if not judge_model:
@@ -156,10 +172,12 @@ def _constructor_args() -> dict[str, Any]:
         judge_concurrency = int(concurrency_value)
     except ValueError:
         raise SystemExit("HARVEY_JUDGE_CONCURRENCY must be an integer") from None
+    try:
+        sandbox_credentials = _modal_credentials_from_process()
+    except (KeyError, OSError, tomllib.TOMLDecodeError, ValueError) as error:
+        raise SystemExit(f"could not load Modal credentials: {error}") from None
     return {
-        "sandbox_credentials": ModalCredentials(
-            token_id=data["token_id"], token_secret=data["token_secret"]
-        ),
+        "sandbox_credentials": sandbox_credentials,
         "verifier_env": verifier_env,
         "judge_model": judge_model,
         "judge_concurrency": judge_concurrency,

@@ -10,7 +10,11 @@ from benchmax.envs.harbor import (
 from harbor import EnvironmentType, TrialVerifierConfig
 
 from harvey_agent import HarveyHarnessAgent
-from main import HarveyLabHarborEnv, _verifier_env_from_process
+from main import (
+    HarveyLabHarborEnv,
+    _modal_credentials_from_process,
+    _verifier_env_from_process,
+)
 
 
 def test_harvey_constructor_uses_latest_dataset_and_native_harness() -> None:
@@ -133,6 +137,43 @@ def test_verifier_env_from_process_rejects_missing_value(
 
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
         _verifier_env_from_process("ANTHROPIC_API_KEY")
+
+
+def test_modal_credentials_from_process_prefers_explicit_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MODAL_TOKEN_ID", "modal-id")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "modal-secret")
+
+    credentials = _modal_credentials_from_process()
+
+    assert credentials.host_environment() == {
+        "MODAL_TOKEN_ID": "modal-id",
+        "MODAL_TOKEN_SECRET": "modal-secret",
+        "MODAL_MAX_THROTTLE_WAIT": "60",
+    }
+
+
+@pytest.mark.parametrize(
+    ("token_id", "token_secret"),
+    [("modal-id", None), (None, "modal-secret"), ("", "")],
+)
+def test_modal_credentials_from_process_rejects_partial_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    token_id: str | None,
+    token_secret: str | None,
+) -> None:
+    if token_id is None:
+        monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+    else:
+        monkeypatch.setenv("MODAL_TOKEN_ID", token_id)
+    if token_secret is None:
+        monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
+    else:
+        monkeypatch.setenv("MODAL_TOKEN_SECRET", token_secret)
+
+    with pytest.raises(ValueError, match="set both MODAL_TOKEN_ID"):
+        _modal_credentials_from_process()
 
 
 def test_harvey_agent_builds_harbor_task_command(tmp_path: Path) -> None:

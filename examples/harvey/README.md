@@ -14,7 +14,7 @@ the agent loop, and the trainer only sees rollouts.
 ```bash
 uv sync            # from the benchmax workspace root
 cd examples/harvey
-# Modal credentials come from ~/.modal.toml; configure the verifier as below.
+# Configure Modal and verifier credentials as described below.
 uv run python main.py             # data (Harbor resolve) → validate: two real Modal trials (no launch)
 uv run python main.py launch      # train on GPUs (asks first; spends credits)
 ```
@@ -50,6 +50,34 @@ env_args = {
 }
 env = HarveyLabHarborEnv(**env_args)
 ```
+
+The runnable entrypoint prefers the standard `MODAL_TOKEN_ID` and
+`MODAL_TOKEN_SECRET` environment variables. Both must be set together. When
+neither is set, it reads the profile selected by `MODAL_PROFILE` (default:
+`castform`) from `~/.modal.toml`.
+
+For CI or another shell where the credentials are already managed:
+
+```bash
+export MODAL_TOKEN_ID=<modal-token-id>
+export MODAL_TOKEN_SECRET=<modal-token-secret>
+```
+
+To copy an existing Modal CLI profile into the current shell without printing
+the secret, capture `modal config show --no-redact` and extract both fields:
+
+```bash
+modal_config="$(
+  MODAL_PROFILE=castform uv run modal config show --no-redact
+)"
+export MODAL_TOKEN_ID="$(jq -r .token_id <<<"$modal_config")"
+export MODAL_TOKEN_SECRET="$(jq -r .token_secret <<<"$modal_config")"
+unset modal_config
+```
+
+This requires `jq`. Avoid `echo`, shell tracing (`set -x`), or putting literal
+secrets in the command line. The credentials are still fixed values in the
+uploaded bundle; this export changes only how the local launcher reads them.
 
 The runnable entrypoint reads the model from `HARVEY_JUDGE_MODEL`. Set
 `HARVEY_VERIFIER_ENV_VARS` to a comma-separated allowlist of variable names to
