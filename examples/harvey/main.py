@@ -4,10 +4,9 @@
 (harveyai/lab@latest) resolves through Harbor at trainer runtime, so the data
 stage has nothing to download. Validation runs two real Modal sandbox trials.
 Launch uploads the bundle and starts a GPU run (explicit, confirmed — it
-spends credits). Credentials: Modal from MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or
-~/.modal.toml; the verifier model and the names of its explicitly supplied
-environment variables come from HARVEY_JUDGE_MODEL and
-HARVEY_VERIFIER_ENV_VARS.
+spends credits). Credentials: Modal from MODAL_TOKEN_ID/MODAL_TOKEN_SECRET; the
+verifier model and the names of its explicitly supplied environment variables
+come from HARVEY_JUDGE_MODEL and HARVEY_VERIFIER_ENV_VARS.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -20,7 +19,6 @@ import os
 import re
 import sys
 import tempfile
-import tomllib
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -140,18 +138,9 @@ RUNTIME_DEPENDENCIES = ["harbor[modal]>=0.18.0,<0.19"]
 def _modal_credentials_from_process() -> ModalCredentials:
     token_id = os.environ.get("MODAL_TOKEN_ID")
     token_secret = os.environ.get("MODAL_TOKEN_SECRET")
-    if token_id is not None or token_secret is not None:
-        if not token_id or not token_secret:
-            raise ValueError(
-                "set both MODAL_TOKEN_ID and MODAL_TOKEN_SECRET, or neither"
-            )
-        return ModalCredentials(token_id=token_id, token_secret=token_secret)
-
-    profile = os.environ.get("MODAL_PROFILE", "castform")
-    data = tomllib.loads((Path.home() / ".modal.toml").read_text())[profile]
-    return ModalCredentials(
-        token_id=data["token_id"], token_secret=data["token_secret"]
-    )
+    if not token_id or not token_secret:
+        raise ValueError("set both MODAL_TOKEN_ID and MODAL_TOKEN_SECRET")
+    return ModalCredentials(token_id=token_id, token_secret=token_secret)
 
 
 def _constructor_args() -> dict[str, Any]:
@@ -174,7 +163,7 @@ def _constructor_args() -> dict[str, Any]:
         raise SystemExit("HARVEY_JUDGE_CONCURRENCY must be an integer") from None
     try:
         sandbox_credentials = _modal_credentials_from_process()
-    except (KeyError, OSError, tomllib.TOMLDecodeError, ValueError) as error:
+    except ValueError as error:
         raise SystemExit(f"could not load Modal credentials: {error}") from None
     return {
         "sandbox_credentials": sandbox_credentials,

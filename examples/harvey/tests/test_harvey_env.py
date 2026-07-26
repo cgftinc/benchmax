@@ -156,9 +156,14 @@ def test_modal_credentials_from_process_prefers_explicit_environment(
 
 @pytest.mark.parametrize(
     ("token_id", "token_secret"),
-    [("modal-id", None), (None, "modal-secret"), ("", "")],
+    [
+        ("modal-id", None),
+        (None, "modal-secret"),
+        ("", ""),
+        (None, None),
+    ],
 )
-def test_modal_credentials_from_process_rejects_partial_environment(
+def test_modal_credentials_from_process_requires_both_values(
     monkeypatch: pytest.MonkeyPatch,
     token_id: str | None,
     token_secret: str | None,

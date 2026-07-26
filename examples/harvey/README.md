@@ -51,10 +51,9 @@ env_args = {
 env = HarveyLabHarborEnv(**env_args)
 ```
 
-The runnable entrypoint prefers the standard `MODAL_TOKEN_ID` and
-`MODAL_TOKEN_SECRET` environment variables. Both must be set together. When
-neither is set, it reads the profile selected by `MODAL_PROFILE` (default:
-`castform`) from `~/.modal.toml`.
+The runnable entrypoint requires the standard `MODAL_TOKEN_ID` and
+`MODAL_TOKEN_SECRET` environment variables. Both must be set together; it does
+not implicitly read a local credential file.
 
 For CI or another shell where the credentials are already managed:
 
@@ -78,6 +77,14 @@ unset modal_config
 This requires `jq`. Avoid `echo`, shell tracing (`set -x`), or putting literal
 secrets in the command line. The credentials are still fixed values in the
 uploaded bundle; this export changes only how the local launcher reads them.
+
+The launcher calls `ensure_session()` for Castform platform authentication. It
+uses an existing `~/.castform` session or starts interactive device login, so a
+normal customer launch does not need `castform with-auth`:
+
+```bash
+uv run python main.py launch
+```
 
 The runnable entrypoint reads the model from `HARVEY_JUDGE_MODEL`. Set
 `HARVEY_VERIFIER_ENV_VARS` to a comma-separated allowlist of variable names to
