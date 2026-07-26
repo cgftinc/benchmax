@@ -26,7 +26,6 @@ from castform.platform.credentials import (
 _TOKEN_PATH_ENV = "ACT_AS_TOKEN_PATH"
 _AUTH_TOKEN_ENV = "CASTFORM_AUTH_TOKEN"
 _CASTFORM_API_KEY_ENV = "CASTFORM_API_KEY"
-_LEGACY_API_KEY_ENV = "PLATFORM_API_KEY"
 _CRED_PATH_ENV = "CASTFORM_CREDENTIALS_PATH"
 
 
@@ -41,7 +40,6 @@ def _clear_env(monkeypatch, tmp_path):
     monkeypatch.delenv(_TOKEN_PATH_ENV, raising=False)
     monkeypatch.delenv(_AUTH_TOKEN_ENV, raising=False)
     monkeypatch.delenv(_CASTFORM_API_KEY_ENV, raising=False)
-    monkeypatch.delenv(_LEGACY_API_KEY_ENV, raising=False)
     monkeypatch.delenv("CASTFORM_PROFILE", raising=False)
     monkeypatch.setenv("CASTFORM_CONFIG_PATH", str(tmp_path / "config.toml"))
     # Point the session cache at a non-existent file so a real ~/.castform on
@@ -82,28 +80,14 @@ def test_falls_back_to_env_when_file_empty(tmp_path, monkeypatch):
     assert platform_bearer() == "sk_env"
 
 
-def test_uses_env_when_no_token_path(monkeypatch):
-    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "sk_env")
-    assert platform_bearer() == "sk_env"
-
-
 @pytest.mark.parametrize("resolver", [platform_bearer, runtime_platform_bearer])
-def test_legitimate_castform_api_key_is_not_shadowed_by_legacy_env(
+def test_provisioned_castform_api_key_is_used_by_both_resolvers(
     monkeypatch,
     resolver,
 ):
-    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "current-castform-key")
-    monkeypatch.setenv(_LEGACY_API_KEY_ENV, "stale-legacy-key")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "provisioned-key")
 
-    assert resolver() == "current-castform-key"
-
-
-@pytest.mark.parametrize("resolver", [platform_bearer, runtime_platform_bearer])
-def test_legacy_platform_api_key_is_not_a_credential(monkeypatch, resolver):
-    monkeypatch.setenv(_LEGACY_API_KEY_ENV, "stale-legacy-key")
-
-    with pytest.raises(RuntimeError):
-        resolver()
+    assert resolver() == "provisioned-key"
 
 
 def test_auth_token_takes_precedence_over_provisioned_api_key(monkeypatch):
