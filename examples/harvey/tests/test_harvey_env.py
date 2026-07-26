@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import main as harvey_main
 import pytest
 from benchmax.bundle import dump_bundle, load_bundle
 from benchmax.envs.harbor import (
@@ -10,7 +11,11 @@ from benchmax.envs.harbor import (
 from harbor import EnvironmentType, TrialVerifierConfig
 
 from harvey_agent import HarveyHarnessAgent
-from main import HarveyLabHarborEnv
+from main import (
+    HarveyLabHarborEnv,
+    _modal_credentials_from_process,
+    _verifier_env_for_provider,
+)
 
 
 def test_harvey_constructor_uses_latest_dataset_and_native_harness() -> None:
@@ -18,7 +23,8 @@ def test_harvey_constructor_uses_latest_dataset_and_native_harness() -> None:
 
     env = HarveyLabHarborEnv(
         sandbox_credentials=credentials,
-        judge_api_key="judge-key",
+        verifier_env={"ANTHROPIC_API_KEY": "anthropic-key"},
+        judge_model="anthropic/claude-sonnet-4-6",
     )
 
     assert env._dataset.name == "harveyai/lab"
@@ -31,39 +37,189 @@ def test_harvey_constructor_uses_latest_dataset_and_native_harness() -> None:
     assert trial.environment.type == EnvironmentType.MODAL
     assert trial.trials_dir == Path("/tmp/castform-harvey-harbor-trials")
     assert isinstance(trial.verifier, TrialVerifierConfig)
-    assert trial.verifier.env["OPENAI_API_KEY"] == "judge-key"
-    assert trial.verifier.env["OPENAI_BASE_URL"] == "https://llm.castform.dev/v1"
+    assert trial.verifier.env == {
+        "ANTHROPIC_API_KEY": "anthropic-key",
+        "REWARDKIT_JUDGE": "anthropic/claude-sonnet-4-6",
+        "JUDGE_CONCURRENCY": "1",
+    }
 
 
-def test_harvey_bundles_carry_the_fixed_judge_key() -> None:
-    """Judge and Modal credentials are fixed keys that ride in bundles."""
+def test_harvey_bundles_carry_the_explicit_verifier_environment() -> None:
+    """Verifier and Modal credentials are fixed values that ride in bundles."""
 
     bundle = dump_bundle(
         HarveyLabHarborEnv,
         constructor_args={
             "sandbox_credentials": ModalCredentials("modal-id", "modal-secret"),
-            "judge_api_key": "judge-key",
+            "verifier_env": {
+                "OPENAI_API_KEY": "judge-key",
+                "OPENAI_BASE_URL": "https://llm.castform.dev/v1",
+            },
+            "judge_model": "openai/gpt-5.4-nano",
         },
         pip_dependencies=["harbor[modal]>=0.18.0,<0.19"],
     )
     _, constructor_args = load_bundle(bundle, instantiate=False)
-    assert constructor_args["judge_api_key"] == "judge-key"
+    assert constructor_args["verifier_env"] == {
+        "OPENAI_API_KEY": "judge-key",
+        "OPENAI_BASE_URL": "https://llm.castform.dev/v1",
+    }
 
 
-def test_harvey_constructor_rejects_empty_judge_key() -> None:
-    with pytest.raises(ValueError, match="judge_api_key"):
+def test_harvey_constructor_does_not_copy_credentials_between_providers() -> None:
+    env = HarveyLabHarborEnv(
+        sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+        verifier_env={"OPENAI_API_KEY": "judge-key"},
+        judge_model="openai/gpt-5.4-nano",
+    )
+
+    assert env._trial.verifier.env["OPENAI_API_KEY"] == "judge-key"
+    assert "ANTHROPIC_API_KEY" not in env._trial.verifier.env
+
+
+def test_harvey_constructor_rejects_empty_verifier_environment() -> None:
+    with pytest.raises(ValueError, match="verifier_env"):
         HarveyLabHarborEnv(
             sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
-            judge_api_key="",
+            verifier_env={},
+            judge_model="anthropic/claude-sonnet-4-6",
         )
 
 
-def test_harvey_constructor_rejects_short_lived_jwt_judge_key() -> None:
-    with pytest.raises(ValueError, match="short-lived JWTs expire"):
+@pytest.mark.parametrize(
+    "verifier_env",
+    [
+        {"REWARDKIT_JUDGE": "anthropic/model"},
+        {"JUDGE_CONCURRENCY": "2"},
+        {"INVALID-NAME": "value"},
+        {"ANTHROPIC_API_KEY": ""},
+    ],
+)
+def test_harvey_constructor_rejects_invalid_verifier_environment(
+    verifier_env: dict[str, str],
+) -> None:
+    with pytest.raises(ValueError):
         HarveyLabHarborEnv(
             sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
-            judge_api_key="header.payload.signature",
+            verifier_env=verifier_env,
+            judge_model="anthropic/claude-sonnet-4-6",
         )
+
+
+def test_verifier_env_for_anthropic_copies_only_anthropic_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    assert _verifier_env_for_provider("anthropic") == {
+        "ANTHROPIC_API_KEY": "anthropic-key"
+    }
+
+
+def test_verifier_env_for_openai_copies_standard_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://llm.castform.com/v1")
+    monkeypatch.setenv("OPENAI_API_BASE", "https://llm.castform.com/v1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "unrelated-anthropic-key")
+
+    assert _verifier_env_for_provider("openai") == {
+        "OPENAI_API_KEY": "openai-key",
+        "OPENAI_BASE_URL": "https://llm.castform.com/v1",
+        "OPENAI_API_BASE": "https://llm.castform.com/v1",
+        "ANTHROPIC_API_KEY": "unused-for-openai-judge",
+    }
+
+
+@pytest.mark.parametrize(
+    ("provider", "missing_name"),
+    [("anthropic", "ANTHROPIC_API_KEY"), ("openai", "OPENAI_API_KEY")],
+)
+def test_verifier_env_for_provider_requires_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    missing_name: str,
+) -> None:
+    monkeypatch.delenv(missing_name, raising=False)
+
+    with pytest.raises(ValueError, match=missing_name):
+        _verifier_env_for_provider(provider)  # type: ignore[arg-type]
+
+
+def test_modal_credentials_from_process_prefers_explicit_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MODAL_TOKEN_ID", "modal-id")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "modal-secret")
+
+    credentials = _modal_credentials_from_process()
+
+    assert credentials.host_environment() == {
+        "MODAL_TOKEN_ID": "modal-id",
+        "MODAL_TOKEN_SECRET": "modal-secret",
+        "MODAL_MAX_THROTTLE_WAIT": "60",
+    }
+
+
+@pytest.mark.parametrize(
+    ("token_id", "token_secret"),
+    [
+        ("modal-id", None),
+        (None, "modal-secret"),
+        ("", ""),
+        (None, None),
+    ],
+)
+def test_modal_credentials_from_process_requires_both_values(
+    monkeypatch: pytest.MonkeyPatch,
+    token_id: str | None,
+    token_secret: str | None,
+) -> None:
+    if token_id is None:
+        monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+    else:
+        monkeypatch.setenv("MODAL_TOKEN_ID", token_id)
+    if token_secret is None:
+        monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
+    else:
+        monkeypatch.setenv("MODAL_TOKEN_SECRET", token_secret)
+
+    with pytest.raises(ValueError, match="set both MODAL_TOKEN_ID"):
+        _modal_credentials_from_process()
+
+
+def test_main_passes_explicit_verifier_options_to_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_launch(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "run-id"
+
+    monkeypatch.setattr(harvey_main, "launch", fake_launch)
+    monkeypatch.setattr("castform.platform.ensure_session", lambda: None)
+
+    result = harvey_main.main(
+        [
+            "launch",
+            "--yes",
+            "--judge-provider",
+            "anthropic",
+            "--judge-model",
+            "anthropic/claude-sonnet-4-6",
+        ]
+    )
+
+    assert result == 0
+    assert captured == {
+        "assume_yes": True,
+        "judge_provider": "anthropic",
+        "judge_model": "anthropic/claude-sonnet-4-6",
+        "judge_concurrency": 1,
+    }
 
 
 def test_harvey_agent_builds_harbor_task_command(tmp_path: Path) -> None:
@@ -174,6 +330,7 @@ def test_harvey_constructor_rejects_invalid_judge_concurrency(
     with pytest.raises(ValueError, match="judge_concurrency must be positive"):
         HarveyLabHarborEnv(
             sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
-            judge_api_key="judge-key",
+            verifier_env={"ANTHROPIC_API_KEY": "anthropic-key"},
+            judge_model="anthropic/claude-sonnet-4-6",
             judge_concurrency=judge_concurrency,
         )

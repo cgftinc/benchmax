@@ -12,8 +12,7 @@ Precedence (per call):
    writes and re-writes before expiry (multi-audience: platform-service +
    llm-proxy-service). Used during training. Re-read each call so rotation is
    picked up. Mirrors ``trainer/auth/ray_auth.py``'s per-request read.
-2. ``CASTFORM_AUTH_TOKEN`` — an explicitly forwarded Castform bearer, including
-   the login session used by ``castform with-auth``.
+2. ``CASTFORM_AUTH_TOKEN`` — an explicitly forwarded Castform bearer.
 3. ``PLATFORM_API_KEY`` — the legacy API-key override used by hosted workers.
 4. ``~/.castform/credentials.json`` — the selected profile's device-auth session cached by
    ``castform login`` (the human self-serve path). Lowest precedence so an
@@ -261,7 +260,9 @@ def session_auth_token(profile: str | None = None) -> str:
     if expires_at is not None and (
         not isinstance(expires_at, (int, float)) or expires_at <= time.time()
     ):
-        raise RuntimeError("The selected Castform session has expired; run `castform login` again.")
+        raise RuntimeError(
+            "The selected Castform session has expired; run `castform login` again."
+        )
     return access_token
 
 
@@ -370,7 +371,9 @@ def _session_jwt(profile: str | None = None) -> str | None:
     if jwt:
         exp = _jwt_exp(jwt)
         if exp <= time.time():
-            exp = time.time() + _MINT_FALLBACK_TTL  # no parseable exp → don't re-mint per call
+            exp = (
+                time.time() + _MINT_FALLBACK_TTL
+            )  # no parseable exp → don't re-mint per call
         with _SESSION_JWT_LOCK:
             _SESSION_JWT_CACHE.update(
                 {"token": jwt, "src": access_token, "exp": exp, "profile": selected}
