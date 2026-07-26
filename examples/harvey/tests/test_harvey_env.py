@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import main as harvey_main
 import pytest
 from benchmax.bundle import dump_bundle, load_bundle
 from benchmax.envs.harbor import (
@@ -111,18 +112,18 @@ def test_verifier_env_from_process_copies_only_named_values(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
 
-    assert _verifier_env_from_process(" ANTHROPIC_API_KEY ") == {
+    assert _verifier_env_from_process([" ANTHROPIC_API_KEY "]) == {
         "ANTHROPIC_API_KEY": "anthropic-key"
     }
 
 
 @pytest.mark.parametrize(
     "variable_names",
-    ["", "ANTHROPIC_API_KEY,", "ANTHROPIC_API_KEY,ANTHROPIC_API_KEY"],
+    [[], [""], ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"]],
 )
 def test_verifier_env_from_process_rejects_invalid_name_list(
     monkeypatch: pytest.MonkeyPatch,
-    variable_names: str,
+    variable_names: list[str],
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
 
@@ -136,7 +137,7 @@ def test_verifier_env_from_process_rejects_missing_value(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
-        _verifier_env_from_process("ANTHROPIC_API_KEY")
+        _verifier_env_from_process(["ANTHROPIC_API_KEY"])
 
 
 def test_modal_credentials_from_process_prefers_explicit_environment(
@@ -179,6 +180,38 @@ def test_modal_credentials_from_process_requires_both_values(
 
     with pytest.raises(ValueError, match="set both MODAL_TOKEN_ID"):
         _modal_credentials_from_process()
+
+
+def test_main_passes_explicit_verifier_options_to_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_launch(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "run-id"
+
+    monkeypatch.setattr(harvey_main, "launch", fake_launch)
+    monkeypatch.setattr("castform.platform.ensure_session", lambda: None)
+
+    result = harvey_main.main(
+        [
+            "launch",
+            "--yes",
+            "--judge-model",
+            "anthropic/claude-sonnet-4-6",
+            "--verifier-env-var",
+            "ANTHROPIC_API_KEY",
+        ]
+    )
+
+    assert result == 0
+    assert captured == {
+        "assume_yes": True,
+        "judge_model": "anthropic/claude-sonnet-4-6",
+        "verifier_env_vars": ["ANTHROPIC_API_KEY"],
+        "judge_concurrency": 1,
+    }
 
 
 def test_harvey_agent_builds_harbor_task_command(tmp_path: Path) -> None:

@@ -6,7 +6,7 @@ stage has nothing to download. Validation runs two real Modal sandbox trials.
 Launch uploads the bundle and starts a GPU run (explicit, confirmed — it
 spends credits). Credentials: Modal from MODAL_TOKEN_ID/MODAL_TOKEN_SECRET; the
 verifier model and the names of its explicitly supplied environment variables
-come from HARVEY_JUDGE_MODEL and HARVEY_VERIFIER_ENV_VARS.
+come from --judge-model and repeated --verifier-env-var options.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -20,7 +20,7 @@ import re
 import sys
 import tempfile
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -64,14 +64,12 @@ def _validated_verifier_env(verifier_env: Mapping[str, str]) -> dict[str, str]:
     return environment
 
 
-def _verifier_env_from_process(variable_names: str) -> dict[str, str]:
-    names = [name.strip() for name in variable_names.split(",")]
-    if not variable_names or any(not name for name in names):
-        raise ValueError(
-            "HARVEY_VERIFIER_ENV_VARS must be a comma-separated list of names"
-        )
+def _verifier_env_from_process(variable_names: Sequence[str]) -> dict[str, str]:
+    names = [name.strip() for name in variable_names]
+    if not names or any(not name for name in names):
+        raise ValueError("provide at least one non-empty --verifier-env-var name")
     if len(names) != len(set(names)):
-        raise ValueError("HARVEY_VERIFIER_ENV_VARS must not contain duplicate names")
+        raise ValueError("--verifier-env-var must not contain duplicate names")
     missing = [name for name in names if not os.environ.get(name)]
     if missing:
         raise ValueError(
@@ -143,24 +141,16 @@ def _modal_credentials_from_process() -> ModalCredentials:
     return ModalCredentials(token_id=token_id, token_secret=token_secret)
 
 
-def _constructor_args() -> dict[str, Any]:
-    judge_model = os.environ.get("HARVEY_JUDGE_MODEL")
-    variable_names = os.environ.get("HARVEY_VERIFIER_ENV_VARS")
-    if not judge_model:
-        raise SystemExit("set HARVEY_JUDGE_MODEL for the sandbox verifier")
-    if not variable_names:
-        raise SystemExit(
-            "set HARVEY_VERIFIER_ENV_VARS to the verifier environment variable names"
-        )
+def _constructor_args(
+    *,
+    judge_model: str,
+    verifier_env_vars: Sequence[str],
+    judge_concurrency: int,
+) -> dict[str, Any]:
     try:
-        verifier_env = _verifier_env_from_process(variable_names)
+        verifier_env = _verifier_env_from_process(verifier_env_vars)
     except ValueError as error:
         raise SystemExit(str(error)) from None
-    concurrency_value = os.environ.get("HARVEY_JUDGE_CONCURRENCY", "1")
-    try:
-        judge_concurrency = int(concurrency_value)
-    except ValueError:
-        raise SystemExit("HARVEY_JUDGE_CONCURRENCY must be an integer") from None
     try:
         sandbox_credentials = _modal_credentials_from_process()
     except ValueError as error:
@@ -180,10 +170,21 @@ def generate_data(*, force: bool) -> None:
     )
 
 
-def validate() -> Any:
+def validate(
+    *,
+    judge_model: str,
+    verifier_env_vars: Sequence[str],
+    judge_concurrency: int,
+) -> Any:
     from castform import validate_environment
 
-    env = HarveyLabHarborEnv(**_constructor_args())
+    env = HarveyLabHarborEnv(
+        **_constructor_args(
+            judge_model=judge_model,
+            verifier_env_vars=verifier_env_vars,
+            judge_concurrency=judge_concurrency,
+        )
+    )
     with tempfile.TemporaryDirectory() as tmp:
         dataset = asyncio.run(env.create_dataset("eval", Path(tmp)))
         example = dataset[0]
@@ -199,7 +200,13 @@ def validate() -> Any:
     return report
 
 
-def launch(*, assume_yes: bool) -> str | None:
+def launch(
+    *,
+    assume_yes: bool,
+    judge_model: str,
+    verifier_env_vars: Sequence[str],
+    judge_concurrency: int,
+) -> str | None:
     from benchmax.bundle import dump_bundle
     from castform import config
     from castform.platform.client import TrainerClient
@@ -217,7 +224,11 @@ def launch(*, assume_yes: bool) -> str | None:
     # Bundle-only upload: Harbor resolves the dataset at trainer runtime.
     bundle = dump_bundle(
         HarveyLabHarborEnv,
-        constructor_args=_constructor_args(),
+        constructor_args=_constructor_args(
+            judge_model=judge_model,
+            verifier_env_vars=verifier_env_vars,
+            judge_concurrency=judge_concurrency,
+        ),
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
     uploaded = upload_training_run(bundle=bundle, run_name=run_name)
@@ -254,7 +265,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the launch confirmation (it spends GPU credits).",
     )
+    parser.add_argument(
+        "--judge-model",
+        help="RewardKit/LiteLLM model name used by the verifier.",
+    )
+    parser.add_argument(
+        "--verifier-env-var",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Copy NAME from the current environment into the verifier; repeat as needed.",
+    )
+    parser.add_argument(
+        "--judge-concurrency",
+        type=int,
+        default=1,
+        help="Maximum concurrent judge calls (default: 1).",
+    )
     args = parser.parse_args(argv)
+    if args.stage in ("validate", "launch", "all"):
+        if not args.judge_model:
+            parser.error("--judge-model is required for validate and launch")
+        if not args.verifier_env_var:
+            parser.error(
+                "at least one --verifier-env-var is required for validate and launch"
+            )
 
     from castform.platform import ensure_session
 
@@ -263,11 +298,23 @@ def main(argv: list[str] | None = None) -> int:
         generate_data(force=args.force)
     if args.stage in ("validate", "all"):
         ensure_session()
-        report = validate()
+        report = validate(
+            judge_model=args.judge_model,
+            verifier_env_vars=args.verifier_env_var,
+            judge_concurrency=args.judge_concurrency,
+        )
         ok = report is not None and report.ok
     if args.stage == "launch":
         ensure_session()
-        ok = launch(assume_yes=args.yes) is not None
+        ok = (
+            launch(
+                assume_yes=args.yes,
+                judge_model=args.judge_model,
+                verifier_env_vars=args.verifier_env_var,
+                judge_concurrency=args.judge_concurrency,
+            )
+            is not None
+        )
     return 0 if ok else 1
 
 
