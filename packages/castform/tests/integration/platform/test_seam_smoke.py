@@ -31,6 +31,7 @@ def _make_echo_env():
     dump_bundle to reject (mirrors the unit-test smoke env)."""
 
     class _EchoEnv(BaseEnv):
+        reward_keys = ("reward",)
         max_turns = 1
 
         async def create_dataset(self, split, base_dir):
