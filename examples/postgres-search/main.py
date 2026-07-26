@@ -604,8 +604,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             return "Error: Missing required parameter: 'query'"
 
         effective_mode = mode or self._default_mode
-        results = await asyncio.to_thread(
-            self._search.search,
+        results = await self._search.search(
             query=query,
             mode=effective_mode,
             top_k=limit,

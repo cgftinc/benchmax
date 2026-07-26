@@ -10,7 +10,8 @@ from types import SimpleNamespace
 import cloudpickle
 import pytest
 
-from castform.platform.credentials import platform_bearer
+from castform.platform.credentials import runtime_platform_bearer
+from castform.rag.corpus.postgres.models import CorpusChunk, SearchResult
 from castform.rag.corpus.postgres.search import PostgresSearch
 from castform.rag.corpus.search_client import SearchClient
 
@@ -39,9 +40,9 @@ class TestConformance:
         cs = PostgresSearch(corpus_name="t", base_url="http://t")
         assert isinstance(cs, SearchClient)
 
-    def test_defaults_to_platform_bearer(self):
+    def test_defaults_to_runtime_platform_bearer(self):
         cs = PostgresSearch(corpus_name="t", base_url="http://t")
-        assert cs._token_provider is platform_bearer
+        assert cs._token_provider is runtime_platform_bearer
 
     def test_pickle_roundtrip(self):
         cs = PostgresSearch(corpus_name="cn", base_url="http://b")
@@ -59,12 +60,13 @@ class TestConformance:
         assert params["corpus_name"] == "c"
         assert "api_key" not in params
 
-    def test_runtime_name_resolution_never_creates_a_corpus(self):
+    @pytest.mark.asyncio
+    async def test_runtime_name_resolution_never_creates_a_corpus(self):
         class ReadOnlyClient:
             def __init__(self) -> None:
                 self.resolved: list[str] = []
 
-            def get_corpus_by_name(self, name: str):
+            async def get_corpus_by_name(self, name: str):
                 self.resolved.append(name)
                 return SimpleNamespace(id="corpus-id")
 
@@ -75,7 +77,7 @@ class TestConformance:
         search = PostgresSearch(corpus_name="existing", base_url="http://t")
         search._client = client  # type: ignore[assignment]
 
-        assert search._get_corpus_id() == "corpus-id"
+        assert await search._get_corpus_id() == "corpus-id"
         assert client.resolved == ["existing"]
 
 
@@ -85,19 +87,62 @@ class TestAvailableModes:
         assert cs.available_modes == ["lexical"]
 
 
-class TestModeValidation:
-    def test_vector_raises(self):
-        cs = PostgresSearch(corpus_name="t", base_url="http://t")
-        with pytest.raises(ValueError, match="lexical"):
-            cs.search("query", mode="vector")
+class TestSearch:
+    @pytest.mark.asyncio
+    async def test_uses_async_name_resolution_and_search_only(self):
+        class AsyncOnlyClient:
+            async def get_corpus_by_name(self, name: str):
+                assert name == "existing"
+                return SimpleNamespace(id="corpus-id")
 
-    def test_hybrid_raises(self):
+            async def search(self, **kwargs):
+                assert kwargs == {
+                    "corpus_id": "corpus-id",
+                    "query": "needle",
+                    "limit": 3,
+                }
+                return SearchResult(
+                    results=[
+                        CorpusChunk(
+                            id="chunk-id",
+                            content="found",
+                            metadata={"file": "doc.md"},
+                            score=0.75,
+                        )
+                    ],
+                    total=1,
+                    query="needle",
+                )
+
+        search = PostgresSearch(corpus_name="existing", base_url="http://t")
+        search._client = AsyncOnlyClient()  # type: ignore[assignment]
+
+        assert await search.search("needle", top_k=3) == [
+            {
+                "content": "found",
+                "source": "doc.md",
+                "metadata": {"file": "doc.md"},
+                "score": 0.75,
+            }
+        ]
+
+
+class TestModeValidation:
+    @pytest.mark.asyncio
+    async def test_vector_raises(self):
         cs = PostgresSearch(corpus_name="t", base_url="http://t")
         with pytest.raises(ValueError, match="lexical"):
-            cs.search("query", mode="hybrid")
+            await cs.search("query", mode="vector")
+
+    @pytest.mark.asyncio
+    async def test_hybrid_raises(self):
+        cs = PostgresSearch(corpus_name="t", base_url="http://t")
+        with pytest.raises(ValueError, match="lexical"):
+            await cs.search("query", mode="hybrid")
 
 
 class TestEmbed:
-    def test_always_none(self):
+    @pytest.mark.asyncio
+    async def test_always_none(self):
         cs = PostgresSearch(corpus_name="t", base_url="http://t")
-        assert cs.embed("hello") is None
+        assert await cs.embed("hello") is None

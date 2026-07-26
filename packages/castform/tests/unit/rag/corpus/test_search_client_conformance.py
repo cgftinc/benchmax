@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+import inspect
 import pickle
 
 import cloudpickle
 
+from castform.rag.corpus.chroma.search import ChromaSearch
+from castform.rag.corpus.embed import OpenAIEmbedder
 from castform.rag.corpus.pinecone.search import PineconeSearch
+from castform.rag.corpus.postgres.search import PostgresSearch
 from castform.rag.corpus.search_client import SearchClient
+from castform.rag.corpus.turbopuffer.search import TpufSearch
+
+
+def test_rollout_search_and_embedding_contracts_are_async_only():
+    """Prevent reintroducing a sync retrieval/auth path."""
+
+    for implementation in (PostgresSearch, TpufSearch, PineconeSearch, ChromaSearch):
+        assert inspect.iscoroutinefunction(implementation.search)
+        assert inspect.iscoroutinefunction(implementation.embed)
+    assert inspect.iscoroutinefunction(OpenAIEmbedder.__call__)
 
 
 class TestPineconeSearchConformance:

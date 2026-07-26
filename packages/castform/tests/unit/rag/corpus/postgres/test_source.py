@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from castform import config
-from castform.platform.credentials import platform_bearer
+from castform.platform.credentials import runtime_platform_bearer
 from castform.rag.corpus.postgres.source import PostgresChunkSource
 
 
@@ -13,7 +13,7 @@ def test_keyless_construction_uses_seam_and_default_base_url() -> None:
 
     # No static key baked: the client resolves the bearer per request via the
     # platform credential seam.
-    assert source._client.token_provider is platform_bearer
+    assert source._client.token_provider is runtime_platform_bearer
     # base_url falls back to the session-derived platform URL.
     assert source._client.base_url == config.platform_url()
     assert source._corpus_name == "my-docs"

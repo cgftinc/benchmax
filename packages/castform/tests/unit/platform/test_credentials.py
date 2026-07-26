@@ -13,17 +13,19 @@ import pytest
 from castform.platform import credentials
 from castform.platform.credentials import (
     as_token_provider,
+    castform_model_bearer,
     clear_castform_session,
     env_token,
     platform_bearer,
     read_castform_session,
     resolve_token_provider,
+    runtime_platform_bearer,
     write_castform_session,
 )
 
 _TOKEN_PATH_ENV = "ACT_AS_TOKEN_PATH"
 _AUTH_TOKEN_ENV = "CASTFORM_AUTH_TOKEN"
-_API_KEY_ENV = "PLATFORM_API_KEY"
+_CASTFORM_API_KEY_ENV = "CASTFORM_API_KEY"
 _CRED_PATH_ENV = "CASTFORM_CREDENTIALS_PATH"
 
 
@@ -37,7 +39,7 @@ def _fake_jwt(exp: float) -> str:
 def _clear_env(monkeypatch, tmp_path):
     monkeypatch.delenv(_TOKEN_PATH_ENV, raising=False)
     monkeypatch.delenv(_AUTH_TOKEN_ENV, raising=False)
-    monkeypatch.delenv(_API_KEY_ENV, raising=False)
+    monkeypatch.delenv(_CASTFORM_API_KEY_ENV, raising=False)
     monkeypatch.delenv("CASTFORM_PROFILE", raising=False)
     monkeypatch.setenv("CASTFORM_CONFIG_PATH", str(tmp_path / "config.toml"))
     # Point the session cache at a non-existent file so a real ~/.castform on
@@ -60,13 +62,13 @@ def test_token_file_takes_precedence_over_env(tmp_path, monkeypatch):
     f = tmp_path / "act-as-token"
     f.write_text("jwt-from-file")
     monkeypatch.setenv(_TOKEN_PATH_ENV, str(f))
-    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "sk_env")
     assert platform_bearer() == "jwt-from-file"
 
 
 def test_falls_back_to_env_when_path_set_but_file_missing(tmp_path, monkeypatch):
     monkeypatch.setenv(_TOKEN_PATH_ENV, str(tmp_path / "does-not-exist"))
-    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "sk_env")
     assert platform_bearer() == "sk_env"
 
 
@@ -74,18 +76,23 @@ def test_falls_back_to_env_when_file_empty(tmp_path, monkeypatch):
     f = tmp_path / "act-as-token"
     f.write_text("   \n")
     monkeypatch.setenv(_TOKEN_PATH_ENV, str(f))
-    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "sk_env")
     assert platform_bearer() == "sk_env"
 
 
-def test_uses_env_when_no_token_path(monkeypatch):
-    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
-    assert platform_bearer() == "sk_env"
+@pytest.mark.parametrize("resolver", [platform_bearer, runtime_platform_bearer])
+def test_provisioned_castform_api_key_is_used_by_both_resolvers(
+    monkeypatch,
+    resolver,
+):
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "provisioned-key")
+
+    assert resolver() == "provisioned-key"
 
 
-def test_auth_token_takes_precedence_over_legacy_api_key(monkeypatch):
+def test_auth_token_takes_precedence_over_provisioned_api_key(monkeypatch):
     monkeypatch.setenv(_AUTH_TOKEN_ENV, "session-forward")
-    monkeypatch.setenv(_API_KEY_ENV, "legacy-key")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "provisioned-key")
     assert platform_bearer() == "session-forward"
 
 
@@ -123,10 +130,45 @@ def test_platform_bearer_mints_jwt_from_cached_session(tmp_path, monkeypatch):
     assert platform_bearer() == jwt
 
 
+def test_model_bearer_uses_only_login_exchange(tmp_path, monkeypatch):
+    jwt = _fake_jwt(time.time() + 300)
+    monkeypatch.setenv(_AUTH_TOKEN_ENV, "forbidden-auth-token")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "forbidden-platform-key")
+    token_file = tmp_path / "act-as-token"
+    token_file.write_text("forbidden-act-as-token")
+    monkeypatch.setenv(_TOKEN_PATH_ENV, str(token_file))
+    monkeypatch.setattr(credentials, "_mint_session_jwt", lambda _t, _p=None: jwt)
+    _write_session(tmp_path, monkeypatch, {"access_token": "login-session"})
+
+    assert castform_model_bearer() == jwt
+
+
+def test_model_bearer_does_not_fall_back_to_platform_credentials(monkeypatch):
+    monkeypatch.setenv(_AUTH_TOKEN_ENV, "forbidden-auth-token")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "forbidden-platform-key")
+
+    with pytest.raises(RuntimeError, match="No local Castform model credential"):
+        castform_model_bearer()
+
+
+def test_runtime_bearer_never_uses_bootstrap_auth_token(monkeypatch):
+    monkeypatch.setenv(_AUTH_TOKEN_ENV, "forbidden-auth-token")
+
+    with pytest.raises(RuntimeError, match="No Castform runtime credential"):
+        runtime_platform_bearer()
+
+
+def test_runtime_bearer_accepts_provisioned_castform_api_key(monkeypatch):
+    monkeypatch.setenv(_AUTH_TOKEN_ENV, "forbidden-auth-token")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "provisioned-key")
+
+    assert runtime_platform_bearer() == "provisioned-key"
+
+
 def test_env_key_takes_precedence_over_session(tmp_path, monkeypatch):
     # env key wins → the session mint is never reached
     _write_session(tmp_path, monkeypatch, {"access_token": "sk_session"})
-    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "sk_env")
     assert platform_bearer() == "sk_env"
 
 
@@ -292,7 +334,9 @@ def test_mint_handles_non_json_200(monkeypatch):
     assert credentials._mint_session_jwt("sess_abc") is None
 
 
-def test_session_jwt_falls_back_to_cached_on_transient_mint_failure(tmp_path, monkeypatch):
+def test_session_jwt_falls_back_to_cached_on_transient_mint_failure(
+    tmp_path, monkeypatch
+):
     """A transient mint failure reuses a still-valid cached JWT instead of failing."""
     good = _fake_jwt(time.time() + 300)
     minted = {"v": good}
@@ -320,19 +364,29 @@ def test_session_jwt_floors_ttl_when_exp_unparseable(tmp_path, monkeypatch):
     _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
     assert platform_bearer() == "opaque-token-without-exp"
     assert platform_bearer() == "opaque-token-without-exp"
-    assert calls["n"] == 1  # floored TTL keeps it cached instead of re-minting each call
+    assert (
+        calls["n"] == 1
+    )  # floored TTL keeps it cached instead of re-minting each call
 
 
 def test_session_jwt_remints_on_session_change(tmp_path, monkeypatch):
     """A re-login (new access_token in the same process) doesn't serve the prior
     identity's cached JWT."""
-    tokens = {"sess_a": _fake_jwt(time.time() + 300), "sess_b": _fake_jwt(time.time() + 300)}
+    tokens = {
+        "sess_a": _fake_jwt(time.time() + 300),
+        "sess_b": _fake_jwt(time.time() + 300),
+    }
     monkeypatch.setattr(credentials, "_mint_session_jwt", lambda t, _p=None: tokens[t])
     f = _write_session(tmp_path, monkeypatch, {"access_token": "sess_a"})
     assert platform_bearer() == tokens["sess_a"]
 
     f.write_text(
-        json.dumps({"version": 2, "profiles": {"prod": {"session": {"access_token": "sess_b"}}}})
+        json.dumps(
+            {
+                "version": 2,
+                "profiles": {"prod": {"session": {"access_token": "sess_b"}}},
+            }
+        )
     )
     f.chmod(0o600)
     assert platform_bearer() == tokens["sess_b"]  # not the cached sess_a JWT
@@ -343,7 +397,7 @@ def test_session_jwt_remints_on_session_change(tmp_path, monkeypatch):
 
 def test_resolve_explicit_api_key_wins(monkeypatch):
     """An explicit api_key beats both a token_provider and the env seam."""
-    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "sk_env")
     provider = resolve_token_provider("sk_explicit", token_provider=lambda: "sk_tp")
     assert provider() == "sk_explicit"
 
@@ -355,7 +409,7 @@ def test_resolve_token_provider_used_when_no_api_key():
 
 def test_resolve_falls_back_to_platform_bearer(monkeypatch):
     """No api_key and no token_provider → the platform_bearer seam."""
-    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "sk_env")
     provider = resolve_token_provider(None)
     assert provider is platform_bearer
     assert provider() == "sk_env"
@@ -364,7 +418,7 @@ def test_resolve_falls_back_to_platform_bearer(monkeypatch):
 def test_resolve_empty_api_key_falls_back_to_seam(monkeypatch):
     """An empty key (config layers default an unset key to "") is treated as
     not-provided → the seam, not a fixed empty bearer."""
-    monkeypatch.setenv(_API_KEY_ENV, "sk_env")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "sk_env")
     provider = resolve_token_provider("")
     assert provider is platform_bearer
     assert provider() == "sk_env"
@@ -373,9 +427,9 @@ def test_resolve_empty_api_key_falls_back_to_seam(monkeypatch):
 def test_resolve_seam_is_per_call(monkeypatch):
     """The fallback provider re-reads the env each call (rotation is seen)."""
     provider = resolve_token_provider(None)
-    monkeypatch.setenv(_API_KEY_ENV, "sk_1")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "sk_1")
     assert provider() == "sk_1"
-    monkeypatch.setenv(_API_KEY_ENV, "sk_2")
+    monkeypatch.setenv(_CASTFORM_API_KEY_ENV, "sk_2")
     assert provider() == "sk_2"
 
 

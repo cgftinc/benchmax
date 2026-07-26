@@ -38,33 +38,43 @@ class TestAvailableModes:
         assert ts.available_modes == ["lexical"]
 
     def test_all_modes_with_embed_fn(self):
+        async def embed(texts):
+            return [[0.1]] * len(texts)
+
         ts = TpufSearch(
             namespace="t",
-            embed_fn=lambda texts: [[0.1]] * len(texts),
+            embed_fn=embed,
         )
         assert sorted(ts.available_modes) == ["hybrid", "lexical", "vector"]
 
 
 class TestModeValidation:
-    def test_vector_without_embed_fn_raises(self):
+    @pytest.mark.asyncio
+    async def test_vector_without_embed_fn_raises(self):
         ts = TpufSearch(namespace="t")
         with pytest.raises(ValueError, match="vector"):
-            ts.search("query", mode="vector")
+            await ts.search("query", mode="vector")
 
-    def test_hybrid_without_embed_fn_raises(self):
+    @pytest.mark.asyncio
+    async def test_hybrid_without_embed_fn_raises(self):
         ts = TpufSearch(namespace="t")
         with pytest.raises(ValueError, match="hybrid"):
-            ts.search("query", mode="hybrid")
+            await ts.search("query", mode="hybrid")
 
 
 class TestEmbed:
-    def test_returns_none_without_embed_fn(self):
+    @pytest.mark.asyncio
+    async def test_returns_none_without_embed_fn(self):
         ts = TpufSearch(namespace="t")
-        assert ts.embed("hello") is None
+        assert await ts.embed("hello") is None
 
-    def test_returns_vector_with_embed_fn(self):
+    @pytest.mark.asyncio
+    async def test_returns_vector_with_embed_fn(self):
+        async def embed(texts):
+            return [[1.0, 2.0]] * len(texts)
+
         ts = TpufSearch(
             namespace="t",
-            embed_fn=lambda texts: [[1.0, 2.0]] * len(texts),
+            embed_fn=embed,
         )
-        assert ts.embed("hello") == [1.0, 2.0]
+        assert await ts.embed("hello") == [1.0, 2.0]

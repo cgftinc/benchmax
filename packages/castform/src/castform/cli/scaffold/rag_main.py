@@ -177,8 +177,7 @@ and cite supporting documents as [Source: <source_id>].
             or not 1 <= limit <= 20
         ):
             raise ValueError("search 'limit' must be an integer from 1 to 20")
-        results = await asyncio.to_thread(
-            self._search.search,
+        results = await self._search.search(
             query=query,
             mode="lexical",
             top_k=limit,

@@ -10,7 +10,7 @@ from typing import Any
 from castform.platform.credentials import (
     TokenProvider,
     as_token_provider,
-    platform_bearer,
+    runtime_platform_bearer,
 )
 
 from .client import CorpusClient
@@ -22,16 +22,17 @@ class PostgresSearch:
     Supports lexical (BM25) search only.
 
     The bearer token is resolved per request via ``token_provider`` (default:
-    the platform credential resolver — rotating act-as token in training, or
-    ``PLATFORM_API_KEY`` in playground / self-serve). No credential is stored,
-    so nothing is frozen into the pickled env.
+    the platform credential resolver — rotating act-as token in training, a
+    provisioned ``CASTFORM_API_KEY``, or a local login session). No credential
+    is stored, so nothing is frozen into the pickled env.
 
     Args:
         corpus_name: Name of the corpus.
         base_url: Corpora API base URL.
         corpus_id: Optional corpus ID (skips name lookup).
         token_provider: Optional override — a callable resolving the bearer per
-            call, or a literal key (string sugar). Defaults to ``platform_bearer``.
+            call, or a literal key (string sugar). Defaults to
+            ``runtime_platform_bearer``, which excludes bootstrap auth.
     """
 
     def __init__(
@@ -45,7 +46,10 @@ class PostgresSearch:
         self._corpus_name = corpus_name
         self._base_url = base_url
         self._corpus_id = corpus_id
-        self._token_provider = as_token_provider(token_provider, platform_bearer)
+        self._token_provider = as_token_provider(
+            token_provider,
+            runtime_platform_bearer,
+        )
         self._client: CorpusClient | None = None
 
     def _get_client(self) -> CorpusClient:
@@ -56,14 +60,14 @@ class PostgresSearch:
             )
         return self._client
 
-    def _get_corpus_id(self) -> str:
+    async def _get_corpus_id(self) -> str:
         if self._corpus_id is None:
             client = self._get_client()
-            corpus = client.get_corpus_by_name(self._corpus_name)
+            corpus = await client.get_corpus_by_name(self._corpus_name)
             self._corpus_id = corpus.id
         return self._corpus_id
 
-    def search(
+    async def search(
         self,
         query: str,
         mode: str = "auto",
@@ -76,8 +80,12 @@ class PostgresSearch:
                 f"The Corpora API uses BM25 search only."
             )
         client = self._get_client()
-        corpus_id = self._get_corpus_id()
-        result = client.search(corpus_id=corpus_id, query=query, limit=top_k)
+        corpus_id = await self._get_corpus_id()
+        result = await client.search(
+            corpus_id=corpus_id,
+            query=query,
+            limit=top_k,
+        )
         return [
             {
                 "content": chunk.content,
@@ -88,7 +96,7 @@ class PostgresSearch:
             for chunk in result.results
         ]
 
-    def embed(self, text: str) -> list[float] | None:
+    async def embed(self, text: str) -> list[float] | None:
         """Corpora API does not support embeddings."""
         return None
 

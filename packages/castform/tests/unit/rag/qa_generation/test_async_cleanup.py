@@ -98,7 +98,11 @@ async def test_get_async_client_rebuilds_after_close():
     gen = DirectLLMGenerator(
         client=None,
         linker=None,
-        cfg=types.SimpleNamespace(api_key="x", base_url="http://localhost"),
+        cfg=types.SimpleNamespace(
+            api_key="x",
+            base_url="http://localhost",
+            model="test-model",
+        ),
     )
     c1 = gen._get_async_client()
     assert gen._get_async_client() is c1  # cached within the same loop

@@ -4,9 +4,14 @@ from collections.abc import Mapping
 import httpx
 import pytest
 
-from benchmax.auth import InjectedAuth, ModelRequestContext, StaticBearerAuth
+from benchmax.auth import (
+    InjectedAuth,
+    ModelRequestContext,
+    RequestModelAuth,
+    StaticBearerAuth,
+)
 from benchmax.rewards import Judge, JudgeError
-from benchmax.rewards.judge import _RequestModelAuth, _parse_json_object
+from benchmax.rewards.judge import _parse_json_object
 
 
 @pytest.mark.parametrize(
@@ -69,7 +74,7 @@ async def test_http_transport_resolves_model_auth_for_every_request():
         return httpx.Response(200, json={"ok": True})
 
     rotating = RotatingAuth()
-    transport_auth = _RequestModelAuth(
+    transport_auth = RequestModelAuth(
         rotating,  # type: ignore[arg-type]
         ModelRequestContext(
             base_url="https://judge.test/v1",

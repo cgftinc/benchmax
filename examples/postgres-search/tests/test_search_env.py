@@ -28,7 +28,7 @@ class StubSearch:
         self._modes = modes or ["vector"]
         self._results = results if results is not None else ["result one", "result two"]
 
-    def search(self, query, mode="auto", top_k=10):
+    async def search(self, query, mode="auto", top_k=10):
         return [
             {
                 "content": r,
@@ -39,7 +39,7 @@ class StubSearch:
             for i, r in enumerate(self._results[:top_k])
         ]
 
-    def embed(self, text):
+    async def embed(self, text):
         return [0.1, 0.2, 0.3]
 
     @property
@@ -216,7 +216,7 @@ class TestSearchTool:
         calls = []
 
         class TrackingSearch(StubSearch):
-            def search(self, query, mode="auto", top_k=10):
+            async def search(self, query, mode="auto", top_k=10):
                 calls.append({"query": query, "mode": mode, "top_k": top_k})
                 return [
                     {"content": "result", "source": "", "metadata": {}, "score": 1.0}

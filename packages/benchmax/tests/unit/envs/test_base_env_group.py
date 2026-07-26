@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -96,6 +97,30 @@ class _ToolMathEnv(_MathEnv):
         return {"value": tool_args["left"] * tool_args["right"]}
 
 
+class _PartialToolMathEnv(_ToolMathEnv):
+    async def compute_reward(
+        self,
+        rollout: BaseRollout,
+    ) -> RewardMap:
+        self.reward_calls.append(
+            (
+                rollout.rollout_id,
+                rollout.messages,
+                rollout.example_args,
+                rollout.termination_reason,
+            )
+        )
+        final_message = rollout.messages[-1]
+        tool_result = json.loads(str(final_message.get("content", "")))
+        return {
+            "correctness": float(
+                rollout.termination_reason == "context_exceeded"
+                and final_message.get("role") == "tool"
+                and str(tool_result["value"]) == str(rollout.example_args["answer"])
+            )
+        }
+
+
 def _requests(
     server: LocalModelServer,
     example: Example[JsonRow],
@@ -174,7 +199,7 @@ async def test_output_exceeded_is_zeroed_without_scoring() -> None:
     assert env.reward_calls == []
 
 
-async def test_gateway_context_exhaustion_ends_with_zero_rewards() -> None:
+async def test_gateway_context_exhaustion_scores_the_partial_transcript() -> None:
     example = Example(
         id="math-context",
         payload={
@@ -182,7 +207,7 @@ async def test_gateway_context_exhaustion_ends_with_zero_rewards() -> None:
             "answer": "42",
         },
     )
-    env = _ToolMathEnv(max_tool_calls=1)
+    env = _PartialToolMathEnv(max_tool_calls=1)
 
     def respond(session_id, call_index, body):
         if call_index == 0:
@@ -217,10 +242,17 @@ async def test_gateway_context_exhaustion_ends_with_zero_rewards() -> None:
 
     outcome = outcomes["rollout-1"]
     assert outcome.termination_reason == "context_exceeded"
-    assert outcome.rewards == {"correctness": 0.0}
+    assert outcome.rewards == {"correctness": 1.0}
     assert len(server.requests) == 2
     assert env.tool_calls == [("rollout-1", "multiply", {"left": 6, "right": 7})]
-    assert env.reward_calls == []
+    assert len(env.reward_calls) == 1
+    assert env.reward_calls[0][0] == "rollout-1"
+    assert env.reward_calls[0][2:] == ({"answer": "42"}, "context_exceeded")
+    assert env.reward_calls[0][1][-1] == {
+        "role": "tool",
+        "tool_call_id": "call-1",
+        "content": '{"value":42}',
+    }
 
 
 async def test_unrelated_bad_request_is_a_logged_model_failure(

@@ -6,7 +6,6 @@ import asyncio
 import json
 import math
 import re
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,7 +16,7 @@ from openai import (
     PermissionDeniedError,
 )
 
-from benchmax.auth import ModelAuth, ModelRequestContext
+from benchmax.auth import ModelAuth, ModelRequestContext, RequestModelAuth
 from benchmax.envs.shared_types import RolloutFailure
 
 _AUTH_ERRORS = (AuthenticationError, PermissionDeniedError)
@@ -29,23 +28,6 @@ class JudgeError(RolloutFailure):
 
     def __init__(self, message: str) -> None:
         super().__init__("judge_error", message)
-
-
-class _RequestModelAuth(httpx.Auth):
-    """Resolve BenchMax model auth for each physical HTTP request."""
-
-    def __init__(self, auth: ModelAuth, context: ModelRequestContext) -> None:
-        self._auth = auth
-        self._context = context
-
-    async def async_auth_flow(
-        self,
-        request: httpx.Request,
-    ) -> AsyncGenerator[httpx.Request, None]:
-        headers = await self._auth.headers_for_request(self._context)
-        for name, value in headers.items():
-            request.headers[name] = value
-        yield request
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +105,7 @@ class Judge:
                 rollout_id=request_id,
             )
             http_client = httpx.AsyncClient(
-                auth=_RequestModelAuth(self.auth, context),
+                auth=RequestModelAuth(self.auth, context),
             )
             client = AsyncOpenAI(
                 base_url=self.base_url,

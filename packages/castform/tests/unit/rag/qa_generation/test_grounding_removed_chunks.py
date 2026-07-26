@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from castform.rag.qa_generation.filters.grounding_llm import GroundingLLMFilter
 from castform.rag.qa_generation.generated_qa import GeneratedQA
 
@@ -39,24 +41,22 @@ def _make_filter() -> GroundingLLMFilter:
     return GroundingLLMFilter(chunk_source=MagicMock(), cfg=cfg)
 
 
-def test_keyless_filter_resolves_judge_key_via_seam(monkeypatch):
-    """An empty judge_api_key resolves the platform bearer via the credential
-    seam (PLATFORM_API_KEY here) instead of building the judge client with an
-    empty key that would 401."""
+def test_external_judge_requires_an_explicit_model_key(monkeypatch):
+    """Generic platform credentials are never reused for an external judge."""
     from unittest.mock import MagicMock
 
     from castform.rag.qa_generation.pipeline_config import GroundingLLMFilterConfig
 
-    monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
-    monkeypatch.setenv("PLATFORM_API_KEY", "sk_seam")
+    monkeypatch.setenv("CASTFORM_AUTH_TOKEN", "forbidden-auth-token")
+    monkeypatch.setenv("CASTFORM_API_KEY", "sk_seam")
     cfg = GroundingLLMFilterConfig(
         enabled=True,
-        judge_api_key="",  # keyless → seam
+        judge_api_key="",
         judge_base_url="http://test",
         batch_enabled=False,
     )
-    filt = GroundingLLMFilter(chunk_source=MagicMock(), cfg=cfg)
-    assert filt.judge_client.api_key == "sk_seam"
+    with pytest.raises(ValueError, match="requires an explicit API key"):
+        GroundingLLMFilter(chunk_source=MagicMock(), cfg=cfg)
 
 
 class TestGroundingRemovedChunksTracking:

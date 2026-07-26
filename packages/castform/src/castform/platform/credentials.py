@@ -1,25 +1,23 @@
-"""Castform platform credential resolution for RL environments.
+"""Castform control-plane and local-session credential resolution.
 
-The generated env authenticates corpus search (platform-service BFF) and the
-LLM judge (llm-proxy) with a single bearer token. Where that token comes from
-depends on *who* runs the env, so it is resolved **per call** — never captured
-at construction. A captured token expires mid-run and can't be rotated, which
-is exactly what broke training when the credential was baked into the bundle.
+``platform_bearer`` authenticates Castform platform operations. It is
+deliberately not a model credential resolver: judges, embeddings, and tool LLM
+calls use BenchMax ``ModelAuth`` exclusively.
 
 Precedence (per call):
 
-1. ``ACT_AS_TOKEN_PATH`` — a rotating act-as JWT the trainer's ``token_refresher``
-   writes and re-writes before expiry (multi-audience: platform-service +
-   llm-proxy-service). Used during training. Re-read each call so rotation is
-   picked up. Mirrors ``trainer/auth/ray_auth.py``'s per-request read.
+1. ``ACT_AS_TOKEN_PATH`` — a rotating act-as JWT the trainer's
+   ``token_refresher`` writes and re-writes before expiry. Re-read each call so
+   rotation is picked up.
 2. ``CASTFORM_AUTH_TOKEN`` — an explicitly forwarded Castform bearer.
-3. ``PLATFORM_API_KEY`` — the legacy API-key override used by hosted workers.
+3. ``CASTFORM_API_KEY`` — an explicitly provisioned Castform API key.
 4. ``~/.castform/credentials.json`` — the selected profile's device-auth session cached by
    ``castform login`` (the human self-serve path). Lowest precedence so an
    explicit key/token always wins. Re-read each call.
 
-Raises if none is available — fail loudly rather than make an
-unauthenticated call.
+``castform_model_bearer`` is a separate, narrow local-validation seam. It only
+exchanges the cached ``castform login`` session for a short-lived JWT; it never
+reads ``CASTFORM_AUTH_TOKEN``, ``CASTFORM_API_KEY``, or the trainer token file.
 """
 
 from __future__ import annotations
@@ -39,7 +37,7 @@ from castform import profile_config
 # Matches the trainer's token_refresher / ray_auth default.
 _TOKEN_PATH_ENV = "ACT_AS_TOKEN_PATH"
 _AUTH_TOKEN_ENV = "CASTFORM_AUTH_TOKEN"
-_API_KEY_ENV = "PLATFORM_API_KEY"
+_CASTFORM_API_KEY_ENV = "CASTFORM_API_KEY"
 
 # Cached device-auth session written by `castform login` (Phase 4). Lowest
 # precedence in platform_bearer. Path overridable for tests.
@@ -47,41 +45,6 @@ _CRED_PATH_ENV = "CASTFORM_CREDENTIALS_PATH"
 _DEFAULT_CRED_PATH = Path.home() / ".castform" / "credentials.json"
 
 TokenProvider = Callable[[], str]
-
-
-def resolve_judge_key(api_key: str, base_url: str | None = None) -> str | None:
-    """Resolve the bearer for an LLM-judge / LLM-clustering call.
-
-    Explicit ``api_key`` wins. Otherwise fall back to the Castform platform
-    credential seam (``ACT_AS_TOKEN_PATH`` in training, ``PLATFORM_API_KEY`` in
-    playground / self-serve) — the same surface the search clients resolve
-    through ``platform_bearer``.
-
-    Failure modes are deliberately *loud*:
-
-    - No platform credential **and** ``OPENAI_API_KEY`` set → return ``None`` so
-      the OpenAI SDK picks it up (legitimate direct-customer use).
-    - No platform credential and no ``OPENAI_API_KEY`` → re-raise
-      ``platform_bearer``'s ``RuntimeError``.
-    - Platform credential resolved but ``base_url`` unset → raise. The platform
-      token is only valid against our llm-proxy; handing it to api.openai.com
-      would leak it off-platform.
-    """
-    if api_key:
-        return api_key
-    try:
-        token = platform_bearer()
-    except RuntimeError:
-        if os.environ.get("OPENAI_API_KEY"):
-            return None
-        raise
-    if not base_url:
-        raise RuntimeError(
-            "Refusing to send the Castform platform credential to the OpenAI "
-            "SDK default endpoint: judge base_url is unset. Set base_url to the "
-            "llm-proxy, or pass an explicit api_key for direct OpenAI use."
-        )
-    return token
 
 
 def platform_bearer(profile: str | None = None) -> str:
@@ -99,7 +62,7 @@ def platform_bearer(profile: str | None = None) -> str:
         if token:
             return token
 
-    for env_var in (_AUTH_TOKEN_ENV, _API_KEY_ENV):
+    for env_var in (_AUTH_TOKEN_ENV, _CASTFORM_API_KEY_ENV):
         if env_token := os.environ.get(env_var):
             return env_token
 
@@ -111,6 +74,58 @@ def platform_bearer(profile: str | None = None) -> str:
         f"No Castform platform credential available: run `castform login`, set "
         f"{_AUTH_TOKEN_ENV}, or (in training) ensure {_TOKEN_PATH_ENV} points at the "
         f"token_refresher output ({_TOKEN_PATH_ENV}={token_path!r})."
+    )
+
+
+def runtime_platform_bearer(profile: str | None = None) -> str:
+    """Resolve a runtime platform/data-plane bearer without bootstrap auth.
+
+    Training reads its rotating act-as token file. A customer may provide a
+    provisioned ``CASTFORM_API_KEY`` explicitly in the runtime environment.
+    Otherwise local execution uses the login exchange.
+    ``CASTFORM_AUTH_TOKEN`` is intentionally excluded: it is bootstrap-only.
+    """
+
+    token_path = os.environ.get(_TOKEN_PATH_ENV)
+    if token_path:
+        try:
+            token = Path(token_path).read_text(encoding="utf-8").strip()
+        except OSError:
+            token = ""
+        if token:
+            return token
+
+    if api_key := os.environ.get(_CASTFORM_API_KEY_ENV):
+        return api_key
+
+    session_jwt = _session_jwt(profile)
+    if session_jwt:
+        return session_jwt
+
+    raise RuntimeError(
+        "No Castform runtime credential available: run `castform login`, pass "
+        "an explicit API key, or ensure ACT_AS_TOKEN_PATH points at the "
+        "trainer token_refresher output."
+    )
+
+
+def castform_model_bearer(profile: str | None = None) -> str:
+    """Return a fresh login-derived bearer for local Castform model calls.
+
+    This deliberately does not consult ``CASTFORM_AUTH_TOKEN``,
+    ``CASTFORM_API_KEY``, or ``ACT_AS_TOKEN_PATH``. Hosted runtimes provide
+    model credentials through ``InjectedAuth``; explicit customer keys use
+    ``StaticBearerAuth``. A local login is exchanged through auth-service for a
+    short-lived JWT and refreshed before expiry.
+    """
+
+    token = _session_jwt(profile)
+    if token:
+        return token
+    name = profile_config.selected_profile_name(profile)
+    raise RuntimeError(
+        f"No local Castform model credential is available for profile {name!r}. "
+        "Run `castform login`, or pass an explicit StaticBearerAuth."
     )
 
 
@@ -407,7 +422,7 @@ def resolve_token_provider(
        commonly default an unset key to ``""``), so they fall through to:
     2. explicit ``token_provider`` — a custom per-call provider (tests / BYO).
     3. :func:`platform_bearer` — the credential seam (``ACT_AS_TOKEN_PATH`` →
-       ``PLATFORM_API_KEY`` → cached ``~/.castform`` session).
+       ``CASTFORM_API_KEY`` → cached ``~/.castform`` session).
 
     The result is called **per request** by the client, so a rotating/expiring
     token is picked up — never frozen at construction.
@@ -474,10 +489,10 @@ def as_token_provider(
             "A literal token string was passed where a per-call provider is "
             "expected. It is captured in a closure and will be baked into the "
             "bundle if the env is pickled — a secret written to storage at rest. "
-            "For a first-party key prefer the default resolver (platform_bearer) "
-            "or an env-var provider (env_token). For a third-party provider key "
-            "the codegen baking path passes a callable, not a literal string — "
-            "if you are seeing this from generated code, that is a bug.",
+            "Prefer the client's default per-call resolver or an env-var provider "
+            "(env_token). For a third-party provider key the codegen baking path "
+            "passes a callable, not a literal string — if you are seeing this "
+            "from generated code, that is a bug.",
             stacklevel=2,
         )
         return lambda: value

@@ -594,7 +594,7 @@ class MetadataChunkLinker:
         search_mode_override: str | None = None,
     ) -> list[dict[str, Any]]:
         """Async twin of ``_search``: same mode selection + oversampling, async
-        corpus I/O via ``asearch_related``, bounded by the run's search semaphore
+        corpus I/O via ``search_related``, bounded by the run's search semaphore
         so concurrent batches don't overrun the corpus backend."""
         if search_mode_override and search_mode_override in self.profile.search_modes:
             mode = search_mode_override
@@ -605,7 +605,7 @@ class MetadataChunkLinker:
         oversample_k = self.config.max_candidates * 3
         async with context.search_semaphore():
             try:
-                return await self.source.asearch_related(
+                return await self.source.search_related(
                     primary_chunk,
                     queries,
                     top_k=oversample_k,
@@ -613,10 +613,10 @@ class MetadataChunkLinker:
                 )
             except Exception:
                 logger.debug(
-                    "asearch_related failed with mode=%s, retrying without mode",
+                    "search_related failed with mode=%s, retrying without mode",
                     search_mode,
                 )
-                return await self.source.asearch_related(
+                return await self.source.search_related(
                     primary_chunk,
                     queries,
                     top_k=oversample_k,

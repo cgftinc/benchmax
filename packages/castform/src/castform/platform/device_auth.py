@@ -2,7 +2,7 @@
 
 Used by ``castform login``: request a device+user code, then poll the token
 endpoint until the user approves in a browser. Interactive only — headless/CI
-never reach this (they use ``PLATFORM_API_KEY`` / ``ACT_AS_TOKEN_PATH``).
+never reach this (they use ``CASTFORM_API_KEY`` / ``ACT_AS_TOKEN_PATH``).
 """
 
 from __future__ import annotations

@@ -77,7 +77,10 @@ from castform.rag.qa_generation.scoring import (
 from castform.rag.qa_generation.transformers import BaseQuestionTransformer
 from castform.rag.qa_generation.transformers.dedup import IncrementalDeduplicator
 from castform.platform.client import RolloutClient
-from castform.platform.credentials import resolve_judge_key
+from castform.model_auth import (
+    create_openai_client,
+    model_auth_for_endpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +98,24 @@ _SUPPORTED_FILTER_STAGES = (
 )
 
 
-def _build_openai_client(*, api_key: str, base_url: str) -> OpenAI:
-    # An empty key resolves the platform bearer per the credential seam (cached
-    # session / ACT_AS_TOKEN_PATH / PLATFORM_API_KEY); an explicit key wins.
-    return OpenAI(api_key=resolve_judge_key(api_key, base_url), base_url=base_url)
+def _build_openai_client(
+    *,
+    model: str,
+    api_key: str,
+    base_url: str,
+    purpose: str,
+) -> OpenAI:
+    auth = model_auth_for_endpoint(
+        api_key=api_key,
+        base_url=base_url,
+        purpose=purpose,
+    )
+    return create_openai_client(
+        model=model,
+        base_url=base_url,
+        auth=auth,
+        request_id=purpose,
+    )
 
 
 def _is_retryable_openai_error(exc: Exception) -> bool:
@@ -158,27 +175,35 @@ def _chat_completion_with_retry(
     raise RuntimeError("Completion retry loop exited unexpectedly.")
 
 
-def _load_source(cfg: PipelineConfig) -> PostgresChunkSource:
+async def _load_source(cfg: PipelineConfig) -> PostgresChunkSource:
     source = PostgresChunkSource(
         api_key=cfg.platform.api_key,
         corpus_name=cfg.corpus.corpus_name,
         base_url=cfg.platform.base_url,
     )
-    if cfg.corpus.docs_path:
-        source.populate_from_folder(
-            cfg.corpus.docs_path, show_summary=cfg.corpus.show_summary
+    try:
+        if cfg.corpus.docs_path:
+            await source.populate_from_folder(
+                cfg.corpus.docs_path,
+                show_summary=cfg.corpus.show_summary,
+            )
+            return source
+        if cfg.corpus.corpus_id:
+            await source.populate_from_existing_corpus(
+                cfg.corpus.corpus_id,
+                show_summary=cfg.corpus.show_summary,
+            )
+            return source
+        await source.populate_from_existing_corpus_name(
+            cfg.corpus.corpus_name,
+            show_summary=cfg.corpus.show_summary,
         )
         return source
-    if cfg.corpus.corpus_id:
-        source.populate_from_existing_corpus(
-            cfg.corpus.corpus_id, show_summary=cfg.corpus.show_summary
-        )
-        return source
-    source.populate_from_existing_corpus_name(
-        cfg.corpus.corpus_name,
-        show_summary=cfg.corpus.show_summary,
-    )
-    return source
+    finally:
+        # ``_prepare_context`` bridges this coroutine from synchronous pipeline
+        # setup. Close the transport bound to that temporary event loop; later
+        # retrieval lazily opens a client on the work queue's event loop.
+        await source.close()
 
 
 def _build_rollout_client(cfg: PipelineConfig) -> RolloutClient:
@@ -262,8 +287,10 @@ def _build_generator(
 ) -> QuestionGenerator:
     generation_cfg = cfg.generation.llm_direct
     generation_client = _build_openai_client(
+        model=generation_cfg.model,
         api_key=generation_cfg.api_key,
         base_url=generation_cfg.base_url,
+        purpose="qa-generation",
     )
     return DirectLLMGenerator(
         client=generation_client,
@@ -1210,8 +1237,10 @@ def _build_corpus_profile(
     try:
         user_prompt = render_template(profile_cfg.user_template, variables)
         client = _build_openai_client(
+            model=profile_cfg.model,
             api_key=profile_cfg.api_key,
             base_url=profile_cfg.base_url,
+            purpose="corpus-profile",
         )
         completion = _chat_completion_with_retry(
             client=client,
@@ -1306,6 +1335,8 @@ class Pipeline:
         cfg.resolve_api_keys()
 
         source = self.source_factory(cfg)
+        if inspect.isawaitable(source):
+            source = self._run_coro(source)
         rng = random.Random(cfg.random_seed)
         context = PipelineContext(config=cfg, source=source, rng=rng)
 
@@ -1462,16 +1493,13 @@ class Pipeline:
             _print_progress(
                 "[3.5/6] Building wiki from entity clusters...", verbose=cfg.verbose
             )
-            from openai import OpenAI as _OpenAI  # noqa: PLC0415
-
             from castform.rag.qa_generation.wiki_builder import WikiBuilder  # noqa: PLC0415
 
-            wiki_client = _OpenAI(
-                # Empty key → credential seam (this block only runs when enabled).
-                api_key=resolve_judge_key(
-                    cfg.wiki_preprocessing.api_key, cfg.wiki_preprocessing.base_url
-                ),
-                base_url=cfg.wiki_preprocessing.base_url or None,
+            wiki_client = _build_openai_client(
+                model=cfg.wiki_preprocessing.model,
+                api_key=cfg.wiki_preprocessing.api_key,
+                base_url=cfg.wiki_preprocessing.base_url,
+                purpose="wiki-preprocessing",
             )
             wiki_builder = WikiBuilder(cfg.wiki_preprocessing, wiki_client)
 
@@ -1796,11 +1824,13 @@ class Pipeline:
             )
         finally:
             for comp in (generator, transformer, guard_filter, *filter_chain, source):
-                aclose = getattr(comp, "aclose", None)
-                if aclose is None:
+                close = getattr(comp, "aclose", None) or getattr(comp, "close", None)
+                if close is None:
                     continue
                 try:
-                    await aclose()
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
                 except Exception:  # noqa: BLE001 — best-effort cleanup
                     logger.debug(
                         "Error closing async client during cleanup", exc_info=True

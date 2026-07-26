@@ -6,7 +6,8 @@ Implements :class:`SearchClient` using the shared
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from castform.platform.credentials import TokenProvider, as_token_provider, env_token
@@ -39,7 +40,7 @@ class ChromaSearch:
         database: Chroma Cloud database name.
         host: Self-hosted server hostname.
         port: Self-hosted server port (default 8000).
-        embed_fn: Custom embedding function. When ``None``, Chroma's
+        embed_fn: Async custom embedding function. When ``None``, Chroma's
             built-in embeddings are used.
         enable_bm25: Enable BM25 for lexical/hybrid modes.
         content_attr: Metadata fields to treat as content.
@@ -55,7 +56,7 @@ class ChromaSearch:
         database: str | None = None,
         host: str | None = None,
         port: int = 8000,
-        embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
+        embed_fn: Callable[[list[str]], Awaitable[list[list[float]]]] | None = None,
         enable_bm25: bool = True,
         content_attr: list[str] | None = None,
         token_provider: str | TokenProvider | None = None,
@@ -102,13 +103,15 @@ class ChromaSearch:
                 database=self._database,
                 host=self._host,
                 port=self._port,
-                embed_fn=self._embed_fn,
+                # Search computes custom embeddings itself so Chroma never
+                # invokes an async embedder through its synchronous callback.
+                embed_fn=None,
                 enable_bm25=self._enable_bm25,
                 content_attr=self._content_attr,
             )
         return self._client
 
-    def search(
+    async def search(
         self,
         query: str,
         mode: str = "auto",
@@ -118,7 +121,7 @@ class ChromaSearch:
         client = self._get_client()
         # Initialize the collection first so capabilities reflect the real index
         # (BM25 downgrade) and the embedder config is readable below.
-        client.get_collection()
+        await asyncio.to_thread(client.get_collection)
         modes = client.modes
         has_lexical = "lexical" in modes
 
@@ -126,7 +129,8 @@ class ChromaSearch:
         # When a dense embed isn't safe — no embed_fn and no Chroma-hosted
         # server-side embedding function — use the BM25 lexical index if the
         # collection has one, otherwise refuse rather than fetch all-MiniLM.
-        if not client.dense_embed_is_safe():
+        dense_embed_is_safe = self._embed_fn is not None or client.dense_embed_is_safe()
+        if not dense_embed_is_safe:
             if not has_lexical:
                 raise LocalEmbeddingDownloadDisallowedError(
                     "chroma", self._collection_name
@@ -146,16 +150,18 @@ class ChromaSearch:
             )
 
         if client.search_api and mode in ("lexical", "hybrid"):
-            vec = client.embed(query) if mode == "hybrid" else None
-            rows = client.search_api_raw(
+            vec = await self.embed(query) if mode == "hybrid" else None
+            rows = await asyncio.to_thread(
+                client.search_api_raw,
                 text_query=query,
                 vector_query=vec,
                 mode=mode,
                 top_k=top_k,
             )
         else:
-            vec = client.embed(query)
-            rows = client.query_raw(
+            vec = await self.embed(query)
+            rows = await asyncio.to_thread(
+                client.query_raw,
                 text_query=query,
                 vector_query=vec,
                 top_k=top_k,
@@ -173,9 +179,14 @@ class ChromaSearch:
             for r in rows
         ]
 
-    def embed(self, text: str) -> list[float] | None:
+    async def embed(self, text: str) -> list[float] | None:
         """Return embedding vector, or None for auto-embed."""
-        return self._get_client().embed(text)
+        if self._embed_fn is None:
+            return None
+        client = self._get_client()
+        vec = (await self._embed_fn([text]))[0]
+        client._validate_embed_dim(vec)
+        return vec
 
     @property
     def available_modes(self) -> list[str]:

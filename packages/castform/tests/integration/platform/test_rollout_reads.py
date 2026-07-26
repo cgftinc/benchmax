@@ -7,7 +7,7 @@ per-component ``rewards``, ``avg``) — against a real completed run. Mocks can'
 validate the wire contract; this does (CLAUDE.md: fetch/query/pagination changes
 must have a live integration test).
 
-Requires ``PLATFORM_API_KEY`` (the seam) AND ``CASTFORM_TEST_RUN_ID`` (a completed
+Requires ``CASTFORM_API_KEY`` (the seam) AND ``CASTFORM_TEST_RUN_ID`` (a completed
 run with stored eval rollouts). Targets ``castform.dev`` unless
 ``CASTFORM_BASE_DOMAIN`` is already set. Skipped in CI (no creds).
 
@@ -22,13 +22,13 @@ from castform.platform.client import TrainerClient
 
 pytestmark = pytest.mark.integration
 
-_API_KEY = os.environ.get("PLATFORM_API_KEY", "")
+_API_KEY = os.environ.get("CASTFORM_API_KEY", "")
 _RUN_ID = os.environ.get("CASTFORM_TEST_RUN_ID", "")
 
 
 @pytest.mark.skipif(
     not (_API_KEY and _RUN_ID),
-    reason="PLATFORM_API_KEY + CASTFORM_TEST_RUN_ID required for the live rollout reads",
+    reason="CASTFORM_API_KEY + CASTFORM_TEST_RUN_ID required for the live rollout reads",
 )
 def test_rollout_read_chain_live(monkeypatch):
     """summary → heatmap → details → mode-average against a real run.

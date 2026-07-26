@@ -6,7 +6,8 @@ Implements :class:`SearchClient` using the shared
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from castform.platform.credentials import TokenProvider, as_token_provider, env_token
@@ -31,7 +32,7 @@ class PineconeSearch:
         index_name: Name of the Pinecone index.
         index_host: Optional host URL (bypasses index name lookup).
         namespace: Pinecone namespace within the index (default ``""``).
-        embed_fn: Custom embedding function. When ``None``, Pinecone's
+        embed_fn: Async custom embedding function. When ``None``, Pinecone's
             hosted Inference API is used.
         embed_model: Pinecone hosted embedding model name. Ignored
             when ``embed_fn`` is provided.
@@ -49,7 +50,7 @@ class PineconeSearch:
         *,
         index_host: str | None = None,
         namespace: str = "",
-        embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
+        embed_fn: Callable[[list[str]], Awaitable[list[list[float]]]] | None = None,
         embed_model: str = "multilingual-e5-large",
         field_mapping: dict[str, str] | None = None,
         content_field: str | None = None,
@@ -76,14 +77,14 @@ class PineconeSearch:
                 index_name=self._index_name,
                 index_host=self._index_host,
                 namespace=self._namespace,
-                embed_fn=self._embed_fn,
+                embed_fn=None,
                 embed_model=self._embed_model,
                 field_mapping=self._field_mapping,
                 content_field=self._content_field,
             )
         return self._client
 
-    def search(
+    async def search(
         self,
         query: str,
         mode: str = "auto",
@@ -96,13 +97,17 @@ class PineconeSearch:
                 f"Pinecone does not support lexical/hybrid search."
             )
         client = self._get_client()
-        vec = client.embed_fn([query])[0]
-        result = client.query(vector=vec, top_k=top_k)
+        vec = await self.embed(query)
+        assert vec is not None
+        result = await asyncio.to_thread(client.query, vector=vec, top_k=top_k)
         return [client.match_to_raw(m) for m in (result.matches or [])]
 
-    def embed(self, text: str) -> list[float] | None:
+    async def embed(self, text: str) -> list[float] | None:
         """Return embedding vector for *text*."""
-        return self._get_client().embed_fn([text])[0]
+        if self._embed_fn is not None:
+            return (await self._embed_fn([text]))[0]
+        client = self._get_client()
+        return (await asyncio.to_thread(client.embed_fn, [text]))[0]
 
     @property
     def available_modes(self) -> list[str]:

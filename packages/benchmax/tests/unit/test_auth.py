@@ -5,9 +5,11 @@ import pytest
 from benchmax.auth import (
     InjectedAuth,
     ModelRequestContext,
+    RequestModelAuth,
     StaticBearerAuth,
     bind_model_auth,
 )
+import httpx
 
 
 _CONTEXT = ModelRequestContext(
@@ -46,3 +48,30 @@ async def test_injected_auth_resolves_provider_on_every_call() -> None:
 async def test_static_bearer_auth_is_explicit() -> None:
     headers = await StaticBearerAuth("secret").headers_for_request(_CONTEXT)
     assert headers == {"Authorization": "Bearer secret"}
+
+
+def test_static_bearer_auth_repr_redacts_token() -> None:
+    assert "secret" not in repr(StaticBearerAuth("secret"))
+
+
+async def test_sync_request_auth_resolves_injected_provider_inside_running_loop() -> (
+    None
+):
+    request = httpx.Request("POST", _CONTEXT.base_url)
+    with bind_model_auth({"judge": StaticBearerAuth("runtime-secret")}):
+        authenticated = list(
+            RequestModelAuth(InjectedAuth("judge"), _CONTEXT).sync_auth_flow(request)
+        )
+
+    assert authenticated == [request]
+    assert request.headers["authorization"] == "Bearer runtime-secret"
+
+
+async def test_async_request_auth_resolves_injected_provider() -> None:
+    request = httpx.Request("POST", _CONTEXT.base_url)
+    auth = RequestModelAuth(InjectedAuth("judge"), _CONTEXT)
+    with bind_model_auth({"judge": StaticBearerAuth("runtime-secret")}):
+        authenticated = [item async for item in auth.async_auth_flow(request)]
+
+    assert authenticated == [request]
+    assert request.headers["authorization"] == "Bearer runtime-secret"

@@ -58,11 +58,12 @@ async def validate_environment(
     """Validate ``env`` by running one real local group of two siblings.
 
     ``model_auth`` authorizes rollout requests. When omitted, the active
-    Castform session is resolved at each request. ``auth_bindings`` separately
-    supplies the named providers used by ``InjectedAuth`` inside the
-    environment. When omitted, Castform binds ``"judge"`` to the same kind of
-    call-time session provider. Callers targeting another model provider can
-    override either side without silently changing the other.
+    Castform login session is exchanged at each request boundary.
+    ``auth_bindings`` separately supplies the named providers used by
+    ``InjectedAuth`` inside the environment. When omitted, Castform binds
+    ``"judge"``, ``"embedding"``, and ``"tool_llm"`` to that local model-auth
+    provider. Callers targeting another model provider can override the
+    bindings without silently changing the rollout model.
 
     ``include_remote`` is additive: local validation always runs first. It
     currently raises after the local run because rollout-service has not yet
@@ -71,9 +72,15 @@ async def validate_environment(
 
     resolved_base_url = base_url or config.llm_url()
     resolved_model_auth = model_auth or CastformModelAuth()
-    resolved_auth_bindings = (
-        {"judge": CastformModelAuth()} if auth_bindings is None else dict(auth_bindings)
-    )
+    if auth_bindings is None:
+        local_model_auth = CastformModelAuth()
+        resolved_auth_bindings = {
+            "judge": local_model_auth,
+            "embedding": local_model_auth,
+            "tool_llm": local_model_auth,
+        }
+    else:
+        resolved_auth_bindings = dict(auth_bindings)
     requests = [
         RolloutRequest(
             rollout_id=f"validate-{index}",
@@ -84,9 +91,9 @@ async def validate_environment(
         )
         for index in range(2)
     ]
-    # Environments refer to their judge credential explicitly as
-    # InjectedAuth("judge"). Validation owns the Castform-specific resolution and
-    # binds it for the duration of the run, preserving call-time token refresh.
+    # Environments refer to model credentials by purpose. Validation owns the
+    # Castform-specific resolution and binds it for the duration of the run,
+    # preserving call-time token refresh.
     with bind_model_auth(resolved_auth_bindings):
         local = dict(await env.run_group(requests))
     if set(local) != {"validate-0", "validate-1"}:

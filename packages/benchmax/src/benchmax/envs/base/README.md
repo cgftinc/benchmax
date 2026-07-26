@@ -56,11 +56,12 @@ class MathEnv(BaseEnv):
 
 `reward_keys` is the complete final reward shape, including both individual and
 group-relative dimensions. BenchMax uses this explicit schema to return the
-same keys, all zero, for operationally failed attempts; it never infers a shape
-from siblings.
+same keys, all zero, for unscoreable operational failures; it never infers a
+shape from siblings.
 
-`run_rollout` calls `compute_reward` only after a normally finished chat loop.
-Context/output/tool/model failures return the declared zero shape and a
+`run_rollout` calls `compute_reward` after a normally finished chat loop and
+after `context_exceeded`, when the partial transcript may still contain
+scoreable work. Output/tool/model failures return the declared zero shape and a
 non-`finished` termination reason. Override
 `compute_group_rewards` when scoring also depends on the completed group. The
 group reward keys are merged into each rollout's individual reward map;

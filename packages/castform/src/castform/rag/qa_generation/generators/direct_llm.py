@@ -13,7 +13,10 @@ from typing import Any
 from openai import AsyncOpenAI, OpenAI
 from tqdm.auto import tqdm
 
-from castform.platform.credentials import resolve_judge_key
+from castform.model_auth import (
+    create_async_openai_client,
+    model_auth_for_endpoint,
+)
 from castform.rag.qa_generation.anchor_selector import AnchorBundle
 from castform.rag.qa_generation.batch_processor import BatchResult, batch_process_async
 from castform.rag.qa_generation.pipeline_config import (
@@ -409,14 +412,19 @@ class DirectLLMGenerator:
         loop = asyncio.get_running_loop()
         client = self._async_client
         stale = (
-            client is None
-            or client.is_closed()
-            or self._async_client_loop is not loop
+            client is None or client.is_closed() or self._async_client_loop is not loop
         )
         if stale:
-            client = AsyncOpenAI(
-                api_key=resolve_judge_key(self.cfg.api_key, self.cfg.base_url),
+            auth = model_auth_for_endpoint(
+                api_key=self.cfg.api_key,
                 base_url=self.cfg.base_url,
+                purpose="qa-generation",
+            )
+            client = create_async_openai_client(
+                model=self.cfg.model,
+                base_url=self.cfg.base_url,
+                auth=auth,
+                request_id="qa-generation",
             )
             self._async_client = client
             self._async_client_loop = loop
