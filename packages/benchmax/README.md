@@ -40,14 +40,15 @@ Each `RolloutRequest` carries a `split` (`"train"` by default) so custom
 `run_rollout`/`run_group` implementations can tell training traffic from
 evaluation traffic without out-of-band state.
 
-`reward_keys` is authoritative. A successful rollout must return exactly those
-keys. Operational failures keep the same shape with every value set to zero,
-record the reason in `termination_reason`, and are logged without cancelling
-successful siblings. Reward hooks run user code, so their defects settle the
-same way under `reward_error` (per rollout) or `group_reward_error` (whole
-group) instead of crashing a run; execution-contract violations such as
-malformed requests or a broken reward schema still fail loudly after the
-sibling group settles.
+`reward_keys` is authoritative. A scored rollout must return exactly those
+keys. A `context_exceeded` rollout remains scoreable because its partial
+transcript may contain useful work; other operational failures keep the same
+shape with every value set to zero, record the reason in `termination_reason`,
+and are logged without cancelling successful siblings. Reward hooks run user
+code, so their defects settle the same way under `reward_error` (per rollout)
+or `group_reward_error` (whole group) instead of crashing a run;
+execution-contract violations such as malformed requests or a broken reward
+schema still fail loudly after the sibling group settles.
 
 See the [BaseEnv guide](src/benchmax/envs/base/README.md) and
 [Harbor adapter guide](src/benchmax/envs/harbor/README.md).
