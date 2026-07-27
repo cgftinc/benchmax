@@ -401,31 +401,17 @@ def _local_rows(path: Path) -> list[dict]:
 
 
 def validate() -> Any:
-    from benchmax.envs.identity import canonical_example_id
-    from benchmax.envs.shared_types import Example
     from castform import validate_environment
 
     if not EVAL_FILE.exists():
         raise SystemExit("data stage has not run; `python main.py data` first")
-    row = _local_rows(EVAL_FILE)[0]
     env = Qwen3OCREnv()
-    payload = {
-        "prompt_messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": row["images"][0]}},
-                    {"type": "text", "text": row["prompt"]},
-                ],
-            }
-        ],
-        "answer": row["answer"],
-    }
     report = asyncio.run(
         validate_environment(
             env,
-            example=Example(id=canonical_example_id(payload), payload=payload),
             model=VALIDATE_MODEL,
+            split="eval",
+            base_dir=DATA_DIR,
         )
     )
     for rollout_id, outcome in report.local.items():

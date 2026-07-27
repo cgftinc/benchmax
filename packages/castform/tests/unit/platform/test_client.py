@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import httpx
@@ -570,9 +571,8 @@ def test_stream_rollout_raises_rollout_server_error_on_5xx(monkeypatch):
 # run_group — one-example batch + batch-SSE consumption
 
 
-def test_run_group_parses_batch_sse(monkeypatch):
-    """run_group POSTs a one-example batch (samples_per_example=N) to
-    /v1/rollout/batch/stream and collects the rollout_completed events."""
+def test_run_group_posts_group_native_dataset_contract(monkeypatch):
+    """run_group pins the worker-created Dataset to its first item."""
     monkeypatch.setenv("CASTFORM_PLATFORM_URL", "https://api.castform.com")
     import httpx as httpx_mod
 
@@ -614,19 +614,23 @@ def test_run_group_parses_batch_sse(monkeypatch):
 
     client = RolloutClient(api_key="k")
     events = client.run_group(
-        {"prompt": "hi"},
         samples=2,
         env_cls_bytes=b"x",
         env_metadata_bytes=b"y",
-        llm_api_key="model-key",
+        dataset_files={"eval.data": b"opaque"},
+        model="test-model",
         verbose=False,
     )
 
     assert captured["url"] == "https://api.castform.com/v1/rollout/batch/stream"
-    assert captured["json"]["options"]["samples_per_example"] == 2
-    # One group → one worker (siblings co-locate); pinning this avoids an empty
-    # second worker crashing on a no-example partition.
-    assert captured["json"]["concurrent_workers"] == 1
+    assert captured["json"]["group_size"] == 2
+    assert captured["json"]["max_examples"] == 1
+    assert captured["json"]["model"] == {"name": "test-model"}
+    assert captured["json"]["dataset_files"] == {
+        "eval.data": base64.b64encode(b"opaque").decode()
+    }
+    assert "llm" not in captured["json"]
+    assert "options" not in captured["json"]
     assert len(events) == 2
     assert events[1]["group_reward_error"] == "ValueError: boom"
 
@@ -670,11 +674,9 @@ def test_run_group_ignores_worker_error(monkeypatch):
 
     client = RolloutClient(api_key="k")
     events = client.run_group(
-        {"prompt": "hi"},
         samples=2,
         env_cls_bytes=b"x",
         env_metadata_bytes=b"y",
-        llm_api_key="model-key",
         verbose=False,
     )
     # worker_error didn't raise; both real rollouts came through.

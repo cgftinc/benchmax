@@ -201,14 +201,26 @@ def _print_scorecard(report: Any) -> None:
 
 
 async def _run_validation(env: CustomEnv) -> Any:
-    dataset = await env.create_dataset("train", Path("."))
-    if not dataset:
-        raise ValueError(f"{TRAIN_FILE} contains no validation examples")
+    include_remote = bool(VALIDATE_CONFIG.get("include_remote", False))
+    bundle = (
+        dump_bundle(
+            CustomEnv,
+            constructor_args=ENV_ARGS,
+            pip_dependencies=RUNTIME_DEPENDENCIES,
+        )
+        if include_remote
+        else None
+    )
     return await validate_environment(
         env,
-        example=dataset[0],
         model=str(VALIDATE_CONFIG["model"]),
-        include_remote=bool(VALIDATE_CONFIG.get("include_remote", False)),
+        split="train",
+        base_dir=Path("."),
+        include_remote=include_remote,
+        bundle=bundle,
+        remote_dataset_files=(
+            {TRAIN_FILE: Path(TRAIN_FILE).read_bytes()} if include_remote else None
+        ),
     )
 
 

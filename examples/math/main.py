@@ -412,23 +412,16 @@ def validate() -> Any:
 
     if not TRAIN_FILE.exists():
         raise SystemExit("data stage has not run; `python main.py data` first")
-    first = _local_rows(TRAIN_FILE)[0]
     # Validation-only relaxed turn budget: proxy validation models play tools
     # strictly one-per-turn and cannot finish 3-op tasks in the bundled
     # max_turns=3; validation checks execution mechanics, not turn-efficiency.
     env = MathEnv(max_turns=5)
-    payload = {
-        "prompt_messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": first["task"]},
-        ],
-        "answer": first["answer"],
-    }
     report = asyncio.run(
         validate_environment(
             env,
-            example=Example(id=canonical_example_id(payload), payload=payload),
             model=VALIDATE_MODEL,
+            split="train",
+            base_dir=DATA_DIR,
         )
     )
     for rollout_id, outcome in report.local.items():

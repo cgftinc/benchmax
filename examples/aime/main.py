@@ -110,11 +110,14 @@ def validate() -> Any:
 
     env = AimeMiniSweHarborEnv(**_constructor_args())
     with tempfile.TemporaryDirectory() as tmp:
-        dataset = asyncio.run(env.create_dataset("eval", Path(tmp)))
-        example = dataset[0]
-        print(f"validating with example {example.id[:16]}... on Modal")
+        print("validating first environment-created eval item... on Modal")
         report = asyncio.run(
-            validate_environment(env, example=example, model=VALIDATE_MODEL)
+            validate_environment(
+                env,
+                model=VALIDATE_MODEL,
+                split="eval",
+                base_dir=Path(tmp),
+            )
         )
     for rollout_id, outcome in report.local.items():
         print(

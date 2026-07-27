@@ -1,9 +1,12 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from aime_agent import MINI_SWE_AGENT_VERSION
 from benchmax.bundle import dump_bundle, load_bundle
 from benchmax.envs.harbor import BundledHarborAgent, ModalCredentials
 from harbor import EnvironmentType
+
+from aime_agent import MINI_SWE_AGENT_VERSION, prefetch_wheels
 from main import AimeMiniSweHarborEnv
 
 
@@ -48,3 +51,23 @@ def test_aime_bundles_carry_the_fixed_modal_credentials() -> None:
     credentials = constructor_args["sandbox_credentials"]
     assert credentials.token_id == "modal-id"
     assert credentials.token_secret == "modal-secret"
+
+
+def test_wheel_prefetch_rebuilds_an_incomplete_cache(tmp_path, monkeypatch) -> None:
+    cache = tmp_path / "wheels"
+    cache.mkdir()
+
+    def fake_download(command, **_kwargs):
+        destination = Path(command[command.index("--dest") + 1])
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "pip-1.0-py3-none-any.whl").write_bytes(b"wheel")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("aime_agent.shutil.which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr("aime_agent.subprocess.run", fake_download)
+
+    result = prefetch_wheels(packages=("pip",), cache=cache)
+
+    assert result == cache
+    assert (cache / ".complete").read_text() == "ok\n"
+    assert list(cache.glob("pip-*.whl"))

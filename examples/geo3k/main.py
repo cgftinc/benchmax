@@ -396,9 +396,13 @@ def validate() -> Any:
     from castform import validate_environment
 
     env = Geo3KEnv(**ENV_ARGS)
-    dataset = asyncio.run(env.create_dataset("eval", DATA_DIR))
     report = asyncio.run(
-        validate_environment(env, example=dataset[0], model=VALIDATE_MODEL)
+        validate_environment(
+            env,
+            model=VALIDATE_MODEL,
+            split="eval",
+            base_dir=DATA_DIR,
+        )
     )
     for rollout_id, outcome in report.local.items():
         print(

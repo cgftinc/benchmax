@@ -152,7 +152,7 @@ def test_main_exit_1_when_launch_gated(mod, monkeypatch):
 # ── validate stage: script calls the public group-native function ───────────────
 
 
-def test_validate_loads_the_public_dataset_then_runs_group_validation(
+def test_validate_delegates_dataset_loading_to_public_group_validation(
     mod, tmp_path, monkeypatch
 ):
     monkeypatch.chdir(tmp_path)
@@ -161,25 +161,20 @@ def test_validate_loads_the_public_dataset_then_runs_group_validation(
     (tmp_path / "eval.jsonl").write_text(f'{{"{field}": "q2"}}\n')
     captured: dict = {}
     env_class = discover_env_class(mod)
-    original_create_dataset = env_class.create_dataset
-
-    async def recording_create_dataset(self, split, base_dir):
-        captured["dataset_call"] = (split, base_dir)
-        return await original_create_dataset(self, split, base_dir)
 
     async def fake_validate_environment(env, **kw):
         captured["env"] = env
         captured.update(kw)
         return _fake_report(ok=True)
 
-    monkeypatch.setattr(env_class, "create_dataset", recording_create_dataset)
     monkeypatch.setattr(mod, "validate_environment", fake_validate_environment)
     report = mod.validate()
 
     assert report.ok
     assert isinstance(captured["env"], env_class)
-    assert captured["dataset_call"] == ("train", Path("."))
-    assert captured["example"].id
+    assert captured["split"] == "train"
+    assert captured["base_dir"] == Path(".")
+    assert captured["remote_dataset_files"] is None
     assert captured["model"] == str(mod.VALIDATE_CONFIG["model"])
     assert captured["include_remote"] is bool(
         mod.VALIDATE_CONFIG.get("include_remote", False)
@@ -187,16 +182,10 @@ def test_validate_loads_the_public_dataset_then_runs_group_validation(
 
 
 def test_validate_surfaces_public_dataset_materialization_failure(mod, monkeypatch):
-    env_class = discover_env_class(mod)
-
-    async def fail_create_dataset(self, split, base_dir):
+    async def fail_validation(*args, **kwargs):
         raise RuntimeError("dataset materialization failed")
 
-    async def should_not_validate(*args, **kwargs):
-        raise AssertionError("validation ran without a materialized example")
-
-    monkeypatch.setattr(env_class, "create_dataset", fail_create_dataset)
-    monkeypatch.setattr(mod, "validate_environment", should_not_validate)
+    monkeypatch.setattr(mod, "validate_environment", fail_validation)
 
     with pytest.raises(RuntimeError, match="dataset materialization failed"):
         mod.validate()

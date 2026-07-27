@@ -8,7 +8,7 @@ import json
 import logging
 import textwrap
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1123,66 +1123,53 @@ class RolloutClient:
 
     def run_group(
         self,
-        example: dict[str, Any],
         *,
         samples: int,
         env_cls_path: str | None = None,
         env_metadata_path: str | None = None,
         env_cls_bytes: bytes | None = None,
         env_metadata_bytes: bytes | None = None,
-        llm_base_url: str | None = None,
-        llm_api_key: str = "",
-        llm_model: str = _DEFAULT_ROLLOUT_MODEL,
-        max_turns: int = 4,
-        max_tool_calls: int = 8,
+        dataset_files: Mapping[str, bytes] | None = None,
+        dataset_prefix: str | None = None,
+        split: str = "eval",
+        model: str = _DEFAULT_ROLLOUT_MODEL,
+        max_context_tokens: int | None = None,
+        max_completion_tokens: int = 1024,
         verbose: bool = True,
     ) -> list[dict[str, Any]]:
-        """Run one example through rollout-service's legacy batch-group API.
+        """Run the first environment-created Dataset item as one sibling group.
 
-        Submits a one-row batch with ``samples_per_example=samples`` to
-        ``/v1/rollout/batch/stream`` and returns its ``rollout_completed``
-        events. This lower-level client is retained for RAG preparation flows;
-        it is not Castform environment validation and does not implement the new
-        BenchMax ``Environment.run_group`` contract. Each event carries
-        ``success``, ``rewards`` and, on a compatible server,
-        ``group_reward_error``. Raises the same typed errors as
-        ``stream_rollout`` on a non-200.
+        Dataset artifacts are opaque to Castform and rollout-service. Inline
+        files are copied into the sandbox base directory, a stored prefix is
+        mirrored there, and the worker always calls ``env.create_dataset``.
+        ``max_examples=1`` selects the Dataset's first item after that call.
         """
         env = self._build_env(
             env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes
         )
-        # Resolve the platform bearer once, per request for the platform-service
-        # request only.
         bearer = self._token_provider()
 
-        if not llm_api_key:
-            raise ValueError(
-                "llm_api_key is required for rollout model calls. Platform and "
-                "login credentials are never reused as model credentials."
-            )
-        resolved_llm_url = llm_base_url or config.llm_url()
-
-        payload = {
-            "dataset_bytes": base64.b64encode(json.dumps(example).encode()).decode(),
-            "is_dataset_standardized": False,
-            # One example maps to one legacy server group. Pin to 1 so the
-            # service does not start workers with empty partitions.
-            "concurrent_workers": 1,
+        if dataset_files is not None and dataset_prefix is not None:
+            raise ValueError("Provide dataset_files or dataset_prefix, not both")
+        payload: dict[str, Any] = {
             "env": env,
-            "llm": {
-                "base_url": resolved_llm_url,
-                "api_key": llm_api_key,
-                "model": llm_model,
-            },
-            "options": {
-                "max_turns": max_turns,
-                "max_tool_calls": max_tool_calls,
-                "samples_per_example": samples,
-            },
+            "model": {"name": model},
+            "sampling": {"max_completion_tokens": max_completion_tokens},
+            "split": split,
+            "max_examples": 1,
+            "group_size": samples,
+            "max_in_flight": samples,
         }
-        # platform-service mounts the batch proxy at /v1/rollout/batch/stream; it
-        # validates the platform key and forwards to rollout-service with an
-        # act_as JWT, same as the single /v1/rollout/stream proxy.
+        if max_context_tokens is not None:
+            payload["max_context_tokens"] = max_context_tokens
+        if dataset_files is not None:
+            payload["dataset_files"] = {
+                name: base64.b64encode(content).decode()
+                for name, content in dataset_files.items()
+            }
+        if dataset_prefix is not None:
+            payload["dataset_prefix"] = dataset_prefix
+
         url = f"{self._server_url}/v1/rollout/batch/stream"
         headers = {"Authorization": f"Bearer {bearer}"}
 
@@ -1212,10 +1199,6 @@ class RolloutClient:
                 elif etype == "rollout_completed":
                     completed.append(event)
                 elif etype == "worker_error":
-                    # A sandbox process crashed. Non-fatal to the group on its
-                    # own: callers receive the completed sibling events and can
-                    # decide how to treat an incomplete group. Surface it for
-                    # visibility without discarding those outcomes.
                     if verbose:
                         print(_err(f"  worker_error: {str(event.get('error'))[:200]}"))
                 elif etype == "error":

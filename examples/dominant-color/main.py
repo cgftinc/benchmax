@@ -412,9 +412,13 @@ def validate() -> Any:
 
     env = DominantColorEnv(**ENV_ARGS)
     with tempfile.TemporaryDirectory() as tmp:
-        dataset = asyncio.run(env.create_dataset("eval", Path(tmp)))
         report = asyncio.run(
-            validate_environment(env, example=dataset[0], model=VALIDATE_MODEL)
+            validate_environment(
+                env,
+                model=VALIDATE_MODEL,
+                split="eval",
+                base_dir=Path(tmp),
+            )
         )
     for rollout_id, outcome in report.local.items():
         print(

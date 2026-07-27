@@ -35,6 +35,7 @@ import os
 import random
 import re
 import sys
+import tempfile
 import uuid
 from collections import Counter
 from collections.abc import AsyncGenerator, Mapping, Sequence
@@ -1489,14 +1490,19 @@ def validate() -> Any:
 
     train_rows, _ = _split_rows()
     env = TelestichEnv(judge_base_url=config.llm_url())
-    report = asyncio.run(
-        validate_environment(
-            env,
-            example=env._example_from_row(train_rows[0]),
-            model=VALIDATE_MODEL,
-            base_url=config.llm_url(),
+    with tempfile.TemporaryDirectory() as tmp:
+        base_dir = Path(tmp)
+        (base_dir / "train.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in train_rows)
         )
-    )
+        report = asyncio.run(
+            validate_environment(
+                env,
+                model=VALIDATE_MODEL,
+                split="train",
+                base_dir=base_dir,
+            )
+        )
     for rollout_id, outcome in report.local.items():
         print(
             f"  {rollout_id}: total={sum(outcome.rewards.values()):.3f} "
