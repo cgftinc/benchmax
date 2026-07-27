@@ -97,7 +97,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
         self,
         rollout: BaseRollout,
     ) -> RewardMap | None:
-        """Optionally score one completed rollout.
+        """Optionally score one reward-eligible terminal rollout.
 
         Raise :class:`RolloutFailure` for expected runtime failures to settle
         this rollout under that reason. Any other exception settles it as
@@ -256,7 +256,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     example_args=example_args,
                     split=request.split,
                 )
-                if termination_reason not in ("finished", "context_exceeded"):
+                if termination_reason not in self.scorable_termination_reasons:
                     return replace(
                         rollout,
                         rewards={key: 0.0 for key in self.reward_keys},

@@ -674,6 +674,86 @@ async def test_tool_budget_termination_is_scored_without_executing_tools() -> No
     assert outcome.rewards == {"correctness": 0.0}
     assert len(server.requests) == 1
     assert env.tool_calls == []
+    assert [call[3] for call in env.reward_calls] == ["tool_budget_exceeded"]
+
+
+@pytest.mark.parametrize(
+    ("max_turns", "max_tool_calls", "termination_reason", "executed_tool_calls"),
+    [
+        (1, 1, "max_turns_exceeded", 1),
+        (2, 0, "tool_budget_exceeded", 0),
+    ],
+)
+async def test_budget_exhaustion_runs_individual_and_group_scoring(
+    max_turns: int,
+    max_tool_calls: int,
+    termination_reason: str,
+    executed_tool_calls: int,
+) -> None:
+    class BudgetScoringEnv(_ToolMathEnv):
+        reward_keys = ("partial", "group")
+
+        def __init__(self) -> None:
+            super().__init__(max_tool_calls=max_tool_calls)
+            self.max_turns = max_turns
+            self.group_termination_reasons: list[str] = []
+
+        async def compute_reward(self, rollout: BaseRollout) -> RewardMap:
+            self.reward_calls.append(
+                (
+                    rollout.rollout_id,
+                    rollout.messages,
+                    rollout.example_args,
+                    rollout.termination_reason,
+                )
+            )
+            return {"partial": 0.75}
+
+        async def compute_group_rewards(
+            self,
+            rollouts: Sequence[BaseRollout],
+        ) -> Mapping[str, RewardMap]:
+            self.group_termination_reasons = [
+                rollout.termination_reason for rollout in rollouts
+            ]
+            return {rollout.rollout_id: {"group": 0.25} for rollout in rollouts}
+
+    example = Example(
+        id="math-budget-exhaustion",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "What is 6 × 7?"}],
+            "answer": "42",
+        },
+    )
+    env = BudgetScoringEnv()
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (
+            200,
+            completion_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "multiply",
+                            "arguments": '{"left":6,"right":7}',
+                        },
+                    }
+                ],
+            ),
+        )
+    ) as server:
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
+
+    outcome = outcomes["rollout-1"]
+    assert outcome.termination_reason == termination_reason
+    assert outcome.rewards == {"partial": 0.75, "group": 0.25}
+    assert [call[3] for call in env.reward_calls] == [termination_reason]
+    assert env.group_termination_reasons == [termination_reason]
+    assert len(env.tool_calls) == executed_tool_calls
 
 
 async def test_base_env_group_only_reward_receives_complete_rollouts() -> None:

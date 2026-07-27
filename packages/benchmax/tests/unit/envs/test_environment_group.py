@@ -145,6 +145,49 @@ async def test_group_scorer_receives_every_attempt_once() -> None:
     assert outcomes["rollout-2"].rewards == {"group_rank": 1.0}
 
 
+@pytest.mark.parametrize(
+    "termination_reason",
+    ["max_turns_exceeded", "tool_budget_exceeded"],
+)
+async def test_group_scorer_receives_budget_exhausted_attempts(
+    termination_reason: str,
+) -> None:
+    class BudgetScoredEnv(Environment[dict[str, Any], RolloutAttempt]):
+        reward_keys = ("individual", "group")
+
+        def __init__(self) -> None:
+            self.group_termination_reasons: list[str] = []
+
+        async def create_dataset(self, split, base_dir):
+            return Dataset([])
+
+        async def run_rollout(self, request):
+            return RolloutAttempt(
+                rollout_id=request.rollout_id,
+                termination_reason=termination_reason,
+                rewards={"individual": 0.75},
+            )
+
+        async def compute_group_rewards(
+            self,
+            rollouts: Sequence[RolloutAttempt],
+        ) -> Mapping[str, RewardMap]:
+            self.group_termination_reasons = [
+                rollout.termination_reason for rollout in rollouts
+            ]
+            return {rollout.rollout_id: {"group": 0.25} for rollout in rollouts}
+
+    request = _request("rollout-1", Example(id="example-1", payload={}))
+    env = BudgetScoredEnv()
+
+    outcomes = await env.run_group([request])
+
+    outcome = outcomes["rollout-1"]
+    assert outcome.termination_reason == termination_reason
+    assert outcome.rewards == {"individual": 0.75, "group": 0.25}
+    assert env.group_termination_reasons == [termination_reason]
+
+
 async def test_one_operational_failure_does_not_cancel_or_shape_from_siblings(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
