@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 class Environment[Payload, Attempt: RolloutAttempt](ABC):
     """Group-native environment with one-attempt implementation hooks."""
 
+    scorable_termination_reasons: frozenset[str] = frozenset(
+        {
+            "finished",
+            "context_exceeded",
+            "max_turns_exceeded",
+            "tool_budget_exceeded",
+        }
+    )
+    """Terminal reasons whose partial attempts remain eligible for rewards."""
+
     @property
     @abstractmethod
     def reward_keys(self) -> Sequence[str]:
@@ -113,7 +123,7 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
                 )
             elif isinstance(result, BaseException):
                 contract_errors.append(result)
-            elif result.termination_reason not in ("finished", "context_exceeded"):
+            elif result.termination_reason not in self.scorable_termination_reasons:
                 _validate_failure_rewards(result, reward_keys)
                 _log_terminal_attempt(result)
                 outcomes[result.rollout_id] = RolloutOutcome(
