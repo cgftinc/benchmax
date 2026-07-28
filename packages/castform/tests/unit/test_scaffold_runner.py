@@ -198,6 +198,8 @@ def test_validate_delegates_dataset_loading_to_public_group_validation(
     assert captured["upload"]["eval_dataset"]
     assert captured["remote_assets"] is remote_assets
     assert captured["model"] == str(mod.VALIDATE_CONFIG["model"])
+    assert captured["max_context_tokens"] == 2048
+    assert captured["local_timeout_seconds"] == 120.0
 
 
 def test_validate_surfaces_public_dataset_materialization_failure(mod, monkeypatch):

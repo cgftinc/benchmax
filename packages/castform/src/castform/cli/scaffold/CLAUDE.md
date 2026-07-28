@@ -46,9 +46,12 @@ distort siblings. Do not turn a configuration or programming error into a reward
 
 Local validation obtains its example through the environment's public
 `create_dataset` method, then calls `validate_environment` once with exactly two
-siblings. Review both outcomes; a completed zero reward is valid, while a zeroed
-result with a failure termination reason is not. Validation is local-only in this
-workflow.
+siblings through ephemeral tracked llm-proxy sessions. The generated validation
+config shares one context budget across local and hosted execution and applies a
+wall-clock backstop to the complete local lifecycle. Review both outcomes; a
+completed zero reward is valid, while a zeroed result with a failure termination
+reason is not. Hosted validation uses the exact uploaded assets that launch would
+consume.
 
 ## Bundle and launch boundary
 

@@ -17,7 +17,9 @@ The validation stage must first obtain its example through
 containing exactly two siblings of that example locally and in the hosted
 sandbox. This exercises the public data materialization and deployment contract
 as part of validation. Keep `include_remote=True` unless intentionally debugging
-the local environment only.
+the local environment only. Keep the local and hosted rollout-model context
+budget shared through `VALIDATE_CONFIG["max_context_tokens"]`; the local
+wall-clock backstop is `VALIDATE_CONFIG["local_timeout_seconds"]`.
 
 ## Read both outcomes
 

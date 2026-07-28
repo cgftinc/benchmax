@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,52 @@ from benchmax.auth import InjectedAuth, ModelRequestContext, StaticBearerAuth
 from benchmax.envs import Dataset, Example, RolloutOutcome
 from castform.model_auth import CastformModelAuth
 from castform.platform.environment_assets import UploadedEnvironmentAssets
+from castform.platform.model_session import ModelSession
 from castform.validation import validate_environment
+
+
+class FakeModelSessionClient:
+    instances: list[FakeModelSessionClient] = []
+    capture_num_calls = 1
+
+    def __init__(self, *, base_url, model_auth):
+        self.base_url = base_url
+        self.model_auth = model_auth
+        self.create_calls: list[dict[str, Any]] = []
+        self.collected: list[str] = []
+        self.discarded: list[str] = []
+        self.closed = False
+        self.instances.append(self)
+
+    async def create(self, **kwargs):
+        self.create_calls.append(kwargs)
+        session_id = kwargs["session_id"]
+        return ModelSession(
+            session_id=session_id,
+            base_url=f"{self.base_url}/sessions/{session_id}",
+            session_key=f"session-key-{session_id}",
+        )
+
+    async def collect(self, session):
+        self.collected.append(session.session_id)
+        return {"num_calls": self.capture_num_calls, "truncated": False}
+
+    async def discard(self, session):
+        self.discarded.append(session.session_id)
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.fixture(autouse=True)
+def fake_model_sessions(monkeypatch):
+    FakeModelSessionClient.instances.clear()
+    FakeModelSessionClient.capture_num_calls = 1
+    monkeypatch.setattr(
+        "castform.validation.ModelSessionClient",
+        FakeModelSessionClient,
+    )
+    return FakeModelSessionClient
 
 
 class RecordingEnvironment:
@@ -46,6 +92,7 @@ class RecordingEnvironment:
 
 async def test_validation_uses_first_dataset_item_for_two_local_siblings(
     tmp_path: Path,
+    fake_model_sessions,
 ) -> None:
     env = RecordingEnvironment()
 
@@ -62,6 +109,23 @@ async def test_validation_uses_first_dataset_item_for_two_local_siblings(
     assert env.dataset_calls == [("train", tmp_path, 1)]
     assert len(env.groups) == 1 and len(env.groups[0]) == 2
     assert {request.example.id for request in env.groups[0]} == {"example-1"}
+    assert {request.split for request in env.groups[0]} == {"train"}
+    assert all(
+        "/v1/sessions/validate-" in request.base_url for request in env.groups[0]
+    )
+    assert len({request.rollout_id for request in env.groups[0]}) == 2
+    sessions = fake_model_sessions.instances[-1]
+    assert [call["model"] for call in sessions.create_calls] == [
+        "test-model",
+        "test-model",
+    ]
+    assert [call["max_context_tokens"] for call in sessions.create_calls] == [
+        2048,
+        2048,
+    ]
+    assert len(sessions.collected) == 2
+    assert sessions.discarded == []
+    assert sessions.closed
 
 
 async def test_validation_rejects_an_empty_dataset() -> None:
@@ -203,15 +267,61 @@ async def test_rollout_and_named_auth_remain_independent() -> None:
             return await super().run_group(group)
 
     env = JudgeEnvironment()
+    rollout_auth = StaticBearerAuth("rollout-token")
     await validate_environment(
         env,
         model="test-model",
-        model_auth=StaticBearerAuth("rollout-token"),
+        model_auth=rollout_auth,
         auth_bindings={"judge": StaticBearerAuth("judge-token")},
     )
 
-    assert env.rollout_headers == {"Authorization": "Bearer rollout-token"}
+    rollout_id = env.groups[0][0].rollout_id
+    assert env.rollout_headers == {"Authorization": f"Bearer session-key-{rollout_id}"}
     assert env.judge_headers == {"Authorization": "Bearer judge-token"}
+    assert FakeModelSessionClient.instances[-1].model_auth is rollout_auth
+
+
+async def test_local_validation_rejects_an_empty_model_capture(
+    fake_model_sessions,
+) -> None:
+    fake_model_sessions.capture_num_calls = 0
+
+    report = await validate_environment(
+        RecordingEnvironment(),
+        model="test-model",
+        model_auth=StaticBearerAuth("rollout-token"),
+    )
+
+    assert not report.ok
+    assert len(report.local_errors) == 2
+    assert set(report.local_errors.values()) == {
+        "rollout produced no usable model trace"
+    }
+
+
+async def test_local_timeout_discards_created_sessions(
+    fake_model_sessions,
+) -> None:
+    class SlowEnvironment(RecordingEnvironment):
+        async def run_group(self, requests):
+            self.groups.append(list(requests))
+            await asyncio.sleep(60)
+            raise AssertionError("unreachable")
+
+    with pytest.raises(
+        TimeoutError,
+        match="local validation timed out.*environment execution",
+    ):
+        await validate_environment(
+            SlowEnvironment(),
+            model="test-model",
+            model_auth=StaticBearerAuth("rollout-token"),
+            local_timeout_seconds=0.01,
+        )
+
+    sessions = fake_model_sessions.instances[-1]
+    assert len(sessions.discarded) == 2
+    assert sessions.closed
 
 
 @pytest.mark.parametrize("dataset_path", ["datasets/frozen-snapshot", None])

@@ -236,6 +236,8 @@ and cite supporting documents as [Source: <source_id>].
 
 VALIDATE_CONFIG = {
     "model": "gpt-5.4-mini",
+    "max_context_tokens": 2048,
+    "local_timeout_seconds": 120,
     "include_remote": True,
 }
 
@@ -284,13 +286,23 @@ def generate_data(force: bool = False) -> bool:
 
 
 def _print_scorecard(report: Any) -> None:
-    for rollout_id, outcome in report.local.items():
-        rewards = dict(outcome.rewards)
-        total = sum(rewards.values())
-        print(
-            f"  {rollout_id}: termination_reason={outcome.termination_reason} "
-            f"total={total:.3f} rewards={rewards}"
-        )
+    for label, outcomes in (
+        ("local", report.local),
+        ("remote", getattr(report, "remote", None)),
+    ):
+        if outcomes is None:
+            continue
+        print(f"{label}:")
+        for rollout_id, outcome in outcomes.items():
+            rewards = dict(outcome.rewards)
+            total = sum(rewards.values())
+            print(
+                f"  {rollout_id}: termination_reason={outcome.termination_reason} "
+                f"total={total:.3f} rewards={rewards}"
+            )
+    for label in ("local", "remote"):
+        for rollout_id, error in getattr(report, f"{label}_errors", {}).items():
+            print(f"  {label} error {rollout_id}: {error}")
     print(f"validate: {'PASS' if report.ok else 'FAIL'}")
 
 
@@ -315,6 +327,8 @@ async def _run_validation(env: CustomSearchEnv) -> Any:
         split="train",
         base_dir=Path("."),
         remote_assets=remote_assets,
+        max_context_tokens=int(VALIDATE_CONFIG["max_context_tokens"]),
+        local_timeout_seconds=float(VALIDATE_CONFIG["local_timeout_seconds"]),
     )
 
 

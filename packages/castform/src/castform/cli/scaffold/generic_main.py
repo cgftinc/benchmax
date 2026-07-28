@@ -110,6 +110,8 @@ class CustomEnv(BaseEnv):
 #    file alone. See `python main.py validate --help` / `launch --help`.
 VALIDATE_CONFIG = {
     "model": "gpt-5.4-mini",
+    "max_context_tokens": 2048,
+    "local_timeout_seconds": 120,
     # Run the same environment in a cheap hosted sandbox before spending GPU credits.
     "include_remote": True,
 }
@@ -194,14 +196,24 @@ def generate_data(force: bool = False) -> bool:
 
 
 def _print_scorecard(report: Any) -> None:
-    """Print the two sibling outcomes returned by local group validation."""
-    for rollout_id, outcome in report.local.items():
-        rewards = dict(outcome.rewards)
-        total = sum(rewards.values())
-        print(
-            f"  {rollout_id}: termination_reason={outcome.termination_reason} "
-            f"total={total:.3f} rewards={rewards}"
-        )
+    """Print local and optional hosted sibling outcomes."""
+    for label, outcomes in (
+        ("local", report.local),
+        ("remote", getattr(report, "remote", None)),
+    ):
+        if outcomes is None:
+            continue
+        print(f"{label}:")
+        for rollout_id, outcome in outcomes.items():
+            rewards = dict(outcome.rewards)
+            total = sum(rewards.values())
+            print(
+                f"  {rollout_id}: termination_reason={outcome.termination_reason} "
+                f"total={total:.3f} rewards={rewards}"
+            )
+    for label in ("local", "remote"):
+        for rollout_id, error in getattr(report, f"{label}_errors", {}).items():
+            print(f"  {label} error {rollout_id}: {error}")
     print(f"validate: {'PASS' if report.ok else 'FAIL'}")
 
 
@@ -226,6 +238,8 @@ async def _run_validation(env: CustomEnv) -> Any:
         split="train",
         base_dir=Path("."),
         remote_assets=remote_assets,
+        max_context_tokens=int(VALIDATE_CONFIG["max_context_tokens"]),
+        local_timeout_seconds=float(VALIDATE_CONFIG["local_timeout_seconds"]),
     )
 
 
