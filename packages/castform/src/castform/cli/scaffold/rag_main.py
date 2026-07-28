@@ -236,7 +236,7 @@ and cite supporting documents as [Source: <source_id>].
 
 VALIDATE_CONFIG = {
     "model": "gpt-5.4-mini",
-    "include_remote": False,
+    "include_remote": True,
 }
 
 LAUNCH_CONFIG = {

@@ -110,8 +110,8 @@ class CustomEnv(BaseEnv):
 #    file alone. See `python main.py validate --help` / `launch --help`.
 VALIDATE_CONFIG = {
     "model": "gpt-5.4-mini",
-    # Local always runs. Flip this only after hosted group validation is available.
-    "include_remote": False,
+    # Run the same environment in a cheap hosted sandbox before spending GPU credits.
+    "include_remote": True,
 }
 
 LAUNCH_CONFIG = {

@@ -14,8 +14,10 @@ uv run python main.py validate
 The validation stage must first obtain its example through
 `env.create_dataset("train", Path("."))`, then call
 `castform.validate_environment` once for one real `Environment.run_group`
-containing exactly two siblings of that example. This exercises the public data
-materialization contract as part of validation. Keep `include_remote=False`.
+containing exactly two siblings of that example locally and in the hosted
+sandbox. This exercises the public data materialization and deployment contract
+as part of validation. Keep `include_remote=True` unless intentionally debugging
+the local environment only.
 
 ## Read both outcomes
 

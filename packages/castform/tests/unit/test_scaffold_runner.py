@@ -161,20 +161,40 @@ def test_validate_delegates_dataset_loading_to_public_group_validation(
     (tmp_path / "eval.jsonl").write_text(f'{{"{field}": "q2"}}\n')
     captured: dict = {}
     env_class = discover_env_class(mod)
+    bundle = object()
+    remote_assets = object()
+
+    def fake_dump_bundle(cls, **kwargs):
+        captured["bundle"] = {
+            "env_class": cls,
+            **kwargs,
+        }
+        return bundle
+
+    def fake_upload_training_run(**kwargs):
+        captured["upload"] = kwargs
+        return remote_assets
 
     async def fake_validate_environment(env, **kw):
         captured["env"] = env
         captured.update(kw)
         return _fake_report(ok=True)
 
+    monkeypatch.setattr(mod, "dump_bundle", fake_dump_bundle)
+    monkeypatch.setattr(mod, "upload_training_run", fake_upload_training_run)
     monkeypatch.setattr(mod, "validate_environment", fake_validate_environment)
     report = mod.validate()
 
     assert report.ok
+    assert mod.VALIDATE_CONFIG["include_remote"] is True
     assert isinstance(captured["env"], env_class)
     assert captured["split"] == "train"
     assert captured["base_dir"] == Path(".")
-    assert captured["remote_assets"] is None
+    assert captured["bundle"]["env_class"] is env_class
+    assert captured["upload"]["bundle"] is bundle
+    assert captured["upload"]["train_dataset"]
+    assert captured["upload"]["eval_dataset"]
+    assert captured["remote_assets"] is remote_assets
     assert captured["model"] == str(mod.VALIDATE_CONFIG["model"])
 
 
@@ -182,6 +202,7 @@ def test_validate_surfaces_public_dataset_materialization_failure(mod, monkeypat
     async def fail_validation(*args, **kwargs):
         raise RuntimeError("dataset materialization failed")
 
+    mod.VALIDATE_CONFIG["include_remote"] = False
     monkeypatch.setattr(mod, "validate_environment", fail_validation)
 
     with pytest.raises(RuntimeError, match="dataset materialization failed"):

@@ -205,6 +205,7 @@ def test_setup_template_rag_writes_searchenv(tmp_path):
     assert issubclass(env_cls, BaseEnv)
     assert isinstance(env_cls(), BaseEnv)  # no-arg construct, no network
     assert env_cls().max_turns == 7
+    assert mod.VALIDATE_CONFIG["include_remote"] is True
     assert mod.LAUNCH_CONFIG["max_context_len"] == 16384
 
 
