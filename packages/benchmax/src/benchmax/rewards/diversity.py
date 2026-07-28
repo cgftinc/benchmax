@@ -7,7 +7,6 @@ import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TypeAlias
 
 from .judge import Judge, JudgeError
 from .prompts import DEFAULT_DIVERSITY_INSTRUCTIONS, build_diversity_prompt
@@ -44,7 +43,7 @@ class LLMDiversityConfig:
             raise ValueError("max_tokens must be positive")
 
 
-DiversityConfig: TypeAlias = NgramDiversityConfig | LLMDiversityConfig
+type DiversityConfig = NgramDiversityConfig | LLMDiversityConfig
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any
 
 from benchmax.envs.dataset import Dataset
 from benchmax.envs.shared_types import Example
 
-JsonRow: TypeAlias = dict[str, Any]
+type JsonRow = dict[str, Any]
 
 
 def resolve_dataset_path(base_dir: Path, relative_path: str) -> Path:

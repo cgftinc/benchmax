@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, NotRequired, TypeAlias, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 FieldOperator = Literal["eq", "in", "gte", "lte", "contains_any", "contains_all"]
 LogicalOperator = Literal["and", "or", "not"]
@@ -40,7 +40,7 @@ class NotPredicate:
     clause: FilterPredicate
 
 
-FilterPredicate: TypeAlias = FieldPredicate | AndPredicate | OrPredicate | NotPredicate
+type FilterPredicate = FieldPredicate | AndPredicate | OrPredicate | NotPredicate
 
 
 class HybridOptions(TypedDict, total=False):
