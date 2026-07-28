@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import cloudpickle
 import pytest
-
 from castform.platform.credentials import runtime_platform_bearer
 from castform.rag.corpus.postgres.models import CorpusChunk, SearchResult
 from castform.rag.corpus.postgres.search import PostgresSearch

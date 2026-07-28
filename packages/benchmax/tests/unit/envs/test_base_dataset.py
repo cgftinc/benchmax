@@ -3,8 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from benchmax.envs import Dataset, Example, JsonRow, JsonlDataset
+from benchmax.envs import Dataset, Example, JsonlDataset, JsonRow
 
 
 def test_dataset_snapshots_membership_and_preserves_order() -> None:

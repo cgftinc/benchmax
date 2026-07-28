@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
-
 from castform.rag.chunkers.models import Chunk, ChunkCollection
 from castform.rag.corpus.postgres.client import CorpusClient
 from castform.rag.corpus.postgres.exceptions import AuthenticationError, CorpusAPIError

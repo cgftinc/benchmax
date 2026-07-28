@@ -4,10 +4,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+from castform.rag.qa_generation.models import QADataPoint
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import LiteralScalarString
-
-from castform.rag.qa_generation.models import QADataPoint
 
 
 def _to_literal_scalars(data: list[QADataPoint]) -> list[dict[str, Any]]:

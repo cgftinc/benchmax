@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import pytest
-
 from benchmax.bundle import Bundle, BundleMetadata, bundle_digest
 from castform.platform import (
     UploadedTrainingRun,
@@ -34,7 +33,7 @@ class FakeStorageClient:
         self.uploads: list[tuple[str, bytes]] = []
 
     def upload_local_file(
-        self, path: str, file_path: Path, *, expires_in_minutes: Optional[int] = None
+        self, path: str, file_path: Path, *, expires_in_minutes: int | None = None
     ) -> dict:
         # Verify the file actually exists at upload time (it lives in a tempdir
         # that gets deleted on context exit — catches lifetime bugs).

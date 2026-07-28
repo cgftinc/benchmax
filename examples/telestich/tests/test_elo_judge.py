@@ -4,7 +4,6 @@ _make_slices (coverage), _rating_to_band (calibration), _bt_fit (recovers order)
 from collections import Counter
 
 import pytest
-
 from main import (
     ACCEPTABLE_EDGE,
     ELO_GREAT_RATING,

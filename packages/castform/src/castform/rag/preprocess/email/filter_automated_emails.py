@@ -32,9 +32,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
-
 from castform.rag.qa_generation.batch_processor import batch_process_sync
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Stage 1: heuristic prefilter

@@ -11,6 +11,7 @@ bundled pip wheel, so no external package service is on the per-trial path.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,9 +22,6 @@ from typing import override
 
 from harbor.agents.installed.mini_swe_agent import MiniSweAgent
 from harbor.environments.base import BaseEnvironment
-
-import shlex
-
 from harbor.models.agent.context import AgentContext
 
 MINI_SWE_AGENT_VERSION = "2.4.5"

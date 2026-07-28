@@ -17,13 +17,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fakes.chroma import (
-    FakeCollection,
-    NoFileFakeFiles,
-    make_query_result,
-    make_source,
-)
-
 from castform.rag.chunkers.models import Chunk
 from castform.rag.corpus.chroma.client import BM25_KEY
 from castform.rag.corpus.search_schema.search_exceptions import (
@@ -31,6 +24,12 @@ from castform.rag.corpus.search_schema.search_exceptions import (
     UnsupportedSearchModeError,
 )
 from castform.rag.corpus.search_schema.search_types import SearchSpec
+from fakes.chroma import (
+    FakeCollection,
+    NoFileFakeFiles,
+    make_query_result,
+    make_source,
+)
 
 
 def _fake_schema(*, has_bm25: bool, enabled: bool = True):

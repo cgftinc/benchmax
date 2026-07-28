@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from benchmax.auth import StaticBearerAuth
 from castform.model_auth import CastformModelAuth, model_auth_for_endpoint
 from castform.platform.config import PlatformConfig

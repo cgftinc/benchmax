@@ -6,7 +6,6 @@ from typing import Any
 
 import httpx
 import pytest
-
 from castform.platform.client import (
     LaunchArgSpec,
     RolloutClient,
@@ -19,7 +18,6 @@ from castform.platform.exceptions import (
     RolloutNotFound,
     RolloutServerError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Wire format: launch_training_run hits the right path and reads runId

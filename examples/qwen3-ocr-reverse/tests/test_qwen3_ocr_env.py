@@ -6,8 +6,7 @@ import asyncio
 from pathlib import Path
 
 from benchmax.envs import BaseRollout
-from main import Qwen3OCREnv
-from main import OCR_PROMPT_TEMPLATE
+from main import OCR_PROMPT_TEMPLATE, Qwen3OCREnv
 from qwen3_ocr_reward import infinity_doc_reward, segments
 
 
@@ -121,7 +120,7 @@ def test_convert_infinity_doc_rows_writes_images(tmp_path: Path, monkeypatch) ->
     monkeypatch.setenv("INFINITY_DOC_SPLIT", "train")
 
     class FakeImage:
-        def convert(self, mode: str) -> "FakeImage":
+        def convert(self, mode: str) -> FakeImage:
             assert mode == "RGB"
             return self
 

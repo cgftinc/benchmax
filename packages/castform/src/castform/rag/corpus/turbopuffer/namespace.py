@@ -11,12 +11,11 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from tqdm.auto import tqdm
-
 from castform.rag.chunkers.models import Chunk, ChunkCollection
 from castform.rag.corpus.search_schema.search_types import (
     HybridOptions,
 )
+from tqdm.auto import tqdm
 
 
 def resolve_content_attr(

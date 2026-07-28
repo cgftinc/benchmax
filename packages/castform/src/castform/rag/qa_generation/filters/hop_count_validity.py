@@ -17,16 +17,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from benchmax.auth import StaticBearerAuth
-from openai import AsyncOpenAI
-
 from castform.model_auth import (
     create_async_openai_client,
     create_openai_client,
     model_auth_for_endpoint,
 )
 from castform.rag.qa_generation.batch_processor import batch_process_async
-from castform.rag.qa_generation.pipeline_config import PipelineContext
 from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
+from castform.rag.qa_generation.pipeline_config import PipelineContext
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 

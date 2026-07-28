@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from castform.rag.qa_generation.pipeline_config import WikiPreprocessingConfig
 from castform.rag.qa_generation.corpus_profile import EntityPattern
+from castform.rag.qa_generation.pipeline_config import WikiPreprocessingConfig
 from castform.rag.qa_generation.wiki_builder import (
     WikiBuilder,
     WikiIndex,

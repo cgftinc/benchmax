@@ -3,7 +3,6 @@
 import math
 
 import pytest
-
 from benchmax.rewards import (
     citation_score,
     clip01,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from castform.rag.corpus.chroma.filter_mapper import to_chroma_filters
 from castform.rag.corpus.search_schema.search_exceptions import (
     InvalidFilterError,

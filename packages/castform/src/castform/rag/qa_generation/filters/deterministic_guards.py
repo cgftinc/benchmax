@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from castform.rag.qa_generation.pipeline_config import PipelineContext, DeterministicGuardsConfig
 from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
+from castform.rag.qa_generation.pipeline_config import DeterministicGuardsConfig, PipelineContext
 
 _STYLE_LABELS = frozenset({"natural", "keyword", "expert"})
 

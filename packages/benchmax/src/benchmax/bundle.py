@@ -8,7 +8,6 @@ import io
 import json
 import logging
 import pickle
-import re
 import site
 import sys
 import threading
@@ -20,11 +19,10 @@ from types import CodeType, ModuleType
 from typing import Any
 
 import cloudpickle
-from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name
-
 from benchmax.envs.environment import Environment
 from benchmax.envs.shared_types import RolloutAttempt
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +91,7 @@ class BundleMetadata:
         ).encode("utf-8")
 
     @classmethod
-    def from_json_bytes(cls, data: bytes) -> "BundleMetadata":
+    def from_json_bytes(cls, data: bytes) -> BundleMetadata:
         try:
             d = json.loads(data.decode("utf-8"))
         except (AttributeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -862,7 +860,7 @@ def _referenced_modules(pickled: bytes) -> set[str]:
         def __init__(self, *a: Any, **kw: Any) -> None:
             pass
 
-        def __call__(self, *a: Any, **kw: Any) -> "_Stub":
+        def __call__(self, *a: Any, **kw: Any) -> _Stub:
             return self
 
         def __reduce__(self) -> tuple:

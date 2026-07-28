@@ -12,8 +12,6 @@ import random
 from collections.abc import Callable
 from typing import Any, cast
 
-from tqdm.auto import tqdm
-
 from castform.rag.chunkers.models import Chunk, ChunkCollection
 from castform.rag.corpus.search_schema.search_exceptions import (
     InvalidSearchSpecError,
@@ -28,6 +26,7 @@ from castform.rag.corpus.search_schema.search_types import (
     SearchSpec,
     validate_search_spec_shape,
 )
+from tqdm.auto import tqdm
 
 from .client import ChromaClient
 from .files import FileAwareness

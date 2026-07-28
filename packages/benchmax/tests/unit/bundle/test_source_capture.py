@@ -14,10 +14,9 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import pytest
-
 from benchmax.bundle import (
     BundlingError,
     _get_source,
@@ -75,7 +74,7 @@ def test_exec_defined_class_has_no_introspectable_source() -> None:
         "    async def create_dataset(self, *a, **k): raise NotImplementedError\n"
         "    async def compute_reward(self, *a, **k): return {'score': 0.0}\n"
     )
-    namespace: Dict[str, Any] = {
+    namespace: dict[str, Any] = {
         "__builtins__": __builtins__,
         "__name__": "__modal_generated_env__",
     }

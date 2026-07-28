@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, Mapping, Sequence
+from typing import Literal
 
+from .judge import Judge, JudgeError
 from .prompts import (
     build_rubric_evaluation_prompt,
     build_rubric_ranking_prompt,
 )
-from .judge import Judge, JudgeError
 
 logger = logging.getLogger(__name__)
 

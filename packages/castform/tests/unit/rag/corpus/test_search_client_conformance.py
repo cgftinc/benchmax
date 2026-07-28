@@ -6,7 +6,6 @@ import inspect
 import pickle
 
 import cloudpickle
-
 from castform.rag.corpus.chroma.search import ChromaSearch
 from castform.rag.corpus.embed import OpenAIEmbedder
 from castform.rag.corpus.pinecone.search import PineconeSearch

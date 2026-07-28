@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from benchmax.auth import StaticBearerAuth
 from benchmax.rewards import Judge
 

@@ -4,7 +4,6 @@ import dataclasses
 import sys
 
 import pytest
-
 from benchmax.bundle import (
     Bundle,
     BundleMetadata,

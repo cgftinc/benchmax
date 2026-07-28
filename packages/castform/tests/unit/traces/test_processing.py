@@ -1,7 +1,6 @@
 """Tests for the generic trace processing pipeline."""
 
 import pytest
-
 from castform.traces.adapter import (
     NormalizedTrace,
     ToolCall,
@@ -22,7 +21,6 @@ from castform.traces.processing import (
     filter_tool_result_relay,
     split_dataset,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

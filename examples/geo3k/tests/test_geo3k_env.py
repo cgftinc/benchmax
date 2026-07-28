@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import pytest
-
 from benchmax.envs.base import BaseRollout
-from main import Geo3KDataset
-from main import Geo3KEnv
+from main import Geo3KDataset, Geo3KEnv
 
 
 @pytest.mark.asyncio
@@ -95,10 +93,9 @@ async def test_zoom_tool_returns_an_upscaled_crop_as_content_parts(tmp_path) -> 
     import base64
     import io
 
-    from PIL import Image
-
     from benchmax.envs.shared_types import Example
     from main import Geo3KEnv
+    from PIL import Image
 
     image = Image.new("RGB", (200, 100), "white")
     image.putpixel((190, 90), (255, 0, 0))

@@ -11,16 +11,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
-from openai import AsyncOpenAI, BadRequestError, OpenAIError
-from openai.types.chat import (
-    ChatCompletion,
-    ChatCompletionAssistantMessageParam,
-    ChatCompletionMessage,
-    ChatCompletionMessageFunctionToolCall,
-    ChatCompletionMessageFunctionToolCallParam,
-    ChatCompletionToolMessageParam,
-)
-
+from benchmax.auth import ModelRequestContext
 from benchmax.envs.base.dataset import JsonRow
 from benchmax.envs.base.openai_types import Message, Messages, Tool
 from benchmax.envs.dataset import Dataset
@@ -33,7 +24,15 @@ from benchmax.envs.shared_types import (
     RolloutFailure,
     RolloutRequest,
 )
-from benchmax.auth import ModelRequestContext
+from openai import AsyncOpenAI, BadRequestError, OpenAIError
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionMessage,
+    ChatCompletionMessageFunctionToolCall,
+    ChatCompletionMessageFunctionToolCallParam,
+    ChatCompletionToolMessageParam,
+)
 
 __all__ = ["BaseEnv", "BaseRollout"]
 

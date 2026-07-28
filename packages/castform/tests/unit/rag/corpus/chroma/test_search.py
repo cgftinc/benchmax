@@ -6,7 +6,6 @@ import pickle
 
 import cloudpickle
 import pytest
-
 from castform.rag.corpus.chroma.search import ChromaSearch
 from castform.rag.corpus.search_schema.search_exceptions import (
     LocalEmbeddingDownloadDisallowedError,

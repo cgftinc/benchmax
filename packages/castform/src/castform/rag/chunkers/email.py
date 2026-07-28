@@ -16,7 +16,11 @@ from datetime import datetime
 from pathlib import Path
 
 from castform.rag.chunkers.models import Chunk, ChunkCollection
-from castform.rag.preprocess.email.schema import date_yyyy_mm_dd, extract_participants, validate_rows
+from castform.rag.preprocess.email.schema import (
+    date_yyyy_mm_dd,
+    extract_participants,
+    validate_rows,
+)
 
 SHARED_PREFIX_THRESHOLD = 4
 CONTEXT_TAIL_FOR_BRANCH = 3

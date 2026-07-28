@@ -8,9 +8,8 @@ import dataclasses
 import types
 from pathlib import Path
 
-import pytest
-
 import castform.cli.scaffold as scaffold_pkg
+import pytest
 
 from ._scaffold import discover_env_class, load_module
 

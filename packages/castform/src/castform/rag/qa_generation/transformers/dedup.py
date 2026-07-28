@@ -11,8 +11,8 @@ import re
 import threading
 from dataclasses import dataclass
 
-from castform.rag.qa_generation.pipeline_config import PipelineContext
 from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
+from castform.rag.qa_generation.pipeline_config import PipelineContext
 
 logger = logging.getLogger(__name__)
 

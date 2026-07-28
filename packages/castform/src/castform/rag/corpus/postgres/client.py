@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import httpx
-
 from castform.platform.credentials import TokenProvider, runtime_platform_bearer
 
 from .exceptions import (
@@ -162,7 +161,7 @@ class CorpusClient:
 
             return response
 
-    async def __aenter__(self) -> "CorpusClient":
+    async def __aenter__(self) -> CorpusClient:
         return self
 
     async def __aexit__(self, *args) -> None:

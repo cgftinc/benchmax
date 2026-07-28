@@ -9,7 +9,6 @@ import time
 
 import cloudpickle
 import pytest
-
 from castform.platform import credentials
 from castform.platform.credentials import (
     as_token_provider,

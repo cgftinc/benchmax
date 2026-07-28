@@ -13,7 +13,6 @@ Run: uv run pytest tests/integration/platform/test_seam_smoke.py -v
 import os
 
 import pytest
-
 from benchmax.bundle import dump_bundle
 from benchmax.envs import BaseEnv, Example, JsonlDataset, canonical_example_id
 from castform.platform.client import RolloutClient

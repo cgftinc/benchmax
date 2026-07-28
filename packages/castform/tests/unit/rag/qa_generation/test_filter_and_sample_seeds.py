@@ -8,8 +8,8 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from castform.rag.chunkers.models import Chunk, ChunkCollection
-from castform.rag.qa_generation.pipeline import _filter_and_sample_seeds
 from castform.rag.qa_generation.corpus_profile import CorpusMetadataCensus, CorpusProfile
+from castform.rag.qa_generation.pipeline import _filter_and_sample_seeds
 
 
 def _make_census() -> CorpusMetadataCensus:

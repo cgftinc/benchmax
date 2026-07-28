@@ -16,13 +16,11 @@ import asyncio
 import base64
 import io
 import json
+import os
 import random
 import sys
-import uuid
-
-
-import os
 import time
+import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -32,14 +30,13 @@ from benchmax.envs import (
     BaseRollout,
     DatasetSplit,
     Example,
-    JsonRow,
     JsonlDataset,
+    JsonRow,
     Tool,
     canonical_example_id,
 )
 from benchmax.envs.base import resolve_dataset_path
 from qwen3_ocr_reward import infinity_doc_reward
-
 
 SYSTEM_PROMPT = ""
 

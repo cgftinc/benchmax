@@ -9,8 +9,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from benchmax.auth import StaticBearerAuth
-from openai import AsyncOpenAI
-
 from castform.model_auth import (
     create_async_openai_client,
     create_openai_client,
@@ -18,17 +16,18 @@ from castform.model_auth import (
 )
 from castform.rag.chunkers.models import Chunk
 from castform.rag.qa_generation.batch_processor import batch_process_async
+from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 from castform.rag.qa_generation.pipeline_config import (
     DEFAULT_RETRIEVAL_JUDGE_SYSTEM_PROMPT,
     DEFAULT_RETRIEVAL_JUDGE_USER_TEMPLATE,
     PipelineContext,
     RetrievalLLMFilterConfig,
 )
-from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 from castform.rag.qa_generation.retrieval_query import (
     QueryRewriteConfig,
     resolve_retrieval_query,
 )
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 

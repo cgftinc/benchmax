@@ -12,19 +12,17 @@ import json
 import os
 import time
 import types
+import urllib.error
+import urllib.request
 from typing import Any
 
-from pydantic import BaseModel
-
+from minisweagent.exceptions import FormatError
 from minisweagent.models.utils.actions_toolcall import (
     BASH_TOOL,
     format_toolcall_observation_messages,
     parse_toolcall_actions,
 )
-from minisweagent.exceptions import FormatError
-
-import urllib.error
-import urllib.request
+from pydantic import BaseModel
 
 
 class CastformModelConfig(BaseModel):

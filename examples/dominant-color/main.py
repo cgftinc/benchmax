@@ -148,7 +148,7 @@ class DominantColorEnv(BaseEnv):
             noise_sigma=self._noise_sigma,
         )
 
-    def rollout_context(self, rollout_id: str, example: Any) -> "_SequenceContext":
+    def rollout_context(self, rollout_id: str, example: Any) -> _SequenceContext:
         return _SequenceContext(self, rollout_id, example)
 
     async def list_tools(self) -> list[Tool]:

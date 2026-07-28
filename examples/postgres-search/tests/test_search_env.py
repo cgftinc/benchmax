@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, patch
 
 import cloudpickle
 import pytest
-
 from benchmax.envs import BaseRollout, StaticBearerAuth
 from benchmax.rewards import Judge, RubricEvaluation
 from castform.rag.corpus.search_client import SearchClient

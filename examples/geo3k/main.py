@@ -16,16 +16,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import sys
-import uuid
-from collections.abc import Iterable, Mapping
-
-
 import base64
 import io
 import logging
 import re
+import sys
 import urllib.request
+import uuid
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -109,7 +107,7 @@ class Geo3KEnv(BaseEnv):
             rows = rows.select(range(min(limit, len(rows))))
         return Geo3KDataset(rows, system_prompt=self.system_prompt)
 
-    def rollout_context(self, rollout_id: str, example: Any) -> "_DiagramContext":
+    def rollout_context(self, rollout_id: str, example: Any) -> _DiagramContext:
         return _DiagramContext(self, rollout_id, example)
 
     async def list_tools(self) -> list[Tool]:

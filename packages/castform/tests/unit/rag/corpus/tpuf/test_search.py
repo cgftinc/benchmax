@@ -6,7 +6,6 @@ import pickle
 
 import cloudpickle
 import pytest
-
 from castform.rag.corpus.search_client import SearchClient
 from castform.rag.corpus.turbopuffer.search import TpufSearch
 

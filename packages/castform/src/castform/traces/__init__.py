@@ -1,5 +1,5 @@
 from .adapter import normalize_message
-from .pipeline import TracesPipeline, ImportanceFilterConfig
+from .pipeline import ImportanceFilterConfig, TracesPipeline
 
 __all__ = [
     "TracesPipeline",

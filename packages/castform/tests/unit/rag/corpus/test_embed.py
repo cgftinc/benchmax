@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import cloudpickle
 import pytest
-
 from benchmax.auth import InjectedAuth, StaticBearerAuth, bind_model_auth
 from castform.rag.corpus.embed import DEFAULT_EMBED_MODEL, OpenAIEmbedder
 

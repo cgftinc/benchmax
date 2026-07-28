@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from castform.utils.checkpoint import CheckpointBase
 from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
+from castform.utils.checkpoint import CheckpointBase
 
 logger = logging.getLogger(__name__)
 

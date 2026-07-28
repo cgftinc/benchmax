@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-
 from castform.rag.qa_generation.corpus_profile import (
     EntityPattern,
     _score_entity_quality,

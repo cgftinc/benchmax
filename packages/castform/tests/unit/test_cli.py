@@ -7,7 +7,6 @@ import base64
 import json
 
 import pytest
-
 from castform import cli, profile_config
 from castform.platform import browser, credentials, login
 from castform.platform.device_auth import DeviceAuthError

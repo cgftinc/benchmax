@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-
 from castform.traces.http import request_with_retry
 
 

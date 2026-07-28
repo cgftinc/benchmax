@@ -7,21 +7,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-
 from benchmax.auth import StaticBearerAuth
+from benchmax.envs import RolloutRequest
+from benchmax.envs.harbor import (
+    HarborEnv,
+    HarborTrialTemplate,
+    ModalCredentials,
+)
 from harbor import (
     DatasetConfig,
     EnvironmentType,
     TrialAgentConfig,
     TrialEnvironmentConfig,
     TrialVerifierConfig,
-)
-
-from benchmax.envs import RolloutRequest
-from benchmax.envs.harbor import (
-    HarborEnv,
-    HarborTrialTemplate,
-    ModalCredentials,
 )
 
 pytestmark = pytest.mark.integration

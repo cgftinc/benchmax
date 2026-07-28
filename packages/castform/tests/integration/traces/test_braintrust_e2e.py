@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 
 import pytest
-
 from castform.traces.adapter import TraceCredentials
 from castform.traces.braintrust.adapter import BraintrustTraceAdapter
 

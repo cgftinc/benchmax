@@ -11,9 +11,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import pytest
-
 import castform.rag.qa_generation.batch_processor as bp
+import pytest
 from castform.rag.qa_generation.batch_processor import batch_process_async
 from castform.rag.qa_generation.pipeline_config import PipelineContext
 

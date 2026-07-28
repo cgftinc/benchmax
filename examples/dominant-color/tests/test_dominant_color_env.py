@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from benchmax.envs.base import BaseRollout
 from main import DominantColorEnv
 
@@ -128,9 +127,8 @@ def test_tile_images_are_dominated_by_the_answer_color() -> None:
     import base64
     import io
 
-    from PIL import Image
-
     from main import PALETTE, render_tile_image_uri
+    from PIL import Image
 
     uri = render_tile_image_uri(
         "teal",

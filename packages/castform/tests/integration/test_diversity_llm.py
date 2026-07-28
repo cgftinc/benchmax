@@ -9,7 +9,6 @@ Credentials: set CASTFORM_LLM_URL and CASTFORM_API_KEY (or load via .env.test).
 import os
 
 import pytest
-
 from benchmax.auth import StaticBearerAuth
 from benchmax.rewards import (
     ClusterResult,

@@ -1,10 +1,9 @@
 from pathlib import Path
 
+from aime_agent import MINI_SWE_AGENT_VERSION
 from benchmax.bundle import dump_bundle, load_bundle
 from benchmax.envs.harbor import BundledHarborAgent, ModalCredentials
 from harbor import EnvironmentType
-
-from aime_agent import MINI_SWE_AGENT_VERSION
 from main import AimeMiniSweHarborEnv
 
 

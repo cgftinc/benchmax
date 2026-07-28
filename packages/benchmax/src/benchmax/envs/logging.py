@@ -27,9 +27,9 @@ Example::
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from contextlib import AbstractContextManager
 from contextvars import ContextVar
-from typing import Iterable
 
 __all__ = [
     "rollout_context",

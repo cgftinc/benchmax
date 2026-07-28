@@ -23,21 +23,21 @@ class FieldPredicate:
 class AndPredicate:
     """Logical AND over child predicates."""
 
-    clauses: tuple["FilterPredicate", ...]
+    clauses: tuple[FilterPredicate, ...]
 
 
 @dataclass(frozen=True)
 class OrPredicate:
     """Logical OR over child predicates."""
 
-    clauses: tuple["FilterPredicate", ...]
+    clauses: tuple[FilterPredicate, ...]
 
 
 @dataclass(frozen=True)
 class NotPredicate:
     """Logical NOT over one child predicate."""
 
-    clause: "FilterPredicate"
+    clause: FilterPredicate
 
 
 FilterPredicate: TypeAlias = FieldPredicate | AndPredicate | OrPredicate | NotPredicate

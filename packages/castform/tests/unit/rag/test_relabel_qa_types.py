@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from castform.rag.qa_generation.pipeline import _relabel_qa_types
 from castform.rag.qa_generation.generated_qa import GeneratedQA
+from castform.rag.qa_generation.pipeline import _relabel_qa_types
 
 
 def _make_item(

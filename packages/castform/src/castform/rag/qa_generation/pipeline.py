@@ -12,29 +12,17 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from openai import (
-    APIConnectionError,
-    APIError,
-    APITimeoutError,
-    BadRequestError,
-    OpenAI,
-    RateLimitError,
+from castform.model_auth import (
+    create_openai_client,
+    model_auth_for_endpoint,
 )
-from tqdm.auto import tqdm as _tqdm
-
+from castform.platform.client import RolloutClient
 from castform.rag.corpus.postgres.source import PostgresChunkSource
 from castform.rag.qa_generation.auto_tune import (
     auto_tune,
     compute_batch_heuristics,
     emit_corpus_warnings,
     should_early_stop,
-)
-from castform.rag.qa_generation.pipeline_config import (
-    PipelineContext,
-    PipelineConfig,
-    RunStats,
-    GenerationTask,
-    load_pipeline_config,
 )
 from castform.rag.qa_generation.corpus_profile import (
     CorpusProfile,
@@ -63,6 +51,13 @@ from castform.rag.qa_generation.metrics import (
     PipelineMetrics,
     stage_timer,
 )
+from castform.rag.qa_generation.pipeline_config import (
+    GenerationTask,
+    PipelineConfig,
+    PipelineContext,
+    RunStats,
+    load_pipeline_config,
+)
 from castform.rag.qa_generation.protocols import (
     ChunkLinker,
     EvaluatorFilter,
@@ -76,11 +71,15 @@ from castform.rag.qa_generation.scoring import (
 )
 from castform.rag.qa_generation.transformers import BaseQuestionTransformer
 from castform.rag.qa_generation.transformers.dedup import IncrementalDeduplicator
-from castform.platform.client import RolloutClient
-from castform.model_auth import (
-    create_openai_client,
-    model_auth_for_endpoint,
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    BadRequestError,
+    OpenAI,
+    RateLimitError,
 )
+from tqdm.auto import tqdm as _tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -2047,12 +2046,12 @@ class Pipeline:
         """
         from pathlib import Path
 
-        from castform.rag.qa_generation.pipeline_config import (
-            allocate_largest_remainder_generic,
-        )
         from castform.rag.qa_generation.checkpoint import (
             CheckpointManager,
             compute_config_hash,
+        )
+        from castform.rag.qa_generation.pipeline_config import (
+            allocate_largest_remainder_generic,
         )
 
         cfg = self.cfg

@@ -10,28 +10,27 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from openai import AsyncOpenAI, OpenAI
-from tqdm.auto import tqdm
-
 from castform.model_auth import (
     create_async_openai_client,
     model_auth_for_endpoint,
 )
 from castform.rag.qa_generation.anchor_selector import AnchorBundle
 from castform.rag.qa_generation.batch_processor import BatchResult, batch_process_async
-from castform.rag.qa_generation.pipeline_config import (
-    PipelineContext,
-    GenerationTask,
-    LLMDirectGenerationConfig,
-)
 from castform.rag.qa_generation.generated_qa import GeneratedQA
 from castform.rag.qa_generation.helpers import render_template
 from castform.rag.qa_generation.models import QADataPoint, ReferenceChunk
+from castform.rag.qa_generation.pipeline_config import (
+    GenerationTask,
+    LLMDirectGenerationConfig,
+    PipelineContext,
+)
 from castform.rag.qa_generation.style_controls import (
     allocate_largest_remainder,
     get_style_distribution,
     style_sequence_from_counts,
 )
+from openai import AsyncOpenAI, OpenAI
+from tqdm.auto import tqdm
 
 logger = logging.getLogger(__name__)
 

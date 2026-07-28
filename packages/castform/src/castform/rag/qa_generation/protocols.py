@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from castform.rag.qa_generation.anchor_selector import AnchorBundle
-    from castform.rag.qa_generation.pipeline_config import PipelineContext, GenerationTask
     from castform.rag.qa_generation.generated_qa import GeneratedQA
+    from castform.rag.qa_generation.pipeline_config import GenerationTask, PipelineContext
 
 
 @runtime_checkable

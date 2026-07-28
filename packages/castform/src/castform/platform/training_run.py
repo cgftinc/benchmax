@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmax.bundle import Bundle, bundle_digest
+
 from castform import config
 
 from .client import StorageClient

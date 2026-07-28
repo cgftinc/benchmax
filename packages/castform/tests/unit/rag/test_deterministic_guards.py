@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from castform.rag.qa_generation.pipeline_config import DeterministicGuardsConfig
 from castform.rag.qa_generation.filters.deterministic_guards import (
     DeterministicGuardsFilter,
     _jaccard,
@@ -12,6 +11,7 @@ from castform.rag.qa_generation.filters.deterministic_guards import (
     _word_set,
 )
 from castform.rag.qa_generation.generated_qa import GeneratedQA
+from castform.rag.qa_generation.pipeline_config import DeterministicGuardsConfig
 
 
 def _make_context() -> MagicMock:

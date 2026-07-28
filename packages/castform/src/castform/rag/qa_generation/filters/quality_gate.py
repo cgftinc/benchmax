@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from castform.rag.qa_generation.pipeline_config import PipelineContext, QualityGateConfig
 from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
+from castform.rag.qa_generation.pipeline_config import PipelineContext, QualityGateConfig
 
 # --------------------------------------------------------------------------- #
 # Check 1 — Fragment detection signals

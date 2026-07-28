@@ -5,7 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
 from castform.rag.corpus.turbopuffer.namespace import TpufNamespace
 
 _HAS_BM25_TRUNCATION = hasattr(TpufNamespace, "_TPUF_BM25_MAX_QUERY_LEN")

@@ -9,7 +9,6 @@ from benchmax.envs.harbor import (
     ModalCredentials,
 )
 from harbor import EnvironmentType, TrialVerifierConfig
-
 from harvey_agent import HarveyHarnessAgent
 from main import (
     HarveyLabHarborEnv,

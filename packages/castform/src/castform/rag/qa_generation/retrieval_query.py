@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from dataclasses import dataclass
-from typing import Any, MutableMapping
+from typing import Any
 
 from castform.rag.qa_generation.query_rewriter import heuristic_query_rewrite
 from castform.rag.qa_generation.style_controls import (

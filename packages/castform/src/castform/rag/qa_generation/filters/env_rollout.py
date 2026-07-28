@@ -8,14 +8,13 @@ import re
 from typing import Any
 
 from benchmax.auth import StaticBearerAuth
-
 from castform.model_auth import create_openai_client, model_auth_for_endpoint
-from castform.rag.qa_generation.pipeline_config import (
-    PipelineContext,
-    LLMEnvFilterConfig,
-)
-from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 from castform.platform.client import RolloutClient
+from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
+from castform.rag.qa_generation.pipeline_config import (
+    LLMEnvFilterConfig,
+    PipelineContext,
+)
 
 logger = logging.getLogger(__name__)
 
