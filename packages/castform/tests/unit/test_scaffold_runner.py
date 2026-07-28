@@ -296,8 +296,8 @@ def test_launch_confirmed_spreads_uploaded_paths(mod, tmp_path, monkeypatch):
     assert "type" not in (launched["launcher_args"] or {})
     assert "name" not in (launched["launcher_args"] or {})
     assert (
-        launched["launcher_args"]["max_rollout_len"]
-        == mod.LAUNCH_CONFIG["max_rollout_len"]
+        launched["launcher_args"]["max_context_len"]
+        == mod.LAUNCH_CONFIG["max_context_len"]
     )
 
 

@@ -60,7 +60,7 @@ For Harbor, add the selected provider extra explicitly, such as
 
 Review `LAUNCH_CONFIG` in source. In particular:
 
-- `max_rollout_len` is the whole-rollout token budget, not one response;
+- `max_context_len` is the whole-rollout prompt-plus-response token budget;
 - keep trainer turn/tool limits compatible with the environment's own limits;
 - start with modest epochs and judge the eval curve, not only train reward;
 - use `TrainerClient.list_launch_args()` when you need the live accepted schema

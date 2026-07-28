@@ -240,7 +240,7 @@ VALIDATE_CONFIG = {
 }
 
 LAUNCH_CONFIG = {
-    "max_rollout_len": 16_384,
+    "max_context_len": 16_384,
     "num_epochs": 2,
 }
 

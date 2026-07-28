@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import logging
@@ -373,7 +372,7 @@ class TrainerClient:
                 Omit it when the environment resolves data at runtime.
             name: Optional name for the training run
             launcher_args: Extra launcher args forwarded to the server
-                (e.g. {"max_rollout_len": 4000}). Bundle and optional dataset
+                (e.g. {"max_context_len": 4000}). Bundle and optional dataset
                 path parameters always take precedence over this mapping.
         Returns:
             The training run ID.
@@ -676,12 +675,8 @@ class RolloutClient:
     auth-service-minted JWTs — never a raw platform key). The proxy is mounted at
     ``/v1/rollout/batch/stream``.
 
-    Supports two ways to provide the environment:
-
-    1. **Blob paths** (default) — pass ``env_cls_path`` and ``env_metadata_path``
-       pointing to already-uploaded blobs.
-    2. **Raw bytes** — pass ``env_cls_bytes`` and ``env_metadata_bytes`` with the
-       raw file contents; they will be base64-encoded and sent inline.
+    Environment artifacts use the same already-uploaded ``env_cls_path`` and
+    ``env_metadata_path`` as trainer launch.
 
     Args:
         api_key:    Platform API key forwarded as the Bearer token
@@ -717,47 +712,20 @@ class RolloutClient:
 
     @staticmethod
     def _build_env(
-        env_cls_path: str | None,
-        env_metadata_path: str | None,
-        env_cls_bytes: bytes | None,
-        env_metadata_bytes: bytes | None,
+        env_cls_path: str,
+        env_metadata_path: str,
     ) -> dict[str, str]:
-        """Build the ``env`` dict for the request payload.
-
-        Exactly one of (paths) or (bytes) must be provided.
-        """
-        has_paths = env_cls_path is not None and env_metadata_path is not None
-        has_bytes = env_cls_bytes is not None and env_metadata_bytes is not None
-
-        if has_paths and has_bytes:
-            raise ValueError(
-                "Provide either blob paths or raw bytes for the env, not both."
-            )
-        if not has_paths and not has_bytes:
-            raise ValueError(
-                "Provide either (env_cls_path, env_metadata_path) or "
-                "(env_cls_bytes, env_metadata_bytes)."
-            )
-
-        if has_paths:
-            return {
-                "env_cls_path": env_cls_path,  # type: ignore[dict-item]
-                "env_metadata_path": env_metadata_path,  # type: ignore[dict-item]
-            }
-
         return {
-            "env_cls_bytes": base64.b64encode(env_cls_bytes).decode(),  # type: ignore[arg-type]
-            "env_metadata_bytes": base64.b64encode(env_metadata_bytes).decode(),  # type: ignore[arg-type]
+            "env_cls_path": env_cls_path,
+            "env_metadata_path": env_metadata_path,
         }
 
     def run_group(
         self,
         *,
         samples: int,
-        env_cls_path: str | None = None,
-        env_metadata_path: str | None = None,
-        env_cls_bytes: bytes | None = None,
-        env_metadata_bytes: bytes | None = None,
+        env_cls_path: str,
+        env_metadata_path: str,
         dataset_path: str | None = None,
         split: str = "eval",
         model: str = _DEFAULT_ROLLOUT_MODEL,
@@ -765,9 +733,7 @@ class RolloutClient:
         verbose: bool = True,
     ) -> list[dict[str, Any]]:
         """Run the first environment-created Dataset item as one sibling group."""
-        env = self._build_env(
-            env_cls_path, env_metadata_path, env_cls_bytes, env_metadata_bytes
-        )
+        env = self._build_env(env_cls_path, env_metadata_path)
         bearer = self._token_provider()
 
         payload: dict[str, Any] = {
@@ -812,10 +778,17 @@ class RolloutClient:
                 elif etype == "rollout_completed":
                     completed.append(event)
                 elif etype == "worker_error":
-                    if verbose:
-                        print(_err(f"  worker_error: {str(event.get('error'))[:200]}"))
+                    raise RolloutError(
+                        str(event.get("error") or "hosted rollout worker failed")[:300],
+                        500,
+                    )
                 elif etype == "error":
                     raise RolloutError(str(event.get("error"))[:300], 500)
-                elif etype in ("batch_completed", "cancelled"):
+                elif etype == "cancelled":
+                    raise RolloutError(
+                        str(event.get("error") or "hosted rollout was cancelled")[:300],
+                        500,
+                    )
+                elif etype == "batch_completed":
                     break
         return completed

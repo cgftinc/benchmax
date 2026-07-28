@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,10 @@ from castform.platform.training_run import UploadedTrainingRun
 
 __all__ = ["ValidationReport", "validate_environment"]
 
+_VALIDATION_NON_ERROR_TERMINATIONS = Environment.scorable_termination_reasons | {
+    "output_exceeded"
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ValidationReport:
@@ -25,11 +29,13 @@ class ValidationReport:
 
     local: dict[str, RolloutOutcome]
     remote: dict[str, RolloutOutcome] | None = None
+    remote_errors: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
-        return _outcomes_finished(self.local) and (
-            self.remote is None or _outcomes_finished(self.remote)
+        return _outcomes_executed(self.local) and (
+            self.remote is None
+            or (not self.remote_errors and _outcomes_executed(self.remote))
         )
 
     def __bool__(self) -> bool:
@@ -113,17 +119,35 @@ async def validate_environment(
             )
         zero_rewards = {str(key): 0.0 for key in env.reward_keys}
         remote = {}
+        remote_errors: dict[str, str] = {}
         for index, event in enumerate(events):
             rollout_id = str(event.get("rollout_id") or f"remote-{index}")
+            if event.get("success") is not True:
+                remote_errors[rollout_id] = str(
+                    event.get("error") or "rollout produced no usable model trace"
+                )
             remote[rollout_id] = RolloutOutcome(
                 rewards=dict(event.get("rewards") or zero_rewards),
                 termination_reason=str(event.get("termination_reason") or "unknown"),
             )
+    else:
+        remote_errors = {}
 
-    return ValidationReport(local=local, remote=remote)
-
-
-def _outcomes_finished(outcomes: dict[str, RolloutOutcome]) -> bool:
-    return bool(outcomes) and all(
-        outcome.termination_reason == "finished" for outcome in outcomes.values()
+    return ValidationReport(
+        local=local,
+        remote=remote,
+        remote_errors=remote_errors,
     )
+
+
+def _outcomes_executed(outcomes: dict[str, RolloutOutcome]) -> bool:
+    """Accept completed work and intentional budgets; reject execution defects."""
+
+    return bool(outcomes) and all(
+        _termination_is_non_error(outcome.termination_reason)
+        for outcome in outcomes.values()
+    )
+
+
+def _termination_is_non_error(reason: str) -> bool:
+    return reason.strip().lower() in _VALIDATION_NON_ERROR_TERMINATIONS

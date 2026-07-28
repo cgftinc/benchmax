@@ -115,9 +115,9 @@ VALIDATE_CONFIG = {
 }
 
 LAUNCH_CONFIG = {
-    # Total tokens across the WHOLE rollout. Single-turn answers are short; raise it
-    # if your task needs long outputs (a truncated rollout is dropped from the loss).
-    "max_rollout_len": 4096,
+    # Total prompt + response tokens across the WHOLE rollout. Single-turn answers
+    # are short; raise it if your task needs longer prompts or tool transcripts.
+    "max_context_len": 4096,
     "num_epochs": 2,  # eval tends to peak before the overfit tail; keep epochs modest
     # "type": "simple",  # GPU pool (gpu4 for 4B / gpu8 for 35B); "simple-cpu" = smoke
 }

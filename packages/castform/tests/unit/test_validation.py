@@ -78,10 +78,16 @@ async def test_validation_rejects_an_empty_dataset() -> None:
     [
         (("finished", "finished"), True),
         (("finished", "harness_error"), False),
-        (("context_exceeded", "finished"), False),
+        (("context_exceeded", "finished"), True),
+        (("max_turns_exceeded", "tool_budget_exceeded"), True),
+        (("output_exceeded", "finished"), True),
+        (("harness_timeout", "finished"), False),
+        (("model_error", "finished"), False),
+        (("unknown", "finished"), False),
+        (("killed", "finished"), False),
     ],
 )
-async def test_validation_requires_every_outcome_to_finish(
+async def test_validation_accepts_intentional_budgets_but_rejects_errors(
     termination_reasons: tuple[str, str],
     expected_ok: bool,
 ) -> None:
@@ -104,6 +110,46 @@ async def test_validation_requires_every_outcome_to_finish(
 
     assert report.ok is expected_ok
     assert bool(report) is expected_ok
+
+
+async def test_remote_validation_rejects_a_finished_event_without_a_trace(
+    monkeypatch,
+) -> None:
+    class FakeRolloutClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_group(self, **kwargs):
+            return [
+                {
+                    "rollout_id": "remote-0",
+                    "success": False,
+                    "error": "missing_model_trace",
+                    "termination_reason": "finished",
+                },
+                {
+                    "rollout_id": "remote-1",
+                    "success": True,
+                    "rewards": {"score": 1.0},
+                    "termination_reason": "context_exceeded",
+                },
+            ]
+
+    monkeypatch.setattr("castform.validation.RolloutClient", FakeRolloutClient)
+
+    report = await validate_environment(
+        RecordingEnvironment(),
+        model="test-model",
+        remote_assets=UploadedTrainingRun(
+            env_cls_path="envs/run/env-cls.pkl",
+            env_metadata_path="envs/run/env-metadata.json",
+        ),
+    )
+
+    assert not report.ok
+    assert report.remote_errors == {"remote-0": "missing_model_trace"}
+    assert report.remote is not None
+    assert report.remote["remote-1"].termination_reason == "context_exceeded"
 
 
 async def test_auth_binding_covers_dataset_creation_and_all_managed_purposes() -> None:

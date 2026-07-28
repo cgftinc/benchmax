@@ -15,6 +15,7 @@ from castform.platform.client import (
 )
 from castform.platform.exceptions import (
     AuthenticationError,
+    RolloutError,
 )
 
 # ---------------------------------------------------------------------------
@@ -88,13 +89,13 @@ def test_launch_training_run_surfaces_server_warnings():
             json={
                 "runId": "run-warn",
                 "warnings": [
-                    '"max_rollout_len" = 32000 exceeds soft cap of 16384; proceed with caution.'
+                    '"max_context_len" = 40000 exceeds soft cap of 32768; proceed with caution.'
                 ],
             },
         )
 
     trainer = _make_trainer_with_transport(handler)
-    with pytest.warns(UserWarning, match=r"max_rollout_len.*16384"):
+    with pytest.warns(UserWarning, match=r"max_context_len.*32768"):
         run_id = trainer.launch_training_run(
             env_cls_path="x/env-cls.pkl",
             env_metadata_path="x/env-metadata.json",
@@ -140,14 +141,14 @@ def test_launch_training_run_filters_reserved_paths_from_launcher_args():
         launcher_args={
             "env_cls_path": "sneaky",
             "dataset_path": "sneaky",
-            "max_rollout_len": 4000,
+            "max_context_len": 4000,
         },
     )
 
     # dataset_path was not supplied as a kwarg, so it must not appear at all.
     assert "dataset_path" not in captured["body"]["args"]
     assert captured["body"]["args"]["env_cls_path"] == "a"
-    assert captured["body"]["args"]["max_rollout_len"] == 4000
+    assert captured["body"]["args"]["max_context_len"] == 4000
 
 
 def test_launch_training_run_rejects_training_run_type_kwarg():
@@ -211,12 +212,12 @@ _SAMPLE_LAUNCH_ARGS = [
         "min": 0,
     },
     {
-        "name": "max_rollout_len",
-        "label": "max rollout length",
+        "name": "max_context_len",
+        "label": "max context length",
         "type": "integer",
         "required": False,
-        "description": "Total tokens generated across the whole rollout.",
-        "warnAbove": 16384,
+        "description": "Total prompt and response tokens across the whole rollout.",
+        "warnAbove": 32768,
     },
     {
         "name": "model",
@@ -250,7 +251,7 @@ def test_list_launch_args_hits_endpoint_and_parses_response():
 
     # warnAbove (camelCase from the API) maps to warn_above (snake_case in Python).
     msl = specs[1]
-    assert msl.warn_above == 16384
+    assert msl.warn_above == 32768
 
     model = specs[2]
     assert model.enum == ("Qwen/Qwen3-4B-Instruct-2507",)
@@ -274,8 +275,8 @@ def test_print_launch_args_prints_each_spec(capsys):
 
     out = capsys.readouterr().out
     assert "learning_rate" in out
-    assert "max_rollout_len" in out
-    assert "warn_above=16384" in out
+    assert "max_context_len" in out
+    assert "warn_above=32768" in out
     assert "Qwen/Qwen3-4B-Instruct-2507" in out
 
 
@@ -403,8 +404,8 @@ def test_run_group_posts_group_native_dataset_contract(monkeypatch):
     client = RolloutClient(api_key="k")
     events = client.run_group(
         samples=2,
-        env_cls_bytes=b"x",
-        env_metadata_bytes=b"y",
+        env_cls_path="env/cls.pkl",
+        env_metadata_path="env/meta.json",
         dataset_path="datasets/frozen",
         model="test-model",
         verbose=False,
@@ -422,9 +423,7 @@ def test_run_group_posts_group_native_dataset_contract(monkeypatch):
     assert events[1]["group_reward_error"] == "ValueError: boom"
 
 
-def test_run_group_ignores_worker_error(monkeypatch):
-    """A worker_error event (e.g. a stray empty-partition worker) is non-fatal:
-    run_group keeps the rollout_completed events instead of raising."""
+def test_run_group_rejects_worker_error(monkeypatch):
     monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
     import httpx as httpx_mod
 
@@ -460,12 +459,10 @@ def test_run_group_ignores_worker_error(monkeypatch):
     monkeypatch.setattr(httpx_mod, "stream", lambda *a, **k: _CM())
 
     client = RolloutClient(api_key="k")
-    events = client.run_group(
-        samples=2,
-        env_cls_bytes=b"x",
-        env_metadata_bytes=b"y",
-        verbose=False,
-    )
-    # worker_error didn't raise; both real rollouts came through.
-    assert len(events) == 2
-    assert all(e["success"] for e in events)
+    with pytest.raises(RolloutError, match="empty partition"):
+        client.run_group(
+            samples=2,
+            env_cls_path="env/cls.pkl",
+            env_metadata_path="env/meta.json",
+            verbose=False,
+        )
