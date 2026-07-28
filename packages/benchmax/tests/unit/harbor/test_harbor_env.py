@@ -297,9 +297,9 @@ def test_harbor_modal_environment_gets_benchmax_defaults(tmp_path: Path) -> None
     )
 
     assert env._trial.environment.kwargs == {
-        "app_name": "harbor-benchmax",
-        "sandbox_timeout_secs": 3600,
-        "sandbox_idle_timeout_secs": 1800,
+        "app_name": "harbor-hang-fix",
+        "sandbox_timeout_secs": 180,
+        "sandbox_idle_timeout_secs": 600,
     }
 
 

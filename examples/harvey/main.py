@@ -104,6 +104,9 @@ class HarveyLabHarborEnv(HarborEnv):
         max_agent_timeout_secs: float | None = None,
         max_concurrent_trials: int | None = 1000,
         eval_ratio: float = 0.1,
+        modal_app_name: str | None = None,
+        sandbox_timeout_secs: int | None = None,
+        sandbox_idle_timeout_secs: int | None = None,
     ) -> None:
         if not isinstance(judge_model, str) or not judge_model:
             raise ValueError("judge_model must be a non-empty string")
@@ -112,11 +115,30 @@ class HarveyLabHarborEnv(HarborEnv):
             raise ValueError("judge_concurrency must be positive")
         if not 0 < eval_ratio < 1:
             raise ValueError("eval_ratio must be in (0, 1)")
+        if modal_app_name is not None and not modal_app_name.strip():
+            raise ValueError("modal_app_name must be non-empty when provided")
+        for name, value in (
+            ("sandbox_timeout_secs", sandbox_timeout_secs),
+            ("sandbox_idle_timeout_secs", sandbox_idle_timeout_secs),
+        ):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            ):
+                raise ValueError(f"{name} must be a positive integer when provided")
 
         verifier_env = {
             **validated_verifier_env,
             "REWARDKIT_JUDGE": judge_model,
             "JUDGE_CONCURRENCY": str(judge_concurrency),
+        }
+        environment_kwargs = {
+            key: value
+            for key, value in {
+                "app_name": modal_app_name,
+                "sandbox_timeout_secs": sandbox_timeout_secs,
+                "sandbox_idle_timeout_secs": sandbox_idle_timeout_secs,
+            }.items()
+            if value is not None
         }
         super().__init__(
             dataset=DatasetConfig(name="harveyai/lab", ref="latest"),
@@ -130,7 +152,10 @@ class HarveyLabHarborEnv(HarborEnv):
                     ),
                     source=_AGENT_SOURCE,
                 ),
-                environment=TrialEnvironmentConfig(type=EnvironmentType.MODAL),
+                environment=TrialEnvironmentConfig(
+                    type=EnvironmentType.MODAL,
+                    kwargs=environment_kwargs,
+                ),
                 verifier=TrialVerifierConfig(env=verifier_env),
                 trials_dir=Path("/tmp/castform-harvey-harbor-trials"),
             ),
