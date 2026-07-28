@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from castform.cli import build_parser
+from castform.cli import build_parser, cli_version
 
 _GOLDEN = Path(__file__).parent / "cli_help.golden"
 
@@ -18,7 +18,8 @@ _GOLDEN = Path(__file__).parent / "cli_help.golden"
 def test_help_snapshot(monkeypatch):
     # Pin width so the wrapped help is identical across terminals / CI.
     monkeypatch.setenv("COLUMNS", "80")
-    got = build_parser().format_help()
+    # Mask the live version so bumps don't churn the golden.
+    got = build_parser().format_help().replace(f"v{cli_version()}", "v<version>")
     if os.environ.get("CASTFORM_UPDATE_GOLDEN"):
         _GOLDEN.write_text(got, encoding="utf-8")
     assert got == _GOLDEN.read_text(encoding="utf-8"), (

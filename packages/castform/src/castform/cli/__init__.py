@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from importlib.metadata import version as _distribution_version
 
 from castform.cli import (
     _auth,
@@ -25,15 +26,27 @@ from castform.cli import (
 # Re-export auth handlers — tests/unit/test_cli.py imports them as cli._cmd_*.
 from castform.cli._auth import _cmd_login, _cmd_logout, _cmd_whoami
 
-__all__ = ["build_parser", "main", "_cmd_login", "_cmd_logout", "_cmd_whoami"]
+__all__ = ["build_parser", "cli_version", "main", "_cmd_login", "_cmd_logout", "_cmd_whoami"]
+
+
+def cli_version() -> str:
+    """Version of the installed ``castform`` distribution."""
+    return _distribution_version("castform")
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the full castform parser. Tests snapshot its ``format_help()``."""
-    parser = argparse.ArgumentParser(prog="castform", description="Castform CLI")
+    ver = cli_version()
+    parser = argparse.ArgumentParser(prog="castform", description=f"Castform CLI v{ver}")
     parser.add_argument(
         "--profile",
         help="Use a named Castform profile for this command",
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"castform v{ver}",
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="<command>")
     _auth.register(sub)

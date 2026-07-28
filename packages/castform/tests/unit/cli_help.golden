@@ -1,6 +1,6 @@
-usage: castform [-h] [--profile PROFILE] <command> ...
+usage: castform [-h] [--profile PROFILE] [-v] <command> ...
 
-Castform CLI
+Castform CLI v<version>
 
 positional arguments:
   <command>
@@ -19,3 +19,4 @@ positional arguments:
 options:
   -h, --help         show this help message and exit
   --profile PROFILE  Use a named Castform profile for this command
+  -v, --version      show program's version number and exit
