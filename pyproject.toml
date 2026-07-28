@@ -15,3 +15,12 @@ dev = [
     "pytest-asyncio>=1.2.0",
     "ruff>=0.14.2",
 ]
+
+# Repo-root ruff config. No package or example declares its own [tool.ruff],
+# so this governs the whole workspace tree.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
