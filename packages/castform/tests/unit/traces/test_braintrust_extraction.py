@@ -7,7 +7,7 @@ from castform.traces.braintrust.message_extraction import (
 )
 
 
-class TestStrategy1_RootInputHasFullConversation:
+class TestStrategy1_RootInputHasFullConversation:  # noqa: N801 — strategy number, then description
     """When root.input.messages already contains assistant messages."""
 
     def test_full_conversation_in_root(self):
@@ -59,7 +59,7 @@ class TestStrategy1_RootInputHasFullConversation:
         assert msgs[2].role == "tool"
 
 
-class TestStrategy2_ReconstructFromChildren:
+class TestStrategy2_ReconstructFromChildren:  # noqa: N801 — strategy number, then description
     """When root.input has only user message, conversation is in children."""
 
     def test_reconstruct_from_llm_child(self):
@@ -176,7 +176,7 @@ class TestStrategy2_ReconstructFromChildren:
         assert assistant_msgs[0].content == "first"
 
 
-class TestStrategy3_Fallback:
+class TestStrategy3_Fallback:  # noqa: N801 — strategy number, then description
     """When neither Strategy 1 nor 2 produces assistant messages."""
 
     def test_fallback_root_plus_outputs(self):

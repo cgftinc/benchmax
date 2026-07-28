@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-
 from castform.rag.chunkers.models import Chunk, ChunkCollection
 from castform.rag.corpus.postgres.source import PostgresChunkSource
 

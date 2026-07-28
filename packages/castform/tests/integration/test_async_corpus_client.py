@@ -23,7 +23,6 @@ import asyncio
 import os
 
 import pytest
-
 from castform import config
 from castform.platform.credentials import runtime_platform_bearer
 from castform.rag.corpus.postgres.client import CorpusClient

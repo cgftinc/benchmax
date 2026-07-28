@@ -19,13 +19,11 @@ import inspect
 from types import SimpleNamespace
 
 import pytest
-
 from castform.rag.chunkers.models import Chunk
 from castform.rag.corpus.search_schema.search_exceptions import (
     UnsupportedSearchModeError,
 )
 from castform.rag.corpus.search_schema.search_types import SearchSpec
-
 from fakes.pinecone import (
     FakeIndex,
     NoFileFakeFiles,

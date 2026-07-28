@@ -1,7 +1,6 @@
 """Tests for trace adapter data models and SSRF validation."""
 
 import pytest
-
 from castform.traces.adapter import (
     LangfuseCredentials,
     NormalizedTrace,

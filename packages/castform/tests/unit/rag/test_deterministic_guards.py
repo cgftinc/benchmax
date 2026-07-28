@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from castform.rag.qa_generation.pipeline_config import DeterministicGuardsConfig
 from castform.rag.qa_generation.filters.deterministic_guards import (
     DeterministicGuardsFilter,
     _jaccard,
@@ -12,6 +11,7 @@ from castform.rag.qa_generation.filters.deterministic_guards import (
     _word_set,
 )
 from castform.rag.qa_generation.generated_qa import GeneratedQA
+from castform.rag.qa_generation.pipeline_config import DeterministicGuardsConfig
 
 
 def _make_context() -> MagicMock:
@@ -199,7 +199,8 @@ class TestDeterministicGuards:
         item_short = GeneratedQA(
             qa={
                 "question": "How do A and B interact with each other?",
-                "answer": "A interacts with B through the shared X interface, which exposes a bidirectional event bus that both components consume and publish to.",
+                "answer": "A interacts with B through the shared X interface, which exposes a "
+                "bidirectional event bus that both components consume and publish to.",
                 "qa_type": "",  # empty — must fall back to generation_metadata
                 "reference_chunks": [
                     {"id": "c1", "metadata": {"file": "a.mdx"}, "content": "Content A."},

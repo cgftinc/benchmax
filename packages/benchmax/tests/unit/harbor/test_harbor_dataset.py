@@ -5,6 +5,9 @@ from builtins import ExceptionGroup
 from pathlib import Path
 
 import pytest
+from benchmax.envs import Dataset
+from benchmax.envs.harbor import HarborDataset, HarborEnv, HarborTrialTemplate
+from benchmax.envs.harbor.dataset import _download_tasks_with_retries
 from harbor import (
     DatasetConfig,
     EnvironmentType,
@@ -13,10 +16,6 @@ from harbor import (
     TrialVerifierConfig,
 )
 from harbor.models.trial.config import TaskConfig
-
-from benchmax.envs import Dataset
-from benchmax.envs.harbor import HarborDataset, HarborEnv, HarborTrialTemplate
-from benchmax.envs.harbor.dataset import _download_tasks_with_retries
 
 
 @pytest.mark.asyncio

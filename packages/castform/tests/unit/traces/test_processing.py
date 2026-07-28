@@ -1,7 +1,6 @@
 """Tests for the generic trace processing pipeline."""
 
 import pytest
-
 from castform.traces.adapter import (
     NormalizedTrace,
     ToolCall,
@@ -22,7 +21,6 @@ from castform.traces.processing import (
     filter_tool_result_relay,
     split_dataset,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -752,10 +750,18 @@ class TestDeduplicateCompletions:
 
     def test_near_duplicates_caught(self):
         examples = [
-            self._make_example("Your order number 12345 has been shipped successfully today", "t1", 0),
-            self._make_example("Your order number 67890 has been shipped successfully today", "t2", 0),
-            self._make_example("Your order number 11111 has been shipped successfully today", "t3", 0),
-            self._make_example("Your order number 22222 has been shipped successfully today", "t4", 0),
+            self._make_example(
+                "Your order number 12345 has been shipped successfully today", "t1", 0
+            ),
+            self._make_example(
+                "Your order number 67890 has been shipped successfully today", "t2", 0
+            ),
+            self._make_example(
+                "Your order number 11111 has been shipped successfully today", "t3", 0
+            ),
+            self._make_example(
+                "Your order number 22222 has been shipped successfully today", "t4", 0
+            ),
         ]
         result = deduplicate_completions(examples, max_per_cluster=2)
         assert len(result.kept) == 2
@@ -907,7 +913,8 @@ class TestApplyFilters:
             TrainingExample(
                 prompt_messages=[_msg("user", "Q")],
                 completion_messages=[
-                    TraceMessage(role="assistant", content="Looking up user",  # 15 chars, survives heuristic(10)
+                    # 15 chars, survives heuristic(10)
+                    TraceMessage(role="assistant", content="Looking up user",
                                  tool_calls=[ToolCall(name="get_user", arguments="{}")])
                 ],
                 prompt="Q", ground_truth="tool", trace_id="t1", turn_index=0,

@@ -11,12 +11,11 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from tqdm.auto import tqdm
-
 from castform.rag.chunkers.models import Chunk, ChunkCollection
 from castform.rag.corpus.search_schema.search_types import (
     HybridOptions,
 )
+from tqdm.auto import tqdm
 
 
 def resolve_content_attr(
@@ -188,7 +187,7 @@ class TpufNamespace:
         ):
             batch = all_chunks[batch_start : batch_start + batch_size]
 
-            _TPUF_ATTR_LIMIT = 4000  # Turbopuffer 4096 byte limit, leave margin
+            tpuf_attr_limit = 4000  # Turbopuffer 4096 byte limit, leave margin
 
             upsert_rows = []
             for i, chunk in enumerate(batch):
@@ -205,15 +204,15 @@ class TpufNamespace:
                     if isinstance(mv, (str, int, float, bool)):
                         row.setdefault(
                             mk,
-                            mv[:_TPUF_ATTR_LIMIT] if isinstance(mv, str) else mv,
+                            mv[:tpuf_attr_limit] if isinstance(mv, str) else mv,
                         )
                     elif mv is not None:
-                        row.setdefault(mk, str(mv)[:_TPUF_ATTR_LIMIT])
+                        row.setdefault(mk, str(mv)[:tpuf_attr_limit])
 
                 # Derived fields — only fill if not already present.
                 row.setdefault(
                     "file_path",
-                    chunk.get_metadata("file", "")[:_TPUF_ATTR_LIMIT],
+                    chunk.get_metadata("file", "")[:tpuf_attr_limit],
                 )
                 row.setdefault("chunk_index", chunk.get_metadata("index", 0))
                 row["chunk_hash"] = chunk.hash

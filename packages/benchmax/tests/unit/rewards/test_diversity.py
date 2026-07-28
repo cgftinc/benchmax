@@ -2,7 +2,6 @@ import json
 import pickle
 
 import pytest
-
 from benchmax.rewards import (
     JudgeError,
     LLMDiversityConfig,

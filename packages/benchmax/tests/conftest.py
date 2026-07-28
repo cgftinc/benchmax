@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+
 @pytest.fixture
 def unique_rollout_id() -> str:
     """Generate a unique rollout ID for testing."""

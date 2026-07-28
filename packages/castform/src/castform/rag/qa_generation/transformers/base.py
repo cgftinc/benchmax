@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from castform.rag.qa_generation.pipeline_config import PipelineContext
 from castform.rag.qa_generation.generated_qa import GeneratedQA
+from castform.rag.qa_generation.pipeline_config import PipelineContext
 from castform.rag.qa_generation.style_controls import classify_query_style
 
 logger = logging.getLogger(__name__)

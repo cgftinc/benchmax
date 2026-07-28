@@ -18,16 +18,16 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from importlib.metadata import PackageNotFoundError, version
 from importlib import resources
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from castform import config
 from castform.cli._client import handle_errors
 from castform.cli._output import (
+    _GREY,
     BLUE,
     ORANGE,
-    _GREY,
     paint,
     rule_label,
     term_width,

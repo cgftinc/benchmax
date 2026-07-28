@@ -29,14 +29,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
-import random
-import sys
-import uuid
-
 import logging
 import math
+import os
+import random
 import re
+import sys
+import uuid
 from collections import Counter
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -46,17 +45,14 @@ from pathlib import Path
 from typing import Any
 
 import pronouncing  # pyright: ignore[reportMissingImports]
-from english_words import get_english_words_set  # pyright: ignore[reportMissingImports]
-from wordfreq import word_frequency  # pyright: ignore[reportMissingImports]
-
 from benchmax.envs import (
     BaseEnv,
     BaseRollout,
     DatasetSplit,
     Example,
     InjectedAuth,
-    JsonRow,
     JsonlDataset,
+    JsonRow,
     Messages,
     ModelAuth,
     Tool,
@@ -71,6 +67,8 @@ from benchmax.rewards import (
     evaluate_rubric_ranking,
     extract_completion_text,
 )
+from english_words import get_english_words_set  # pyright: ignore[reportMissingImports]
+from wordfreq import word_frequency  # pyright: ignore[reportMissingImports]
 
 logger = logging.getLogger(__name__)
 
@@ -700,21 +698,21 @@ def _bt_fit(
 ) -> list[float]:
     """Bradley-Terry ratings by gradient ascent over (winner, loser) pairs pooled across
     slices; `fixed` players (the anchors) stay pinned at their given ratings."""
-    R = [0.0] * n_players
+    ratings = [0.0] * n_players
     for pid, val in fixed.items():
-        R[pid] = val
+        ratings[pid] = val
     norm = max(1.0, len(pairs) / max(1, n_players))
     for _ in range(iters):
         grad = [0.0] * n_players
         for win, lose in pairs:
-            d = max(-30.0, min(30.0, R[win] - R[lose]))
+            d = max(-30.0, min(30.0, ratings[win] - ratings[lose]))
             pe = 1.0 / (1.0 + math.exp(-d))
             grad[win] += 1.0 - pe
             grad[lose] -= 1.0 - pe
         for i in range(n_players):
             if i not in fixed:
-                R[i] += lr * grad[i] / norm
-    return R
+                ratings[i] += lr * grad[i] / norm
+    return ratings
 
 
 def _first_ref(refs: Any) -> str | None:
@@ -993,10 +991,13 @@ then stop."""
                         "AND the hidden word it should spell ('word'); it checks every line ending "
                         "against that word — so you don't have to verify each last letter yourself "
                         "— and flags over-long (prose run-on) lines and filler endings, both of "
-                        "which lower your score. Recommended flow: write a full draft, send it here "
+                        "which lower your score. Recommended flow: write a full draft, send it "
+                        "here "
                         "to check the endings and tighten, then put your revised best in <answer>. "
-                        "Use it sparingly (often one pass is enough); a correct poem written with no "
-                        "calls earns a small efficiency bonus, so wean off once you can reliably nail "
+                        "Use it sparingly (often one pass is enough); a correct poem written with "
+                        "no "
+                        "calls earns a small efficiency bonus, so wean off once you can reliably "
+                        "nail "
                         "it on the first try."
                     ),
                     "parameters": {

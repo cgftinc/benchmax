@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from castform.rag.corpus.pinecone.filter_mapper import _negate, to_pinecone_filters
 from castform.rag.corpus.search_schema.search_exceptions import (
     InvalidFilterError,

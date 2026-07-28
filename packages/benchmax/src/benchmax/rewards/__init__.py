@@ -6,14 +6,6 @@ from .adaptive import (
     generate_adaptive_rubrics,
     generate_and_cache_adaptive_rubrics,
 )
-from .diversity import (
-    ClusterResult,
-    DiversityConfig,
-    LLMDiversityConfig,
-    NgramDiversityConfig,
-    cluster_texts,
-    scale_by_diversity,
-)
 from .deterministic import (
     Completion,
     citation_score,
@@ -25,6 +17,14 @@ from .deterministic import (
     percent_of_text_a_in_text_b,
     search_within_budget,
     tool_call_efficiency,
+)
+from .diversity import (
+    ClusterResult,
+    DiversityConfig,
+    LLMDiversityConfig,
+    NgramDiversityConfig,
+    cluster_texts,
+    scale_by_diversity,
 )
 from .judge import Judge, JudgeError
 from .rubric import (

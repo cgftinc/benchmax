@@ -8,6 +8,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from benchmax.bundle import dump_bundle
+from benchmax.envs.harbor import (
+    BundledAgentSource,
+    BundledHarborAgent,
+    HarborEnv,
+    HarborTrialTemplate,
+)
 from harbor import DatasetConfig, EnvironmentType
 from harbor.agents.factory import AgentFactory
 from harbor.models.task.task import Task
@@ -20,14 +27,6 @@ from harbor.models.trial.config import (
 )
 from harbor.tasks.client import TaskDownloadResult
 from harbor.trial.trial import Trial
-
-from benchmax.bundle import dump_bundle
-from benchmax.envs.harbor import (
-    BundledAgentSource,
-    BundledHarborAgent,
-    HarborEnv,
-    HarborTrialTemplate,
-)
 
 _AGENT_SOURCE = b"""\
 from pathlib import Path

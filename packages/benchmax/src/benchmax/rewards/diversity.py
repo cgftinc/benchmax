@@ -44,7 +44,9 @@ class LLMDiversityConfig:
             raise ValueError("max_tokens must be positive")
 
 
-DiversityConfig: TypeAlias = NgramDiversityConfig | LLMDiversityConfig
+# Re-exported from benchmax.rewards; a PEP 695 alias would hand importers a lazy
+# TypeAliasType instead of the UnionType they get today.
+DiversityConfig: TypeAlias = NgramDiversityConfig | LLMDiversityConfig  # noqa: UP040
 
 
 @dataclass(frozen=True, slots=True)

@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from castform.rag.qa_generation.anchor_selector import AnchorBundle
-    from castform.rag.qa_generation.pipeline_config import PipelineContext, GenerationTask
     from castform.rag.qa_generation.generated_qa import GeneratedQA
+    from castform.rag.qa_generation.pipeline_config import GenerationTask, PipelineContext
 
 
 @runtime_checkable
@@ -28,14 +28,18 @@ class ChunkLinker(Protocol):
 class QuestionGenerator(Protocol):
     """Generates initial QA candidates from task intents."""
 
-    def generate(self, tasks: list[GenerationTask], context: PipelineContext) -> list[GeneratedQA]: ...
+    def generate(
+        self, tasks: list[GenerationTask], context: PipelineContext
+    ) -> list[GeneratedQA]: ...
 
 
 @runtime_checkable
 class LLMSupportedGenerator(QuestionGenerator, Protocol):
     """Direct-LLM generator specialization."""
 
-    def generate(self, tasks: list[GenerationTask], context: PipelineContext) -> list[GeneratedQA]: ...
+    def generate(
+        self, tasks: list[GenerationTask], context: PipelineContext
+    ) -> list[GeneratedQA]: ...
 
 
 @runtime_checkable
@@ -56,7 +60,9 @@ class LLMBasedFilter(EvaluatorFilter, Protocol):
 class QuestionTransformer(Protocol):
     """Transforms question text without changing answers or reference chunks."""
 
-    def transform(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]: ...
+    def transform(
+        self, items: list[GeneratedQA], context: PipelineContext
+    ) -> list[GeneratedQA]: ...
 
 
 @runtime_checkable

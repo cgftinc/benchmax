@@ -8,8 +8,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from castform.rag.qa_generation.pipeline_config import PipelineContext, OutputConfig, SplitConfig
 from castform.rag.qa_generation.generated_qa import GeneratedQA
+from castform.rag.qa_generation.pipeline_config import OutputConfig, PipelineContext, SplitConfig
 
 
 class TrainEvalFormatter:

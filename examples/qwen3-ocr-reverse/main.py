@@ -16,13 +16,11 @@ import asyncio
 import base64
 import io
 import json
+import os
 import random
 import sys
-import uuid
-
-
-import os
 import time
+import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -32,19 +30,19 @@ from benchmax.envs import (
     BaseRollout,
     DatasetSplit,
     Example,
-    JsonRow,
     JsonlDataset,
+    JsonRow,
     Tool,
     canonical_example_id,
 )
 from benchmax.envs.base import resolve_dataset_path
 from qwen3_ocr_reward import infinity_doc_reward
 
-
 SYSTEM_PROMPT = ""
 
 OCR_PROMPT_TEMPLATE = (
-    "Document Parsing: You are an AI assistant specialized in converting PDF images to Markdown format.\n"
+    "Document Parsing: You are an AI assistant specialized in converting PDF images to Markdown "
+    "format.\n"
     "Please follow these instructions for the conversion:\n"
     "1. Text Processing:\n"
     "- Accurately recognize all text content in the PDF image without guessing or inferring.\n"
@@ -62,10 +60,14 @@ OCR_PROMPT_TEMPLATE = (
     "4. Figure Handling:\n"
     "- Ignore figures content in the PDF image. Do not attempt to describe or convert images.\n"
     "5. Output Format:\n"
-    "- Ensure the output Markdown document has a clear structure with appropriate line breaks between elements.\n"
-    "- For complex layouts, try to maintain the original document's structure and format as closely as possible.\n"
-    "Please strictly follow these guidelines to ensure accuracy and consistency in the conversion. Your task is to\n"
-    "accurately convert the content of the PDF image into Markdown format without adding any extra explanations\n"
+    "- Ensure the output Markdown document has a clear structure with appropriate line breaks "
+    "between elements.\n"
+    "- For complex layouts, try to maintain the original document's structure and format as "
+    "closely as possible.\n"
+    "Please strictly follow these guidelines to ensure accuracy and consistency in the conversion. "
+    "Your task is to\n"
+    "accurately convert the content of the PDF image into Markdown format without adding any extra "
+    "explanations\n"
     "or comments.\n"
     "Table Parsing:\n"
     "1. Please encode the table from the image into HTML format.\n"

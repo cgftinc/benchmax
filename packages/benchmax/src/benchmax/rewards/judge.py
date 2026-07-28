@@ -10,14 +10,13 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from benchmax.auth import ModelAuth, ModelRequestContext, RequestModelAuth
+from benchmax.envs.shared_types import RolloutFailure
 from openai import (
     AsyncOpenAI,
     AuthenticationError,
     PermissionDeniedError,
 )
-
-from benchmax.auth import ModelAuth, ModelRequestContext, RequestModelAuth
-from benchmax.envs.shared_types import RolloutFailure
 
 _AUTH_ERRORS = (AuthenticationError, PermissionDeniedError)
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)

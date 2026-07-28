@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from benchmax.auth import InjectedAuth, ModelRequestContext, StaticBearerAuth
 from benchmax.envs import Example, RolloutOutcome
 from castform.model_auth import CastformModelAuth

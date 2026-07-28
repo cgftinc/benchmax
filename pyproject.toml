@@ -15,3 +15,28 @@ dev = [
     "pytest-asyncio>=1.2.0",
     "ruff>=0.14.2",
 ]
+
+# Repo-root ruff config. No package or example declares its own [tool.ruff],
+# so this governs the whole workspace tree.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Message/Tool are deliberately bound to different types under TYPE_CHECKING vs
+# at runtime, and are re-exported. PEP 695 `type` aliases are lazy objects rather
+# than the plain runtime types importers currently receive, so keep TypeAlias.
+"packages/benchmax/src/benchmax/envs/base/openai_types.py" = ["UP040"]
+# Long lines in these three are prompt text inside triple-quoted literals. A line
+# break there lands in the string, changing the prompt the model receives, so the
+# text is left exactly as written.
+"examples/aime/mini_swe_probe.py" = ["E501"]
+"packages/benchmax/src/benchmax/rewards/prompts.py" = ["E501"]
+"packages/castform/src/castform/rag/preprocess/email/filter_automated_email_qas.py" = ["E501"]
+# Same reason, and both files mix that prompt text with wrappable literals, so the
+# ignore covers the whole file rather than leaving it half-enforced.
+"examples/telestich/telestich_datagen.py" = ["E501"]
+"packages/castform/src/castform/rag/qa_generation/pipeline_config.py" = ["E501"]

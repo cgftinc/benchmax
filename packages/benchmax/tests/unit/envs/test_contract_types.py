@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 
 import pytest
-
 from benchmax.auth import StaticBearerAuth
 from benchmax.envs import Example, RolloutAttempt, RolloutOutcome, RolloutRequest
 

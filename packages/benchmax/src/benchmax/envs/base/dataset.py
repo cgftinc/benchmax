@@ -10,7 +10,9 @@ from typing import Any, TypeAlias
 from benchmax.envs.dataset import Dataset
 from benchmax.envs.shared_types import Example
 
-JsonRow: TypeAlias = dict[str, Any]
+# Re-exported from benchmax.envs; a PEP 695 alias would hand importers a lazy
+# TypeAliasType instead of the GenericAlias they get today.
+JsonRow: TypeAlias = dict[str, Any]  # noqa: UP040
 
 
 def resolve_dataset_path(base_dir: Path, relative_path: str) -> Path:

@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import cloudpickle
 import pytest
-
 from castform.rag.corpus.pinecone.index_client import PineconeIndexClient
 from castform.rag.corpus.pinecone.search import PineconeSearch
 

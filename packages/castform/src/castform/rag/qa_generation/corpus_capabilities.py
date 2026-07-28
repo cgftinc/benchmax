@@ -38,7 +38,7 @@ class CorpusCapabilities:
         return modes
 
     @classmethod
-    def detect(cls, sample_chunks: list[Any]) -> "CorpusCapabilities":
+    def detect(cls, sample_chunks: list[Any]) -> CorpusCapabilities:
         """Auto-detect capabilities from a sample of chunks."""
         if not sample_chunks:
             return cls(

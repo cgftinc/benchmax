@@ -10,9 +10,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
 from castform.rag.corpus.pinecone.index_client import PineconeIndexClient
-
 from fakes.pinecone import FakeIndex, make_match, make_source
 
 

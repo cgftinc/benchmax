@@ -18,11 +18,10 @@ import sys
 import tempfile
 import tomllib
 import uuid
-
-
 from pathlib import Path
 from typing import Any
 
+from aime_agent import MINI_SWE_AGENT_VERSION
 from benchmax.envs.harbor import (
     BundledAgentSource,
     BundledHarborAgent,
@@ -37,8 +36,6 @@ from harbor import (
     TrialEnvironmentConfig,
     TrialVerifierConfig,
 )
-
-from aime_agent import MINI_SWE_AGENT_VERSION
 
 _AGENT_SOURCE = BundledAgentSource.from_directory(
     Path(__file__).parent,

@@ -14,7 +14,7 @@ import sys
 
 from castform import config
 from castform.cli._client import handle_errors
-from castform.cli._output import BLUE, _GREY, paint, print_json
+from castform.cli._output import _GREY, BLUE, paint, print_json
 from castform.cli._preflight import _EXTRA_SENTINEL, extra_is_installed
 from castform.platform import credentials
 

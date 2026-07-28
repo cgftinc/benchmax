@@ -9,18 +9,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from harbor import DatasetConfig, EnvironmentType
-from harbor.agents.base import BaseAgent
-from harbor.agents.factory import AgentFactory
-from harbor.agents.installed.mini_swe_agent import MiniSweAgent
-from harbor.models.trial.config import (
-    AgentConfig,
-    EnvironmentConfig,
-    TaskConfig,
-    VerifierConfig,
-)
-from harbor.trial.trial import Trial
-
 from benchmax.auth import StaticBearerAuth
 from benchmax.envs import Example, RolloutRequest
 from benchmax.envs.harbor import (
@@ -34,6 +22,17 @@ from benchmax.envs.harbor.env import (
     _result_termination_reason,
     _rollout_attempt,
 )
+from harbor import DatasetConfig, EnvironmentType
+from harbor.agents.base import BaseAgent
+from harbor.agents.factory import AgentFactory
+from harbor.agents.installed.mini_swe_agent import MiniSweAgent
+from harbor.models.trial.config import (
+    AgentConfig,
+    EnvironmentConfig,
+    TaskConfig,
+    VerifierConfig,
+)
+from harbor.trial.trial import Trial
 
 _REWARD_KEYS = ("reward", "partial_credit")
 

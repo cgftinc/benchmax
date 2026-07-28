@@ -543,7 +543,7 @@ def deduplicate_completions(
 
     # Greedy clustering against pre-computed sets.
     # Cap at 500 cluster reps to keep worst case O(n × 500) ≈ linear.
-    _MAX_CLUSTER_REPS = 500
+    max_cluster_reps = 500
     clusters: list[list[int]] = []
     cluster_reps: list[frozenset[str]] = []
     remaining_start: int | None = None
@@ -558,7 +558,7 @@ def deduplicate_completions(
         if not placed:
             clusters.append([idx])
             cluster_reps.append(tri)
-            if len(cluster_reps) >= _MAX_CLUSTER_REPS:
+            if len(cluster_reps) >= max_cluster_reps:
                 remaining_start = pos + 1
                 break
 

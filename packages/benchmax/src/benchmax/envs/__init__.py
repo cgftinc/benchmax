@@ -1,8 +1,9 @@
+from benchmax.auth import InjectedAuth, ModelAuth, StaticBearerAuth, bind_model_auth
 from benchmax.envs.base import (
     BaseEnv,
     BaseRollout,
-    JsonRow,
     JsonlDataset,
+    JsonRow,
     Message,
     Messages,
     Tool,
@@ -19,7 +20,6 @@ from benchmax.envs.shared_types import (
     RolloutOutcome,
     RolloutRequest,
 )
-from benchmax.auth import InjectedAuth, ModelAuth, StaticBearerAuth, bind_model_auth
 
 __all__ = [
     "BaseEnv",

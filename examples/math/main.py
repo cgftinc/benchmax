@@ -41,14 +41,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
-import uuid
-
-
 import logging
 import math
 import random
 import re
+import sys
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from html import unescape
 from pathlib import Path
@@ -57,15 +55,14 @@ from typing import Any
 from benchmax.envs.base import (
     BaseEnv,
     BaseRollout,
-    JsonRow,
     JsonlDataset,
+    JsonRow,
     Tool,
     resolve_dataset_path,
 )
-from benchmax.envs.identity import canonical_example_id
 from benchmax.envs.dataset import Dataset
-from benchmax.envs.shared_types import Example, DatasetSplit, RewardMap, RolloutFailure
-
+from benchmax.envs.identity import canonical_example_id
+from benchmax.envs.shared_types import DatasetSplit, Example, RewardMap, RolloutFailure
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +121,7 @@ class MathEnv(BaseEnv):
 
         return list(_TOOLS)
 
-    def rollout_context(self, rollout_id: str, example: Any) -> "_MathRolloutContext":
+    def rollout_context(self, rollout_id: str, example: Any) -> _MathRolloutContext:
         """Stash row sentinels for the rollout and honour the context stages."""
 
         return _MathRolloutContext(self, rollout_id, example)

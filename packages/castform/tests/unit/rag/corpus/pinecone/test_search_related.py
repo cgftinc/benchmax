@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from castform.rag.chunkers.models import Chunk
-
 from fakes.pinecone import (
     FakeIndex,
     FileAwareFakeFiles,

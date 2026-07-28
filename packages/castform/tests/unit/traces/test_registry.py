@@ -1,7 +1,6 @@
 """Tests for the trace adapter registry."""
 
 import pytest
-
 from castform.traces.braintrust.adapter import BraintrustTraceAdapter
 from castform.traces.registry import get_adapter_class
 

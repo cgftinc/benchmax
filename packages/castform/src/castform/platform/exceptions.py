@@ -28,7 +28,7 @@ class RolloutError(TrainerError):
     pass
 
 
-class RolloutNotFound(RolloutError):
+class RolloutNotFound(RolloutError):  # noqa: N818 — public exported name
     """Rollout endpoint or referenced resource not found (HTTP 404)."""
 
     pass

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import httpx
 import pytest
-
 from castform.platform.device_auth import (
     DeviceAuthError,
     poll_for_token,

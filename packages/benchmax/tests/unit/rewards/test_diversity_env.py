@@ -7,28 +7,26 @@ rollouts. Uses ngram clustering to avoid LLM calls.
 from __future__ import annotations
 
 import pickle
-from pathlib import Path
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import cloudpickle
 import pytest
-
+from benchmax.auth import InjectedAuth
 from benchmax.envs import (
     BaseEnv,
     BaseRollout,
     Example,
-    JsonRow,
     JsonlDataset,
+    JsonRow,
     Messages,
     RewardMap,
     Tool,
     canonical_example_id,
 )
-from benchmax.auth import InjectedAuth
 from benchmax.rewards import Judge, LLMDiversityConfig, NgramDiversityConfig
 from benchmax.rewards.diversity import scale_by_diversity
-
 
 # ---------------------------------------------------------------------------
 # Toy env that uses diversity in compute_group_rewards

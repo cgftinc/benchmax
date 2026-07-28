@@ -4,7 +4,6 @@ import ast
 import tomllib
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[2]
 BENCHMAX_ROOT = ROOT / "packages" / "benchmax"
 BENCHMAX_SOURCE = BENCHMAX_ROOT / "src" / "benchmax"

@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from castform.rag.qa_generation.auto_tune import (
     auto_tune,
     compute_batch_heuristics,

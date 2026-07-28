@@ -9,8 +9,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from benchmax.auth import StaticBearerAuth
-from openai import AsyncOpenAI
-
 from castform.model_auth import (
     create_async_openai_client,
     create_openai_client,
@@ -18,17 +16,18 @@ from castform.model_auth import (
 )
 from castform.rag.chunkers.models import Chunk
 from castform.rag.qa_generation.batch_processor import batch_process_async
+from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 from castform.rag.qa_generation.pipeline_config import (
     DEFAULT_RETRIEVAL_JUDGE_SYSTEM_PROMPT,
     DEFAULT_RETRIEVAL_JUDGE_USER_TEMPLATE,
     PipelineContext,
     RetrievalLLMFilterConfig,
 )
-from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
 from castform.rag.qa_generation.retrieval_query import (
     QueryRewriteConfig,
     resolve_retrieval_query,
 )
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +268,8 @@ class RetrievalLLMFilter:
                     )
             except Exception:
                 logger.warning(
-                    "RetrievalLLMFilter search failed for one item; routing to refinement/rejection.",
+                    "RetrievalLLMFilter search failed for one item; routing to "
+                    "refinement/rejection.",
                     exc_info=True,
                 )
                 refinements = int(item.generation_metadata.get("refinement_count", 0))
@@ -398,7 +398,8 @@ class RetrievalLLMFilter:
                         "confidence": 1.0,
                         "failure_type": _FAILURE_TYPE_TOO_EASY,
                         "feedback_type": "same_anchor_feedback",
-                        "refinement_hint": "Increase retrieval difficulty and avoid directly retrievable terms.",
+                        "refinement_hint": "Increase retrieval difficulty and avoid directly "
+                        "retrievable terms.",
                         "judge_called": False,
                         "judge_answerable": None,
                         "judge_reasoning": "",
@@ -510,7 +511,8 @@ class RetrievalLLMFilter:
                 "confidence": 1.0,
                 "failure_type": _FAILURE_TYPE_TOO_EASY,
                 "feedback_type": "same_anchor_feedback",
-                "refinement_hint": "Increase retrieval difficulty and avoid directly retrievable terms.",
+                "refinement_hint": "Increase retrieval difficulty and avoid directly retrievable "
+                "terms.",
                 "judge_called": False,
                 "judge_answerable": None,
                 "judge_reasoning": "",
@@ -548,7 +550,8 @@ class RetrievalLLMFilter:
                 reason="retrieval_filter_needs_refinement",
                 reasoning=(
                     "Naive retrieval appears sufficient "
-                    f"(overlap={overlap_ratio:.2f}, source={metadata.get('too_easy_source', 'unknown')})."
+                    f"(overlap={overlap_ratio:.2f}, "
+                    f"source={metadata.get('too_easy_source', 'unknown')})."
                 ),
                 metadata=metadata,
             )
@@ -705,7 +708,8 @@ class RetrievalLLMFilter:
                 "confidence": confidence,
                 "failure_type": _FAILURE_TYPE_TOO_EASY,
                 "feedback_type": "same_anchor_feedback",
-                "refinement_hint": "Increase retrieval difficulty and avoid directly retrievable terms.",
+                "refinement_hint": "Increase retrieval difficulty and avoid directly retrievable "
+                "terms.",
                 "judge_called": True,
                 "judge_answerable": answerable,
                 "judge_reasoning": judge_reasoning,

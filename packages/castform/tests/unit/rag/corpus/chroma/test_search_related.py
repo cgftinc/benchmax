@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from castform.rag.chunkers.models import Chunk
 from fakes.chroma import (
     FakeCollection,
     FileAwareFakeFiles,
@@ -9,8 +10,6 @@ from fakes.chroma import (
     make_query_result,
     make_source,
 )
-
-from castform.rag.chunkers.models import Chunk
 
 # ---------------------------------------------------------------------------
 # Helpers

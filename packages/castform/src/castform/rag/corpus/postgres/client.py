@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import httpx
-
 from castform.platform.credentials import TokenProvider, runtime_platform_bearer
 
 from .exceptions import (
@@ -122,7 +121,8 @@ class CorpusClient:
                 if attempt >= retries:
                     raise CorpusAPIError(
                         (
-                            "Corpora API request failed after retries due to a network timeout/error. "
+                            "Corpora API request failed after retries due to a network "
+                            "timeout/error. "
                             f"method={method} path={path} base_url={self.base_url} "
                             f"attempts={retries} last_error={exc!s}"
                         ),
@@ -162,7 +162,7 @@ class CorpusClient:
 
             return response
 
-    async def __aenter__(self) -> "CorpusClient":
+    async def __aenter__(self) -> CorpusClient:
         return self
 
     async def __aexit__(self, *args) -> None:

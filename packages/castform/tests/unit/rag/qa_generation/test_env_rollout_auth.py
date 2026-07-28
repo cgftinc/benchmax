@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from benchmax.auth import StaticBearerAuth
-
 from castform.rag.qa_generation.filters import env_rollout
 from castform.rag.qa_generation.pipeline_config import LLMEnvFilterConfig
 

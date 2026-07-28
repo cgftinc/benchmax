@@ -4,7 +4,6 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from castform.traces.adapter import NormalizedTrace, ToolCall, TraceMessage
 from castform.traces.pivot import (
     PivotCheckpointManager,
@@ -14,7 +13,6 @@ from castform.traces.pivot import (
     apply_pivot_filter,
 )
 from castform.traces.processing import TrainingExample
-
 
 # ---------------------------------------------------------------------------
 # Helpers

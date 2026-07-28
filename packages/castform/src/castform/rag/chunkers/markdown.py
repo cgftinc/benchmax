@@ -5,12 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from castform.rag.chunkers.models import Chunk, ChunkCollection
 from langchain_text_splitters import (
     MarkdownHeaderTextSplitter,
     RecursiveCharacterTextSplitter,
 )
-
-from castform.rag.chunkers.models import Chunk, ChunkCollection
 
 # Matches lines that are JS/TS import statements, e.g.:
 #   import Foo from "../path/to/file.mdx"

@@ -3,14 +3,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-
 from castform.rag.qa_generation.corpus_profile import (
     CorpusProfile,
     EntityPattern,
     build_entity_chunk_graph,
 )
 from castform.rag.qa_generation.wiki_chunk_linker import WikiChunkLinker, WikiChunkLinkerConfig
-
 
 # ---------------------------------------------------------------------------
 # Test fixtures

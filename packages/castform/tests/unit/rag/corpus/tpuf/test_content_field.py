@@ -4,7 +4,6 @@ whose text attribute isn't named `content`."""
 from __future__ import annotations
 
 import pytest
-
 from castform.rag.corpus.turbopuffer.namespace import resolve_content_attr
 from castform.rag.corpus.turbopuffer.search import TpufSearch
 

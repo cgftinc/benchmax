@@ -23,24 +23,26 @@ class FieldPredicate:
 class AndPredicate:
     """Logical AND over child predicates."""
 
-    clauses: tuple["FilterPredicate", ...]
+    clauses: tuple[FilterPredicate, ...]
 
 
 @dataclass(frozen=True)
 class OrPredicate:
     """Logical OR over child predicates."""
 
-    clauses: tuple["FilterPredicate", ...]
+    clauses: tuple[FilterPredicate, ...]
 
 
 @dataclass(frozen=True)
 class NotPredicate:
     """Logical NOT over one child predicate."""
 
-    clause: "FilterPredicate"
+    clause: FilterPredicate
 
 
-FilterPredicate: TypeAlias = FieldPredicate | AndPredicate | OrPredicate | NotPredicate
+# Referenced by the predicate dataclasses above and the SearchSpec TypedDict below;
+# a PEP 695 alias changes what get_type_hints returns for those annotations.
+FilterPredicate: TypeAlias = FieldPredicate | AndPredicate | OrPredicate | NotPredicate  # noqa: UP040
 
 
 class HybridOptions(TypedDict, total=False):

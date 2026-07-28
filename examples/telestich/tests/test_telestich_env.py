@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 import benchmax.envs.base.env as base_env_module
+import pytest
 from benchmax.envs import RolloutRequest, StaticBearerAuth
 from benchmax.rewards import JudgeError
 from main import TelestichEnv, _bucket, _count_tool_calls

@@ -4,7 +4,6 @@ _make_slices (coverage), _rating_to_band (calibration), _bt_fit (recovers order)
 from collections import Counter
 
 import pytest
-
 from main import (
     ACCEPTABLE_EDGE,
     ELO_GREAT_RATING,
@@ -64,8 +63,8 @@ def test_bt_fit_pins_anchors_and_recovers_order():
         (3, 2),
         (4, 2),
     ]
-    R = _bt_fit(pairs * 3, fixed, n_players=5)
-    assert R[3] == 0.0 and R[4] == ELO_GREAT_RATING  # anchors stay pinned
-    assert R[0] > R[1] > R[2]  # poem order recovered
-    assert R[1] > 0.0  # beats acceptable → above the baseline rating
-    assert R[2] < 0.0  # below acceptable
+    ratings = _bt_fit(pairs * 3, fixed, n_players=5)
+    assert ratings[3] == 0.0 and ratings[4] == ELO_GREAT_RATING  # anchors stay pinned
+    assert ratings[0] > ratings[1] > ratings[2]  # poem order recovered
+    assert ratings[1] > 0.0  # beats acceptable → above the baseline rating
+    assert ratings[2] < 0.0  # below acceptable

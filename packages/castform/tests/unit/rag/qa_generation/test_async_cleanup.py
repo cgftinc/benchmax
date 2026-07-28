@@ -10,7 +10,6 @@ from __future__ import annotations
 import types
 
 import pytest
-
 from castform.rag.qa_generation.generators.direct_llm import DirectLLMGenerator
 from castform.rag.qa_generation.pipeline import Pipeline
 

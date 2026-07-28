@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import httpx
 import pytest
-
 from benchmax.auth import (
     InjectedAuth,
     ModelRequestContext,
@@ -9,8 +9,6 @@ from benchmax.auth import (
     StaticBearerAuth,
     bind_model_auth,
 )
-import httpx
-
 
 _CONTEXT = ModelRequestContext(
     base_url="https://model.example/v1",

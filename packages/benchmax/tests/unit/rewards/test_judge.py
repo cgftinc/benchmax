@@ -3,7 +3,6 @@ from collections.abc import Mapping
 
 import httpx
 import pytest
-
 from benchmax.auth import (
     InjectedAuth,
     ModelRequestContext,

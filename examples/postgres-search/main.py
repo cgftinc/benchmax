@@ -27,13 +27,11 @@ Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 from __future__ import annotations
 
 import argparse
-import sys
-
-
 import asyncio
 import logging
 import math
 import re
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -44,8 +42,8 @@ from benchmax.envs import (
     DatasetSplit,
     Example,
     InjectedAuth,
-    JsonRow,
     JsonlDataset,
+    JsonRow,
     Messages,
     ModelAuth,
     Tool,

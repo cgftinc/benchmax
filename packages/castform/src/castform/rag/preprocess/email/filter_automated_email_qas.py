@@ -16,8 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
-
 from castform import config
 from castform.rag.qa_generation.batch_processor import batch_process_sync
 from castform.rag.qa_generation.storage import (
@@ -25,6 +23,7 @@ from castform.rag.qa_generation.storage import (
     save_qa_dataset,
     save_qa_dataset_jsonl,
 )
+from openai import OpenAI
 
 FILTER_SYSTEM_PROMPT = """You are a strict dataset curator.
 

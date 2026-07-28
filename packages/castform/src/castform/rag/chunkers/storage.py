@@ -3,10 +3,9 @@
 from pathlib import Path
 from typing import Any
 
+from castform.rag.chunkers.models import Chunk, ChunkCollection
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import LiteralScalarString
-
-from castform.rag.chunkers.models import Chunk, ChunkCollection
 
 
 def _to_literal_scalars(data: list[dict[str, Any]]) -> list[dict[str, Any]]:

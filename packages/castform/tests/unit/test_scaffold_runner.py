@@ -8,9 +8,8 @@ import dataclasses
 import types
 from pathlib import Path
 
-import pytest
-
 import castform.cli.scaffold as scaffold_pkg
+import pytest
 
 from ._scaffold import discover_env_class, load_module
 
@@ -233,7 +232,7 @@ def _patch_launch_sdk(mod, monkeypatch, launched: dict, *, validate_ok: bool = T
         return bundle
 
     monkeypatch.setattr(mod, "dump_bundle", fake_dump_bundle)
-    Uploaded = dataclasses.make_dataclass(
+    Uploaded = dataclasses.make_dataclass(  # noqa: N806 — binds a class, not a variable
         "Uploaded",
         [
             "env_cls_path",

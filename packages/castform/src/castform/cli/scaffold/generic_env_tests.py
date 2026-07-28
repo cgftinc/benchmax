@@ -7,7 +7,6 @@ Plain `asyncio.run` keeps the suite dependency-free; run with `uv run pytest tes
 import asyncio
 
 from benchmax.envs.base import BaseRollout
-
 from main import CustomEnv
 
 

@@ -22,9 +22,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from castform.utils.checkpoint import CheckpointBase
 from castform.traces.adapter import NormalizedTrace, TraceMessage
 from castform.traces.processing import MIN_TRAIN_SAMPLES, TrainingExample
+from castform.utils.checkpoint import CheckpointBase
 
 logger = logging.getLogger(__name__)
 

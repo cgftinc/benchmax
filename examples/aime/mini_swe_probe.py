@@ -164,7 +164,7 @@ class FormatError(Exception):
         self.message = message
 
 
-class Submitted(Exception):
+class Submitted(Exception):  # noqa: N818 — control-flow signal, not an error
     def __init__(self, submission: str) -> None:
         super().__init__("submitted")
         self.submission = submission

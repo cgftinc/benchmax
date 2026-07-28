@@ -17,7 +17,6 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-
 from benchmax.auth import ModelRequestContext
 from benchmax.rewards import Judge, JudgeError, Rubric, evaluate_single_rubric
 

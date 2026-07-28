@@ -15,9 +15,8 @@ import random
 import re
 from pathlib import Path
 
-from openai import AsyncOpenAI
-
 from castform import config
+from openai import AsyncOpenAI
 
 LLM_BASE_URL = config.llm_url()
 LLM_API_KEY = os.environ.get("CASTFORM_LLM_API_KEY") or os.environ.get(

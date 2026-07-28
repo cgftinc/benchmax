@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-
 from castform.rag.qa_generation.corpus_profile import (
     EntityPattern,
     _aggregate_keyphrases,

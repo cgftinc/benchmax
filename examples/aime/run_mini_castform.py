@@ -13,11 +13,9 @@ from importlib import resources
 from pathlib import Path
 
 import yaml
-
+from castform_model import CastformToolcallModel
 from minisweagent.agents.default import DefaultAgent
 from minisweagent.environments.local import LocalEnvironment
-
-from castform_model import CastformToolcallModel
 
 
 def main() -> int:

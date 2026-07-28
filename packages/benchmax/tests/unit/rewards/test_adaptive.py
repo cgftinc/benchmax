@@ -1,7 +1,6 @@
 import json
 
 import pytest
-
 from benchmax.rewards import (
     JudgeError,
     Rubric,

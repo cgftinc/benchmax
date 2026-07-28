@@ -3,8 +3,11 @@
 from unittest.mock import MagicMock, patch
 
 import httpx
-
-from castform.traces.braintrust.adapter import BraintrustTraceAdapter, _group_into_traces, _normalize_trace
+from castform.traces.braintrust.adapter import (
+    BraintrustTraceAdapter,
+    _group_into_traces,
+    _normalize_trace,
+)
 
 
 class TestGroupIntoTraces:

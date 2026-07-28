@@ -6,12 +6,6 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from castform.rag.qa_generation.pipeline_config import (
-    PipelineConfig,
-    MicroBatchConfig,
-    PlatformConfig,
-    TargetsConfig,
-)
 from castform.rag.qa_generation.checkpoint import (
     CheckpointManager,
     Manifest,
@@ -20,6 +14,12 @@ from castform.rag.qa_generation.checkpoint import (
     serialize_generated_qa,
 )
 from castform.rag.qa_generation.generated_qa import FilterVerdict, GeneratedQA
+from castform.rag.qa_generation.pipeline_config import (
+    MicroBatchConfig,
+    PipelineConfig,
+    PlatformConfig,
+    TargetsConfig,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers

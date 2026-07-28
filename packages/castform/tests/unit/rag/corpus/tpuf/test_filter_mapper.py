@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from castform.rag.corpus.search_schema.search_exceptions import (
     InvalidFilterError,
     UnsupportedFilterError,

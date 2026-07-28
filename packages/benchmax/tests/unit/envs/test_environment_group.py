@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-
 from benchmax.auth import StaticBearerAuth
 from benchmax.envs import (
     Dataset,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from castform.rag.qa_generation.filters.grounding_llm import GroundingLLMFilter
 from castform.rag.qa_generation.generated_qa import GeneratedQA
 
