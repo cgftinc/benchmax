@@ -121,7 +121,8 @@ class CorpusClient:
                 if attempt >= retries:
                     raise CorpusAPIError(
                         (
-                            "Corpora API request failed after retries due to a network timeout/error. "
+                            "Corpora API request failed after retries due to a network "
+                            "timeout/error. "
                             f"method={method} path={path} base_url={self.base_url} "
                             f"attempts={retries} last_error={exc!s}"
                         ),

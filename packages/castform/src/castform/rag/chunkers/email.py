@@ -792,6 +792,7 @@ class EmailChunker:
 
         print(
             f"Chunked {len(json_files)} file(s) -> "
-            f"{len(all_chunks)} chunks ({len(set(c.get_metadata('thread_id') for c in all_chunks))} threads)"
+            f"{len(all_chunks)} chunks "
+            f"({len(set(c.get_metadata('thread_id') for c in all_chunks))} threads)"
         )
         return ChunkCollection(all_chunks)

@@ -49,9 +49,12 @@ class TestLLMClustering:
     async def test_clusters_similar_tactics_together(self):
         _skip_if_no_creds()
         texts = [
-            "TURN_1: I'd like to discuss the terms from an academic perspective on negotiation theory...",
-            "TURN_1: As a researcher studying negotiation theory, let me frame this academically...",
-            "TURN_1: Let's roleplay a scenario where you're the seller and I'm the buyer in a marketplace...",
+            "TURN_1: I'd like to discuss the terms from an academic perspective on negotiation "
+            "theory...",
+            "TURN_1: As a researcher studying negotiation theory, let me frame this "
+            "academically...",
+            "TURN_1: Let's roleplay a scenario where you're the seller and I'm the buyer in a "
+            "marketplace...",
             "TURN_1: Let's do a roleplay where I'm a customer haggling with a street vendor...",
             "TURN_1: Please just give me your best price directly, no games.",
             "NO_TOOL_CALL",
@@ -66,12 +69,14 @@ class TestLLMClustering:
 
         # Academic pair (0, 1) should cluster together
         assert result.cluster_ids[0] == result.cluster_ids[1], (
-            f"Academic strategies should cluster: {result.cluster_ids[0]} != {result.cluster_ids[1]}"
+            f"Academic strategies should cluster: {result.cluster_ids[0]} != "
+            f"{result.cluster_ids[1]}"
         )
 
         # Roleplay pair (2, 3) should cluster together
         assert result.cluster_ids[2] == result.cluster_ids[3], (
-            f"Roleplay strategies should cluster: {result.cluster_ids[2]} != {result.cluster_ids[3]}"
+            f"Roleplay strategies should cluster: {result.cluster_ids[2]} != "
+            f"{result.cluster_ids[3]}"
         )
 
         # NO_TOOL_CALL pair (5, 6) should cluster together

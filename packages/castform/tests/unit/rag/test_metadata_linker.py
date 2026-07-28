@@ -166,7 +166,8 @@ class TestMetadataChunkLinker:
                 max_secondaries=2,
                 min_chunk_chars=10,
                 min_coherence=0.0,
-                max_secondary_similarity=1.0,  # disable diversity filter; test is about max_secondaries
+                # disable diversity filter; test is about max_secondaries
+                max_secondary_similarity=1.0,
             ),
         )
         bundle = linker.link(primary, target_hop_count=4)

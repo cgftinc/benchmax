@@ -311,7 +311,8 @@ class PostgresChunkSource:
         """Search with async corpus I/O and deterministic result aggregation."""
         if hybrid is not None:
             warnings.warn(
-                "PostgresChunkSource does not support hybrid search; 'hybrid' parameter is ignored.",
+                "PostgresChunkSource does not support hybrid search; 'hybrid' parameter is "
+                "ignored.",
                 stacklevel=2,
             )
         if mode is not None and mode != "lexical":

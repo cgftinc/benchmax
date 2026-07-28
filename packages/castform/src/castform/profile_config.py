@@ -168,7 +168,8 @@ def activate_profile(name: str) -> None:
     config = load_config()
     if name not in config["profiles"]:
         raise RuntimeError(
-            f"Profile {name!r} is not configured. Run `castform login --profile {name} --domain <domain>`."
+            f"Profile {name!r} is not configured. Run `castform login --profile {name} --domain "
+            f"<domain>`."
         )
     config["active_profile"] = name
     write_config(config)

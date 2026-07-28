@@ -28,14 +28,18 @@ class ChunkLinker(Protocol):
 class QuestionGenerator(Protocol):
     """Generates initial QA candidates from task intents."""
 
-    def generate(self, tasks: list[GenerationTask], context: PipelineContext) -> list[GeneratedQA]: ...
+    def generate(
+        self, tasks: list[GenerationTask], context: PipelineContext
+    ) -> list[GeneratedQA]: ...
 
 
 @runtime_checkable
 class LLMSupportedGenerator(QuestionGenerator, Protocol):
     """Direct-LLM generator specialization."""
 
-    def generate(self, tasks: list[GenerationTask], context: PipelineContext) -> list[GeneratedQA]: ...
+    def generate(
+        self, tasks: list[GenerationTask], context: PipelineContext
+    ) -> list[GeneratedQA]: ...
 
 
 @runtime_checkable
@@ -56,7 +60,9 @@ class LLMBasedFilter(EvaluatorFilter, Protocol):
 class QuestionTransformer(Protocol):
     """Transforms question text without changing answers or reference chunks."""
 
-    def transform(self, items: list[GeneratedQA], context: PipelineContext) -> list[GeneratedQA]: ...
+    def transform(
+        self, items: list[GeneratedQA], context: PipelineContext
+    ) -> list[GeneratedQA]: ...
 
 
 @runtime_checkable

@@ -196,7 +196,9 @@ class TestDiverseProfileSample:
         source.sample_chunks.return_value = chunks
 
         # corpus_size=10000 → pool_size=min(10000, max(500, min(10000, 500)))=500
-        result = diverse_profile_sample(source, corpus_size=10_000, min_chars=0, rng=random.Random(42))
+        result = diverse_profile_sample(
+            source, corpus_size=10_000, min_chars=0, rng=random.Random(42)
+        )
         assert len(result) <= 500
 
         # Should have chunks from multiple files
@@ -206,7 +208,9 @@ class TestDiverseProfileSample:
     def test_empty_source(self):
         source = MagicMock()
         source.sample_chunks.return_value = []
-        result = diverse_profile_sample(source, corpus_size=1000, min_chars=0, rng=random.Random(42))
+        result = diverse_profile_sample(
+            source, corpus_size=1000, min_chars=0, rng=random.Random(42)
+        )
         assert result == []
 
     def test_fewer_chunks_than_pool(self):
@@ -365,7 +369,11 @@ class TestComputeMetadataCensus:
         census = compute_metadata_census(pool, entity_names=["Redis"], chunk_count=100)
         assert census.content_length_p25 <= census.content_length_p50 <= census.content_length_p75
         assert census.entity_density_p25 <= census.entity_density_p50 <= census.entity_density_p75
-        assert census.lexical_diversity_p25 <= census.lexical_diversity_p50 <= census.lexical_diversity_p75
+        assert (
+            census.lexical_diversity_p25
+            <= census.lexical_diversity_p50
+            <= census.lexical_diversity_p75
+        )
 
     def test_tiny_corpus_degenerate(self):
         pool = [FakeChunk(content="x") for _ in range(3)]
@@ -468,8 +476,14 @@ class TestSelectDiverse:
     def test_stratification_uneven_groups(self):
         """Stratification with uneven group sizes should not crash."""
         pool = (
-            [FakeChunk(content=f"big group token{i} word{i}", metadata=(("file", "big.md"),)) for i in range(20)]
-            + [FakeChunk(content=f"small group item{i}", metadata=(("file", "small.md"),)) for i in range(2)]
+            [
+                FakeChunk(content=f"big group token{i} word{i}", metadata=(("file", "big.md"),))
+                for i in range(20)
+            ]
+            + [
+                FakeChunk(content=f"small group item{i}", metadata=(("file", "small.md"),))
+                for i in range(2)
+            ]
         )
         result = select_diverse(
             pool,

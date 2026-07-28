@@ -268,7 +268,8 @@ class RetrievalLLMFilter:
                     )
             except Exception:
                 logger.warning(
-                    "RetrievalLLMFilter search failed for one item; routing to refinement/rejection.",
+                    "RetrievalLLMFilter search failed for one item; routing to "
+                    "refinement/rejection.",
                     exc_info=True,
                 )
                 refinements = int(item.generation_metadata.get("refinement_count", 0))
@@ -397,7 +398,8 @@ class RetrievalLLMFilter:
                         "confidence": 1.0,
                         "failure_type": _FAILURE_TYPE_TOO_EASY,
                         "feedback_type": "same_anchor_feedback",
-                        "refinement_hint": "Increase retrieval difficulty and avoid directly retrievable terms.",
+                        "refinement_hint": "Increase retrieval difficulty and avoid directly "
+                        "retrievable terms.",
                         "judge_called": False,
                         "judge_answerable": None,
                         "judge_reasoning": "",
@@ -509,7 +511,8 @@ class RetrievalLLMFilter:
                 "confidence": 1.0,
                 "failure_type": _FAILURE_TYPE_TOO_EASY,
                 "feedback_type": "same_anchor_feedback",
-                "refinement_hint": "Increase retrieval difficulty and avoid directly retrievable terms.",
+                "refinement_hint": "Increase retrieval difficulty and avoid directly retrievable "
+                "terms.",
                 "judge_called": False,
                 "judge_answerable": None,
                 "judge_reasoning": "",
@@ -547,7 +550,8 @@ class RetrievalLLMFilter:
                 reason="retrieval_filter_needs_refinement",
                 reasoning=(
                     "Naive retrieval appears sufficient "
-                    f"(overlap={overlap_ratio:.2f}, source={metadata.get('too_easy_source', 'unknown')})."
+                    f"(overlap={overlap_ratio:.2f}, "
+                    f"source={metadata.get('too_easy_source', 'unknown')})."
                 ),
                 metadata=metadata,
             )
@@ -704,7 +708,8 @@ class RetrievalLLMFilter:
                 "confidence": confidence,
                 "failure_type": _FAILURE_TYPE_TOO_EASY,
                 "feedback_type": "same_anchor_feedback",
-                "refinement_hint": "Increase retrieval difficulty and avoid directly retrievable terms.",
+                "refinement_hint": "Increase retrieval difficulty and avoid directly retrievable "
+                "terms.",
                 "judge_called": True,
                 "judge_answerable": answerable,
                 "judge_reasoning": judge_reasoning,

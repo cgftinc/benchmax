@@ -65,7 +65,8 @@ _REASONING_MODE_INSTRUCTIONS: dict[str, str] = {
 }
 
 _DEFAULT_TEMPLATE = (
-    "[[if corpus_language]]LANGUAGE REQUIREMENT: You MUST generate the question and answer in {corpus_language}. "
+    "[[if corpus_language]]LANGUAGE REQUIREMENT: You MUST generate the question and answer in "
+    "{corpus_language}. "
     "Do not use any other language.\n\n[[endif]]"
     "Your task is to generate a {qa_type} question that will require "
     "{target_hop_count} search steps to answer by gathering information from multiple sources.\n\n"
@@ -77,7 +78,8 @@ _DEFAULT_TEMPLATE = (
     "[[if regeneration_attempt]]attempt={regeneration_attempt}\n[[endif]]"
     "[[if source_task_id]]source_task_id={source_task_id}\n[[endif]]"
     "[[if previous_failure_type]]previous_failure_type={previous_failure_type}\n[[endif]]"
-    "[[if previous_judge_reason_tag]]previous_judge_reason_tag={previous_judge_reason_tag}\n[[endif]]"
+    "[[if previous_judge_reason_tag]]"
+    "previous_judge_reason_tag={previous_judge_reason_tag}\n[[endif]]"
     "[[if overlap_triggered]]overlap_triggered={overlap_triggered}\n[[endif]]"
     "[[if expected_action]]expected_action={expected_action}\n[[endif]]"
     "Corpus summary:\n{corpus_summary}\n\n"
@@ -90,11 +92,14 @@ _DEFAULT_TEMPLATE = (
     "[[if failed_answer]]Failed answer:\n{failed_answer}\n\n[[endif]]"
     "[[if regeneration_prompt]]Feedback:\n{regeneration_prompt}\n\n[[endif]]"
     "Requirements:\n"
-    "- Generate a **complicated**, realistic, user-facing {qa_type} question connecting information across chunks.\n"
-    "- The question should require around {target_hop_count} retrieval/search steps to answer and avoid single-lookup shortcuts.\n"
+    "- Generate a **complicated**, realistic, user-facing {qa_type} question connecting "
+    "information across chunks.\n"
+    "- The question should require around {target_hop_count} retrieval/search steps to answer and "
+    "avoid single-lookup shortcuts.\n"
     "- Use only chunk evidence; do not use outside knowledge.\n"
     "- Keep the question standalone and understandable without seeing source chunks.\n"
-    "- Ensure the answer is correct, specific, and uniquely determined by the question and provided evidence.\n"
+    "- Ensure the answer is correct, specific, and uniquely determined by the question and "
+    "provided evidence.\n"
     "- Prefer task-oriented documentation use-cases over internal implementation trivia.\n"
     "- Avoid forced cross-topic stitching that is unlikely for a single user intent.\n"
     "- RETRIEVAL DIFFICULTY — CRITICAL:\n"
@@ -143,7 +148,8 @@ _DEFAULT_TEMPLATE = (
     "  4. Self-check: would a keyword search for any 3-word substring of your new question find the chunk? If yes, rephrase again.\n"  # noqa: E501
     "  Previous failed question: {failed_question}\n"
     "  Hint: Describe EFFECTS and USE CASES, not features and mechanisms.\n[[endif]]"
-    "[[if previous_failure_type]]- If previous_failure_type=unsupported, revise answer using current chunk evidence only.\n[[endif]]"
+    "[[if previous_failure_type]]- If previous_failure_type=unsupported, revise answer using "
+    "current chunk evidence only.\n[[endif]]"
     "- Output exactly one question and one answer.\n"
     "- In chunks_used, list the indices of chunks you referenced (0=primary, 1+=secondary).\n"
     "- CRITICAL: If the provided chunks genuinely cannot support a valid {qa_type} question "
@@ -151,11 +157,13 @@ _DEFAULT_TEMPLATE = (
     'return `{{"status": "cannot_generate", "reason": "<brief explanation>"}}` instead. '
     "Do NOT output a meta-question about the generation process itself.\n\n"
     "First output your reasoning in <think>...</think>, then provide:\n"
-    '```json\n{{"question": "...", "answer": "...", "answering_steps": "...", "chunks_used": [0, 1, ...]}}\n```'
+    '```json\n{{"question": "...", "answer": "...", "answering_steps": "...", '
+    '"chunks_used": [0, 1, ...]}}\n```'
 )
 
 _LOOKUP_TEMPLATE = (
-    "[[if corpus_language]]LANGUAGE REQUIREMENT: You MUST generate the question and answer in {corpus_language}. "
+    "[[if corpus_language]]LANGUAGE REQUIREMENT: You MUST generate the question and answer in "
+    "{corpus_language}. "
     "Do not use any other language.\n\n[[endif]]"
     "Your task is to generate a single-hop lookup question answerable from one chunk.\n\n"
     "You must first reason inside <think> and </think>:\n"
@@ -165,7 +173,8 @@ _LOOKUP_TEMPLATE = (
     "[[if regeneration_attempt]]attempt={regeneration_attempt}\n[[endif]]"
     "[[if source_task_id]]source_task_id={source_task_id}\n[[endif]]"
     "[[if previous_failure_type]]previous_failure_type={previous_failure_type}\n[[endif]]"
-    "[[if previous_judge_reason_tag]]previous_judge_reason_tag={previous_judge_reason_tag}\n[[endif]]"
+    "[[if previous_judge_reason_tag]]"
+    "previous_judge_reason_tag={previous_judge_reason_tag}\n[[endif]]"
     "[[if overlap_triggered]]overlap_triggered={overlap_triggered}\n[[endif]]"
     "[[if expected_action]]expected_action={expected_action}\n[[endif]]"
     "Corpus summary:\n{corpus_summary}\n\n"

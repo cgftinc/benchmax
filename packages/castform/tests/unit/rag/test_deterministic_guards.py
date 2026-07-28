@@ -199,7 +199,8 @@ class TestDeterministicGuards:
         item_short = GeneratedQA(
             qa={
                 "question": "How do A and B interact with each other?",
-                "answer": "A interacts with B through the shared X interface, which exposes a bidirectional event bus that both components consume and publish to.",
+                "answer": "A interacts with B through the shared X interface, which exposes a "
+                "bidirectional event bus that both components consume and publish to.",
                 "qa_type": "",  # empty — must fall back to generation_metadata
                 "reference_chunks": [
                     {"id": "c1", "metadata": {"file": "a.mdx"}, "content": "Content A."},

@@ -166,7 +166,8 @@ class HarveyHarnessAgent(BaseAgent):
         if result.return_code != 0:
             raise RuntimeError(
                 "Harvey harness failed with exit code "
-                f"{result.return_code}\nSTDOUT:\n{result.stdout or ''}\nSTDERR:\n{result.stderr or ''}"
+                f"{result.return_code}\nSTDOUT:\n{result.stdout or ''}\n"
+                f"STDERR:\n{result.stderr or ''}"
             )
         await self._populate_context_from_metrics(environment, context, run_id)
 
@@ -328,7 +329,8 @@ class HarveyHarnessAgent(BaseAgent):
                 "  fi",
                 '  RUNNER=( "${BOOTSTRAP_VENV}/bin/python" "${RUNTIME}" )',
                 "else",
-                '  echo "Harvey runtime requires HARBOR_HARVEY_PYTHON, the prebaked venv, uv, or python3" >&2',
+                '  echo "Harvey runtime requires HARBOR_HARVEY_PYTHON, the prebaked venv, uv, or '
+                'python3" >&2',
                 "  exit 1",
                 "fi",
                 '"${RUNNER[@]}" ' + " ".join(shlex.quote(arg) for arg in args),
@@ -339,11 +341,14 @@ class HarveyHarnessAgent(BaseAgent):
                 # Harvey creates these aliases as absolute symlinks into the
                 # sandbox. They are redundant with Harbor's own workspace
                 # capture, and safe tar extraction rejects absolute links.
-                'for path in "$STAGED_RESULT/workspace/documents" "$STAGED_RESULT/workspace/output"; do',
+                'for path in "$STAGED_RESULT/workspace/documents" '
+                '"$STAGED_RESULT/workspace/output"; do',
                 '  if [ -L "$path" ]; then rm -f "$path"; fi',
                 "done",
                 f"mkdir -p {shlex.quote(str(EnvironmentPaths.artifacts_dir / 'harvey-output'))}",
-                f"if [ -d {shlex.quote(self.harbor_output_dir)} ]; then cp -a {shlex.quote(self.harbor_output_dir + '/.')} {shlex.quote(str(EnvironmentPaths.artifacts_dir / 'harvey-output/'))}; fi",
+                f"if [ -d {shlex.quote(self.harbor_output_dir)} ]; then cp -a "
+                f"{shlex.quote(self.harbor_output_dir + '/.')} "
+                f"{shlex.quote(str(EnvironmentPaths.artifacts_dir / 'harvey-output/'))}; fi",
             ]
         )
 
@@ -394,7 +399,10 @@ class HarveyHarnessAgent(BaseAgent):
         trial_name = self.logs_dir.parent.name if self.logs_dir.parent.name else "trial"
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         task_name = self._harbor_task_name()
-        return f"harbor-agent/{task_name}/{self._slug(self._model_name_for_harvey())}/{trial_name}-{timestamp}"
+        return (
+            f"harbor-agent/{task_name}/{self._slug(self._model_name_for_harvey())}"
+            f"/{trial_name}-{timestamp}"
+        )
 
     def _harbor_task_name(self) -> str:
         task_name = self._env("HARBOR_HARVEY_TASK_NAME")

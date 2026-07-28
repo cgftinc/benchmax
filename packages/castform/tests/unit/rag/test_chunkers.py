@@ -12,7 +12,11 @@ class TestPreprocessMdx:
 
     def test_import_lines_are_stripped(self):
         """JS/TS import statements should be removed entirely."""
-        src = 'import MyComponent from "../components/MyComponent"\nimport { Foo } from \'./foo\'\n\nSome real content.'
+        src = (
+            'import MyComponent from "../components/MyComponent"\n'
+            "import { Foo } from './foo'\n"
+            "\nSome real content."
+        )
         result = _preprocess_mdx(src)
         assert "import" not in result
         assert "Some real content." in result

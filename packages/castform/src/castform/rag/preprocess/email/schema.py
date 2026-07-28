@@ -166,7 +166,8 @@ def validate_rows(rows: list[dict[str, Any]], max_warnings: int = 200) -> list[s
             warnings.append(f"row={idx} has empty 'thread_id' (id={as_str(row.get('id'))!r})")
         if not isinstance(row.get("from"), dict):
             warnings.append(
-                f"row={idx} has invalid 'from' type={type(row.get('from')).__name__}; expected object"
+                f"row={idx} has invalid 'from' type={type(row.get('from')).__name__}; expected "
+                f"object"
             )
         for opt_list in ("to", "cc"):
             if opt_list in row and not isinstance(row.get(opt_list), list):

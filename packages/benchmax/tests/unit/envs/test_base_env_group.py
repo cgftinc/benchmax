@@ -935,7 +935,10 @@ async def test_request_split_reaches_reward_hooks_and_must_be_uniform() -> None:
             return await super().compute_reward(rollout)
 
     env = _SplitAwareEnv()
-    example = Example(id="split-example", payload={"prompt_messages": [{"role": "user", "content": "2*2?"}], "answer": "4"})
+    example = Example(
+        id="split-example",
+        payload={"prompt_messages": [{"role": "user", "content": "2*2?"}], "answer": "4"},
+    )
 
     def respond(session_id: str, call_index: int, body: dict[str, Any]):
         return 200, completion_response(content="4")
