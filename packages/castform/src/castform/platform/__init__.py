@@ -4,8 +4,8 @@ from .client import RolloutClient, StorageClient, TrainerClient
 from .config import PlatformConfig
 from .credentials import platform_bearer
 
-# Imported last: login depends on credentials/device_auth (siblings), so this
-# stays cycle-free as long as those are already loaded by the imports above.
+# login depends on its siblings credentials/device_auth; alphabetical ordering
+# keeps both ahead of it, so the package stays cycle-free.
 from .login import ensure_session
 from .training_run import UploadedTrainingRun, upload_training_run
 

@@ -7,6 +7,7 @@ import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TypeAlias
 
 from .judge import Judge, JudgeError
 from .prompts import DEFAULT_DIVERSITY_INSTRUCTIONS, build_diversity_prompt
@@ -43,7 +44,9 @@ class LLMDiversityConfig:
             raise ValueError("max_tokens must be positive")
 
 
-type DiversityConfig = NgramDiversityConfig | LLMDiversityConfig
+# Re-exported from benchmax.rewards; a PEP 695 alias would hand importers a lazy
+# TypeAliasType instead of the UnionType they get today.
+DiversityConfig: TypeAlias = NgramDiversityConfig | LLMDiversityConfig  # noqa: UP040
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,3 +1,4 @@
+(
 """Integration tests for BraintrustTraceAdapter against live API.
 
 Requires environment variables:
@@ -5,9 +6,10 @@ Requires environment variables:
     BT_PROJECT_ID — Braintrust project ID to test against
 
 Run manually:
-    BT_API_KEY=sk-... BT_PROJECT_ID=... \
-        uv run pytest -m integration tests/integration/traces/test_braintrust_e2e.py -v
+    BT_API_KEY=sk-... BT_PROJECT_ID=... uv run pytest -m integration """
+"""tests/integration/traces/test_braintrust_e2e.py -v
 """
+)
 
 from __future__ import annotations
 

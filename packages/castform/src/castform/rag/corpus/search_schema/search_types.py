@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypeAlias, TypedDict
 
 FieldOperator = Literal["eq", "in", "gte", "lte", "contains_any", "contains_all"]
 LogicalOperator = Literal["and", "or", "not"]
@@ -40,7 +40,9 @@ class NotPredicate:
     clause: FilterPredicate
 
 
-type FilterPredicate = FieldPredicate | AndPredicate | OrPredicate | NotPredicate
+# Referenced by the predicate dataclasses above and the SearchSpec TypedDict below;
+# a PEP 695 alias changes what get_type_hints returns for those annotations.
+FilterPredicate: TypeAlias = FieldPredicate | AndPredicate | OrPredicate | NotPredicate  # noqa: UP040
 
 
 class HybridOptions(TypedDict, total=False):

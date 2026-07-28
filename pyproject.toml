@@ -26,9 +26,6 @@ target-version = "py312"
 select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
-# Test classes named TestStrategy<N>_<Description>; the underscore separates the
-# strategy number from its description and is deliberate.
-"packages/castform/tests/unit/traces/test_braintrust_extraction.py" = ["N801"]
 # Message/Tool are deliberately bound to different types under TYPE_CHECKING vs
 # at runtime, and are re-exported. PEP 695 `type` aliases are lazy objects rather
 # than the plain runtime types importers currently receive, so keep TypeAlias.
