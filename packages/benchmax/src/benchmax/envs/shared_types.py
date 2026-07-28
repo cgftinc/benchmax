@@ -19,7 +19,7 @@ DatasetSplit = Literal["train", "eval"]
 type RewardMap = Mapping[str, float]
 
 
-class RolloutFailure(RuntimeError):
+class RolloutFailure(RuntimeError):  # noqa: N818 — public exported name
     """Operational rollout failure that should become a terminal outcome.
 
     Environment implementations may raise this when they cannot construct a

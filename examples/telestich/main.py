@@ -698,21 +698,21 @@ def _bt_fit(
 ) -> list[float]:
     """Bradley-Terry ratings by gradient ascent over (winner, loser) pairs pooled across
     slices; `fixed` players (the anchors) stay pinned at their given ratings."""
-    R = [0.0] * n_players
+    ratings = [0.0] * n_players
     for pid, val in fixed.items():
-        R[pid] = val
+        ratings[pid] = val
     norm = max(1.0, len(pairs) / max(1, n_players))
     for _ in range(iters):
         grad = [0.0] * n_players
         for win, lose in pairs:
-            d = max(-30.0, min(30.0, R[win] - R[lose]))
+            d = max(-30.0, min(30.0, ratings[win] - ratings[lose]))
             pe = 1.0 / (1.0 + math.exp(-d))
             grad[win] += 1.0 - pe
             grad[lose] -= 1.0 - pe
         for i in range(n_players):
             if i not in fixed:
-                R[i] += lr * grad[i] / norm
-    return R
+                ratings[i] += lr * grad[i] / norm
+    return ratings
 
 
 def _first_ref(refs: Any) -> str | None:

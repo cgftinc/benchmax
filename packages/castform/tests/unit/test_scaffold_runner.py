@@ -232,7 +232,7 @@ def _patch_launch_sdk(mod, monkeypatch, launched: dict, *, validate_ok: bool = T
         return bundle
 
     monkeypatch.setattr(mod, "dump_bundle", fake_dump_bundle)
-    Uploaded = dataclasses.make_dataclass(
+    Uploaded = dataclasses.make_dataclass(  # noqa: N806 — binds a class, not a variable
         "Uploaded",
         [
             "env_cls_path",

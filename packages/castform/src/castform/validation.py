@@ -24,7 +24,7 @@ __all__ = [
 ]
 
 
-class RemoteValidationUnavailable(RuntimeError):
+class RemoteValidationUnavailable(RuntimeError):  # noqa: N818 — public exported name
     """Hosted validation is waiting on group-native rollout-service support."""
 
 
