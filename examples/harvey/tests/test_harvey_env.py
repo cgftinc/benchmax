@@ -240,6 +240,7 @@ def test_harvey_agent_builds_harbor_task_command(tmp_path: Path) -> None:
     assert "--output-dir /workspace/output" in command
     assert "--model gemma-model" in command
     assert "--max-turns 30" in command
+    assert "--max-tool-result-chars 12000" in command
     assert "/workspace/output/." in command
     assert (
         'for path in "$STAGED_RESULT/workspace/documents" '

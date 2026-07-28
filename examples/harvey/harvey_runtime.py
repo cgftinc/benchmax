@@ -56,6 +56,11 @@ SYSTEM_PROMPT_PREAMBLE = (HARVEY_ROOT / "harness" / "system_prompt.md").read_tex
 )
 SKILLS_DIR = HARVEY_ROOT / "harness" / "skills"
 DEFAULT_SKILLS = sorted(path.parent.name for path in SKILLS_DIR.glob("*/SKILL.md"))
+DEFAULT_MAX_TOOL_RESULT_CHARS = 12000
+TOOL_RESULT_GUIDANCE = """\
+Use the `read` tool for document files and use offsets/limits for large documents.
+Tool results may be truncated; request the next relevant range instead of rereading
+the whole file. Start drafting by the midpoint of the turn budget."""
 
 
 def _load_skills(skill_names: list[str]) -> str:
@@ -223,6 +228,34 @@ def _is_context_length_exceeded(error: openai.BadRequestError) -> bool:
     return any(code in error_text for code in context_error_codes)
 
 
+class TruncatingToolExecutor(ToolExecutor):
+    """Cap tool observations so one document read cannot consume the context."""
+
+    def __init__(self, *args: Any, max_result_chars: int, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        if max_result_chars < 0:
+            raise ValueError("max_result_chars must be non-negative")
+        self.max_result_chars = max_result_chars
+
+    def execute(self, tool_name: str, arguments: str | dict) -> str:
+        result = self._sanitize(super().execute(tool_name, arguments))
+        if self.max_result_chars == 0 or len(result) <= self.max_result_chars:
+            return result
+        omitted = len(result) - self.max_result_chars
+        return (
+            result[: self.max_result_chars]
+            + f"\n\n[truncated {omitted} characters; "
+            "rerun read with offset/limit for more]"
+        )
+
+    @staticmethod
+    def _sanitize(value: str) -> str:
+        return "".join(
+            char if char in "\n\r\t" or ord(char) >= 32 else "\ufffd"
+            for char in value
+        )
+
+
 class HarborOwnedSandbox(Sandbox):
     """Map Harvey's sandbox interface onto the current Harbor environment."""
 
@@ -387,6 +420,7 @@ def run(args: argparse.Namespace) -> None:
         "documents_dir": str(Path(args.documents_dir)),
         "output_dir": str(output_dir),
         "max_turns": args.max_turns,
+        "max_tool_result_chars": args.max_tool_result_chars,
         "temperature": args.temperature,
         "shell_timeout": args.shell_timeout,
         "reasoning_effort": args.reasoning_effort,
@@ -408,7 +442,7 @@ def run(args: argparse.Namespace) -> None:
     )
     sandbox.start()
     try:
-        system_prompt = SYSTEM_PROMPT_PREAMBLE
+        system_prompt = SYSTEM_PROMPT_PREAMBLE + "\n\n" + TOOL_RESULT_GUIDANCE
         if skill_names:
             system_prompt += _load_skills(skill_names)
             _setup_skill_scripts(skill_names, workspace_dir)
@@ -424,9 +458,10 @@ def run(args: argparse.Namespace) -> None:
             adapter=adapter,
             system_prompt=system_prompt,
             user_prompt=instruction,
-            tool_executor=ToolExecutor(
+            tool_executor=TruncatingToolExecutor(
                 sandbox=sandbox,
                 shell_timeout=args.shell_timeout,
+                max_result_chars=args.max_tool_result_chars,
             ),
             tools=get_all_tool_definitions(),
             max_turns=args.max_turns,
@@ -473,6 +508,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--max-turns", type=int, default=30)
+    parser.add_argument(
+        "--max-tool-result-chars",
+        type=int,
+        default=DEFAULT_MAX_TOOL_RESULT_CHARS,
+    )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--shell-timeout", type=int, default=60)
     parser.add_argument("--reasoning-effort")
