@@ -35,6 +35,9 @@ def test_harvey_constructor_uses_latest_dataset_and_native_harness() -> None:
     assert isinstance(trial.agent, BundledHarborAgent)
     assert trial.agent.config.import_path == "harvey_agent:HarveyHarnessAgent"
     assert trial.environment.type == EnvironmentType.MODAL
+    assert trial.environment.kwargs["app_name"] == "harbor-benchmax"
+    assert trial.environment.kwargs["sandbox_timeout_secs"] == 10800
+    assert trial.environment.kwargs["sandbox_idle_timeout_secs"] == 1800
     assert trial.trials_dir == Path("/tmp/castform-harvey-harbor-trials")
     assert isinstance(trial.verifier, TrialVerifierConfig)
     assert trial.verifier.env == {
@@ -42,6 +45,44 @@ def test_harvey_constructor_uses_latest_dataset_and_native_harness() -> None:
         "REWARDKIT_JUDGE": "anthropic/claude-sonnet-4-6",
         "JUDGE_CONCURRENCY": "1",
     }
+
+
+def test_harvey_constructor_overrides_modal_sandbox_lifecycle() -> None:
+    env = HarveyLabHarborEnv(
+        sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+        verifier_env={"ANTHROPIC_API_KEY": "anthropic-key"},
+        judge_model="anthropic/claude-sonnet-4-6",
+        modal_app_name="harbor-long-docs",
+        sandbox_timeout_secs=7200,
+        sandbox_idle_timeout_secs=900,
+    )
+
+    assert env._trial.environment.kwargs == {
+        "app_name": "harbor-long-docs",
+        "sandbox_timeout_secs": 7200,
+        "sandbox_idle_timeout_secs": 900,
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("sandbox_timeout_secs", 0),
+        ("sandbox_timeout_secs", True),
+        ("sandbox_idle_timeout_secs", -1),
+    ],
+)
+def test_harvey_constructor_rejects_invalid_modal_timeouts(
+    name: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match=name):
+        HarveyLabHarborEnv(
+            sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+            verifier_env={"ANTHROPIC_API_KEY": "anthropic-key"},
+            judge_model="anthropic/claude-sonnet-4-6",
+            **{name: value},
+        )
 
 
 def test_harvey_bundles_carry_the_explicit_verifier_environment() -> None:
