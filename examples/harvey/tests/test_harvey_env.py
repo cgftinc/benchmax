@@ -269,7 +269,10 @@ async def test_harvey_agent_reads_metrics_from_sandbox_before_download(
             if command.startswith("cat "):
                 return SimpleNamespace(
                     return_code=0,
-                    stdout='{"input_tokens":123,"output_tokens":45,"turns":3}',
+                    stdout=(
+                        '{"input_tokens":123,"output_tokens":45,"turns":3,'
+                        '"termination_reason":"context_exceeded"}'
+                    ),
                     stderr="",
                 )
             return SimpleNamespace(return_code=0, stdout="", stderr="")
@@ -294,6 +297,7 @@ async def test_harvey_agent_reads_metrics_from_sandbox_before_download(
             "input_tokens": 123,
             "output_tokens": 45,
             "turns": 3,
+            "termination_reason": "context_exceeded",
         },
     }
 

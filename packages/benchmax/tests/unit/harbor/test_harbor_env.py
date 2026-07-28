@@ -29,7 +29,11 @@ from benchmax.envs.harbor import (
     ModalCredentials,
 )
 from benchmax.envs.harbor.credentials import sandbox_credentials_scope
-from benchmax.envs.harbor.env import _log_rewardkit_criteria
+from benchmax.envs.harbor.env import (
+    _log_rewardkit_criteria,
+    _result_termination_reason,
+    _rollout_attempt,
+)
 
 _REWARD_KEYS = ("reward", "partial_credit")
 
@@ -53,6 +57,66 @@ class _UserHarness(BaseAgent):
 
     async def run(self, instruction: str, environment: Any, context: Any) -> None:
         pass
+
+
+@pytest.mark.parametrize("reason", ["context_exceeded", "output_exceeded"])
+def test_harbor_prefers_harvey_reported_budget_termination(reason: str) -> None:
+    result = SimpleNamespace(
+        agent_result=SimpleNamespace(
+            metadata={"harvey_metrics": {"termination_reason": reason}}
+        ),
+        exception_info=None,
+    )
+
+    assert _result_termination_reason(result) == reason
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        None,
+        {},
+        {"harvey_metrics": None},
+        {"harvey_metrics": {"termination_reason": "unexpected"}},
+    ],
+)
+def test_harbor_ignores_unrecognized_harness_termination_metadata(
+    metadata: object,
+) -> None:
+    result = SimpleNamespace(
+        agent_result=SimpleNamespace(metadata=metadata),
+        exception_info=None,
+    )
+
+    assert _result_termination_reason(result) == "finished"
+
+
+@pytest.mark.parametrize("reason", ["context_exceeded", "output_exceeded"])
+@pytest.mark.parametrize("rewards", [{"reward": 0.25}, None])
+def test_harbor_preserves_budget_termination_with_or_without_verifier_rewards(
+    tmp_path: Path,
+    reason: str,
+    rewards: dict[str, float] | None,
+) -> None:
+    result = SimpleNamespace(
+        agent_result=SimpleNamespace(
+            metadata={"harvey_metrics": {"termination_reason": reason}}
+        ),
+        verifier_result=(
+            SimpleNamespace(rewards=rewards) if rewards is not None else None
+        ),
+        exception_info=None,
+    )
+
+    rollout = _rollout_attempt(
+        "rollout-1",
+        result,
+        trial_dir=tmp_path,
+        reward_keys=("reward",),
+    )
+
+    assert rollout.termination_reason == reason
+    assert rollout.rewards == (rewards or {"reward": 0.0})
 
 
 @pytest.mark.asyncio

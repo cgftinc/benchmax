@@ -54,6 +54,9 @@ _TERMINATION_REASON_BY_EXCEPTION = {
     "SandboxBuildFailedError": "sandbox_error",
     "VerifierTimeoutError": "verifier_timeout",
 }
+_HARNESS_REPORTED_TERMINATION_REASONS = frozenset(
+    {"context_exceeded", "output_exceeded"}
+)
 
 
 class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
@@ -305,6 +308,7 @@ def _rollout_attempt(
 ) -> RolloutAttempt:
     """Normalize every completed Harbor trial into a scored rollout attempt."""
 
+    termination_reason = _result_termination_reason(result)
     verifier_result = result.verifier_result
     rewards = verifier_result.rewards if verifier_result is not None else None
     if not rewards:
@@ -325,8 +329,8 @@ def _rollout_attempt(
             reward_keys=reward_keys,
             termination_reason=(
                 "verifier_error"
-                if result.exception_info is None
-                else _result_termination_reason(result)
+                if result.exception_info is None and termination_reason == "finished"
+                else termination_reason
             ),
         )
 
@@ -340,7 +344,7 @@ def _rollout_attempt(
         return _zero_reward_rollout(
             rollout_id,
             reward_keys=reward_keys,
-            termination_reason=_result_termination_reason(result),
+            termination_reason=termination_reason,
         )
 
     normalized_rewards = {str(key): float(value) for key, value in rewards.items()}
@@ -356,7 +360,7 @@ def _rollout_attempt(
     _log_rewardkit_criteria(rollout_id, rewardkit_criteria)
     return RolloutAttempt(
         rollout_id=rollout_id,
-        termination_reason=_result_termination_reason(result),
+        termination_reason=termination_reason,
         rewards=normalized_rewards,
     )
 
@@ -377,8 +381,20 @@ def _zero_reward_rollout(
 
 
 def _result_termination_reason(result: TrialResult) -> str:
-    """Use known Harbor terminal states and fall back to existing metadata."""
+    """Prefer an explicit harness budget stop, then classify Harbor failures."""
 
+    agent_result = getattr(result, "agent_result", None)
+    metadata = getattr(agent_result, "metadata", None)
+    harvey_metrics = (
+        metadata.get("harvey_metrics") if isinstance(metadata, Mapping) else None
+    )
+    reason = (
+        harvey_metrics.get("termination_reason")
+        if isinstance(harvey_metrics, Mapping)
+        else None
+    )
+    if reason in _HARNESS_REPORTED_TERMINATION_REASONS:
+        return cast(str, reason)
     if result.exception_info is None:
         return "finished"
     return _exception_termination_reason(result.exception_info.exception_type)

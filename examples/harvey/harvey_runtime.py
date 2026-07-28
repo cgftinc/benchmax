@@ -104,6 +104,7 @@ class OpenAIChatCompletionsAdapter(ModelAdapter):
         super().__init__(
             model=model, temperature=temperature, reasoning_effort=reasoning_effort
         )
+        self.termination_reason: str | None = None
         self.gateway_controls_sampling = _gateway_controls_sampling(base_url)
         client_options: dict[str, Any] = {
             "api_key": api_key,
@@ -126,7 +127,10 @@ class OpenAIChatCompletionsAdapter(ModelAdapter):
             request["extra_body"] = {"chat_template_kwargs": {"enable_thinking": True}}
 
         response = self._create_with_retries(request)
-        message = response.choices[0].message
+        choice = response.choices[0]
+        if choice.finish_reason == "length":
+            self.termination_reason = "output_exceeded"
+        message = choice.message
         usage = response.usage
         return ModelResponse(
             message=message.model_dump(exclude_none=True),
@@ -148,7 +152,8 @@ class OpenAIChatCompletionsAdapter(ModelAdapter):
             try:
                 return self.client.chat.completions.create(**request)
             except openai.BadRequestError as error:
-                if _is_context_budget_exceeded(error):
+                if _is_context_length_exceeded(error):
+                    self.termination_reason = "context_exceeded"
                     # Harvey recognizes this spelling as a graceful context stop
                     # and preserves artifacts for verification.
                     raise RuntimeError(f"context_length_exceeded: {error}") from error
@@ -199,17 +204,23 @@ def _gateway_controls_sampling(base_url: str) -> bool:
     )
 
 
-def _is_context_budget_exceeded(error: openai.BadRequestError) -> bool:
-    if getattr(error, "code", None) == "context_budget_exceeded":
+def _is_context_length_exceeded(error: openai.BadRequestError) -> bool:
+    context_error_codes = {
+        "context_budget_exceeded",
+        "context_length_exceeded",
+        "context_window_exceeded",
+    }
+    if getattr(error, "code", None) in context_error_codes:
         return True
     body = getattr(error, "body", None)
     if isinstance(body, dict):
-        if body.get("code") == "context_budget_exceeded":
+        if body.get("code") in context_error_codes:
             return True
         nested = body.get("error")
-        if isinstance(nested, dict) and nested.get("code") == "context_budget_exceeded":
+        if isinstance(nested, dict) and nested.get("code") in context_error_codes:
             return True
-    return "context_budget_exceeded" in str(error)
+    error_text = str(error).lower()
+    return any(code in error_text for code in context_error_codes)
 
 
 class HarborOwnedSandbox(Sandbox):
@@ -402,14 +413,15 @@ def run(args: argparse.Namespace) -> None:
             system_prompt += _load_skills(skill_names)
             _setup_skill_scripts(skill_names, workspace_dir)
 
+        adapter = OpenAIChatCompletionsAdapter(
+            model=args.model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=args.temperature,
+            reasoning_effort=args.reasoning_effort,
+        )
         result = run_agent(
-            adapter=OpenAIChatCompletionsAdapter(
-                model=args.model,
-                api_key=api_key,
-                base_url=base_url,
-                temperature=args.temperature,
-                reasoning_effort=args.reasoning_effort,
-            ),
+            adapter=adapter,
             system_prompt=system_prompt,
             user_prompt=instruction,
             tool_executor=ToolExecutor(
@@ -433,6 +445,7 @@ def run(args: argparse.Namespace) -> None:
         "total_tokens": result["input_tokens"] + result["output_tokens"],
         "wall_clock_seconds": result["wall_clock_seconds"],
         "finished_cleanly": result["finished_cleanly"],
+        "termination_reason": adapter.termination_reason or "finished",
         "completed_at": datetime.now(UTC).isoformat(),
         **result["tool_metrics"],
     }
