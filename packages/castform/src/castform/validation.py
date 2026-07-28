@@ -18,9 +18,7 @@ from castform.platform.training_run import UploadedTrainingRun
 
 __all__ = ["ValidationReport", "validate_environment"]
 
-_VALIDATION_NON_ERROR_TERMINATIONS = Environment.scorable_termination_reasons | {
-    "output_exceeded"
-}
+_VALIDATION_NON_ERROR_TERMINATIONS = Environment.scorable_termination_reasons
 
 
 @dataclass(frozen=True, slots=True)

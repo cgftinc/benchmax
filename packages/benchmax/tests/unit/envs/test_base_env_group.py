@@ -176,7 +176,7 @@ async def test_base_env_group_runs_end_to_end_through_distinct_http_endpoints() 
     assert all(call[2] == {"answer": "42"} for call in env.reward_calls)
 
 
-async def test_output_exceeded_is_zeroed_without_scoring() -> None:
+async def test_output_exceeded_scores_the_partial_transcript() -> None:
     example = Example(
         id="math-context",
         payload={
@@ -196,7 +196,13 @@ async def test_output_exceeded_is_zeroed_without_scoring() -> None:
 
     assert outcomes["rollout-1"].termination_reason == "output_exceeded"
     assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
-    assert env.reward_calls == []
+    assert len(env.reward_calls) == 1
+    assert env.reward_calls[0][0] == "rollout-1"
+    assert env.reward_calls[0][1][-1] == {
+        "role": "assistant",
+        "content": "partial",
+    }
+    assert env.reward_calls[0][3] == "output_exceeded"
 
 
 async def test_gateway_context_exhaustion_scores_the_partial_transcript() -> None:
@@ -992,13 +998,18 @@ async def test_tool_content_parts_pass_through_to_the_transcript() -> None:
     ]
 
     class _RichToolEnv(_ToolMathEnv):
-        async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> Any:
+        async def run_tool(
+            self, rollout_id: str, tool_name: str, **tool_args: Any
+        ) -> Any:
             return parts
 
     env = _RichToolEnv(max_tool_calls=1)
     example = Example(
         id="rich-tool",
-        payload={"prompt_messages": [{"role": "user", "content": "6*7?"}], "answer": "42"},
+        payload={
+            "prompt_messages": [{"role": "user", "content": "6*7?"}],
+            "answer": "42",
+        },
     )
 
     def respond(session_id: str, call_index: int, body: dict[str, Any]):
@@ -1010,7 +1021,10 @@ async def test_tool_content_parts_pass_through_to_the_transcript() -> None:
                     {
                         "id": "call-1",
                         "type": "function",
-                        "function": {"name": "multiply", "arguments": '{"left":6,"right":7}'},
+                        "function": {
+                            "name": "multiply",
+                            "arguments": '{"left":6,"right":7}',
+                        },
                     }
                 ],
             )

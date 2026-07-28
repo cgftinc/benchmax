@@ -146,7 +146,7 @@ async def test_group_scorer_receives_every_attempt_once() -> None:
 
 @pytest.mark.parametrize(
     "termination_reason",
-    ["max_turns_exceeded", "tool_budget_exceeded"],
+    ["max_turns_exceeded", "tool_budget_exceeded", "output_exceeded"],
 )
 async def test_group_scorer_receives_budget_exhausted_attempts(
     termination_reason: str,

@@ -29,6 +29,7 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
         {
             "finished",
             "context_exceeded",
+            "output_exceeded",
             "max_turns_exceeded",
             "tool_budget_exceeded",
         }
