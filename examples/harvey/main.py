@@ -251,7 +251,7 @@ def launch(
     from benchmax.bundle import dump_bundle
     from castform import config
     from castform.platform.client import TrainerClient
-    from castform.platform.training_run import upload_training_run
+    from castform.platform.environment_assets import upload_environment_assets
 
     run_name = f"harvey-{uuid.uuid4().hex[:8]}"
     if not assume_yes:
@@ -272,7 +272,7 @@ def launch(
         ),
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
-    uploaded = upload_training_run(bundle=bundle, run_name=run_name)
+    uploaded = upload_environment_assets(bundle=bundle, run_name=run_name)
     with TrainerClient() as trainer:
         run_id = trainer.launch_training_run(
             env_cls_path=uploaded.env_cls_path,

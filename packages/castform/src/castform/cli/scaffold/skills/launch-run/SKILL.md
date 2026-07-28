@@ -23,7 +23,7 @@ Read the script and confirm that `launch()` does all of the following in order:
 2. stops if either sibling did not finish;
 3. asks the human to confirm a credit-spending GPU launch;
 4. builds one `Bundle` with `dump_bundle`;
-5. passes that exact object to `upload_training_run(bundle=bundle, ...)`;
+5. passes that exact object to `upload_environment_assets(bundle=bundle, ...)`;
 6. passes the returned paths to `TrainerClient.launch_training_run`.
 
 The upload helper must not silently rebundle the environment.

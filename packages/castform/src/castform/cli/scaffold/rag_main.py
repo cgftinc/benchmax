@@ -48,7 +48,7 @@ from benchmax.rewards import (
 from castform import config, validate_environment
 from castform.platform.client import TrainerClient
 from castform.platform.login import ensure_session
-from castform.platform.training_run import upload_training_run
+from castform.platform.environment_assets import upload_environment_assets
 from castform.rag.corpus.postgres.search import PostgresSearch
 
 CORPUS_NAME = "my-corpus"
@@ -303,7 +303,7 @@ async def _run_validation(env: CustomSearchEnv) -> Any:
             constructor_args=ENV_ARGS,
             pip_dependencies=RUNTIME_DEPENDENCIES,
         )
-        remote_assets = upload_training_run(
+        remote_assets = upload_environment_assets(
             bundle=bundle,
             train_dataset=_load_jsonl(TRAIN_FILE),
             eval_dataset=(_load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else None),
@@ -347,7 +347,7 @@ def launch(assume_yes: bool = False) -> str | None:
         constructor_args=ENV_ARGS,
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
-    uploaded = upload_training_run(
+    uploaded = upload_environment_assets(
         bundle=bundle,
         train_dataset=_load_jsonl(TRAIN_FILE),
         eval_dataset=_load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else [],

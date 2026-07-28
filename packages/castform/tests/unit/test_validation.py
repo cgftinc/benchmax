@@ -7,7 +7,7 @@ import pytest
 from benchmax.auth import InjectedAuth, ModelRequestContext, StaticBearerAuth
 from benchmax.envs import Dataset, Example, RolloutOutcome
 from castform.model_auth import CastformModelAuth
-from castform.platform.training_run import UploadedTrainingRun
+from castform.platform.environment_assets import UploadedEnvironmentAssets
 from castform.validation import validate_environment
 
 
@@ -140,7 +140,7 @@ async def test_remote_validation_rejects_a_finished_event_without_a_trace(
     report = await validate_environment(
         RecordingEnvironment(),
         model="test-model",
-        remote_assets=UploadedTrainingRun(
+        remote_assets=UploadedEnvironmentAssets(
             env_cls_path="envs/run/env-cls.pkl",
             env_metadata_path="envs/run/env-metadata.json",
         ),
@@ -242,7 +242,7 @@ async def test_remote_validation_uses_the_same_group_native_client_contract(
     report = await validate_environment(
         RecordingEnvironment(),
         model="test-model",
-        remote_assets=UploadedTrainingRun(
+        remote_assets=UploadedEnvironmentAssets(
             env_cls_path="envs/run/env-cls.pkl",
             env_metadata_path="envs/run/env-metadata.json",
             dataset_path=dataset_path,

@@ -431,7 +431,7 @@ def launch(*, assume_yes: bool) -> str | None:
     from benchmax.bundle import dump_bundle
     from castform import config
     from castform.platform.client import TrainerClient
-    from castform.platform.training_run import upload_training_run
+    from castform.platform.environment_assets import upload_environment_assets
 
     if not (TRAIN_FILE.exists() and EVAL_FILE.exists()):
         raise SystemExit("data stage has not run; `python main.py data` first")
@@ -450,7 +450,7 @@ def launch(*, assume_yes: bool) -> str | None:
         Qwen3OCREnv,
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
-    uploaded = upload_training_run(
+    uploaded = upload_environment_assets(
         bundle=bundle,
         train_dataset=_local_rows(TRAIN_FILE),
         eval_dataset=_local_rows(EVAL_FILE),

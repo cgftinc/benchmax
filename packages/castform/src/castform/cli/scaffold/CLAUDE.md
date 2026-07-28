@@ -57,7 +57,7 @@ The launch stage must remain visibly ordered:
 1. validate the environment;
 2. obtain explicit human confirmation that GPU training spends credits;
 3. call `dump_bundle` with explicit `pip_dependencies`;
-4. pass that exact `Bundle` to `upload_training_run(bundle=...)`, supplying only
+4. pass that exact `Bundle` to `upload_environment_assets(bundle=...)`, supplying only
    dataset splits that should be uploaded;
 5. pass the uploaded paths to `TrainerClient.launch_training_run`.
 

@@ -50,7 +50,7 @@ The generated script makes every boundary visible:
 2. materialize an example through `Environment.create_dataset`, then call
    `validate_environment` for the real two-sibling environment contract;
 3. call `dump_bundle(..., pip_dependencies=[...])` with explicit remote deps;
-4. call `upload_training_run(bundle=...)` with that exact bundle and only the
+4. call `upload_environment_assets(bundle=...)` with that exact bundle and only the
    dataset splits that should be uploaded;
 5. ask for cost confirmation, then call `TrainerClient.launch_training_run`.
 

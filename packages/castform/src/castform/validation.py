@@ -14,7 +14,7 @@ from benchmax.envs import Environment, RolloutOutcome, RolloutRequest
 from castform import config
 from castform.model_auth import CastformModelAuth
 from castform.platform.client import RolloutClient
-from castform.platform.training_run import UploadedTrainingRun
+from castform.platform.environment_assets import UploadedEnvironmentAssets
 
 __all__ = ["ValidationReport", "validate_environment"]
 
@@ -48,7 +48,7 @@ async def validate_environment(
     base_dir: Path = Path("."),
     model_auth: ModelAuth | None = None,
     auth_bindings: Mapping[str, ModelAuth] | None = None,
-    remote_assets: UploadedTrainingRun | None = None,
+    remote_assets: UploadedEnvironmentAssets | None = None,
     max_context_tokens: int = 2048,
     platform_url: str | None = None,
 ) -> ValidationReport:
