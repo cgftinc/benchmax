@@ -79,6 +79,8 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> Dataset[JsonRow]:
         """Create a finite dataset whose payloads contain ``prompt_messages``."""
 
@@ -524,8 +526,7 @@ def _is_tool_content_parts(result: object) -> bool:
         isinstance(result, (list, tuple))
         and len(result) > 0
         and all(
-            isinstance(part, Mapping)
-            and part.get("type") in _TOOL_CONTENT_PART_TYPES
+            isinstance(part, Mapping) and part.get("type") in _TOOL_CONTENT_PART_TYPES
             for part in result
         )
     )

@@ -111,10 +111,15 @@ class MathEnv(BaseEnv):
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> Dataset[JsonRow]:
         """Load the requested normalized JSONL split from the trainer data root."""
 
-        return MathDataset(resolve_dataset_path(base_dir, self._dataset_paths[split]))
+        return MathDataset(
+            resolve_dataset_path(base_dir, self._dataset_paths[split]),
+            max_examples=max_examples,
+        )
 
     async def list_tools(self) -> list[Tool]:
         """Expose the four basic arithmetic operations to the common tool loop."""
@@ -332,8 +337,17 @@ SYSTEM_PROMPT = (
 class MathDataset(JsonlDataset[JsonRow]):
     """Load normalized math rows with stable, content-derived identities."""
 
-    def __init__(self, path: str | Path) -> None:
-        super().__init__(path, row_to_example=_math_example)
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        max_examples: int | None = None,
+    ) -> None:
+        super().__init__(
+            path,
+            row_to_example=_math_example,
+            max_examples=max_examples,
+        )
 
 
 def _math_example(row: JsonRow) -> Example[JsonRow]:

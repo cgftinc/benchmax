@@ -115,10 +115,13 @@ and cite supporting documents as [Source: <source_id>].
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> JsonlDataset[JsonRow]:
         return JsonlDataset(
             base_dir / f"{split}.jsonl",
             row_to_example=self._example_from_row,
+            max_examples=max_examples,
         )
 
     def _example_from_row(self, row: JsonRow) -> Example[JsonRow]:
@@ -293,25 +296,25 @@ def _print_scorecard(report: Any) -> None:
 
 async def _run_validation(env: CustomSearchEnv) -> Any:
     include_remote = bool(VALIDATE_CONFIG.get("include_remote", False))
-    bundle = (
-        dump_bundle(
+    remote_assets = None
+    if include_remote:
+        bundle = dump_bundle(
             CustomSearchEnv,
             constructor_args=ENV_ARGS,
             pip_dependencies=RUNTIME_DEPENDENCIES,
         )
-        if include_remote
-        else None
-    )
+        remote_assets = upload_training_run(
+            bundle=bundle,
+            train_dataset=_load_jsonl(TRAIN_FILE),
+            eval_dataset=(_load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else None),
+            run_name=_run_name(),
+        )
     return await validate_environment(
         env,
         model=str(VALIDATE_CONFIG["model"]),
         split="train",
         base_dir=Path("."),
-        include_remote=include_remote,
-        bundle=bundle,
-        remote_dataset_files=(
-            {TRAIN_FILE: Path(TRAIN_FILE).read_bytes()} if include_remote else None
-        ),
+        remote_assets=remote_assets,
     )
 
 

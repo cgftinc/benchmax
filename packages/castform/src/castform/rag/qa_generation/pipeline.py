@@ -87,13 +87,11 @@ _QUALITY_GATE_FILTER_STAGE = "quality_gate"
 _RETRIEVAL_TOO_EASY_FILTER_STAGE = "retrieval_too_easy_llm"
 _GROUNDING_FILTER_STAGE = "grounding_llm"
 _HOP_COUNT_VALIDITY_FILTER_STAGE = "hop_count_validity"
-_ENV_ROLLOUT_FILTER_STAGE = "env_rollout"
 _SUPPORTED_FILTER_STAGES = (
     _QUALITY_GATE_FILTER_STAGE,
     _GROUNDING_FILTER_STAGE,
     _RETRIEVAL_TOO_EASY_FILTER_STAGE,
     _HOP_COUNT_VALIDITY_FILTER_STAGE,
-    _ENV_ROLLOUT_FILTER_STAGE,
 )
 
 
@@ -205,10 +203,6 @@ async def _load_source(cfg: PipelineConfig) -> PostgresChunkSource:
         await source.close()
 
 
-def _build_rollout_client(cfg: PipelineConfig) -> RolloutClient:
-    return RolloutClient(api_key=cfg.platform.api_key)
-
-
 def _build_metadata_linker(
     cfg: PipelineConfig,
     source: Any,
@@ -308,7 +302,6 @@ def _build_filter_from_stage_name(
     cfg: PipelineConfig,
     *,
     source: Any,
-    rollout_client_factory: Callable[[PipelineConfig], RolloutClient] | None = None,
 ) -> EvaluatorFilter:
     stage = str(stage_name or "").strip().lower()
     if stage == _QUALITY_GATE_FILTER_STAGE:
@@ -346,18 +339,6 @@ def _build_filter_from_stage_name(
                 lopsided_low_threshold=hcfg.lopsided_low_threshold,
             ),
         )
-    if stage == _ENV_ROLLOUT_FILTER_STAGE:
-        from castform.rag.qa_generation.filters.env_rollout import EnvRolloutFilter
-
-        if rollout_client_factory is None:
-            raise ValueError(
-                "env_rollout filter requires a rollout_client_factory. "
-                "Pass one when constructing Pipeline."
-            )
-        return EnvRolloutFilter(
-            rollout_client=rollout_client_factory(cfg),
-            cfg=cfg.filtering.env_rollout,
-        )
     raise ValueError(
         f"Unknown filter stage '{stage_name}'. "
         f"Supported filter stage names: {', '.join(_SUPPORTED_FILTER_STAGES)}."
@@ -368,7 +349,6 @@ def _build_filter_chain(
     cfg: PipelineConfig,
     *,
     source: Any,
-    rollout_client_factory: Callable[[PipelineConfig], RolloutClient] | None = None,
 ) -> tuple[list[str], list[EvaluatorFilter]]:
     chain_names = [
         str(name).strip().lower()
@@ -380,7 +360,6 @@ def _build_filter_chain(
             stage_name,
             cfg,
             source=source,
-            rollout_client_factory=rollout_client_factory,
         )
         for stage_name in chain_names
     ]
@@ -1291,11 +1270,9 @@ class Pipeline:
         cfg: PipelineConfig,
         *,
         source_factory: Callable[[PipelineConfig], Any] | None = None,
-        rollout_client_factory: Callable[[PipelineConfig], RolloutClient] | None = None,
     ) -> None:
         self.cfg = cfg
         self.source_factory = source_factory or _load_source
-        self.rollout_client_factory = rollout_client_factory
 
     @property
     def checkpoint_dir(self) -> Path:
@@ -1610,7 +1587,6 @@ class Pipeline:
         filter_stage_names, filter_chain = _build_filter_chain(
             cfg,
             source=source,
-            rollout_client_factory=self.rollout_client_factory,
         )
         context["filter_chain"] = list(filter_stage_names)
         transformer = _build_transformer(cfg)
@@ -2724,13 +2700,11 @@ def run_pipeline(
     cfg: PipelineConfig,
     *,
     source_factory: Callable[[PipelineConfig], Any] | None = None,
-    rollout_client_factory: Callable[[PipelineConfig], RolloutClient] | None = None,
 ) -> dict[str, Any]:
     """Run Pipeline with a fully constructed config."""
     pipeline = Pipeline(
         cfg,
         source_factory=source_factory,
-        rollout_client_factory=rollout_client_factory,
     )
     return pipeline.run()
 
@@ -2739,12 +2713,10 @@ def run_pipeline_from_config(
     config_path: str | Path,
     *,
     source_factory: Callable[[PipelineConfig], Any] | None = None,
-    rollout_client_factory: Callable[[PipelineConfig], RolloutClient] | None = None,
 ) -> dict[str, Any]:
     """Load config YAML and run Pipeline."""
     cfg = load_pipeline_config(config_path)
     return run_pipeline(
         cfg,
         source_factory=source_factory,
-        rollout_client_factory=rollout_client_factory,
     )

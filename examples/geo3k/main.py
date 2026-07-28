@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmax.envs.base import BaseEnv, BaseRollout, JsonRow, Tool
-from benchmax.envs.dataset import Dataset
+from benchmax.envs.dataset import Dataset, validate_max_examples
 from benchmax.envs.identity import canonical_example_id
 from benchmax.envs.shared_types import (
     DatasetSplit,
@@ -93,6 +93,8 @@ class Geo3KEnv(BaseEnv):
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> Dataset[JsonRow]:
         rows = _load_rows(
             self._dataset_name,
@@ -100,7 +102,12 @@ class Geo3KEnv(BaseEnv):
             cache_dir=base_dir / "geo3k",
         )
         rows = rows.shuffle(seed=self._sample_seed)
-        limit = self._limits[split]
+        configured_limit = self._limits[split]
+        requested_limit = validate_max_examples(max_examples)
+        limits = [
+            limit for limit in (configured_limit, requested_limit) if limit is not None
+        ]
+        limit = min(limits) if limits else None
         if limit is not None:
             if limit <= 0:
                 raise ValueError("Geo3K example limits must be positive")

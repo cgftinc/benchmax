@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeAlias
 
-from benchmax.envs.dataset import Dataset
+from benchmax.envs.dataset import Dataset, validate_max_examples
 from benchmax.envs.shared_types import Example
 
 # Re-exported from benchmax.envs; a PEP 695 alias would hand importers a lazy
@@ -43,34 +43,37 @@ class JsonlDataset[Payload](Dataset[Payload]):
         path: str | Path,
         *,
         row_to_example: Callable[[JsonRow], Example[Payload]],
+        max_examples: int | None = None,
     ) -> None:
+        validate_max_examples(max_examples)
         data_path = Path(path)
         examples: list[Example[Payload]] = []
-        for line_number, raw_line in enumerate(
-            data_path.read_text("utf-8").splitlines(), start=1
-        ):
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"{data_path}:{line_number} contains invalid JSON: {exc.msg}"
-                ) from exc
-            if not isinstance(row, dict):
-                raise TypeError(f"{data_path}:{line_number} must be a JSON object")
-            try:
-                example = row_to_example(row)
-            except Exception as exc:
-                exc.add_note(f"while loading {data_path}:{line_number}")
-                raise
-            if not isinstance(example, Example):
-                raise TypeError(
-                    f"{data_path}:{line_number} row_to_example returned "
-                    f"{type(example).__name__}, expected Example"
-                )
-            examples.append(example)
+        with data_path.open(encoding="utf-8") as source:
+            for line_number, raw_line in enumerate(source, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"{data_path}:{line_number} contains invalid JSON: {exc.msg}"
+                    ) from exc
+                if not isinstance(row, dict):
+                    raise TypeError(f"{data_path}:{line_number} must be a JSON object")
+                try:
+                    example = row_to_example(row)
+                except Exception as exc:
+                    exc.add_note(f"while loading {data_path}:{line_number}")
+                    raise
+                if not isinstance(example, Example):
+                    raise TypeError(
+                        f"{data_path}:{line_number} row_to_example returned "
+                        f"{type(example).__name__}, expected Example"
+                    )
+                examples.append(example)
+                if max_examples is not None and len(examples) == max_examples:
+                    break
         super().__init__(examples)
 
 

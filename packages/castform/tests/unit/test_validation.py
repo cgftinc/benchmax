@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from benchmax.auth import InjectedAuth, ModelRequestContext, StaticBearerAuth
 from benchmax.envs import Dataset, Example, RolloutOutcome
 from castform.model_auth import CastformModelAuth
+from castform.platform.training_run import UploadedTrainingRun
 from castform.validation import validate_environment
 
 
@@ -16,16 +16,21 @@ class RecordingEnvironment:
 
     def __init__(self) -> None:
         self.groups: list[list[Any]] = []
-        self.dataset_calls: list[tuple[str, Path]] = []
+        self.dataset_calls: list[tuple[str, Path, int | None]] = []
 
-    async def create_dataset(self, split, base_dir):
-        self.dataset_calls.append((split, base_dir))
-        return Dataset(
-            [
-                Example(id="example-1", payload={}),
-                Example(id="example-2", payload={}),
-            ]
-        )
+    async def create_dataset(
+        self,
+        split,
+        base_dir,
+        *,
+        max_examples: int | None = None,
+    ):
+        self.dataset_calls.append((split, base_dir, max_examples))
+        examples = [
+            Example(id="example-1", payload={}),
+            Example(id="example-2", payload={}),
+        ]
+        return Dataset(examples[:max_examples])
 
     async def run_group(self, requests):
         group = list(requests)
@@ -54,14 +59,14 @@ async def test_validation_uses_first_dataset_item_for_two_local_siblings(
 
     assert report.ok
     assert report.remote is None
-    assert env.dataset_calls == [("train", tmp_path)]
+    assert env.dataset_calls == [("train", tmp_path, 1)]
     assert len(env.groups) == 1 and len(env.groups[0]) == 2
     assert {request.example.id for request in env.groups[0]} == {"example-1"}
 
 
 async def test_validation_rejects_an_empty_dataset() -> None:
     class EmptyEnvironment(RecordingEnvironment):
-        async def create_dataset(self, split, base_dir):
+        async def create_dataset(self, split, base_dir, *, max_examples=None):
             return Dataset([])
 
     with pytest.raises(ValueError, match="empty.*Dataset"):
@@ -103,7 +108,7 @@ async def test_validation_requires_every_outcome_to_finish(
 
 async def test_auth_binding_covers_dataset_creation_and_all_managed_purposes() -> None:
     class AuthDatasetEnvironment(RecordingEnvironment):
-        async def create_dataset(self, split, base_dir):
+        async def create_dataset(self, split, base_dir, *, max_examples=None):
             context = ModelRequestContext(
                 base_url="https://model.example/v1",
                 model="model",
@@ -113,7 +118,11 @@ async def test_auth_binding_covers_dataset_creation_and_all_managed_purposes() -
                 purpose: await InjectedAuth(purpose).headers_for_request(context)
                 for purpose in ("judge", "embedding", "tool_llm")
             }
-            return await super().create_dataset(split, base_dir)
+            return await super().create_dataset(
+                split,
+                base_dir,
+                max_examples=max_examples,
+            )
 
     auth = StaticBearerAuth("runtime-token")
     env = AuthDatasetEnvironment()
@@ -159,24 +168,10 @@ async def test_rollout_and_named_auth_remain_independent() -> None:
     assert env.judge_headers == {"Authorization": "Bearer judge-token"}
 
 
-def _bundle() -> Any:
-    return SimpleNamespace(
-        pickled=b"bundle",
-        metadata=SimpleNamespace(to_json_bytes=lambda: b"metadata"),
-    )
-
-
-@pytest.mark.parametrize(
-    ("remote_files", "remote_prefix"),
-    [
-        ({"eval.jsonl": b"one lightweight row"}, None),
-        (None, None),  # Harbor resolves its Dataset remotely.
-    ],
-)
+@pytest.mark.parametrize("dataset_path", ["datasets/frozen-snapshot", None])
 async def test_remote_validation_uses_the_same_group_native_client_contract(
     monkeypatch,
-    remote_files,
-    remote_prefix,
+    dataset_path,
 ) -> None:
     calls: list[dict[str, Any]] = []
 
@@ -201,26 +196,20 @@ async def test_remote_validation_uses_the_same_group_native_client_contract(
     report = await validate_environment(
         RecordingEnvironment(),
         model="test-model",
-        include_remote=True,
-        bundle=_bundle(),
-        remote_dataset_files=remote_files,
-        remote_dataset_prefix=remote_prefix,
+        remote_assets=UploadedTrainingRun(
+            env_cls_path="envs/run/env-cls.pkl",
+            env_metadata_path="envs/run/env-metadata.json",
+            dataset_path=dataset_path,
+        ),
     )
 
     assert report.ok and report.remote is not None
     request = calls[1]
     assert request["samples"] == 2
-    assert request["dataset_files"] == remote_files
-    assert request["dataset_prefix"] == remote_prefix
-
-
-async def test_remote_validation_requires_the_selected_bundle() -> None:
-    with pytest.raises(ValueError, match="bundle is required"):
-        await validate_environment(
-            RecordingEnvironment(),
-            model="test-model",
-            include_remote=True,
-        )
+    assert request["env_cls_path"] == "envs/run/env-cls.pkl"
+    assert request["env_metadata_path"] == "envs/run/env-metadata.json"
+    assert request["dataset_path"] == dataset_path
+    assert request["max_context_tokens"] == 2048
 
 
 async def test_castform_auth_resolves_the_session_for_each_model_call(

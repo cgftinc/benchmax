@@ -5,7 +5,6 @@ from .batch_processor import BatchResponse, BatchResult, batch_process_sync
 from .corpus_capabilities import CorpusCapabilities
 from .filters import (
     DeterministicGuardsFilter,
-    EnvRolloutFilter,
     GroundingLLMFilter,
     RetrievalLLMFilter,
 )
@@ -54,7 +53,6 @@ __all__ = [
     "DeterministicGuardsFilter",
     "RetrievalLLMFilter",
     "GroundingLLMFilter",
-    "EnvRolloutFilter",
     "TrainEvalFormatter",
     "Pipeline",
     "run_pipeline",

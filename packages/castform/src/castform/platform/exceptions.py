@@ -38,9 +38,3 @@ class RolloutServerError(RolloutError):
     """Rollout server returned 5xx — treat as transient/retryable."""
 
     pass
-
-
-class RolloutStreamError(RolloutError):
-    """Rollout stream ended unexpectedly (no terminal event, timeout, or disconnect)."""
-
-    pass

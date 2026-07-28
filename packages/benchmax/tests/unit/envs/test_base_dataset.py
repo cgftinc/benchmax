@@ -59,3 +59,35 @@ def test_jsonl_dataset_reports_the_source_of_invalid_rows(
 
     with pytest.raises(error_type, match=r"train\.jsonl:1"):
         JsonlDataset(path, row_to_example=lambda row: Example(id="row", payload=row))
+
+
+def test_jsonl_dataset_stops_reading_after_max_examples(tmp_path: Path) -> None:
+    path = tmp_path / "train.jsonl"
+    path.write_text(
+        '{"id":"first"}\nthis later row is deliberately invalid JSON\n',
+        encoding="utf-8",
+    )
+
+    dataset = JsonlDataset(
+        path,
+        row_to_example=lambda row: Example(id=str(row["id"]), payload=row),
+        max_examples=1,
+    )
+
+    assert [example.id for example in dataset] == ["first"]
+
+
+@pytest.mark.parametrize("max_examples", [0, -1, True, 1.5, "1"])
+def test_jsonl_dataset_rejects_invalid_max_examples(
+    tmp_path: Path,
+    max_examples: object,
+) -> None:
+    path = tmp_path / "train.jsonl"
+    path.write_text('{"id":"first"}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="max_examples"):
+        JsonlDataset(
+            path,
+            row_to_example=lambda row: Example(id=str(row["id"]), payload=row),
+            max_examples=max_examples,  # type: ignore[arg-type]
+        )

@@ -113,13 +113,18 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
             if max_concurrent_trials is not None
             else None
         )
-        self._dataset_cache: dict[Path, HarborDataset] = {}
+        self._dataset_cache: dict[
+            tuple[Path, DatasetSplit | None, int | None],
+            HarborDataset,
+        ] = {}
         self._dataset_cache_lock = asyncio.Lock()
 
     async def create_dataset(
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> Dataset[TaskConfig]:
         """Return the explicit eval source or a ratio-split primary snapshot."""
 
@@ -128,7 +133,20 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
 
         if self._eval_dataset is not None:
             config = self._dataset if split == "train" else self._eval_dataset
-            return await self._resolve_dataset(config, Path(base_dir) / split)
+            return await self._resolve_dataset(
+                config,
+                Path(base_dir) / split,
+                max_examples=max_examples,
+            )
+
+        if max_examples is not None:
+            return await self._resolve_dataset(
+                self._dataset,
+                Path(base_dir) / "main",
+                split=split,
+                eval_ratio=self._eval_ratio,
+                max_examples=max_examples,
+            )
 
         complete = await self._resolve_dataset(
             self._dataset,
@@ -147,17 +165,28 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         self,
         config: DatasetConfig,
         snapshot_dir: Path,
+        *,
+        split: DatasetSplit | None = None,
+        eval_ratio: float | None = None,
+        max_examples: int | None = None,
     ) -> HarborDataset:
         """Resolve each configured source once per local snapshot directory."""
 
-        cache_key = snapshot_dir.expanduser().resolve()
+        cache_key = (
+            snapshot_dir.expanduser().resolve(),
+            split,
+            max_examples,
+        )
         async with self._dataset_cache_lock:
             cached = self._dataset_cache.get(cache_key)
             if cached is None:
                 cached = await HarborDataset.create(
                     config,
-                    base_dir=cache_key,
+                    base_dir=cache_key[0],
                     disable_verification=_verifier_disabled(self._trial.verifier),
+                    split=split,
+                    eval_ratio=eval_ratio,
+                    max_examples=max_examples,
                 )
                 self._dataset_cache[cache_key] = cached
             return cached

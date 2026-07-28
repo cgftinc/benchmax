@@ -31,7 +31,7 @@ from typing import Any
 
 from benchmax.bundle import dump_bundle
 from benchmax.envs.base import BaseEnv, BaseRollout, JsonRow, Tool
-from benchmax.envs.dataset import Dataset
+from benchmax.envs.dataset import Dataset, validate_max_examples
 from benchmax.envs.identity import canonical_example_id
 from benchmax.envs.shared_types import DatasetSplit, Example, RewardMap
 
@@ -125,11 +125,16 @@ class DominantColorEnv(BaseEnv):
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> Dataset[JsonRow]:
         del base_dir  # fully synthetic; nothing to download or cache
         count = self._counts[split]
         if count <= 0:
             raise ValueError("dominant-color example counts must be positive")
+        limit = validate_max_examples(max_examples)
+        if limit is not None:
+            count = min(count, limit)
         rng = random.Random(f"{self._sample_seed}:{split}")
         names = list(PALETTE)
         specs = [

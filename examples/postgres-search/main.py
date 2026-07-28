@@ -501,11 +501,16 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     # ------------------------------------------------------------------
 
     async def create_dataset(
-        self, split: DatasetSplit, base_dir: Path
+        self,
+        split: DatasetSplit,
+        base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> JsonlDataset[JsonRow]:
         return JsonlDataset(
             base_dir / f"{split}.jsonl",
             row_to_example=self._example_from_row,
+            max_examples=max_examples,
         )
 
     async def list_tools(self) -> list[Tool]:

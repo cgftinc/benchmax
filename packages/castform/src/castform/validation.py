@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from benchmax.auth import ModelAuth, bind_model_auth
-from benchmax.bundle import Bundle
 from benchmax.envs import Environment, RolloutOutcome, RolloutRequest
 
 from castform import config
 from castform.model_auth import CastformModelAuth
 from castform.platform.client import RolloutClient
+from castform.platform.training_run import UploadedTrainingRun
 
 __all__ = ["ValidationReport", "validate_environment"]
 
@@ -44,25 +44,17 @@ async def validate_environment(
     base_dir: Path = Path("."),
     model_auth: ModelAuth | None = None,
     auth_bindings: Mapping[str, ModelAuth] | None = None,
-    include_remote: bool = False,
-    bundle: Bundle | None = None,
-    remote_dataset_files: Mapping[str, bytes] | None = None,
-    remote_dataset_prefix: str | None = None,
-    max_context_tokens: int | None = None,
-    max_completion_tokens: int = 1024,
+    remote_assets: UploadedTrainingRun | None = None,
+    max_context_tokens: int = 2048,
     platform_url: str | None = None,
 ) -> ValidationReport:
     """Validate the first item of the environment's Dataset with two siblings.
 
     Dataset construction is always owned by ``env.create_dataset``. Local
     validation calls it against ``base_dir`` and selects item zero. Hosted
-    validation sends only opaque artifact files (or an uploaded artifact
-    prefix); the group-native worker calls the same method and applies
-    ``max_examples=1``. No serialized-example or JSONL compatibility path
-    exists.
-
-    ``bundle`` is required only for hosted validation. It is the exact
-    BenchMax artifact the caller selected; Castform does not rebuild it.
+    validation is enabled by passing the same uploaded bundle paths and
+    optional ``dataset_path`` used by trainer launch. Both paths ask the
+    environment to construct at most one example.
     """
 
     resolved_base_url = config.llm_url()
@@ -80,7 +72,7 @@ async def validate_environment(
     # The auth binding covers dataset creation too: managed environments may
     # need an embedding or tool model while materializing their Dataset.
     with bind_model_auth(resolved_auth_bindings):
-        dataset = await env.create_dataset(split, base_dir)
+        dataset = await env.create_dataset(split, base_dir, max_examples=1)
         if not dataset:
             raise ValueError(f"environment returned an empty {split!r} Dataset")
         example = dataset[0]
@@ -102,21 +94,17 @@ async def validate_environment(
         )
 
     remote: dict[str, RolloutOutcome] | None = None
-    if include_remote:
-        if bundle is None:
-            raise ValueError("bundle is required when include_remote=True")
+    if remote_assets is not None:
         client = RolloutClient(server_url=platform_url)
         events = await asyncio.to_thread(
             client.run_group,
             samples=2,
-            env_cls_bytes=bundle.pickled,
-            env_metadata_bytes=bundle.metadata.to_json_bytes(),
-            dataset_files=remote_dataset_files,
-            dataset_prefix=remote_dataset_prefix,
+            env_cls_path=remote_assets.env_cls_path,
+            env_metadata_path=remote_assets.env_metadata_path,
+            dataset_path=remote_assets.dataset_path,
             split=split,
             model=model,
             max_context_tokens=max_context_tokens,
-            max_completion_tokens=max_completion_tokens,
             verbose=False,
         )
         if len(events) != 2:

@@ -954,11 +954,16 @@ then stop."""
         }
 
     async def create_dataset(
-        self, split: DatasetSplit, base_dir: Path
+        self,
+        split: DatasetSplit,
+        base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> JsonlDataset[JsonRow]:
         return JsonlDataset(
             resolve_dataset_path(base_dir, self._dataset_paths[split]),
             row_to_example=self._example_from_row,
+            max_examples=max_examples,
         )
 
     def _example_from_row(self, row: JsonRow) -> Example[JsonRow]:

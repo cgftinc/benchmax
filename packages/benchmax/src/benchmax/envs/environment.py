@@ -56,8 +56,14 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> Dataset[Payload]:
-        """Create a fixed, ordered dataset for ``split``."""
+        """Create a fixed, ordered dataset for ``split``.
+
+        When ``max_examples`` is set, return at most that many examples and
+        avoid loading later source records when the backing store permits it.
+        """
 
     @abstractmethod
     async def run_rollout(

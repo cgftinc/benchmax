@@ -34,12 +34,6 @@ _SCORE_EXTRACTION_KEYS: dict[str, list[str]] = {
         "redundant_chunks",
         "difficulty_score",
     ],
-    "env_rollout": [
-        "confidence",
-        "tool_calls",
-        "target_hop_count",
-        "reason_code",
-    ],
 }
 
 
@@ -65,11 +59,15 @@ def extract_filter_scores(items: list[GeneratedQA], stage_name: str) -> None:
         if not item.is_passed:
             continue
         meta = (
-            item.filter_verdict.metadata if isinstance(item.filter_verdict.metadata, dict) else {}
+            item.filter_verdict.metadata
+            if isinstance(item.filter_verdict.metadata, dict)
+            else {}
         )
         scores = {k: meta[k] for k in keys if k in meta}
         if scores:
-            filter_scores: dict[str, Any] = item.generation_metadata.setdefault("filter_scores", {})
+            filter_scores: dict[str, Any] = item.generation_metadata.setdefault(
+                "filter_scores", {}
+            )
             filter_scores[stage_name] = scores
 
 
@@ -109,6 +107,8 @@ def compute_eval_scores(item: GeneratedQA, cfg: ScoringConfig) -> dict[str, floa
         available = {k: v for k, v in weights.items() if k in scores}
         total_weight = sum(available.values())
         if total_weight > 0:
-            scores["composite"] = sum(scores[k] * available[k] for k in available) / total_weight
+            scores["composite"] = (
+                sum(scores[k] * available[k] for k in available) / total_weight
+            )
 
     return scores

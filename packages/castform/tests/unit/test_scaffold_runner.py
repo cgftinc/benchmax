@@ -174,11 +174,8 @@ def test_validate_delegates_dataset_loading_to_public_group_validation(
     assert isinstance(captured["env"], env_class)
     assert captured["split"] == "train"
     assert captured["base_dir"] == Path(".")
-    assert captured["remote_dataset_files"] is None
+    assert captured["remote_assets"] is None
     assert captured["model"] == str(mod.VALIDATE_CONFIG["model"])
-    assert captured["include_remote"] is bool(
-        mod.VALIDATE_CONFIG.get("include_remote", False)
-    )
 
 
 def test_validate_surfaces_public_dataset_materialization_failure(mod, monkeypatch):
