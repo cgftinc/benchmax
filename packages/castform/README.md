@@ -58,6 +58,41 @@ The CLI does not duplicate that orchestration. Use it for `login`, `setup`,
 `doctor`, `guide`, `runs` inspection and cancelling a run with `castform stop`.
 `castform whoami` and `castform logout` manage the active session.
 
+## Supervised fine-tuning
+
+`castform setup --template sft` scaffolds an env-less project: no environment
+class, no reward, no rollout. Its data is `{"messages": [...]}` rows owned by
+`benchmax.sft`, so `python main.py validate` is a purely local schema check, and
+its launch stage replaces bundling with a dataset upload:
+
+```python
+from benchmax.sft import load_sft_dataset, validate_sft_dataset
+from castform.platform import TrainerClient, upload_sft_run
+
+train = load_sft_dataset("train.jsonl")
+report = validate_sft_dataset(train)
+
+uploaded = upload_sft_run(train=train, run_name="my-sft-run")
+with TrainerClient() as client:
+    run_id = client.launch_sft_run(
+        name="my-sft-run",
+        train_dataset_path=uploaded.train_dataset_path,
+    )
+```
+
+`upload_sft_run` re-validates the pair and raises before any storage call, so a
+refused run cannot leave a half-uploaded dataset behind. `launch_sft_run` nests
+`training_mode` and the dataset paths inside `args`, which is where the platform
+reads them.
+
+The platform does not accept env-less SFT launch args yet:
+`castform.platform.client.SFT_LAUNCH_SUPPORTED` is `False`, and the scaffolded
+`main.py` checks it before uploading anything. Direct SDK callers such as the
+snippet above are not gated by that flag and will be rejected by the server at
+launch. Multimodal rows — a user message whose content is a list of `text` and
+`image_url` parts — validate and canonicalize correctly today, but trainer-side
+image support is not implemented.
+
 ## Optional libraries
 
 Add only the features the project uses:

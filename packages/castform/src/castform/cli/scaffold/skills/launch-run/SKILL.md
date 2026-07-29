@@ -72,6 +72,40 @@ the rollout bundle includes the runtime search client but not large local corpus
 preparation dependencies unless the environment imports them.
 <!-- rag:end -->
 
+## SFT launch (and why it cannot land yet)
+
+An env-less SFT project (see design-environment) launches with the same command
+and the same confirmation discipline, but there is no bundle to build. Confirm
+that its `launch()` does all of the following in order:
+
+1. loads the train/eval pair once and runs the local `validate()` gate on it;
+2. stops if any row carries a per-message `weight` and
+   `LAUNCH_CONFIG["allow_experimental_weights"]` is not true;
+3. stops if `castform.platform.client.SFT_LAUNCH_SUPPORTED` is `False`;
+4. asks the human to confirm a credit-spending GPU launch;
+5. calls `upload_sft_run(train=..., eval=..., run_name=...)`;
+6. passes the returned paths to `TrainerClient.launch_sft_run`.
+
+Steps 2 and 3 are independent gates, and both sit ahead of the upload on
+purpose: a refused launch must not leave a dataset orphaned in storage behind an
+API that cannot accept it.
+
+**The live platform does not accept env-less SFT launch args yet.**
+`SFT_LAUNCH_SUPPORTED` is `False` as of writing, so step 3 stops every SFT
+launch before it uploads. The upload and launch path is fully implemented and
+tested — it has nowhere to land until platform support ships. Do not tell a user
+an SFT project is launch-ready today; track `SFT_LAUNCH_SUPPORTED` for when that
+flips. Note that the flag gates the *scaffold*, not the SDK: code calling
+`upload_sft_run` directly can still upload and then be rejected by the server at
+launch. Keep the gate in the script.
+
+On the wire, `launch_sft_run` nests `training_mode` and the dataset paths inside
+`args`, which is where the platform reads them; a top-level `training_mode` is
+silently ignored and would fall through to an RL run. `LAUNCH_CONFIG` carries
+`training_mode` and an optional per-run `model` for that reason — they are wire
+args, not local knobs — while `name`, `type` and `allow_experimental_weights`
+are resolved locally and never forwarded.
+
 ## Credentials
 
 Model and judge credentials must resolve per request (`InjectedAuth` for named

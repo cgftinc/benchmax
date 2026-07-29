@@ -41,6 +41,14 @@ data stage, test retrieval and reward behavior locally, and show me validation
 results before proposing a launch.
 ```
 
+**SFT dataset** (`castform setup --template sft` — no environment, no reward):
+
+```
+Build a Castform SFT dataset for <task> from these demonstrations. Keep the rows
+in the OpenAI fine-tuning chat format, validate them locally, and show me the
+scorecard before proposing a launch.
+```
+
 Use these skills in order:
 
 | Stage | Skill |
@@ -51,6 +59,11 @@ Use these skills in order:
 | explicit GPU launch | `launch-run` |
 | monitoring and diagnosis | `view-progress` |
 
+An SFT project has no environment to design and no reward to score, so
+`design-environment` only tells you to skip it. Its stages are `generate-data`
+(the `messages` row format), `verify-environment` (a local, no-rollout dataset
+check) and `launch-run` — read each skill's SFT section.
+
 ## A green baseline
 
 A green baseline means both validation siblings finished, returned the declared
@@ -58,6 +71,9 @@ reward keys, and produced believable task-specific scores. A zero score can be a
 valid completed result. An operational failure instead has a non-`finished`
 `termination_reason`, the same reward keys all set to zero, and a corresponding
 log entry.
+
+For an SFT project there are no siblings: a green baseline is a `validate` that
+exits `0` — no error-severity issues and at least one train row.
 
 After a green baseline, decide deliberately:
 

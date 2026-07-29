@@ -116,6 +116,36 @@ The rewards package follows a deep-module design:
 - A new public abstraction should hide substantially more complexity than it
   adds to the interface.
 
+## Define an SFT dataset
+
+Supervised fine-tuning needs no environment at all: the dataset is the training
+signal. `benchmax.sft` owns that contract — OpenAI fine-tuning chat rows
+(`{"messages": [...]}`, with an optional top-level `tools` list and an optional
+per-assistant-message `weight` for turn masking) and nothing about how a run is
+submitted:
+
+```python
+from benchmax.sft import canonical_jsonl, load_sft_dataset, validate_sft_dataset
+
+train = load_sft_dataset("train.jsonl")
+report = validate_sft_dataset(train)
+if report.ok:
+    payload = canonical_jsonl(train)
+```
+
+`load_sft_dataset` is the only reader and `canonical_jsonl` the only serializer.
+Legacy shapes — a bare `prompt`/`completion` pair, a `prompt_messages`/
+`completion_messages` split, flat tool-call entries — are normalized into
+`messages` rows on load. The boundary is enforced rather than documented:
+`canonical_jsonl` raises `SftSerializationError` on a dataset that did not load
+and validate cleanly, so a caller that skips `validate_sft_dataset` still cannot
+serialize partial or invalid data.
+
+A user message's `content` may be a list of parts rather than a string, so an
+`image_url` part survives load, validation and canonicalization byte-for-byte.
+`benchmax.envs.base.content` reads and builds that content — `message_text`,
+`content_preview`, `iter_image_refs` and `image_to_data_uri`.
+
 ## Bundle an environment
 
 Declare remote runtime dependencies at the script boundary:

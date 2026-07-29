@@ -34,6 +34,60 @@ decides what it uploads: omit a split when the environment resolves it at runtim
 and do not upload unrelated preparation artifacts. `None` means “do not upload”;
 an empty list deliberately uploads an empty JSONL.
 
+## SFT — the `messages` row format
+
+For an env-less SFT project (`castform setup --template sft`, see
+design-environment) each row is the OpenAI fine-tuning chat format, not
+`prompt`/`ground_truth`:
+
+```jsonl
+{"messages": [{"role": "user", "content": "Translate 'hello' to French."}, {"role": "assistant", "content": "Bonjour."}]}
+```
+
+`messages` is required and every row needs at least one assistant turn to train
+on. Two fields are optional: a top-level `tools` list in OpenAI tool-call format,
+and a per-assistant-message `weight` (`0` or `1`) that excludes that turn from
+the loss. `weight` is **experimental** — trainer support for it is unconfirmed,
+so the launch stage blocks a weight-bearing dataset unless
+`LAUNCH_CONFIG["allow_experimental_weights"]` is true (see launch-run).
+
+Load and validate rows through `benchmax.sft`, which owns the whole dataset
+boundary:
+
+```python
+from benchmax.sft import load_sft_dataset, validate_sft_dataset
+
+train = load_sft_dataset("train.jsonl")
+report = validate_sft_dataset(train)
+```
+
+`load_sft_dataset` is the only reader for SFT data and `canonical_jsonl` the only
+serializer; both upload and validation consume their output, and `canonical_jsonl`
+refuses a dataset that did not load and validate cleanly. Legacy shapes — a bare
+`prompt`/`completion` pair, a `prompt_messages`/`completion_messages` split, flat
+tool-call entries — are normalized into `messages` rows on load, so they are
+accepted as input without being a second row format to maintain.
+
+A user message's `content` may be a list of parts instead of a plain string, for
+a vision base model. Build the `image_url` value with
+`benchmax.envs.base.content.image_to_data_uri`, which turns a local path or raw
+bytes into a `data:` URI and passes an existing `data:`/`https:` string through
+unchanged:
+
+```python
+from benchmax.envs.base.content import image_to_data_uri
+
+image_url = image_to_data_uri("figure.png")  # -> "data:image/png;base64,..."
+```
+
+**Deriving SFT rows from traces**: `castform.traces.TracesPipeline` (below) emits
+RL-shaped rows and discards the model's actual completion. For SFT, keep the
+detected system prompt and tools, but append the completion as a trained
+`{"role": "assistant", ...}` message onto the detected prompt messages to get a
+canonical `messages` row. There is no dedicated traces-to-SFT converter yet —
+treat the detected prompt and tools as the starting point and assemble rows in
+the data stage.
+
 <!-- rag:start -->
 ## Hosted corpus and RAG
 

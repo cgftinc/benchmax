@@ -54,5 +54,33 @@ name to its call-time credential provider for the duration of the run. Rollout
 not silently override the other. A missing or unknown binding should fail visibly;
 the environment must not read a platform token itself.
 
+## SFT validate: local, no rollouts
+
+An env-less SFT project (see design-environment) runs the same command:
+
+```bash
+uv run python main.py validate
+```
+
+but takes a different path entirely. It loads `train.jsonl` and, when present,
+`eval.jsonl` through `benchmax.sft.load_sft_dataset`, then calls
+`validate_sft_dataset` on the pair. Nothing rolls out: no remote calls, no LLM,
+no GPU, so it is typically fast even on a large file and safe to run on every
+data edit. There is no reward table and no "rewards vary" check — row and schema
+correctness is the whole gate.
+
+The scorecard reports train/eval row counts, a char/4-heuristic token-length
+summary, masking usage when any row carries a per-message `weight`, and each
+issue as `path:line  message` tagged `✗` (error, gate-failing) or `⚠` (notice,
+informational). The stage exits `0` only when the report is `ok`: no
+error-severity issues and at least one train row. A missing or empty train
+dataset is an error; a missing eval dataset is not — a train-only SFT project is
+a legitimate state.
+
+`VALIDATE_CONFIG` in `main.py` holds the dataset knobs — `max_seq_len` for the
+token-budget notice and `max_row_bytes` for the per-row size notice. Both are
+notices, not errors: they tell you a row is likely to be truncated or rejected
+later without failing the gate on your behalf.
+
 When the baseline is green, report both outcomes and ask whether to iterate or load
 **launch-run**. Do not launch automatically.

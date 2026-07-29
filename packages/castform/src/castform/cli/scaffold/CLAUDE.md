@@ -1,8 +1,29 @@
-# Castform environment project
+# Castform training project
 
 This is a standalone Python 3.12 project. Treat `main.py` as the reviewed,
 reproducible workflow for data preparation, validation, bundling, upload and
 launch. Do not recreate those stages with hidden CLI state.
+
+## RL project, or SFT project?
+
+Read `main.py` before following anything below — not every scaffolded project is
+a reinforcement-learning environment:
+
+- **`LAUNCH_CONFIG["training_mode"] == "sft"`, no `BaseEnv` subclass** → an
+  env-less supervised fine-tuning project (`castform setup --template sft`).
+  Skip environment design entirely: there is no reward function, no rollout and
+  no rollout budget to tune. Data is `{"messages": [...]}` rows (see
+  generate-data's SFT section), `python main.py validate` is a local
+  no-rollout dataset check (see verify-environment's SFT section), and
+  `python main.py launch` currently stops before uploading because
+  `castform.platform.client.SFT_LAUNCH_SUPPORTED` is `False` (see launch-run's
+  SFT section).
+- **No `training_mode`, a `BaseEnv` subclass present** → a reinforcement-learning
+  project. The rest of this file describes that path.
+
+The two do not mix: SFT rows may still carry a `tools` list and tool-call
+demonstrations, but there is no rollout-time tool execution and no reward, so an
+SFT project has no environment class to design.
 
 ## Required loop
 
@@ -72,6 +93,14 @@ reviewing a bundle.
 
 Dataset uploads are optional. Omit a split argument when the environment resolves
 that data at runtime. Passing `[]` explicitly uploads an empty JSONL file.
+
+An SFT project has no bundle, so its launch stage is ordered differently:
+validate the dataset, clear the `allow_experimental_weights` gate if any row
+carries a per-message `weight`, check
+`castform.platform.client.SFT_LAUNCH_SUPPORTED`, confirm the cost, then
+`upload_sft_run` followed by `TrainerClient.launch_sft_run`. The capability
+check sits ahead of the upload deliberately, so a launch that cannot succeed
+leaves nothing behind in storage.
 
 ## Reward review
 
