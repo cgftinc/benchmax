@@ -1,10 +1,8 @@
 """Multimodal document / VLM env with Infinity-Doc OCR reward.
 
-`python main.py [data|validate|launch|all]` drives the loop: the data stage
-generates small synthetic rendered-text pages (data-URI PNGs with varied
-geometry) into ./data — no 55K-document Infinity-Doc fetch — and the answers
-carry the hard-mode reversed reading order. Launch uploads datasets + bundle
-and starts a GPU run (explicit, confirmed — it spends credits).
+`python main.py validate` generates small synthetic rendered-text pages,
+uploads the dataset and bundle, and runs local and hosted checks.
+`python main.py launch` follows the same path before asking to spend credits.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -14,17 +12,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import dataclasses
 import io
 import json
-import os
 import random
 import sys
-import time
-import uuid
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from benchmax.bundle import dump_bundle
 from benchmax.envs import (
     BaseEnv,
     BaseRollout,
@@ -36,6 +32,8 @@ from benchmax.envs import (
     canonical_example_id,
 )
 from benchmax.envs.base import resolve_dataset_path
+from benchmax.envs.environment import Environment
+from castform.platform import ensure_session, upload_assets
 from qwen3_ocr_reward import infinity_doc_reward
 
 SYSTEM_PROMPT = ""
@@ -91,44 +89,9 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
-def _is_retryable_dataset_load_error(exc: Exception) -> bool:
-    name = type(exc).__name__.lower()
-    message = str(exc).lower()
-    retryable_markers = (
-        "timeout",
-        "timed out",
-        "connection",
-        "temporarily unavailable",
-        "too many requests",
-        "rate limit",
-    )
-    return any(marker in name or marker in message for marker in retryable_markers)
-
-
-def _load_dataset_with_retries(load_dataset: Any, *args: Any, **kwargs: Any) -> Any:
-    max_attempts = max(1, int(os.environ.get("QWEN3_OCR_LOAD_RETRIES", "5")))
-    delay_seconds = max(
-        0.0, float(os.environ.get("QWEN3_OCR_LOAD_RETRY_DELAY_SECONDS", "10"))
-    )
-
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return load_dataset(*args, **kwargs)
-        except Exception as exc:
-            if attempt == max_attempts or not _is_retryable_dataset_load_error(exc):
-                raise
-            print(
-                f"load_dataset failed with retryable {type(exc).__name__} "
-                f"on attempt {attempt}/{max_attempts}: {exc}. Retrying in {delay_seconds:.1f}s..."
-            )
-            time.sleep(delay_seconds)
-            delay_seconds = min(delay_seconds * 2 if delay_seconds else 1.0, 120.0)
-
-
 class Qwen3OCREnv(BaseEnv):
     """Tool-free multimodal env for document OCR / geometry VLM rollouts."""
 
-    reward_keys = ("answer_correct",)
     system_prompt: str = SYSTEM_PROMPT
     max_turns = 1
     max_tool_calls = 0
@@ -148,47 +111,8 @@ class Qwen3OCREnv(BaseEnv):
         }
 
     @classmethod
-    def load_dataset(
-        cls, dataset_name: str | None = None, **kwargs: Any
-    ) -> tuple[Any, None]:
-        from datasets import load_dataset
-
-        if dataset_name is None:
-            dataset_name = os.environ.get(
-                "INFINITY_DOC_DATASET", "infly/Infinity-Doc-55K"
-            )
-            kwargs.setdefault("name", "default")
-            kwargs.setdefault("split", os.environ.get("INFINITY_DOC_SPLIT", "train"))
-        return _load_dataset_with_retries(load_dataset, dataset_name, **kwargs), None
-
-    @classmethod
-    def get_train_val_split(cls) -> tuple[Any, Any]:
-        from datasets import Dataset
-
-        dataset_name = os.environ.get("INFINITY_DOC_DATASET", "infly/Infinity-Doc-55K")
-        split = os.environ.get("INFINITY_DOC_SPLIT", "train")
-        seed = int(os.environ.get("INFINITY_DOC_SAMPLE_SEED", "42"))
-        train_count = int(os.environ.get("INFINITY_DOC_TRAIN_COUNT", "20"))
-        eval_count = int(os.environ.get("INFINITY_DOC_EVAL_COUNT", "20"))
-
-        ds, _ = cls.load_dataset(dataset_name, name="default", split=split)
-        ds = ds.shuffle(seed=seed)
-        train_indices = list(range(0, train_count))
-        eval_indices = list(range(train_count, train_count + eval_count))
-
-        train_rows = cls._convert_infinity_doc_rows(
-            ds.select(train_indices), "train_images", train_indices
-        )
-        eval_rows = cls._convert_infinity_doc_rows(
-            ds.select(eval_indices), "eval_images", eval_indices
-        )
-        return Dataset.from_list(train_rows), Dataset.from_list(eval_rows)
-
-    @classmethod
     def dataset_preprocess(cls, example: Any, **kwargs: Any) -> Example[JsonRow]:
-        prompt = str(
-            example.get("prompt") or example.get("problem") or OCR_PROMPT_TEMPLATE
-        ).strip()
+        prompt = str(example.get("prompt") or example.get("problem") or OCR_PROMPT_TEMPLATE).strip()
         images = [
             str(image)
             for image in _as_list(example.get("images") or example.get("image_urls"))
@@ -201,9 +125,7 @@ class Qwen3OCREnv(BaseEnv):
             content.append({"type": "text", "text": prompt})
         payload: JsonRow = {
             "prompt_messages": [{"role": "user", "content": content}],
-            "answer": (
-                example.get("answer") or example.get("label") or example.get("gt") or ""
-            ),
+            "answer": (example.get("answer") or example.get("label") or example.get("gt") or ""),
             "metadata": example.get("metadata") or {},
         }
         return Example(
@@ -212,82 +134,17 @@ class Qwen3OCREnv(BaseEnv):
         )
 
     async def create_dataset(
-        self, split: DatasetSplit, base_dir: Path
+        self,
+        split: DatasetSplit,
+        base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> JsonlDataset[JsonRow]:
         return JsonlDataset(
             resolve_dataset_path(base_dir, self._dataset_paths[split]),
             row_to_example=self.dataset_preprocess,
+            max_examples=max_examples,
         )
-
-    @classmethod
-    def _convert_infinity_doc_rows(
-        cls,
-        rows: Iterable[dict[str, Any]],
-        image_subdir: str,
-        source_indices: list[int],
-    ) -> list[dict[str, Any]]:
-        converted_rows: list[dict[str, Any]] = []
-        image_dir = cls._dataset_root() / image_subdir
-        for row_idx, row in enumerate(rows):
-            row = dict(row)
-            row_id = row.get("id")
-            metadata = {
-                "source": os.environ.get(
-                    "INFINITY_DOC_DATASET", "infly/Infinity-Doc-55K"
-                ),
-                "config": "default",
-                "split": os.environ.get("INFINITY_DOC_SPLIT", "train"),
-                "source_index_after_shuffle": source_indices[row_idx],
-                "id": row_id,
-                "attributes": row.get("attributes"),
-            }
-            converted_rows.append(
-                {
-                    "prompt": OCR_PROMPT_TEMPLATE,
-                    "images": [
-                        cls._image_to_reference(
-                            row.get("image"), image_dir, row_id, row_idx
-                        )
-                    ],
-                    "answer": str(row.get("gt") or ""),
-                    "metadata": metadata,
-                }
-            )
-        return converted_rows
-
-    @staticmethod
-    def _dataset_root() -> Path:
-        return Path(
-            os.environ.get(
-                "INFINITY_DOC_DATASET_DIR", "/root/datasets/infinity_doc_55k"
-            )
-        )
-
-    @staticmethod
-    def _image_to_reference(
-        image: Any, image_dir: Path, row_id: Any, row_idx: int
-    ) -> str:
-        image_dir.mkdir(parents=True, exist_ok=True)
-        safe_id = str(row_id if row_id is not None else row_idx)
-        safe_id = "".join(
-            ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in safe_id
-        )
-        output_path = image_dir / f"{safe_id}.png"
-
-        if hasattr(image, "convert") and hasattr(image, "save"):
-            image.convert("RGB").save(output_path, format="PNG")
-            return str(output_path)
-
-        if isinstance(image, dict):
-            path = image.get("path")
-            if path and Path(path).exists():
-                return str(path)
-            data = image.get("bytes")
-            if data:
-                output_path.write_bytes(data)
-                return str(output_path)
-
-        return str(image)
 
     async def list_tools(self) -> list[Tool]:
         return []
@@ -377,12 +234,18 @@ EVAL_COUNT = 16
 DATA_DIR = Path(__file__).parent / "data"
 TRAIN_FILE = DATA_DIR / "train.jsonl"
 EVAL_FILE = DATA_DIR / "eval.jsonl"
+RUN_NAME = "qwen3-ocr-reverse"
+TRAINING_ARGS = {"model": MODEL}
 
 
-def generate_data(*, force: bool) -> None:
+def generate_data(*, force: bool) -> dict[str, Path]:
+    dataset_files = {
+        "train.jsonl": TRAIN_FILE,
+        "eval.jsonl": EVAL_FILE,
+    }
     if TRAIN_FILE.exists() and EVAL_FILE.exists() and not force:
         print(f"data: {TRAIN_FILE} / {EVAL_FILE} present — skipping (--force to redo)")
-        return
+        return dataset_files
     rng = random.Random(20260720)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     TRAIN_FILE.write_text(
@@ -391,129 +254,119 @@ def generate_data(*, force: bool) -> None:
     EVAL_FILE.write_text(
         "".join(json.dumps(row) + "\n" for row in _synthetic_rows(EVAL_COUNT, rng))
     )
-    print(
-        f"data: wrote {TRAIN_COUNT} train / {EVAL_COUNT} eval synthetic pages to {DATA_DIR}"
-    )
+    print(f"data: wrote {TRAIN_COUNT} train / {EVAL_COUNT} eval synthetic pages to {DATA_DIR}")
+    return dataset_files
 
 
-def _local_rows(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-
-
-def validate() -> Any:
-    from benchmax.envs.identity import canonical_example_id
-    from benchmax.envs.shared_types import Example
+def validate(env: Qwen3OCREnv, uploaded_assets: Any) -> Any:
     from castform import validate_environment
 
-    if not EVAL_FILE.exists():
-        raise SystemExit("data stage has not run; `python main.py data` first")
-    row = _local_rows(EVAL_FILE)[0]
-    env = Qwen3OCREnv()
-    payload = {
-        "prompt_messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": row["images"][0]}},
-                    {"type": "text", "text": row["prompt"]},
-                ],
-            }
-        ],
-        "answer": row["answer"],
-    }
     report = asyncio.run(
         validate_environment(
             env,
-            example=Example(id=canonical_example_id(payload), payload=payload),
             model=VALIDATE_MODEL,
+            split="eval",
+            base_dir=DATA_DIR,
+            remote_assets=uploaded_assets,
+            max_context_tokens=2048,
         )
     )
-    for rollout_id, outcome in report.local.items():
-        print(
-            f"  {rollout_id}: termination={outcome.termination_reason} "
-            f"rewards={dict(outcome.rewards)}"
-        )
+    _print_validation(report)
     return report
 
 
-def launch(*, assume_yes: bool) -> str | None:
-    from benchmax.bundle import dump_bundle
+def launch(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
     from castform import config
     from castform.platform.client import TrainerClient
-    from castform.platform.training_run import upload_training_run
 
-    if not (TRAIN_FILE.exists() and EVAL_FILE.exists()):
-        raise SystemExit("data stage has not run; `python main.py data` first")
-    run_name = f"qwen3-ocr-{uuid.uuid4().hex[:8]}"
     if not assume_yes:
-        reply = input(
-            f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] "
-        )
+        reply = input("launch training on GPUs? this spends credits. [y/N] ")
         if reply.strip().lower() not in ("y", "yes"):
-            print("Launch aborted.")
+            print("launch: cancelled")
             return None
 
-    # The trainer mirrors the uploaded dataset prefix to the machine and hands
-    # it to the env as base_dir, where the default train.jsonl/eval.jsonl live.
-    bundle = dump_bundle(
-        Qwen3OCREnv,
-        pip_dependencies=RUNTIME_DEPENDENCIES,
-    )
-    uploaded = upload_training_run(
-        bundle=bundle,
-        train_dataset=_local_rows(TRAIN_FILE),
-        eval_dataset=_local_rows(EVAL_FILE),
-        run_name=run_name,
-    )
     with TrainerClient() as trainer:
         run_id = trainer.launch_training_run(
-            env_cls_path=uploaded.env_cls_path,
-            env_metadata_path=uploaded.env_metadata_path,
-            dataset_path=uploaded.dataset_path,
-            name=run_name,
-            launcher_args={"model": MODEL},
+            name=RUN_NAME,
+            launcher_args=TRAINING_ARGS,
+            **dataclasses.asdict(uploaded_assets),
         )
-    print(f"✓ Launched run_id={run_id}")
-    print(f"  View / cancel at: {config.web_app_url()}/train/{run_id}")
+    print(f"launch: started {run_id}")
+    print(f"view: {config.web_app_url()}/train/{run_id}")
     return run_id
 
 
+def _print_validation(report: Any) -> None:
+    for location in ("local", "remote"):
+        outcomes = getattr(report, location)
+        if outcomes is None:
+            continue
+        errors = getattr(report, f"{location}_errors")
+        for rollout_id, outcome in outcomes.items():
+            if rollout_id in errors:
+                print(f"❌ {location} {rollout_id}: {errors[rollout_id]}")
+            else:
+                mark = (
+                    "✅"
+                    if outcome.termination_reason in Environment.scorable_termination_reasons
+                    else "❌"
+                )
+                error_suffix = f" error={outcome.error}" if outcome.error else ""
+                print(
+                    f"{mark} {location} {rollout_id}: "
+                    f"{outcome.termination_reason} {dict(outcome.rewards)}{error_suffix}"
+                )
+        for rollout_id, error in errors.items():
+            if rollout_id not in outcomes:
+                print(f"❌ {location} {rollout_id}: {error}")
+    print("✅ validation passed" if report.ok else "❌ validation failed")
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="main.py",
-        description="Run the castform loop for this env: data → validate → launch.",
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument(
-        "stage",
+        "action",
         nargs="?",
-        default="all",
-        choices=["data", "validate", "launch", "all"],
-        help="Stage to run (default: all = data → validate, then STOP).",
+        choices=("data", "validate", "launch"),
+        default="validate",
     )
+    parser.add_argument("--force", action="store_true")
     parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
-    parser.add_argument(
-        "-y",
         "--yes",
         action="store_true",
-        help="Skip the launch confirmation (it spends GPU credits).",
+        help="skip the launch confirmation",
     )
     args = parser.parse_args(argv)
+    total_stages = {"data": 1, "validate": 4, "launch": 5}[args.action]
 
-    from castform.platform import ensure_session
+    print(f"[stage 1/{total_stages}] generating data")
+    dataset_files = generate_data(force=args.force)
+    if args.action == "data":
+        return 0
 
-    ok = True
-    if args.stage in ("data", "all"):
-        generate_data(force=args.force)
-    if args.stage in ("validate", "all"):
-        ensure_session()
-        report = validate()
-        ok = report is not None and report.ok
-    if args.stage == "launch":
-        ensure_session()
-        ok = launch(assume_yes=args.yes) is not None
-    return 0 if ok else 1
+    ensure_session()
+    print(f"[stage 2/{total_stages}] bundling environment")
+    bundled_environment = dump_bundle(
+        Qwen3OCREnv,
+        pip_dependencies=RUNTIME_DEPENDENCIES,
+    )
+    print(f"[stage 3/{total_stages}] uploading environment and dataset")
+    uploaded_assets = upload_assets(
+        bundle=bundled_environment,
+        dataset_files=dataset_files,
+        run_name=RUN_NAME,
+    )
+    print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
+    print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
+    print(f"  dataset_path: {uploaded_assets.dataset_path}")
+    print(f"[stage 4/{total_stages}] validating environment")
+    report = validate(Qwen3OCREnv(), uploaded_assets)
+    if not report.ok:
+        return 1
+    if args.action == "launch":
+        print(f"[stage 5/{total_stages}] launching training")
+        launch(uploaded_assets, assume_yes=args.yes)
+    return 0
 
 
 if __name__ == "__main__":

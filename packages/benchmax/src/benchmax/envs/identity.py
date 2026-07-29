@@ -18,15 +18,11 @@ def _normalize(value: Any) -> Any:
             try:
                 value.encode("utf-8")
             except UnicodeEncodeError as exc:
-                raise ValueError(
-                    "strings used for identity must be valid UTF-8"
-                ) from exc
+                raise ValueError("strings used for identity must be valid UTF-8") from exc
         return value
     if isinstance(value, int):
         if not _JS_MIN_SAFE_INT <= value <= _JS_MAX_SAFE_INT:
-            raise ValueError(
-                "integers used for identity must fit in JavaScript's safe range"
-            )
+            raise ValueError("integers used for identity must fit in JavaScript's safe range")
         return value
     if isinstance(value, float):
         if not math.isfinite(value):

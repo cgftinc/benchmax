@@ -62,9 +62,7 @@ class LocalModelServer:
     ) -> None:
         self._response_factory = response_factory
         self._barrier = (
-            threading.Barrier(concurrent_calls)
-            if concurrent_calls is not None
-            else None
+            threading.Barrier(concurrent_calls) if concurrent_calls is not None else None
         )
         self._lock = threading.Lock()
         self._call_counts: Counter[str] = Counter()

@@ -296,10 +296,7 @@ class TestExtractKeybertEntities:
         assert types <= {"entity", "domain_term", "code_pattern"}
 
     def test_df_and_quality_populated(self) -> None:
-        chunks = [
-            FakeChunk(f"Redis caching layer chunk {i}")
-            for i in range(60)
-        ]
+        chunks = [FakeChunk(f"Redis caching layer chunk {i}") for i in range(60)]
         mock_model = _make_mock_model()
         mock_model.extract_keywords = MagicMock(return_value=[("Redis", 0.9)])
 
@@ -407,8 +404,7 @@ class TestMergeSynonymEntities:
         model = _make_embedding_model(embeddings)
 
         patterns = [
-            EntityPattern(name=f"term{i}", type="domain_term", semantic_score=0.7)
-            for i in range(6)
+            EntityPattern(name=f"term{i}", type="domain_term", semantic_score=0.7) for i in range(6)
         ]
         result = _merge_synonym_entities(
             patterns, model, similarity_threshold=0.82, max_cluster_size=5

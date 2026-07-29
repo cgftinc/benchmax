@@ -315,9 +315,7 @@ class TestLopsidedOverlapPreGate:
 
     def test_single_chunk_item_skipped(self):
         """Single-chunk items skip the filter entirely (no verdict set)."""
-        item = _make_item(
-            chunks=[{"id": "c1", "metadata": {}, "content": "Only one chunk here."}]
-        )
+        item = _make_item(chunks=[{"id": "c1", "metadata": {}, "content": "Only one chunk here."}])
         filt = self._make_filter_leave_one_out()
         ctx = _make_context()
 
@@ -417,8 +415,7 @@ class TestDifficultyScoring:
                 )
             )
             chunks = [
-                {"id": f"c{i}", "metadata": {}, "content": f"Chunk {i}."}
-                for i in range(n_chunks)
+                {"id": f"c{i}", "metadata": {}, "content": f"Chunk {i}."} for i in range(n_chunks)
             ]
             item = _make_item(chunks=chunks)
             ctx = _make_context()

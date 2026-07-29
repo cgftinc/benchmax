@@ -53,6 +53,7 @@ def _make_profile_with_scores(chunks: list[Chunk], scores: list[float]) -> Corpu
 # Test 1: chunks below p25 threshold are never returned
 # ---------------------------------------------------------------------------
 
+
 def test_filter_and_sample_seeds_excludes_bottom_quartile() -> None:
     # 8 chunks with scores 0.1, 0.2, ..., 0.8
     # p25 index = 8//4 = 2 → threshold = scores[2] = 0.3
@@ -76,6 +77,7 @@ def test_filter_and_sample_seeds_excludes_bottom_quartile() -> None:
 # ---------------------------------------------------------------------------
 # Test 2: sampling is uniform (no weighting bias among eligible chunks)
 # ---------------------------------------------------------------------------
+
 
 def test_filter_and_sample_seeds_uniform() -> None:
     # 8 chunks with scores [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.9]
@@ -113,6 +115,7 @@ def test_filter_and_sample_seeds_uniform() -> None:
 # Test 3: fallback when profile is None
 # ---------------------------------------------------------------------------
 
+
 def test_filter_and_sample_seeds_fallback_no_profile() -> None:
     source = MagicMock()
     fallback = [_make_chunk("fallback content " * 10, i) for i in range(3)]
@@ -128,6 +131,7 @@ def test_filter_and_sample_seeds_fallback_no_profile() -> None:
 # ---------------------------------------------------------------------------
 # Test 4: fallback when eligible pool < n
 # ---------------------------------------------------------------------------
+
 
 def test_filter_and_sample_seeds_fallback_small_pool() -> None:
     # 6 chunks but only 2 above threshold — requesting n=5 triggers fallback
@@ -150,6 +154,7 @@ def test_filter_and_sample_seeds_fallback_small_pool() -> None:
 # ---------------------------------------------------------------------------
 # Test 5: API backend path (no collection attribute)
 # ---------------------------------------------------------------------------
+
 
 class _NoCollectionSource:
     """Fake source that has no collection attribute (API-backed path)."""

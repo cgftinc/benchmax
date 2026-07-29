@@ -1,45 +1,72 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import main as example
 from benchmax.bundle import load_bundle
 from benchmax.envs import Environment
 
 
-def test_bundle_inputs_are_explicit_and_local_capture_is_automatic(monkeypatch):
-    captured: dict = {}
-    sentinel = object()
+def test_launch_reuses_the_assets_that_were_validated(monkeypatch) -> None:
+    dataset_files = {"train.jsonl": object(), "eval.jsonl": object()}
+    bundled_environment = object()
+    uploaded_assets = SimpleNamespace(
+        env_cls_path="envs/test/env-cls.pkl",
+        env_metadata_path="envs/test/env-metadata.json",
+        dataset_path=None,
+    )
+    report = SimpleNamespace(ok=True)
+    calls: list[tuple[str, object]] = []
 
-    def fake_dump_bundle(env_class, **kwargs):
-        captured["env_class"] = env_class
-        captured.update(kwargs)
-        return sentinel
+    monkeypatch.setattr(example, "generate_data", lambda **kwargs: dataset_files)
+    monkeypatch.setattr(
+        example,
+        "dump_bundle",
+        lambda *args, **kwargs: bundled_environment,
+    )
+    monkeypatch.setattr(
+        example,
+        "upload_assets",
+        lambda **kwargs: calls.append(("upload", kwargs)) or uploaded_assets,
+    )
+    monkeypatch.setattr(
+        example,
+        "validate",
+        lambda env, received: calls.append(("validate", received)) or report,
+    )
+    monkeypatch.setattr(
+        example,
+        "launch",
+        lambda received, **kwargs: calls.append(("launch", received)) or "run-id",
+    )
+    monkeypatch.setattr(example, "ensure_session", lambda: None)
+    monkeypatch.setattr("castform.config.llm_url", lambda: "https://judge.example/v1")
 
-    import benchmax.bundle
+    assert example.main(["launch", "--yes"]) == 0
+    assert calls == [
+        (
+            "upload",
+            {
+                "bundle": bundled_environment,
+                "dataset_files": dataset_files,
+                "run_name": "telestich",
+            },
+        ),
+        ("validate", uploaded_assets),
+        ("launch", uploaded_assets),
+    ]
 
-    monkeypatch.setattr(benchmax.bundle, "dump_bundle", fake_dump_bundle)
 
+def test_real_bundle_roundtrip_uses_automatic_local_capture() -> None:
     constructor_args = {"judge_base_url": "https://judge.example/v1"}
-    assert example.build_training_bundle(constructor_args) is sentinel
-    assert captured == {
-        "env_class": example.TelestichEnv,
-        "constructor_args": constructor_args,
-        "pip_dependencies": example.RUNTIME_DEPENDENCIES,
-    }
-
-
-def test_gpu_launch_requires_explicit_confirmation(monkeypatch):
-    monkeypatch.setattr("builtins.input", lambda _: "yes")
-    assert example.confirm_gpu_launch("telestich-test")
-
-    monkeypatch.setattr("builtins.input", lambda _: "")
-    assert not example.confirm_gpu_launch("telestich-test")
-
-
-def test_real_bundle_roundtrip_uses_automatic_local_capture():
-    constructor_args = {"judge_base_url": "https://judge.example/v1"}
-    bundle = example.build_training_bundle(constructor_args)
+    bundle = example.dump_bundle(
+        example.TelestichEnv,
+        constructor_args=constructor_args,
+        pip_dependencies=example.RUNTIME_DEPENDENCIES,
+    )
 
     env_class, restored_args = load_bundle(bundle, instantiate=False)
+
     assert issubclass(env_class, Environment)
     assert env_class.__name__ == "TelestichEnv"
     assert restored_args == constructor_args
@@ -49,3 +76,15 @@ def test_real_bundle_roundtrip_uses_automatic_local_capture():
         "pronouncing",
         "wordfreq",
     )
+
+
+def test_dataset_split_is_deterministic(monkeypatch) -> None:
+    rows = [{"prompt": str(index)} for index in range(20)]
+    monkeypatch.setattr(example, "_rows", lambda: rows)
+
+    first = example._split_rows()
+    second = example._split_rows()
+
+    assert first == second
+    assert len(first[0]) == 18
+    assert len(first[1]) == 2

@@ -1,9 +1,9 @@
 [project]
 name = "benchmax-example-dominant-color"
 version = "0.1.0"
-description = "Multi-turn dominant-color vision environment for Benchmax"
+description = "Multi-turn dominant-color vision environment for benchmax"
 requires-python = "==3.12.*"
-dependencies = ["benchmax", "pillow>=10"]
+dependencies = ["benchmax", "castform", "pillow>=10"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

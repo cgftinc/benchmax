@@ -100,9 +100,7 @@ def _wire_async(monkeypatch, client: CorpusClient, responses) -> _FakeAsyncClien
 
 async def test_request_retries_on_429_then_succeeds(monkeypatch, no_async_sleep):
     client = CorpusClient(base_url="http://corpora", token_provider=lambda: "tok")
-    fake = _wire_async(
-        monkeypatch, client, [_resp(429, {"Retry-After": "2"}), _resp(200)]
-    )
+    fake = _wire_async(monkeypatch, client, [_resp(429, {"Retry-After": "2"}), _resp(200)])
 
     resp = await client._request("POST", "/v1/corpora/c/chunks", json={})
 
@@ -120,9 +118,7 @@ async def test_missing_credential_surfaces_as_auth_error():
         await client._request("GET", "/health")
 
 
-async def test_request_429_without_header_uses_exponential_backoff(
-    monkeypatch, no_async_sleep
-):
+async def test_request_429_without_header_uses_exponential_backoff(monkeypatch, no_async_sleep):
     client = CorpusClient(
         base_url="http://corpora",
         token_provider=lambda: "tok",
@@ -137,9 +133,7 @@ async def test_request_429_without_header_uses_exponential_backoff(
 
 
 async def test_request_network_error_retries_then_surfaces(monkeypatch, no_async_sleep):
-    client = CorpusClient(
-        base_url="http://corpora", token_provider=lambda: "tok", max_retries=3
-    )
+    client = CorpusClient(base_url="http://corpora", token_provider=lambda: "tok", max_retries=3)
 
     class _AlwaysFails:
         is_closed = False
@@ -182,9 +176,7 @@ async def test_request_429_exhausts_retries(monkeypatch, no_async_sleep):
 
 
 async def test_upload_chunks_uses_bounded_async_concurrency(monkeypatch):
-    chunks = ChunkCollection(
-        chunks=[Chunk(content=f"chunk {index}") for index in range(4)]
-    )
+    chunks = ChunkCollection(chunks=[Chunk(content=f"chunk {index}") for index in range(4)])
     client = CorpusClient(base_url="http://corpora", token_provider=lambda: "tok")
     active = 0
     max_active = 0

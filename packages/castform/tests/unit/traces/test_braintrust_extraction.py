@@ -1,6 +1,5 @@
 """Tests for Braintrust message extraction strategies."""
 
-
 from castform.traces.braintrust.message_extraction import (
     extract_messages,
     extract_scores,
@@ -121,9 +120,7 @@ class TestStrategy2_ReconstructFromChildren:  # noqa: N801 — strategy number, 
                 {
                     "span_attributes": {"type": "llm"},
                     "created": "2024-01-01T00:00:01Z",
-                    "input": {
-                        "messages": [{"role": "user", "content": "Search docs"}]
-                    },
+                    "input": {"messages": [{"role": "user", "content": "Search docs"}]},
                     "output": {
                         "role": "assistant",
                         "content": "",
@@ -181,9 +178,7 @@ class TestStrategy3_Fallback:  # noqa: N801 — strategy number, then descriptio
 
     def test_fallback_root_plus_outputs(self):
         trace = {
-            "input": {
-                "messages": [{"role": "user", "content": "Hello"}]
-            },
+            "input": {"messages": [{"role": "user", "content": "Hello"}]},
             "children": [
                 {
                     "span_attributes": {"type": "custom"},
@@ -234,9 +229,7 @@ class TestToolCallNormalization:
                     {
                         "role": "assistant",
                         "content": "",
-                        "tool_calls": [
-                            {"name": "lookup", "arguments": "{}", "id": "tc2"}
-                        ],
+                        "tool_calls": [{"name": "lookup", "arguments": "{}", "id": "tc2"}],
                     },
                 ]
             },
@@ -291,12 +284,14 @@ class TestExtractScores:
         assert scores == {"accuracy": 0.9, "speed": 0.5}
 
     def test_list_scores(self):
-        scores = extract_scores({
-            "scores": [
-                {"name": "task_success", "score": 1.0},
-                {"name": "efficiency", "score": 0.7},
-            ]
-        })
+        scores = extract_scores(
+            {
+                "scores": [
+                    {"name": "task_success", "score": 1.0},
+                    {"name": "efficiency", "score": 0.7},
+                ]
+            }
+        )
         assert scores == {"task_success": 1.0, "efficiency": 0.7}
 
     def test_empty_scores(self):

@@ -35,8 +35,6 @@ class _AsyncBarrier:
 
 
 class _ScoredEnv(Environment[dict[str, Any], RolloutAttempt]):
-    reward_keys = ("reward",)
-
     def __init__(self, group_size: int) -> None:
         self._barrier = _AsyncBarrier(group_size)
         self.seen_requests: dict[str, RolloutRequest[dict[str, Any]]] = {}
@@ -88,26 +86,19 @@ async def test_run_group_is_concurrent_and_preserves_request_identity() -> None:
     outcomes = await asyncio.wait_for(env.run_group(requests), timeout=1)
 
     assert list(outcomes) == [request.rollout_id for request in requests]
-    assert {
-        rollout_id: outcome.rewards for rollout_id, outcome in outcomes.items()
-    } == {
+    assert {rollout_id: outcome.rewards for rollout_id, outcome in outcomes.items()} == {
         "rollout-1": {"reward": 1.0},
         "rollout-2": {"reward": 2.0},
         "rollout-3": {"reward": 3.0},
     }
-    assert {
-        rollout_id: request.base_url
-        for rollout_id, request in env.seen_requests.items()
-    } == {request.rollout_id: request.base_url for request in requests}
-    assert env.log_contexts == {
-        request.rollout_id: request.rollout_id for request in requests
+    assert {rollout_id: request.base_url for rollout_id, request in env.seen_requests.items()} == {
+        request.rollout_id: request.base_url for request in requests
     }
+    assert env.log_contexts == {request.rollout_id: request.rollout_id for request in requests}
 
 
 async def test_group_scorer_receives_every_attempt_once() -> None:
     class GroupScoredEnv(Environment[dict[str, Any], RolloutAttempt]):
-        reward_keys = ("group_rank",)
-
         def __init__(self) -> None:
             self.scored_ids: list[str] = []
             self.group_log_context: tuple[str, ...] | None = None
@@ -146,14 +137,12 @@ async def test_group_scorer_receives_every_attempt_once() -> None:
 
 @pytest.mark.parametrize(
     "termination_reason",
-    ["max_turns_exceeded", "tool_budget_exceeded"],
+    ["max_turns_exceeded", "tool_budget_exceeded", "output_exceeded"],
 )
 async def test_group_scorer_receives_budget_exhausted_attempts(
     termination_reason: str,
 ) -> None:
     class BudgetScoredEnv(Environment[dict[str, Any], RolloutAttempt]):
-        reward_keys = ("individual", "group")
-
         def __init__(self) -> None:
             self.group_termination_reasons: list[str] = []
 
@@ -171,9 +160,7 @@ async def test_group_scorer_receives_budget_exhausted_attempts(
             self,
             rollouts: Sequence[RolloutAttempt],
         ) -> Mapping[str, RewardMap]:
-            self.group_termination_reasons = [
-                rollout.termination_reason for rollout in rollouts
-            ]
+            self.group_termination_reasons = [rollout.termination_reason for rollout in rollouts]
             return {rollout.rollout_id: {"group": 0.25} for rollout in rollouts}
 
     request = _request("rollout-1", Example(id="example-1", payload={}))
@@ -187,7 +174,7 @@ async def test_group_scorer_receives_budget_exhausted_attempts(
     assert env.group_termination_reasons == [termination_reason]
 
 
-async def test_one_operational_failure_does_not_cancel_or_shape_from_siblings(
+async def test_one_operational_failure_does_not_cancel_siblings(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     group_size = 3
@@ -195,8 +182,6 @@ async def test_one_operational_failure_does_not_cancel_or_shape_from_siblings(
     completed: set[str] = set()
 
     class FailingEnv(Environment[dict[str, Any], RolloutAttempt]):
-        reward_keys = ("declared_reward",)
-
         async def create_dataset(self, split, base_dir):
             return Dataset([])
 
@@ -217,7 +202,7 @@ async def test_one_operational_failure_does_not_cancel_or_shape_from_siblings(
 
     outcomes = await FailingEnv().run_group(requests)
 
-    assert outcomes["rollout-1"].rewards == {"declared_reward": 0.0}
+    assert outcomes["rollout-1"].rewards == {}
     assert outcomes["rollout-1"].termination_reason == "sandbox_error"
     assert outcomes["rollout-2"].rewards == {"declared_reward": 1.0}
     assert outcomes["rollout-3"].rewards == {"declared_reward": 1.0}
@@ -242,15 +227,48 @@ async def test_group_scorer_defect_settles_the_group_without_crashing(
     outcomes = await env.run_group(requests)
 
     assert set(env.seen_requests) == {"rollout-1", "rollout-2"}
-    assert all(outcome.rewards == {"reward": 0.0} for outcome in outcomes.values())
+    assert all(outcome.rewards == {} for outcome in outcomes.values())
+    assert all(outcome.termination_reason == "group_reward_error" for outcome in outcomes.values())
+    assert "group verifier crashed" in caplog.text
+
+
+async def test_group_defect_keeps_budget_stop_labels(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Same precedence as HarborEnv: a budget stop outranks a group scoring error."""
+
+    class MixedTerminationEnv(_ScoredEnv):
+        async def run_rollout(
+            self,
+            request: RolloutRequest[dict[str, Any]],
+        ) -> RolloutAttempt:
+            attempt = await super().run_rollout(request)
+            if request.rollout_id == "rollout-1":
+                return RolloutAttempt(
+                    rollout_id=attempt.rollout_id,
+                    termination_reason="context_exceeded",
+                    rewards={},
+                )
+            return attempt
+
+        async def compute_group_rewards(self, rollouts):
+            raise RuntimeError("group verifier crashed")
+
+    example = Example(id="example-1", payload={"rollout-1": 0.0, "rollout-2": 0.0})
+    requests = [_request(f"rollout-{index}", example) for index in range(1, 3)]
+
+    outcomes = await MixedTerminationEnv(group_size=2).run_group(requests)
+
+    assert outcomes["rollout-1"].termination_reason == "context_exceeded"
+    assert outcomes["rollout-2"].termination_reason == "group_reward_error"
+    assert all(outcome.rewards == {} for outcome in outcomes.values())
     assert all(
-        outcome.termination_reason == "group_reward_error"
-        for outcome in outcomes.values()
+        outcome.error == "RuntimeError: group verifier crashed" for outcome in outcomes.values()
     )
     assert "group verifier crashed" in caplog.text
 
 
-async def test_operational_group_judge_failure_zeroes_the_complete_group(
+async def test_operational_group_judge_failure_empties_the_complete_group(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class FailingGroupJudge(_ScoredEnv):
@@ -264,10 +282,8 @@ async def test_operational_group_judge_failure_zeroes_the_complete_group(
     requests = [_request(f"rollout-{index}", example) for index in range(1, 3)]
     outcomes = await FailingGroupJudge(group_size=2).run_group(requests)
 
-    assert all(outcome.rewards == {"reward": 0.0} for outcome in outcomes.values())
-    assert all(
-        outcome.termination_reason == "judge_error" for outcome in outcomes.values()
-    )
+    assert all(outcome.rewards == {} for outcome in outcomes.values())
+    assert all(outcome.termination_reason == "judge_error" for outcome in outcomes.values())
     assert "ranking judge unavailable" in caplog.text
 
 
@@ -275,8 +291,6 @@ async def test_programming_error_is_raised_only_after_sibling_settles() -> None:
     sibling_completed = asyncio.Event()
 
     class BrokenEnv(Environment[dict[str, Any], RolloutAttempt]):
-        reward_keys = ("reward",)
-
         async def create_dataset(self, split, base_dir):
             return Dataset([])
 
@@ -356,7 +370,7 @@ async def test_misaligned_reward_ids_settle_as_group_reward_error(
 
     outcomes = await MisalignedEnv(group_size=1).run_group([request])
 
-    assert outcomes["rollout-1"].rewards == {"reward": 0.0}
+    assert outcomes["rollout-1"].rewards == {}
     assert outcomes["rollout-1"].termination_reason == "group_reward_error"
     assert re.search(message, caplog.text)
 
@@ -374,8 +388,6 @@ async def test_run_group_rejects_malformed_rollout_results(
     message: str,
 ) -> None:
     class MalformedEnv(Environment[dict[str, Any], RolloutAttempt]):
-        reward_keys = ("reward",)
-
         async def create_dataset(self, split, base_dir):
             return Dataset([])
 
@@ -396,8 +408,6 @@ async def test_run_group_rejects_malformed_rollout_results(
 
 async def test_rollout_with_no_reward_source_settles_as_group_reward_error() -> None:
     class UnscoredEnv(Environment[dict[str, Any], RolloutAttempt]):
-        reward_keys = ("reward",)
-
         async def create_dataset(self, split, base_dir):
             return Dataset([])
 
@@ -411,14 +421,31 @@ async def test_rollout_with_no_reward_source_settles_as_group_reward_error() -> 
 
     outcomes = await UnscoredEnv().run_group([request])
 
-    assert outcomes["rollout-1"].rewards == {"reward": 0.0}
+    assert outcomes["rollout-1"].rewards == {}
     assert outcomes["rollout-1"].termination_reason == "group_reward_error"
 
 
-async def test_undeclared_reward_shape_settles_as_group_reward_error() -> None:
-    class WrongShapeEnv(Environment[dict[str, Any], RolloutAttempt]):
-        reward_keys = ("declared",)
+async def test_partial_attempt_may_finish_without_rewards() -> None:
+    class UnscoredPartialEnv(Environment[dict[str, Any], RolloutAttempt]):
+        async def create_dataset(self, split, base_dir):
+            return Dataset([])
 
+        async def run_rollout(self, request) -> RolloutAttempt:
+            return RolloutAttempt(
+                rollout_id=request.rollout_id,
+                termination_reason="context_exceeded",
+            )
+
+    request = _request("rollout-1", Example(id="example-1", payload={}))
+
+    outcomes = await UnscoredPartialEnv().run_group([request])
+
+    assert outcomes["rollout-1"].rewards == {}
+    assert outcomes["rollout-1"].termination_reason == "context_exceeded"
+
+
+async def test_environment_can_return_any_named_reward_components() -> None:
+    class DynamicRewardEnv(Environment[dict[str, Any], RolloutAttempt]):
         async def create_dataset(self, split, base_dir):
             return Dataset([])
 
@@ -431,16 +458,14 @@ async def test_undeclared_reward_shape_settles_as_group_reward_error() -> None:
 
     request = _request("rollout-1", Example(id="example-1", payload={}))
 
-    outcomes = await WrongShapeEnv().run_group([request])
+    outcomes = await DynamicRewardEnv().run_group([request])
 
-    assert outcomes["rollout-1"].rewards == {"declared": 0.0}
-    assert outcomes["rollout-1"].termination_reason == "group_reward_error"
+    assert outcomes["rollout-1"].rewards == {"observed": 1.0}
+    assert outcomes["rollout-1"].termination_reason == "finished"
 
 
 async def test_run_group_rejects_nonzero_reward_on_failed_attempt() -> None:
     class InvalidFailureEnv(Environment[dict[str, Any], RolloutAttempt]):
-        reward_keys = ("reward",)
-
         async def create_dataset(self, split, base_dir):
             return Dataset([])
 
@@ -461,8 +486,6 @@ async def test_returned_terminal_attempt_is_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class TerminalEnv(Environment[dict[str, Any], RolloutAttempt]):
-        reward_keys = ("reward",)
-
         async def create_dataset(self, split, base_dir):
             return Dataset([])
 

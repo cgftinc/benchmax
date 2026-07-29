@@ -36,7 +36,6 @@ _DIVERSITY_CFG = NgramDiversityConfig(n=3, similarity_threshold=0.5)
 
 
 class _DiversityEnv(BaseEnv):
-    reward_keys = ("quality",)
     system_prompt = "You are a helpful assistant."
     max_turns = 1
 
@@ -83,16 +82,12 @@ class _DiversityEnv(BaseEnv):
     ) -> Mapping[str, RewardMap]:
         raw_rewards = [await self.compute_reward(rollout) for rollout in rollouts]
         texts = [
-            rollout.messages[-1]["content"] if rollout.messages else ""
-            for rollout in rollouts
+            rollout.messages[-1]["content"] if rollout.messages else "" for rollout in rollouts
         ]
         context = rollouts[0].example_args.get("behavior", "") if rollouts else ""
-        scaled, _ = await scale_by_diversity(
-            raw_rewards, texts, _DIVERSITY_CFG, context=context
-        )
+        scaled, _ = await scale_by_diversity(raw_rewards, texts, _DIVERSITY_CFG, context=context)
         return {
-            rollout.rollout_id: reward
-            for rollout, reward in zip(rollouts, scaled, strict=True)
+            rollout.rollout_id: reward for rollout, reward in zip(rollouts, scaled, strict=True)
         }
 
 
@@ -148,9 +143,7 @@ class TestEnvIntegrated:
         ]
         tasks = [_make_task(), _make_task(), _make_task()]
 
-        rewards = await env.compute_group_rewards(
-            _make_rollouts(rollout_ids, messages_list, tasks)
-        )
+        rewards = await env.compute_group_rewards(_make_rollouts(rollout_ids, messages_list, tasks))
 
         assert len(rewards) == 3
         # All are dicts with "quality"
@@ -172,9 +165,7 @@ class TestEnvIntegrated:
         ]
         tasks = [_make_task(), _make_task(), _make_task()]
 
-        rewards = await env.compute_group_rewards(
-            _make_rollouts(rollout_ids, messages_list, tasks)
-        )
+        rewards = await env.compute_group_rewards(_make_rollouts(rollout_ids, messages_list, tasks))
 
         # All unique → all get full reward
         for reward in rewards.values():
@@ -213,9 +204,7 @@ class TestPickleRoundTripEnv:
         ]
         tasks = [_make_task(), _make_task()]
 
-        rewards = await env.compute_group_rewards(
-            _make_rollouts(rollout_ids, messages_list, tasks)
-        )
+        rewards = await env.compute_group_rewards(_make_rollouts(rollout_ids, messages_list, tasks))
 
         assert len(rewards) == 2
         # Duplicates → halved

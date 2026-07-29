@@ -8,7 +8,7 @@ reward, swap the dataset, add tools (see the design-environment skill).
 
 The whole run is reproducible from this file: the reward is below, and the
 `VALIDATE_CONFIG` / `LAUNCH_CONFIG` blocks bake in the rollout budgets.
-`python main.py` drives the loop: data → validate, then STOP
+`python main.py` drives the loop: data → upload → validate, then STOP
 (`launch` is an explicit, confirmed step — it spends GPU credits).
 """
 
@@ -19,7 +19,6 @@ import asyncio
 import dataclasses
 import difflib
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +27,7 @@ from benchmax.envs import (
     BaseEnv,
     BaseRollout,
     DatasetSplit,
+    Environment,
     Example,
     JsonlDataset,
     JsonRow,
@@ -37,8 +37,8 @@ from benchmax.rewards import extract_completion_text
 
 from castform import validate_environment
 from castform.platform.client import TrainerClient
+from castform.platform.environment_assets import upload_assets
 from castform.platform.login import ensure_session
-from castform.platform.training_run import upload_training_run
 
 
 class CustomEnv(BaseEnv):
@@ -51,14 +51,18 @@ class CustomEnv(BaseEnv):
     # Advertised to the model each rollout (optional; default ""). Keep it short.
     system_prompt = "Answer the question concisely and directly."
     max_turns = 1
-    reward_keys = ("overlap", "contains_gold", "answered")
 
     async def create_dataset(
-        self, split: DatasetSplit, base_dir: Path
+        self,
+        split: DatasetSplit,
+        base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> JsonlDataset[JsonRow]:
         return JsonlDataset(
             base_dir / f"{split}.jsonl",
             row_to_example=self._example_from_row,
+            max_examples=max_examples,
         )
 
     def _example_from_row(self, row: JsonRow) -> Example[JsonRow]:
@@ -89,9 +93,7 @@ class CustomEnv(BaseEnv):
         if not answer:
             return {"overlap": 0.0, "contains_gold": 0.0, "answered": 0.0}
         overlap = (
-            difflib.SequenceMatcher(None, answer.lower(), gold.lower()).ratio()
-            if gold
-            else 0.0
+            difflib.SequenceMatcher(None, answer.lower(), gold.lower()).ratio() if gold else 0.0
         )
         contains = 1.0 if gold and gold.lower() in answer.lower() else 0.0
         return {
@@ -105,28 +107,28 @@ class CustomEnv(BaseEnv):
 #    file alone. See `python main.py validate --help` / `launch --help`.
 VALIDATE_CONFIG = {
     "model": "gpt-5.4-mini",
-    # Local always runs. Flip this only after hosted group validation is available.
-    "include_remote": False,
+    "max_context_tokens": 2048,
+    "local_timeout_seconds": 120,
 }
 
 LAUNCH_CONFIG = {
-    # Total tokens across the WHOLE rollout. Single-turn answers are short; raise it
-    # if your task needs long outputs (a truncated rollout is dropped from the loss).
-    "max_rollout_len": 4096,
+    # Total prompt + response tokens across the WHOLE rollout. Single-turn answers
+    # are short; raise it if your task needs longer prompts or tool transcripts.
+    "max_context_len": 4096,
     "num_epochs": 2,  # eval tends to peak before the overfit tail; keep epochs modest
     # "type": "simple",  # GPU pool (gpu4 for 4B / gpu8 for 35B); "simple-cpu" = smoke
 }
 
 
 # ── Runnable entrypoint ──────────────────────────────────────────────────────
-# `python main.py [data|validate|launch|all]` drives the whole loop SDK-directly —
-# no CLI needed, and this file stays the reproducible record of the run. Stages are
-# isolable and skip work whose output already exists (`--force` to redo):
+# `python main.py [data|validate|launch]` drives the whole loop SDK-directly —
+# no CLI needed, and this file stays the reproducible record of the run:
 #
 #   python main.py data       generate/refresh the datasets (skip if present)
-#   python main.py validate   baseline on a real-rollout subset (no launch)
-#   python main.py launch     validate-gate, then train on GPUs (spends credits)
-#   python main.py  (or all)  data → validate, then STOP (never auto-launches)
+#   python main.py validate   upload, then check the same assets locally and in
+#                             a hosted sandbox (the default; never launches)
+#   python main.py launch     the same path, then a confirmed GPU launch that
+#                             reuses the assets that were just validated
 #
 # Import-safe: stages run only from the ``if __name__ == "__main__"`` block below,
 # so importing this file for tests or environment inspection has no side effects.
@@ -188,82 +190,70 @@ def generate_data(force: bool = False) -> bool:
     return True
 
 
-def _print_scorecard(report: Any) -> None:
-    """Print the two sibling outcomes returned by local group validation."""
-    for rollout_id, outcome in report.local.items():
-        rewards = dict(outcome.rewards)
-        total = sum(rewards.values())
-        print(
-            f"  {rollout_id}: termination_reason={outcome.termination_reason} "
-            f"total={total:.3f} rewards={rewards}"
+def _print_validation(report: Any) -> None:
+    for location in ("local", "remote"):
+        outcomes = getattr(report, location)
+        if outcomes is None:
+            continue
+        errors = getattr(report, f"{location}_errors")
+        for rollout_id, outcome in outcomes.items():
+            if rollout_id in errors:
+                print(f"❌ {location} {rollout_id}: {errors[rollout_id]}")
+            else:
+                mark = (
+                    "✅"
+                    if outcome.termination_reason in Environment.scorable_termination_reasons
+                    else "❌"
+                )
+                error_suffix = f" error={outcome.error}" if outcome.error else ""
+                print(
+                    f"{mark} {location} {rollout_id}: "
+                    f"{outcome.termination_reason} {dict(outcome.rewards)}{error_suffix}"
+                )
+        for rollout_id, error in errors.items():
+            if rollout_id not in outcomes:
+                print(f"❌ {location} {rollout_id}: {error}")
+    print("✅ validation passed" if report.ok else "❌ validation failed")
+
+
+def validate(env: CustomEnv, uploaded_assets: Any) -> Any:
+    """Validate the exact uploaded assets, locally and in a hosted sandbox."""
+    report = asyncio.run(
+        validate_environment(
+            env,
+            model=str(VALIDATE_CONFIG["model"]),
+            split="train",
+            base_dir=Path("."),
+            remote_assets=uploaded_assets,
+            max_context_tokens=int(VALIDATE_CONFIG["max_context_tokens"]),
+            local_timeout_seconds=float(VALIDATE_CONFIG["local_timeout_seconds"]),
         )
-    print(f"validate: {'PASS' if report.ok else 'FAIL'}")
-
-
-async def _run_validation(env: CustomEnv) -> Any:
-    dataset = await env.create_dataset("train", Path("."))
-    if not dataset:
-        raise ValueError(f"{TRAIN_FILE} contains no validation examples")
-    return await validate_environment(
-        env,
-        example=dataset[0],
-        model=str(VALIDATE_CONFIG["model"]),
-        include_remote=bool(VALIDATE_CONFIG.get("include_remote", False)),
     )
-
-
-def validate() -> Any:
-    """Run the real environment group contract with exactly two siblings."""
-    env = CustomEnv(**ENV_ARGS)
-    report = asyncio.run(_run_validation(env))
-    _print_scorecard(report)
+    _print_validation(report)
     return report
 
 
-def launch(assume_yes: bool = False) -> str | None:
-    """Validate-gate, confirm, then upload + launch a GPU training run (spends
-    credits). Returns the run id, or None if gated/aborted."""
-    report = validate()  # cheap pre-flight — never spend GPU on a broken env
-    if report is None or not report.ok:
-        print(
-            "launch: validate gate FAILED — fix the env before launching.",
-            file=sys.stderr,
-        )
-        return None
+def launch(uploaded_assets: Any, *, assume_yes: bool = False) -> str | None:
+    """Confirm, then train on GPUs with the assets that were just validated."""
     if not assume_yes:
         reply = (
-            input(
-                f"Launch '{_run_name()}' on GPUs — this spends credits. Continue? [y/N] "
-            )
+            input(f"Launch '{_run_name()}' on GPUs — this spends credits. Continue? [y/N] ")
             .strip()
             .lower()
         )
         if reply not in ("y", "yes"):
             print("launch: aborted.")
             return None
-    train = _load_jsonl(TRAIN_FILE)
-    eval_ds = _load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else []
-    bundle = dump_bundle(
-        CustomEnv,
-        constructor_args=ENV_ARGS,
-        pip_dependencies=RUNTIME_DEPENDENCIES,
-    )
-    uploaded = upload_training_run(
-        bundle=bundle,
-        train_dataset=train,
-        eval_dataset=eval_ds,
-        run_name=_run_name(),
-    )
-    # LAUNCH_CONFIG feeds the launcher, minus the reserved keys: `name` is the run
-    # name above; `type` is not a wire arg. The server rejects any unknown key.
+    # LAUNCH_CONFIG feeds the launcher, minus the reserved keys: `name` is the
+    # run name; `type` is not a wire arg. The server rejects any unknown key.
     launcher_args = {
-        k: v for k, v in LAUNCH_CONFIG.items() if k not in ("type", "name")
+        key: value for key, value in LAUNCH_CONFIG.items() if key not in ("name", "type")
     }
     with TrainerClient() as client:
         run_id = client.launch_training_run(
             name=_run_name(),
             launcher_args=launcher_args or None,
-            **dataclasses.asdict(uploaded),
+            **dataclasses.asdict(uploaded_assets),
         )
     print(f"launch: started run {run_id}")
     return run_id
@@ -272,18 +262,16 @@ def launch(assume_yes: bool = False) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="Run the castform loop for this env: data → validate → launch.",
+        description="Run the castform loop for this env: data → upload → validate → launch.",
     )
     parser.add_argument(
-        "stage",
+        "action",
         nargs="?",
-        default="all",
-        choices=["data", "validate", "launch", "all"],
-        help="Stage to run (default: all = data → validate, then STOP).",
+        default="validate",
+        choices=["data", "validate", "launch"],
+        help="data stops after datasets; validate stops after checks; launch trains.",
     )
-    parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
+    parser.add_argument("--force", action="store_true", help="Regenerate datasets even if present.")
     parser.add_argument(
         "-y",
         "--yes",
@@ -291,20 +279,39 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip the launch confirmation (it spends GPU credits).",
     )
     args = parser.parse_args(argv)
+    total_stages = {"data": 1, "validate": 4, "launch": 5}[args.action]
 
-    ok = True
-    if args.stage in ("data", "all"):
-        generate_data(force=args.force)
-    if args.stage in ("validate", "all"):
-        ensure_session()  # data preparation remains usable without platform login
-        report = validate()
-        ok = report is not None and report.ok  # non-zero exit on a failed baseline
-    if args.stage == "launch":
-        ensure_session()
-        ok = launch(assume_yes=args.yes) is not None  # None = gated / aborted / failed
-    # `all` / bare `python main.py` STOPS after validate — launch is never automatic
-    # (it spends GPU credits); run `python main.py launch` to train.
-    return 0 if ok else 1
+    print(f"[stage 1/{total_stages}] generating data")
+    if not generate_data(force=args.force):
+        return 1
+    if args.action == "data":
+        return 0
+
+    ensure_session()  # data preparation stays usable without platform login
+    print(f"[stage 2/{total_stages}] bundling environment")
+    bundled_environment = dump_bundle(
+        CustomEnv,
+        constructor_args=ENV_ARGS,
+        pip_dependencies=RUNTIME_DEPENDENCIES,
+    )
+    print(f"[stage 3/{total_stages}] uploading environment and dataset")
+    uploaded_assets = upload_assets(
+        bundle=bundled_environment,
+        train_dataset=_load_jsonl(TRAIN_FILE),
+        eval_dataset=(_load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else None),
+        run_name=_run_name(),
+    )
+    print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
+    print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
+    print(f"  dataset_path: {uploaded_assets.dataset_path}")
+    print(f"[stage 4/{total_stages}] validating environment")
+    report = validate(CustomEnv(**ENV_ARGS), uploaded_assets)
+    if not report.ok:
+        return 1
+    if args.action == "launch":
+        print(f"[stage 5/{total_stages}] launching training")
+        return 0 if launch(uploaded_assets, assume_yes=args.yes) is not None else 1
+    return 0
 
 
 if __name__ == "__main__":

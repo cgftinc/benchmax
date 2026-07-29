@@ -14,8 +14,12 @@ uv run python main.py validate
 The validation stage must first obtain its example through
 `env.create_dataset("train", Path("."))`, then call
 `castform.validate_environment` once for one real `Environment.run_group`
-containing exactly two siblings of that example. This exercises the public data
-materialization contract as part of validation. Keep `include_remote=False`.
+containing exactly two siblings of that example locally and in the hosted
+sandbox. This exercises the public data materialization and deployment contract
+as part of validation. Hosted validation always runs against the exact assets
+that were just uploaded — the same ones a launch would train on. Keep the local and hosted rollout-model context
+budget shared through `VALIDATE_CONFIG["max_context_tokens"]`; the local
+wall-clock backstop is `VALIDATE_CONFIG["local_timeout_seconds"]`.
 
 ## Read both outcomes
 
@@ -26,9 +30,9 @@ For each sibling, inspect:
 - evidence that the response was actually scored by the intended reward;
 - any environment, tool, sandbox or judge error logs.
 
-A successful outcome has `termination_reason == "finished"` and exactly the
-environment's declared `reward_keys`. Its scores may legitimately all be zero. An
-operational failure has a different termination reason, the same keys all zero,
+A successful outcome has `termination_reason == "finished"` and the reward
+components produced by its scoring hooks. Its scores may legitimately all be
+zero. An operational failure has a different termination reason, no rewards,
 and a visible log entry. It must not cancel the other sibling.
 
 Do not call the baseline green when:
@@ -48,8 +52,7 @@ tool exceptions and judge exceptions and assert the failure termination reason,
 zeroed declared shape and log message. For a group-relative reward, verify that one
 failed sibling does not alter successful siblings' scoring inputs.
 
-If the environment uses `InjectedAuth("judge")`, Castform validation binds that
-name to its call-time credential provider for the duration of the run. Rollout
+If the environment uses `InjectedAuth("judge")` for the Castform LLM endpoint, Castform validation binds that name to its call-time credential provider for the duration of the run. Rollout
 `model_auth` and named environment bindings are independent; overriding one must
 not silently override the other. A missing or unknown binding should fail visibly;
 the environment must not read a platform token itself.

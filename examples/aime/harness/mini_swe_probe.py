@@ -346,9 +346,7 @@ def main() -> int:
             continue
 
         try:
-            outputs = [
-                execute(action["command"], args.shell_timeout) for action in actions
-            ]
+            outputs = [execute(action["command"], args.shell_timeout) for action in actions]
         except Submitted as done:
             exit_status, submission = "Submitted", done.submission
             break

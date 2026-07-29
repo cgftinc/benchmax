@@ -238,9 +238,7 @@ def test_runs_rollout_details_with_gold(monkeypatch, capsys, tmp_path):
         rollout_details={
             "step": 139,
             "totalReward": 0.85,
-            "promptMessages": [
-                {"role": "user", "content": "where do I add the exception?"}
-            ],
+            "promptMessages": [{"role": "user", "content": "where do I add the exception?"}],
             "messages": [
                 {"role": "user", "content": "where do I add the exception?"},
                 {"role": "assistant", "content": "edit /etc/docker and reload"},
@@ -259,13 +257,9 @@ def test_runs_rollout_details_with_gold(monkeypatch, capsys, tmp_path):
     assert "step 139" in out
 
 
-def test_runs_rollout_uses_canonical_dataset_names_by_default(
-    monkeypatch, capsys, tmp_path
-):
+def test_runs_rollout_uses_canonical_dataset_names_by_default(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "eval.jsonl").write_text(
-        '{"prompt": "where?", "ground_truth": "in eval"}\n'
-    )
+    (tmp_path / "eval.jsonl").write_text('{"prompt": "where?", "ground_truth": "in eval"}\n')
     _patch(
         monkeypatch,
         rollout_details={
@@ -307,9 +301,7 @@ def test_runs_rollout_gold_not_found_is_graceful(monkeypatch, capsys, tmp_path):
         },
     )
     # dataset path that doesn't exist → no gold, but must not crash
-    assert (
-        runs._cmd_runs_rollout(_rollout_ns(dataset=str(tmp_path / "nope.jsonl"))) == 0
-    )
+    assert runs._cmd_runs_rollout(_rollout_ns(dataset=str(tmp_path / "nope.jsonl"))) == 0
     assert "not found locally" in capsys.readouterr().out
 
 
@@ -324,9 +316,7 @@ def test_gold_join_helpers(tmp_path):
     idx = {"a b c": "GOLD"}
     assert runs._match_gold("a b c", idx) == "GOLD"  # exact (whitespace-normalized)
     assert runs._match_gold("  a   b c ", idx) == "GOLD"  # normalization
-    assert (
-        runs._match_gold("prefix a b c suffix", idx) is None
-    )  # NOT fuzzy — no wrong gold
+    assert runs._match_gold("prefix a b c suffix", idx) is None  # NOT fuzzy — no wrong gold
     assert runs._match_gold("unrelated", idx) is None
     assert runs._match_gold(None, idx) is None
 
@@ -334,13 +324,9 @@ def test_gold_join_helpers(tmp_path):
 def test_gold_index_reads_question_key(tmp_path):
     # Flagship RAG datasets key on 'question'/'answer' (no 'prompt'/'ground_truth').
     ds = tmp_path / "eval.jsonl"
-    ds.write_text(
-        '{"question": "what is X?", "answer": "X is Y", "reference_chunks": []}\n'
-    )
+    ds.write_text('{"question": "what is X?", "answer": "X is Y", "reference_chunks": []}\n')
     idx = runs._gold_index([str(ds)])
-    assert idx == {
-        "what is X?": "X is Y"
-    }  # was empty before the fix (keyed on 'prompt')
+    assert idx == {"what is X?": "X is Y"}  # was empty before the fix (keyed on 'prompt')
 
 
 def test_match_gold_exact_only_no_false_positive():

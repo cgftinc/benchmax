@@ -1,6 +1,5 @@
 """Tests for CheckpointBase shared I/O."""
 
-
 from castform.utils.checkpoint import CheckpointBase
 
 

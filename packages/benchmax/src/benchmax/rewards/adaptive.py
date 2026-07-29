@@ -50,9 +50,7 @@ class RubricCache:
         ):
             raise ValueError("max_per_polarity must be positive")
         self.max_per_polarity = max_per_polarity
-        self._entries: dict[
-            str, dict[RubricPolarity, dict[str, _Candidate]]
-        ] = {}
+        self._entries: dict[str, dict[RubricPolarity, dict[str, _Candidate]]] = {}
 
     def get(self, prompt: str) -> AdaptiveRubrics:
         """Return the selected rubrics for ``prompt``."""
@@ -84,9 +82,7 @@ class RubricCache:
             return False
         deviation = float(statistics.pstdev(numeric_scores))
         key = prompt_key(prompt)
-        entry = self._entries.setdefault(
-            key, {"positive": {}, "negative": {}}
-        )
+        entry = self._entries.setdefault(key, {"positive": {}, "negative": {}})
         candidates = entry[rubric.polarity]
         candidates[rubric.title] = _Candidate(rubric, deviation)
         retained_titles = {
@@ -225,9 +221,7 @@ def _parse_generated(
         if not isinstance(title, str) or not title.strip():
             raise ValueError(f"judge response {field}[{index}].title must be non-empty")
         if not isinstance(description, str) or not description.strip():
-            raise ValueError(
-                f"judge response {field}[{index}].description must be non-empty"
-            )
+            raise ValueError(f"judge response {field}[{index}].description must be non-empty")
         rubrics.append(
             Rubric(
                 title=title.strip(),

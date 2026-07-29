@@ -15,7 +15,7 @@ from benchmax.auth import ModelRequestContext
 from benchmax.envs.base.dataset import JsonRow
 from benchmax.envs.base.openai_types import Message, Messages, Tool
 from benchmax.envs.dataset import Dataset
-from benchmax.envs.environment import Environment
+from benchmax.envs.environment import Environment, settle_termination_reason
 from benchmax.envs.shared_types import (
     DatasetSplit,
     Example,
@@ -79,6 +79,8 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> Dataset[JsonRow]:
         """Create a finite dataset whose payloads contain ``prompt_messages``."""
 
@@ -100,7 +102,9 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
 
         Raise :class:`RolloutFailure` for expected runtime failures to settle
         this rollout under that reason. Any other exception settles it as
-        ``reward_error``; a hook defect never crashes the run.
+        ``reward_error``; a hook defect never crashes the run. Either label
+        replaces only a clean finish — budget-stopped rollouts keep their own
+        reason and record the failure in ``error``.
         """
 
         return None
@@ -134,9 +138,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
 
         self._validate_limits()
         if self.max_turns is None:
-            raise ValueError(
-                f"{self.__class__.__name__} must configure max_turns before rollout"
-            )
+            raise ValueError(f"{self.__class__.__name__} must configure max_turns before rollout")
 
         messages, example_args = _prepare_example(request.example.payload)
 
@@ -160,8 +162,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                         else:
                             termination_reason = "model_error"
                         logger.warning(
-                            "base.rollout.model_failed rollout_id=%s "
-                            "termination_reason=%s",
+                            "base.rollout.model_failed rollout_id=%s termination_reason=%s",
                             request.rollout_id,
                             termination_reason,
                             exc_info=True,
@@ -170,8 +171,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     except OpenAIError:
                         termination_reason = "model_error"
                         logger.exception(
-                            "base.rollout.model_failed rollout_id=%s "
-                            "termination_reason=%s",
+                            "base.rollout.model_failed rollout_id=%s termination_reason=%s",
                             request.rollout_id,
                             termination_reason,
                         )
@@ -183,8 +183,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                         # programming errors outside this catch.
                         termination_reason = "model_error"
                         logger.exception(
-                            "base.rollout.model_failed rollout_id=%s "
-                            "termination_reason=%s",
+                            "base.rollout.model_failed rollout_id=%s termination_reason=%s",
                             request.rollout_id,
                             termination_reason,
                         )
@@ -200,14 +199,10 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                         break
                     assistant_turn = completion.choices[0]
                     tool_calls = _function_tool_calls(assistant_turn.message)
-                    messages.append(
-                        _to_assistant_message(assistant_turn.message, tool_calls)
-                    )
+                    messages.append(_to_assistant_message(assistant_turn.message, tool_calls))
 
                     if not tool_calls:
-                        termination_reason = _termination_reason(
-                            assistant_turn.finish_reason
-                        )
+                        termination_reason = _termination_reason(assistant_turn.finish_reason)
                         break
 
                     if (
@@ -227,8 +222,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     except RolloutFailure as failure:
                         termination_reason = failure.termination_reason
                         logger.error(
-                            "base.rollout.tool_failed rollout_id=%s "
-                            "termination_reason=%s: %s",
+                            "base.rollout.tool_failed rollout_id=%s termination_reason=%s: %s",
                             request.rollout_id,
                             termination_reason,
                             failure,
@@ -238,8 +232,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     except Exception:
                         termination_reason = "tool_error"
                         logger.exception(
-                            "base.rollout.tool_failed rollout_id=%s "
-                            "termination_reason=%s",
+                            "base.rollout.tool_failed rollout_id=%s termination_reason=%s",
                             request.rollout_id,
                             termination_reason,
                         )
@@ -258,14 +251,13 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                 if termination_reason not in self.scorable_termination_reasons:
                     return replace(
                         rollout,
-                        rewards={key: 0.0 for key in self.reward_keys},
+                        rewards={},
                     )
                 try:
                     rewards = await self.compute_reward(rollout)
                 except RolloutFailure as failure:
                     logger.error(
-                        "base.rollout.reward_failed rollout_id=%s "
-                        "termination_reason=%s: %s",
+                        "base.rollout.reward_failed rollout_id=%s termination_reason=%s: %s",
                         request.rollout_id,
                         failure.termination_reason,
                         failure,
@@ -273,8 +265,12 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     )
                     return replace(
                         rollout,
-                        termination_reason=failure.termination_reason,
-                        rewards={key: 0.0 for key in self.reward_keys},
+                        termination_reason=settle_termination_reason(
+                            termination_reason,
+                            failure.termination_reason,
+                        ),
+                        rewards={},
+                        error=str(failure),
                     )
                 except Exception as error:
                     # compute_reward is user code: a defect settles this one
@@ -289,8 +285,12 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     )
                     return replace(
                         rollout,
-                        termination_reason="reward_error",
-                        rewards={key: 0.0 for key in self.reward_keys},
+                        termination_reason=settle_termination_reason(
+                            termination_reason,
+                            "reward_error",
+                        ),
+                        rewards={},
+                        error=f"{type(error).__name__}: {error}",
                     )
                 return replace(rollout, rewards=rewards)
 
@@ -314,9 +314,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
         for tool_call in tool_calls:
             tool_name = tool_call.function.name
             if tool_name not in advertised_tools:
-                tool_messages.append(
-                    _tool_message(tool_call.id, f"Unknown tool: {tool_name}")
-                )
+                tool_messages.append(_tool_message(tool_call.id, f"Unknown tool: {tool_name}"))
                 continue
 
             try:
@@ -345,9 +343,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                 # real vision tokens inside the tool response.
                 tool_messages.append(_tool_message(tool_call.id, list(result)))
             else:
-                tool_messages.append(
-                    _tool_message(tool_call.id, _serialize_tool_result(result))
-                )
+                tool_messages.append(_tool_message(tool_call.id, _serialize_tool_result(result)))
 
         return tool_messages
 
@@ -374,9 +370,7 @@ def _prepare_example(payload: JsonRow) -> tuple[Messages, Mapping[str, Any]]:
     if not isinstance(payload, Mapping):
         raise TypeError("BaseEnv example payload must be a JSON object")
     messages = _coerce_messages(payload.get("prompt_messages"))
-    example_args = {
-        key: value for key, value in payload.items() if key != "prompt_messages"
-    }
+    example_args = {key: value for key, value in payload.items() if key != "prompt_messages"}
     return messages, example_args
 
 
@@ -384,9 +378,7 @@ def _coerce_messages(value: object) -> Messages:
     """Validate and copy the initial OpenAI-compatible messages."""
 
     if not isinstance(value, list) or not value:
-        raise ValueError(
-            "BaseEnv example payload requires a non-empty prompt_messages list"
-        )
+        raise ValueError("BaseEnv example payload requires a non-empty prompt_messages list")
     messages: Messages = []
     for index, message in enumerate(value):
         if not isinstance(message, Mapping):
@@ -524,8 +516,7 @@ def _is_tool_content_parts(result: object) -> bool:
         isinstance(result, (list, tuple))
         and len(result) > 0
         and all(
-            isinstance(part, Mapping)
-            and part.get("type") in _TOOL_CONTENT_PART_TYPES
+            isinstance(part, Mapping) and part.get("type") in _TOOL_CONTENT_PART_TYPES
             for part in result
         )
     )

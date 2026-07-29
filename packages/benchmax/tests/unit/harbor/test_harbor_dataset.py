@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from builtins import ExceptionGroup
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from benchmax.envs import Dataset
@@ -16,6 +17,8 @@ from harbor import (
     TrialVerifierConfig,
 )
 from harbor.models.trial.config import TaskConfig
+from harbor.publisher.packager import Packager
+from harbor.tasks.client import TaskDownloadResult
 
 
 @pytest.mark.asyncio
@@ -84,9 +87,7 @@ async def test_harbor_dataset_identity_is_content_addressed_and_snapshotted(
     assert second[0].payload.path.is_relative_to(tmp_path / "cache-b")
 
     (first_source / "task" / "instruction.md").write_text("Changed later.")
-    assert first[0].payload.path.joinpath("instruction.md").read_text() == (
-        "Solve the task."
-    )
+    assert first[0].payload.path.joinpath("instruction.md").read_text() == ("Solve the task.")
 
     _write_task(second_source / "task", instruction="A different task.")
     changed = await HarborDataset.create(
@@ -132,6 +133,84 @@ async def test_harbor_env_selects_lowest_canonical_ids_for_eval_ratio(
     assert [example.id for example in custom_eval] == sorted(
         example.id for example in (*custom_train, *custom_eval)
     )[:3]
+
+
+@pytest.mark.asyncio
+async def test_harbor_package_limit_selects_by_manifest_before_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources: dict[str, Path] = {}
+    task_configs: list[TaskConfig] = []
+    for index in range(5):
+        name = f"task-{index}"
+        source = tmp_path / "source" / name
+        _write_task(source, instruction=f"Task {index}")
+        content_hash, _ = Packager.compute_content_hash(source)
+        sources[name] = source
+        task_configs.append(
+            TaskConfig(
+                name=f"tests/{name}",
+                ref=f"sha256:{content_hash}",
+                source=f"tests/{name}",
+            )
+        )
+
+    async def fake_get_task_configs(
+        self: DatasetConfig,
+        disable_verification: bool = False,
+    ) -> list[TaskConfig]:
+        del self, disable_verification
+        return list(reversed(task_configs))
+
+    downloaded_names: list[str] = []
+
+    async def fake_download_tasks(
+        client: object,
+        task_ids: list[object],
+        *,
+        overwrite: bool,
+        output_dir: Path,
+    ) -> object:
+        del client, overwrite, output_dir
+        downloaded_names.extend(task_id.name for task_id in task_ids)  # type: ignore[attr-defined]
+        return SimpleNamespace(
+            results=[
+                TaskDownloadResult(
+                    path=sources[task_id.name],  # type: ignore[attr-defined]
+                    download_time_sec=0,
+                    cached=False,
+                )
+                for task_id in task_ids
+            ]
+        )
+
+    monkeypatch.setattr(DatasetConfig, "get_task_configs", fake_get_task_configs)
+    monkeypatch.setattr(
+        "benchmax.envs.harbor.dataset._download_tasks_with_retries",
+        fake_download_tasks,
+    )
+
+    dataset = await HarborDataset.create(
+        DatasetConfig(name="tests/dataset"),
+        base_dir=tmp_path / "cache",
+        split="eval",
+        eval_ratio=0.4,
+        max_examples=1,
+    )
+
+    expected_hash = min(
+        task_config.ref.removeprefix("sha256:")
+        for task_config in task_configs
+        if task_config.ref is not None
+    )
+    expected_name = next(
+        task_config.name.split("/", 1)[1]
+        for task_config in task_configs
+        if task_config.ref == f"sha256:{expected_hash}" and task_config.name is not None
+    )
+    assert [example.id for example in dataset] == [expected_hash]
+    assert downloaded_names == [expected_name]
 
 
 @pytest.mark.asyncio
@@ -189,7 +268,6 @@ def _make_env(
 ) -> HarborEnv:
     return HarborEnv(
         dataset=dataset,
-        reward_keys=("reward",),
         eval_dataset=eval_dataset,
         eval_ratio=eval_ratio,
         trial=HarborTrialTemplate(

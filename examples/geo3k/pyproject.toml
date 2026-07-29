@@ -1,9 +1,9 @@
 [project]
 name = "benchmax-example-geo3k"
 version = "0.1.0"
-description = "Geo3K multimodal environment for Benchmax"
+description = "Geo3K multimodal environment for benchmax"
 requires-python = "==3.12.*"
-dependencies = ["benchmax", "datasets>=4.0.0", "pillow>=10"]
+dependencies = ["benchmax", "castform", "datasets>=4.0.0", "pillow>=10"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

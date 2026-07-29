@@ -12,9 +12,7 @@ from castform.rag.corpus.search_schema.search_exceptions import (
 )
 
 
-def _make_search(
-    modes=None, embed_fn=None, ef_name="chroma-cloud-qwen"
-) -> ChromaSearch:
+def _make_search(modes=None, embed_fn=None, ef_name="chroma-cloud-qwen") -> ChromaSearch:
     """Build a ChromaSearch with a fake ChromaClient injected.
 
     ``ef_name`` is the collection's configured embedding function: defaults to a

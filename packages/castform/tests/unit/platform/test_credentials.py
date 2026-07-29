@@ -45,9 +45,7 @@ def _clear_env(monkeypatch, tmp_path):
     # the dev machine can't leak into tests; cache tests override it.
     monkeypatch.setenv(_CRED_PATH_ENV, str(tmp_path / "no-creds.json"))
     # Reset the per-process minted-JWT cache between tests.
-    credentials._SESSION_JWT_CACHE.update(
-        {"token": None, "src": None, "exp": 0.0, "profile": None}
-    )
+    credentials._SESSION_JWT_CACHE.update({"token": None, "src": None, "exp": 0.0, "profile": None})
 
 
 def test_reads_token_file_and_strips(tmp_path, monkeypatch):
@@ -215,9 +213,7 @@ def test_raises_when_session_mint_fails(tmp_path, monkeypatch):
 
 
 def test_session_skipped_when_expired(tmp_path, monkeypatch):
-    _write_session(
-        tmp_path, monkeypatch, {"access_token": "sk_session", "expires_at": 1}
-    )
+    _write_session(tmp_path, monkeypatch, {"access_token": "sk_session", "expires_at": 1})
     with pytest.raises(RuntimeError, match="No Castform platform credential"):
         platform_bearer()
 
@@ -309,12 +305,8 @@ def test_session_is_rejected_after_profile_auth_url_changes(tmp_path, monkeypatc
 def test_session_skipped_when_expires_at_non_numeric(tmp_path, monkeypatch):
     """A malformed (non-numeric) expires_at fails closed — the session is unusable
     rather than slipping past the numeric-only guard."""
-    monkeypatch.setattr(
-        credentials, "_mint_session_jwt", lambda _t, _p=None: "must-not-mint"
-    )
-    _write_session(
-        tmp_path, monkeypatch, {"access_token": "sk_session", "expires_at": "tomorrow"}
-    )
+    monkeypatch.setattr(credentials, "_mint_session_jwt", lambda _t, _p=None: "must-not-mint")
+    _write_session(tmp_path, monkeypatch, {"access_token": "sk_session", "expires_at": "tomorrow"})
     with pytest.raises(RuntimeError, match="No Castform platform credential"):
         platform_bearer()
 
@@ -333,15 +325,11 @@ def test_mint_handles_non_json_200(monkeypatch):
     assert credentials._mint_session_jwt("sess_abc") is None
 
 
-def test_session_jwt_falls_back_to_cached_on_transient_mint_failure(
-    tmp_path, monkeypatch
-):
+def test_session_jwt_falls_back_to_cached_on_transient_mint_failure(tmp_path, monkeypatch):
     """A transient mint failure reuses a still-valid cached JWT instead of failing."""
     good = _fake_jwt(time.time() + 300)
     minted = {"v": good}
-    monkeypatch.setattr(
-        credentials, "_mint_session_jwt", lambda _t, _p=None: minted["v"]
-    )
+    monkeypatch.setattr(credentials, "_mint_session_jwt", lambda _t, _p=None: minted["v"])
     _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
     assert platform_bearer() == good  # mints + caches
 
@@ -363,9 +351,7 @@ def test_session_jwt_floors_ttl_when_exp_unparseable(tmp_path, monkeypatch):
     _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
     assert platform_bearer() == "opaque-token-without-exp"
     assert platform_bearer() == "opaque-token-without-exp"
-    assert (
-        calls["n"] == 1
-    )  # floored TTL keeps it cached instead of re-minting each call
+    assert calls["n"] == 1  # floored TTL keeps it cached instead of re-minting each call
 
 
 def test_session_jwt_remints_on_session_change(tmp_path, monkeypatch):

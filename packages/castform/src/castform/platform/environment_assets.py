@@ -1,10 +1,10 @@
-"""High-level helper for uploading a prepared training run.
+"""High-level helper for uploading environment assets.
 
 Uploads a completed environment bundle and any caller-supplied datasets in a
 single call. The returned dataclass spreads into
 ``TrainerClient.launch_training_run``.
 
-Bundling remains a BenchMax concern. This helper deliberately accepts a
+Bundling remains a benchmax concern. This helper deliberately accepts a
 ``Bundle`` instead of environment construction inputs so Castform cannot
 silently rebuild or reinterpret the artifact selected by the caller.
 """
@@ -28,13 +28,13 @@ from .client import StorageClient
 
 
 @dataclass(frozen=True)
-class UploadedTrainingRun:
-    """Blob paths for a training run's uploaded assets.
+class UploadedEnvironmentAssets:
+    """Blob paths for an uploaded environment bundle and optional datasets.
 
     Field names match ``TrainerClient.launch_training_run`` kwargs so the
     result spreads directly into the launch call::
 
-        uploaded = upload_training_run(...)
+        uploaded = upload_assets(...)
         run_id = trainer.launch_training_run(
             **dataclasses.asdict(uploaded),
         )
@@ -67,7 +67,7 @@ def _validate_blob_path(path: str, *, source: str) -> None:
             )
 
 
-def upload_training_run(
+def upload_assets(
     *,
     bundle: Bundle,
     train_dataset: list[dict[str, Any]] | None = None,
@@ -79,21 +79,21 @@ def upload_training_run(
     env_prefix: str | None = None,
     dataset_prefix: str | None = None,
     storage_client: StorageClient | None = None,
-) -> UploadedTrainingRun:
+) -> UploadedEnvironmentAssets:
     """Upload a completed environment bundle and optional dataset files.
 
     Default layout:
         envs/<run_name>/<env_hash>/{env-cls.pkl, env-metadata.json}
         datasets/<run_name>/<dataset_hash>/<every dataset file>
 
-    Environment paths use BenchMax's complete-artifact digest, covering both
+    Environment paths use benchmax's complete-artifact digest, covering both
     the pickle and canonical metadata. The dataset prefix hashes every
     uploaded file's name and bytes. The hashes are truncated to 16 / 8 hex
     chars. When no dataset content is supplied, Castform uploads only the
     bundle and returns ``None`` for ``dataset_path``.
 
     Args:
-        bundle: Completed BenchMax environment bundle. Its pickle and metadata
+        bundle: Completed benchmax environment bundle. Its pickle and metadata
             are uploaded exactly as supplied.
         train_dataset: Optional training examples, written as ``train.jsonl``
             under the dataset prefix. ``None`` means the environment manages
@@ -104,7 +104,7 @@ def upload_training_run(
         dataset_files: Arbitrary extra dataset content: relative file name
             (subdirectories allowed) mapped to bytes, text, or a local Path to
             read. Names must not collide with the generated JSONL splits.
-        run_name: Training run identifier; used as the storage path segment.
+        run_name: Asset namespace used as the storage path segment.
         api_key: Platform API key. Optional — when omitted (and no
             ``storage_client`` is passed) the bearer resolves per request via
             the credential seam (``ACT_AS_TOKEN_PATH`` / ``CASTFORM_API_KEY``).
@@ -118,7 +118,7 @@ def upload_training_run(
             ``api_key``/``base_url``.
 
     Returns:
-        UploadedTrainingRun with the bundle paths and the optional dataset
+        UploadedEnvironmentAssets with the bundle paths and the optional dataset
         prefix (``dataset_path``).
     """
     files = _collect_dataset_files(
@@ -161,9 +161,9 @@ def upload_training_run(
         meta_local = tmpdir / "env-metadata.json"
         cls_local.write_bytes(bundle.pickled)
         meta_local.write_bytes(bundle.metadata.to_json_bytes())
-        env_cls_path = storage_client.upload_local_file(
-            f"{env_prefix}/env-cls.pkl", cls_local
-        )["blobPath"]
+        env_cls_path = storage_client.upload_local_file(f"{env_prefix}/env-cls.pkl", cls_local)[
+            "blobPath"
+        ]
         env_metadata_path = storage_client.upload_local_file(
             f"{env_prefix}/env-metadata.json", meta_local
         )["blobPath"]
@@ -175,7 +175,7 @@ def upload_training_run(
             local.write_bytes(content)
             storage_client.upload_local_file(f"{dataset_prefix}/{name}", local)
 
-        return UploadedTrainingRun(
+        return UploadedEnvironmentAssets(
             env_cls_path=env_cls_path,
             env_metadata_path=env_metadata_path,
             dataset_path=dataset_prefix,
@@ -200,9 +200,7 @@ def _collect_dataset_files(
             raise ValueError("dataset_files names must be non-empty strings")
         _validate_blob_path(name, source="dataset_files")
         if name in files:
-            raise ValueError(
-                f"dataset_files name {name!r} collides with a generated JSONL split"
-            )
+            raise ValueError(f"dataset_files name {name!r} collides with a generated JSONL split")
         if isinstance(content, Path):
             files[name] = content.read_bytes()
         elif isinstance(content, str):
@@ -211,8 +209,7 @@ def _collect_dataset_files(
             files[name] = content
         else:
             raise TypeError(
-                f"dataset_files[{name!r}] must be bytes, str, or Path, got "
-                f"{type(content).__name__}"
+                f"dataset_files[{name!r}] must be bytes, str, or Path, got {type(content).__name__}"
             )
     return files
 

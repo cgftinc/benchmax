@@ -12,9 +12,16 @@ _STYLE_LABELS = frozenset({"natural", "keyword", "expert"})
 
 # Languages where characters encode more meaning — answer length thresholds
 # are divided by 3 for these to avoid over-rejecting concise but complete answers.
-_HIGH_DENSITY_LANGUAGES = frozenset({
-    "korean", "ko", "chinese", "zh", "japanese", "ja",
-})
+_HIGH_DENSITY_LANGUAGES = frozenset(
+    {
+        "korean",
+        "ko",
+        "chinese",
+        "zh",
+        "japanese",
+        "ja",
+    }
+)
 
 # Patterns indicating a meta-question about generation failure rather than a real domain question
 _META_QUESTION_PATTERNS = [

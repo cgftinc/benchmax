@@ -40,9 +40,7 @@ _FAILURE_TYPE_NONE = "none"
 # suffices). A value of -1 is safe because ref_chunk indices are always >= 0.
 _PRIMARY_ONLY_SENTINEL = -1
 _PRIMARY_ONLY_OMITTED_ID = "all_non_primary"
-_MAX_CONSECUTIVE_ERRORS = (
-    5  # circuit-breaker: abort filter after this many consecutive failures
-)
+_MAX_CONSECUTIVE_ERRORS = 5  # circuit-breaker: abort filter after this many consecutive failures
 
 _HOP_COUNT_JUDGE_SYSTEM_PROMPT = """\
 You are an expert judge evaluating whether a question can be fully answered \
@@ -154,11 +152,7 @@ class HopCountValidityFilter:
         GC)."""
         loop = asyncio.get_running_loop()
         client = self._async_judge_client
-        stale = (
-            client is None
-            or client.is_closed()
-            or self._async_judge_client_loop is not loop
-        )
+        stale = client is None or client.is_closed() or self._async_judge_client_loop is not loop
         if stale:
             client = create_async_openai_client(
                 model=self.cfg.judge_model,
@@ -222,8 +216,7 @@ class HopCountValidityFilter:
 
             qa_type = (
                 str(
-                    item.qa.get("qa_type", "")
-                    or item.generation_metadata.get("qa_type_target", "")
+                    item.qa.get("qa_type", "") or item.generation_metadata.get("qa_type_target", "")
                 )
                 .strip()
                 .lower()
@@ -319,9 +312,7 @@ class HopCountValidityFilter:
                 # primary_only mode: testing whether the primary chunk alone suffices.
                 # If it does, this is a single-hop question — skip the multi-hop
                 # validator entirely and let it pass through to other filters.
-                async with context.model_semaphore(
-                    self.cfg.judge_model, self.cfg.judge_base_url
-                ):
+                async with context.model_semaphore(self.cfg.judge_model, self.cfg.judge_base_url):
                     result = await asyncio.to_thread(
                         self._judge_subset, question, answer, subset, stats
                     )
@@ -347,20 +338,14 @@ class HopCountValidityFilter:
             omitted_chunk = ref_chunks[omitted_idx]
             omitted_id = str(omitted_chunk.get("id", f"chunk_{omitted_idx}"))
             omitted_file = str(
-                omitted_chunk.get("metadata", {}).get(
-                    "file", omitted_chunk.get("file", omitted_id)
-                )
+                omitted_chunk.get("metadata", {}).get("file", omitted_chunk.get("file", omitted_id))
             )
 
-            async with context.model_semaphore(
-                self.cfg.judge_model, self.cfg.judge_base_url
-            ):
+            async with context.model_semaphore(self.cfg.judge_model, self.cfg.judge_base_url):
                 result = await asyncio.to_thread(
                     self._judge_subset, question, answer, subset, stats
                 )
-            contribution_level = (
-                str(result.get("contribution_level", "")).lower().strip()
-            )
+            contribution_level = str(result.get("contribution_level", "")).lower().strip()
             per_subset_results.append(
                 {
                     "omitted": omitted_id,
@@ -375,9 +360,7 @@ class HopCountValidityFilter:
                 redundant_chunks.append(omitted_id)
             elif contribution_level == "low":
                 # Chunk is technically essential but barely contributes — flag for refinement.
-                low_contribution_chunks.append(
-                    {"chunk_id": omitted_id, "file": omitted_file}
-                )
+                low_contribution_chunks.append({"chunk_id": omitted_id, "file": omitted_file})
 
         hop_count_claimed = len(ref_chunks)
         validated = len(redundant_chunks) == 0
@@ -420,8 +403,7 @@ class HopCountValidityFilter:
                     "failure_type": _FAILURE_TYPE_LOW_CONTRIBUTION,
                     "low_contribution_chunks": low_contribution_chunks,
                     "refinement_hint": (
-                        "Increase the question's dependence on all reference chunks. "
-                        + feedback
+                        "Increase the question's dependence on all reference chunks. " + feedback
                     ),
                 },
             )
@@ -455,12 +437,8 @@ class HopCountValidityFilter:
         essential_count = hop_count_claimed - len(redundant_chunks)
         if essential_count >= 2:
             redundant_set = set(redundant_chunks)
-            essential_chunks = [
-                c for c in ref_chunks if str(c.get("id", "")) not in redundant_set
-            ]
-            removed_chunks = [
-                c for c in ref_chunks if str(c.get("id", "")) in redundant_set
-            ]
+            essential_chunks = [c for c in ref_chunks if str(c.get("id", "")) not in redundant_set]
+            removed_chunks = [c for c in ref_chunks if str(c.get("id", "")) in redundant_set]
             item.qa["reference_chunks"] = essential_chunks
             if removed_chunks:
                 existing = list(item.qa.get("removed_reference_chunks", []))
@@ -586,9 +564,7 @@ class HopCountValidityFilter:
             show_progress=self.cfg.show_batch_progress,
             temperature=0.0,
             desc="Hop-count validity",
-            semaphore=context.model_semaphore(
-                self.cfg.judge_model, self.cfg.judge_base_url
-            ),
+            semaphore=context.model_semaphore(self.cfg.judge_model, self.cfg.judge_base_url),
         )
 
         # Process results — mirrors the sequential loop exactly.
@@ -631,9 +607,7 @@ class HopCountValidityFilter:
                 )
             )
 
-            contribution_level = (
-                str(result.get("contribution_level", "")).lower().strip()
-            )
+            contribution_level = str(result.get("contribution_level", "")).lower().strip()
             per_subset_results.append(
                 {
                     "omitted": omitted_id,
@@ -696,8 +670,7 @@ class HopCountValidityFilter:
                     "failure_type": (_FAILURE_TYPE_LOW_CONTRIBUTION),
                     "low_contribution_chunks": (low_contribution_chunks),
                     "refinement_hint": (
-                        "Increase the question's dependence on all reference chunks. "
-                        + feedback
+                        "Increase the question's dependence on all reference chunks. " + feedback
                     ),
                 },
             )
@@ -729,12 +702,8 @@ class HopCountValidityFilter:
         essential_count = hop_count_claimed - len(redundant_chunks)
         if essential_count >= 2:
             redundant_set = set(redundant_chunks)
-            essential_chunks = [
-                c for c in ref_chunks if str(c.get("id", "")) not in redundant_set
-            ]
-            removed_chunks = [
-                c for c in ref_chunks if str(c.get("id", "")) in redundant_set
-            ]
+            essential_chunks = [c for c in ref_chunks if str(c.get("id", "")) not in redundant_set]
+            removed_chunks = [c for c in ref_chunks if str(c.get("id", "")) in redundant_set]
             item.qa["reference_chunks"] = essential_chunks
             if removed_chunks:
                 existing = list(item.qa.get("removed_reference_chunks", []))
@@ -835,9 +804,7 @@ class HopCountValidityFilter:
         overlaps: list[tuple[str, str, float]] = []  # (chunk_id, file, overlap_ratio)
         for chunk in ref_chunks:
             chunk_id = str(chunk.get("id", "unknown"))
-            chunk_file = str(
-                chunk.get("metadata", {}).get("file", chunk.get("file", chunk_id))
-            )
+            chunk_file = str(chunk.get("metadata", {}).get("file", chunk.get("file", chunk_id)))
             chunk_words = set(str(chunk.get("content", "")).lower().split())
             if not chunk_words:
                 overlap = 0.0
@@ -862,12 +829,10 @@ class HopCountValidityFilter:
         )
 
         over_info = [
-            {"chunk_id": cid, "file": f, "overlap": round(r, 4)}
-            for cid, f, r in over_represented
+            {"chunk_id": cid, "file": f, "overlap": round(r, 4)} for cid, f, r in over_represented
         ]
         under_info = [
-            {"chunk_id": cid, "file": f, "overlap": round(r, 4)}
-            for cid, f, r in under_represented
+            {"chunk_id": cid, "file": f, "overlap": round(r, 4)} for cid, f, r in under_represented
         ]
         feedback = (
             "lopsided_chunk_contribution: "
@@ -983,9 +948,7 @@ class HopCountValidityFilter:
             "confidence": float(data.get("confidence", 0.0)),
             "reasoning": str(data.get("reasoning", "")),
             "missing_facts": list(data.get("missing_facts", [])),
-            "contribution_level": str(data.get("contribution_level", ""))
-            .lower()
-            .strip(),
+            "contribution_level": str(data.get("contribution_level", "")).lower().strip(),
         }
 
     def _judge_subset(
@@ -1030,9 +993,7 @@ class HopCountValidityFilter:
     ) -> dict[str, Any]:
         return {
             "filter_mode": _FILTER_MODE,
-            "reason_code": (
-                "hop_count_valid" if validated else "redundant_chunk_found"
-            ),
+            "reason_code": ("hop_count_valid" if validated else "redundant_chunk_found"),
             "confidence": 1.0 if validated else 0.5,
             "hop_count_claimed": hop_count_claimed,
             "hop_count_validated": validated,

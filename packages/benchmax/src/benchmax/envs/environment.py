@@ -29,21 +29,12 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
         {
             "finished",
             "context_exceeded",
+            "output_exceeded",
             "max_turns_exceeded",
             "tool_budget_exceeded",
         }
     )
     """Terminal reasons whose partial attempts remain eligible for rewards."""
-
-    @property
-    @abstractmethod
-    def reward_keys(self) -> Sequence[str]:
-        """Declare the complete, ordered reward shape for every outcome.
-
-        A concrete environment may satisfy this property with a class-level
-        tuple. Dynamic adapters such as Harbor may expose constructor-provided
-        keys instead. BenchMax never infers reward keys from sibling rollouts.
-        """
 
     @property
     def requires_public_model_endpoint(self) -> bool:
@@ -56,8 +47,14 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> Dataset[Payload]:
-        """Create a fixed, ordered dataset for ``split``."""
+        """Create a fixed, ordered dataset for ``split``.
+
+        When ``max_examples`` is set, return at most that many examples and
+        avoid loading later source records when the backing store permits it.
+        """
 
     @abstractmethod
     async def run_rollout(
@@ -75,7 +72,9 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
         Raise :class:`RolloutFailure` for expected runtime failures (judge
         outage, rate limit) to settle the group under that reason. Any other
         exception, or a misaligned or misshapen result, settles the group as
-        ``group_reward_error``; a hook defect never crashes the run.
+        ``group_reward_error``; a hook defect never crashes the run. Either
+        label replaces only clean finishes — budget-stopped attempts keep
+        their own reason and record the failure in ``error``.
         """
 
         return None
@@ -87,14 +86,13 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
         """Run, score, and validate one complete rollout group.
 
         All requests must target the same example. Execution is concurrent.
-        Operational failures and reward-hook defects become zero-valued
+        Operational failures and reward-hook defects become empty-reward
         terminal outcomes without cancelling siblings. Execution-contract
-        violations (malformed requests, a broken reward schema, run_rollout
-        identity lies) remain loud, but only after every sibling has settled.
+        violations (malformed requests or run_rollout identity lies) remain
+        loud, but only after every sibling has settled.
         """
 
         group, rollout_ids = _validate_group_requests(requests)
-        reward_keys = _validate_reward_keys(self.reward_keys)
         tasks = [
             asyncio.create_task(
                 self._run_and_validate_rollout(request),
@@ -118,17 +116,18 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
             if isinstance(result, RolloutFailure):
                 _log_operational_failure(request.rollout_id, result)
                 outcomes[request.rollout_id] = _failure_outcome(
-                    reward_keys,
                     result.termination_reason,
+                    error=str(result),
                 )
             elif isinstance(result, BaseException):
                 contract_errors.append(result)
             elif result.termination_reason not in self.scorable_termination_reasons:
-                _validate_failure_rewards(result, reward_keys)
+                _validate_failure_rewards(result)
                 _log_terminal_attempt(result)
                 outcomes[result.rollout_id] = RolloutOutcome(
                     rewards=dict(result.rewards or {}),
                     termination_reason=result.termination_reason,
+                    error=result.error,
                 )
             else:
                 if result.termination_reason != "finished":
@@ -156,31 +155,33 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
                         rollout,
                         group_rewards,
                     )
-                    _validate_complete_reward_shape(
-                        rollout.rollout_id,
-                        rewards,
-                        reward_keys,
-                    )
                     merged[rollout.rollout_id] = rewards
             except RolloutFailure as failure:
                 _log_operational_failure("group", failure)
                 for rollout in rollouts:
                     outcomes[rollout.rollout_id] = _failure_outcome(
-                        reward_keys,
-                        failure.termination_reason,
+                        settle_termination_reason(
+                            rollout.termination_reason,
+                            failure.termination_reason,
+                        ),
+                        error=rollout.error or str(failure),
                     )
             except Exception as error:
                 _log_group_reward_defect(error)
                 for rollout in rollouts:
                     outcomes[rollout.rollout_id] = _failure_outcome(
-                        reward_keys,
-                        "group_reward_error",
+                        settle_termination_reason(
+                            rollout.termination_reason,
+                            "group_reward_error",
+                        ),
+                        error=rollout.error or f"{type(error).__name__}: {error}",
                     )
             else:
                 for rollout in rollouts:
                     outcomes[rollout.rollout_id] = RolloutOutcome(
                         rewards=merged[rollout.rollout_id],
                         termination_reason=rollout.termination_reason,
+                        error=rollout.error,
                     )
 
         return {rollout_id: outcomes[rollout_id] for rollout_id in rollout_ids}
@@ -195,8 +196,7 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
             rollout = await self.run_rollout(request)
         if not isinstance(rollout, RolloutAttempt):
             raise TypeError(
-                f"run_rollout returned {type(rollout).__name__}, "
-                "expected RolloutAttempt"
+                f"run_rollout returned {type(rollout).__name__}, expected RolloutAttempt"
             )
         if rollout.rollout_id != request.rollout_id:
             raise ValueError(
@@ -233,64 +233,40 @@ def _validate_group_requests[Payload](
     return group, rollout_ids
 
 
-def _validate_reward_keys(reward_keys: Sequence[str]) -> tuple[str, ...]:
-    """Freeze and validate an environment's explicit reward schema."""
-
-    if isinstance(reward_keys, (str, bytes)) or not isinstance(reward_keys, Sequence):
-        raise TypeError("reward_keys must be a sequence of strings")
-    keys = tuple(reward_keys)
-    if not keys:
-        raise ValueError("reward_keys must declare at least one reward")
-    if any(not isinstance(key, str) or not key.strip() for key in keys):
-        raise ValueError("reward_keys must contain non-empty strings")
-    if len(set(keys)) != len(keys):
-        raise ValueError("reward_keys must not contain duplicates")
-    return keys
-
-
 def _failure_outcome(
-    reward_keys: Sequence[str],
     termination_reason: str,
+    *,
+    error: str | None = None,
 ) -> RolloutOutcome:
-    """Create an explicit zero-valued outcome from the env-owned schema."""
+    """Create an empty-reward outcome for an operational failure."""
 
     return RolloutOutcome(
-        rewards={key: 0.0 for key in reward_keys},
+        rewards={},
         termination_reason=termination_reason,
+        error=error,
     )
+
+
+def settle_termination_reason(attempt_reason: str, failure_reason: str) -> str:
+    """A reward-stage failure relabels only a clean finish.
+
+    Same precedence as HarborEnv: a budget stop (context_exceeded,
+    max_turns_exceeded, ...) outranks a later scoring error, which is logged
+    and zeroes rewards without masking what actually stopped the rollout.
+    """
+
+    return failure_reason if attempt_reason == "finished" else attempt_reason
 
 
 def _validate_failure_rewards(
     rollout: RolloutAttempt,
-    reward_keys: Sequence[str],
 ) -> None:
-    """Require terminal failures to carry the declared all-zero shape."""
+    """Prevent a failed attempt from contributing reward signal."""
 
     rewards = dict(rollout.rewards or {})
-    _validate_complete_reward_shape(rollout.rollout_id, rewards, reward_keys)
     nonzero = sorted(key for key, value in rewards.items() if value != 0)
     if nonzero:
-        raise ValueError(
-            f"failed rollout {rollout.rollout_id!r} has non-zero rewards: {nonzero}"
-        )
-
-
-def _validate_complete_reward_shape(
-    rollout_id: str,
-    rewards: Mapping[str, float],
-    reward_keys: Sequence[str],
-) -> None:
-    """Require every outcome to use exactly the environment's declared keys."""
-
-    expected = set(reward_keys)
-    actual = set(rewards)
-    if actual != expected:
-        missing = sorted(expected - actual)
-        unknown = sorted(actual - expected)
-        raise ValueError(
-            f"rollout {rollout_id!r} has the wrong reward shape: "
-            f"missing={missing}, unknown={unknown}"
-        )
+        raise ValueError(f"failed rollout {rollout.rollout_id!r} has non-zero rewards: {nonzero}")
 
 
 def _log_operational_failure(rollout_id: str, failure: RolloutFailure) -> None:
@@ -309,8 +285,7 @@ def _log_group_reward_defect(error: BaseException) -> None:
     """Log a group reward defect that settles the group instead of crashing."""
 
     logger.error(
-        "benchmax.rollout.failed rollout_id=group "
-        "termination_reason=group_reward_error: %s",
+        "benchmax.rollout.failed rollout_id=group termination_reason=group_reward_error: %s",
         error,
         exc_info=(type(error), error, error.__traceback__),
     )
@@ -366,13 +341,11 @@ def _merge_individual_and_group_rewards(
     rollout: RolloutAttempt,
     group_rewards_by_id: Mapping[str, RewardMap] | None,
 ) -> dict[str, float]:
-    """Merge disjoint reward dimensions into one nonempty reward map."""
+    """Merge disjoint rewards, allowing an unscored partial attempt."""
 
     individual_rewards = dict(rollout.rewards or {})
     group_rewards = (
-        group_rewards_by_id[rollout.rollout_id]
-        if group_rewards_by_id is not None
-        else {}
+        group_rewards_by_id[rollout.rollout_id] if group_rewards_by_id is not None else {}
     )
     if not isinstance(group_rewards, Mapping):
         raise TypeError("compute_group_rewards values must be reward mappings")
@@ -385,7 +358,7 @@ def _merge_individual_and_group_rewards(
         )
 
     rewards = {**individual_rewards, **group_rewards}
-    if not rewards:
+    if not rewards and rollout.termination_reason == "finished":
         raise ValueError(
             f"rollout {rollout.rollout_id!r} has no rewards; implement "
             "compute_reward or compute_group_rewards"

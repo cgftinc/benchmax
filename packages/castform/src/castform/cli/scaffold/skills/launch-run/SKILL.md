@@ -17,16 +17,19 @@ Do not pass `--yes` unless the user has already explicitly authorized the cost.
 
 ## Required ordering
 
-Read the script and confirm that `launch()` does all of the following in order:
+Read the script and confirm that the launch action does all of the following
+in order:
 
-1. calls the same local `validate()` gate used during iteration;
-2. stops if either sibling did not finish;
-3. asks the human to confirm a credit-spending GPU launch;
-4. builds one `Bundle` with `dump_bundle`;
-5. passes that exact object to `upload_training_run(bundle=bundle, ...)`;
-6. passes the returned paths to `TrainerClient.launch_training_run`.
+1. builds one `Bundle` with `dump_bundle`;
+2. passes that exact object to `upload_assets(bundle=bundle, ...)`;
+3. validates the uploaded assets (locally and in the hosted sandbox) and stops
+   on failure;
+4. asks the human to confirm a credit-spending GPU launch;
+5. passes the same uploaded paths to `TrainerClient.launch_training_run` — the
+   run trains on precisely what was validated.
 
-The upload helper must not silently rebundle the environment.
+The upload helper must not silently rebundle the environment, and launch must
+not re-upload.
 
 Dataset upload is explicit and optional. Supply `train_dataset` and/or
 `eval_dataset` only for splits Castform should upload. Omit them for data resolved
@@ -48,7 +51,7 @@ bundle = dump_bundle(
 
 List every external package imported while the environment, tools or rewards run.
 Do not copy the whole project dependency list automatically: data-preparation and
-development packages may not belong in the rollout image. BenchMax captures local
+development packages may not belong in the rollout image. benchmax captures local
 modules under the environment project automatically. Source from another project
 must be explicit: use `local_modules=` to capture it, or list its installed
 distribution in `pip_dependencies` to keep it as a remote reference.
@@ -60,7 +63,7 @@ For Harbor, add the selected provider extra explicitly, such as
 
 Review `LAUNCH_CONFIG` in source. In particular:
 
-- `max_rollout_len` is the whole-rollout token budget, not one response;
+- `max_context_len` is the whole-rollout prompt-plus-response token budget;
 - keep trainer turn/tool limits compatible with the environment's own limits;
 - start with modest epochs and judge the eval curve, not only train reward;
 - use `TrainerClient.list_launch_args()` when you need the live accepted schema
@@ -74,10 +77,7 @@ preparation dependencies unless the environment imports them.
 
 ## Credentials
 
-Model and judge credentials must resolve per request (`InjectedAuth` for named
-runtime providers); never freeze a temporary token in the bundle. Harbor sandbox
-credentials are currently explicit constructor inputs. Review them before
-bundling and limit their scope; a reference-injection design is deferred.
+Use `InjectedAuth` for model and judge calls through the Castform LLM endpoint so the hosted runtime supplies the current Castform credential. User-managed external endpoints use explicit `StaticBearerAuth`. Harbor sandbox credentials are currently explicit constructor inputs. Review static credentials before bundling and limit their scope.
 
 ## Handoff
 

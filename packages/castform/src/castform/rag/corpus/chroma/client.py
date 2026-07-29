@@ -237,9 +237,7 @@ class ChromaClient:
         if existing is not None and type(existing).__name__ != "DefaultEmbeddingFunction":
             return
         try:
-            ef_config = (collection._model.configuration_json or {}).get(
-                "embedding_function"
-            ) or {}
+            ef_config = (collection._model.configuration_json or {}).get("embedding_function") or {}
         except Exception:
             return
         if ef_config.get("name") != "chroma-cloud-qwen":

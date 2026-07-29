@@ -106,7 +106,7 @@ class TracesPipeline:
         examples = build_training_examples(self.traces, include_system_prompt=False)
         _print_progress(
             f"[2/6] Built {len(examples)} training examples "
-            f"(avg {len(examples)/max(len(self.traces),1):.1f} per trace)",
+            f"(avg {len(examples) / max(len(self.traces), 1):.1f} per trace)",
             verbose=v,
         )
 
@@ -190,8 +190,7 @@ class TracesPipeline:
             rng = random.Random(self.random_seed)
             kept = rng.sample(kept, self.max_examples)
             _print_progress(
-                f"[5/6] Capped to max_examples={self.max_examples} "
-                f"(sampled from {pre_cap})",
+                f"[5/6] Capped to max_examples={self.max_examples} (sampled from {pre_cap})",
                 verbose=v,
             )
         else:
@@ -208,9 +207,7 @@ class TracesPipeline:
             )
         train_count = max(int(round(len(kept) * self.train_fraction)), MIN_TRAIN_SAMPLES)
         eval_count = len(kept) - train_count
-        train_data, eval_data = split_dataset(
-            kept, train_count, eval_count, seed=self.random_seed
-        )
+        train_data, eval_data = split_dataset(kept, train_count, eval_count, seed=self.random_seed)
         _print_progress(
             f"[6/6] Split complete: {len(train_data)} train, {len(eval_data)} eval",
             verbose=v,
@@ -234,10 +231,7 @@ class TracesPipeline:
                 else None
             ),
             "detected_tools": (
-                [
-                    {"name": t.name, "call_count": t.call_count}
-                    for t in detected_tools.tools
-                ]
+                [{"name": t.name, "call_count": t.call_count} for t in detected_tools.tools]
                 if detected_tools
                 else None
             ),

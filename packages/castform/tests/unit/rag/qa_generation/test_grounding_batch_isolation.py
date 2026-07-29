@@ -61,9 +61,7 @@ async def test_batch_error_path_isolates_failing_item(monkeypatch):
 
     monkeypatch.setattr(filt, "_verdict_from_judge_result", flaky)
 
-    result = await filt._evaluate_batch(
-        items, context=ctx, stats=stats, max_refinements=2
-    )
+    result = await filt._evaluate_batch(items, context=ctx, stats=stats, max_refinements=2)
 
     # Batch completed (no AttributeError from the error path); isolation held.
     assert result is items

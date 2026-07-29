@@ -58,6 +58,7 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
         return True
     return None
 
+
 @pytest.fixture
 def unique_rollout_id() -> str:
     """Generate a unique rollout ID for testing."""

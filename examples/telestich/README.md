@@ -1,107 +1,65 @@
 # telestich
 
-`TelestichEnv` rewards a model for writing **telestich** poems — poems where
-the last letter of each line, read top to bottom, spells out a hidden word.
-Scoring uses BenchMax's group-native contract: individual rollouts defer, and
-`compute_group_rewards` judges the complete sibling group (Elo-style).
+a group-scored poetry environment built with [`BaseEnv`](../../packages/benchmax/src/benchmax/envs/base/README.md) where the last letter of each line spells a hidden word.
 
-Purpose: the group-scoring reference environment, with a committed
-curriculum-ordered dataset (`telestich_dataset.jsonl`) and an LLM judge.
+## example task
 
-## Getting started
+each dataset row is a poem request naming a hidden word. the poem needs one line per letter, every line must end on a real word, and the hidden word itself may never appear in the poem.
+
+```
+prompt: write a telestich hiding nah
+```
+
+the model can draft, then call the `feedback` tool (up to three times) with the draft and the word to get deterministic notes on line count, wrong ending letters, filler endings, and leaked hidden words:
+
+```
+feedback(poem="A quiet thought drifts in with the rain\n...", word="nah")
+→ "line 2 ends in 'r' but needs 'a'"
+```
+
+it then commits the final poem in answer tags:
+
+```
+<answer>
+A quiet thought drifts in with the rain
+I turn it over, looking for a small idea
+By morning, I follow a calmer path
+</answer>
+```
+
+reading the last letters top to bottom (rain → n, idea → a, path → h) spells the hidden word.
+
+## launch training
 
 ```bash
-uv sync            # from the benchmax workspace root
 cd examples/telestich
-uv run python main.py             # data (committed jsonl) → validate (no launch)
-uv run python main.py launch      # train on GPUs (asks first; spends credits)
+uv run python main.py launch
+
+# if iterating on the env, validate first
+uv run python main.py validate
 ```
 
-Dependencies pulled in by `uv sync`: `english_words` and `wordfreq` for
-real-word validity checks, `pronouncing` for CMU rhyme scoring. The judge uses
-an OpenAI-compatible endpoint; the `feedback` tool is fully deterministic — no
-LLM.
+launch splits the 719 committed examples into curriculum-ordered training data and an evaluation holdout, uploads the environment and dataset, validates them, then asks for confirmation before spending credits (pass `--yes` to skip).
 
-Constructing the environment directly:
+validate stops after the checks: it runs sample rollouts with a standard model, locally and in a hosted sandbox, just to confirm the environment runs end to end.
+
+## environment
 
 ```python
-from benchmax.envs import InjectedAuth
-from main import TelestichEnv
+class TelestichEnv(BaseEnv):
+    async def create_dataset(...):
+        return JsonlDataset(...)
 
-env = TelestichEnv(
-    judge_base_url=...,
-    judge_auth=InjectedAuth("judge"),
-)
+    async def list_tools(...):
+        return [feedback]
+
+    async def run_tool(...):
+        return deterministic_poem_feedback(...)
+
+    async def compute_group_rewards(...):
+        return score_complete_sibling_group(...)
 ```
 
-`InjectedAuth("judge")` is resolved on every judge call by the execution runtime.
-For a standalone third-party endpoint, pass another `ModelAuth` implementation
-explicitly.
+the deterministic gate checks the hidden word, line count, valid ending words, and cheating. correct poems are ranked against acceptable and great reference anchors by an llm judge; rhyme, sibling diversity, and concise tool use add smaller quality-scaled bonuses. near-complete poems receive a small partial reward.
 
-Each dataset example is
-`{"prompt": str, "ground_truth": <hidden word>, "acceptable_refs": [poem, ...],
-"great_refs": [poem, ...]}`. The two reference sets are the quality **anchors**
-the judge ranks against (generated offline by `telestich_datagen.py`; the
-committed `telestich_dataset.jsonl` is the source of truth).
-
-## Tools
-
-- **`feedback(poem, word)`** — deterministic formative feedback on a draft (≤3
-  calls/rollout). The model passes its draft **and** the hidden word it should
-  spell; the tool **stacks every issue in one pass** — line count, per-line wrong
-  letters (over the shared range even when the count is off), filler/blacklisted
-  endings, non-word / too-short endings, **prose run-on lines** (over `LINE_CHAR_CAP`
-  chars), and the hidden word leaked into a line — so the model can fix them all in
-  one revision. It never sets reward and never reveals the hidden word.
-
-## Reward
-
-`compute_group_rewards` scores the whole GRPO group, writing each rollout's
-components onto a `_Rollout` record. Reward = the sum of the logged components:
-`quality + rhyme + diversity + conciseness` (every component ≥ 0).
-
-0. **Parse** each rollout once: completion length, the `<answer>` poem, lines,
-   tool-call count.
-1. **Hard rules** (deterministic, no LLM). A perfect telestich — acrostic spells
-   the target, exact line count, every line ends on a real word, each line is a
-   real poem line (≥ `MIN_EN_LINE_WORDS` words), no hidden word in the body — is
-   **CORRECT** and goes to the judge. A near-miss (answer present, right line
-   count, no cheat, **>`MIN_CORRECT_FRAC`** of lines correct) is **PARTIAL** — a
-   small graded reward (`PARTIAL_HI`→`PARTIAL_LO`) so there's always a gradient.
-   Cheating / no answer / wrong line count / ≤25% correct → **0**.
-2. **Quality** — the shared **multi-anchor** rubric judge
-   (`benchmax.rewards.evaluate_rubric_ranking`) ranks the CORRECT poems against
-   **both** references inserted blind (`acceptable` as a floor, `great` as the bar),
-   in **batches of ≤`JUDGE_BATCH` poems** per call (ranking the whole group at once
-   lets near-identical siblings contaminate each other's placement and the judge
-   over-rates them — see the run-0ec8e2dc audit). The band score maps onto a reward
-   ladder:
-   - below acceptable → `[0.1, 0.4)` — **below** bucket (floored at `MIN_CORRECT`)
-   - acceptable…great → `[0.4, 0.7]` — **mid** bucket
-   - above great → `(0.7, 1.0]` — **above** bucket
-
-   The judged score is then scaled down by two **deterministic** quality penalties
-   the judge under-charges: `_line_length_penalty` (lines past `LINE_CHAR_CAP` ≈ 90
-   chars — the prose-run-on degeneracy) and `_ending_penalty` (blacklisted line
-   endings — `_HARD_FORCED_ENDINGS` interjections/fillers scaled by `W_HARD_ENDING`,
-   `_SOFT_FORCED_ENDINGS` mode-collapse nouns scaled less by `W_SOFT_ENDING`).
-   Near-duplicate whole poems are divided down before bucketing.
-3. **Secondary bonuses** (deterministic, all **quality-scaled** so a weak poem
-   can't farm them):
-   - **rhyme** = `W_RHYME · q · rhyme_score` — CMU rhyme density; awarded to any
-     correct poem.
-   - **diversity** = `W_DIVERSITY · q · (1 − reuse)` — rewards line-ending words
-     *not* shared with sibling rollouts; fights ending-word mode collapse.
-   - **conciseness** = `W_CONCISE · q · len_eff + W_TOOL_EFF · q · tool_eff` —
-     shorter generation **and** fewer feedback calls, contributing equally.
-     `len_eff = exp(−max(0, completion_len/budget − 1))`;
-     `tool_eff` is graded (full at 0 calls → 0 at the call cap), so the model
-     weans off the tool as it gets reliable.
-
-   Diversity and conciseness apply only to the group's **top occupied band**, so
-   even an all-`below` group keeps a gradient (anti-collapse).
-
-The `acceptable` (competent-but-plain) and `great` (excellent) references are
-generated offline and cached per example; missing anchors degrade gracefully
-(against none it's pure relative ranking). Every rollout logs one path-revealing
-line, and correct poems get a full per-component breakdown.
+the judge uses `InjectedAuth("judge")` with `llm.castform.com`, which lets castform supply the active credential. use `StaticBearerAuth` for a third-party endpoint that requires your own bearer token.

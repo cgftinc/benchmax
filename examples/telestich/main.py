@@ -15,11 +15,9 @@ rollout in a GRPO group (see ``compute_group_rewards``):
 
 Final reward = quality + rhyme + diversity + conciseness (all components >= 0).
 
-`python main.py [data|validate|launch|all]` drives the loop. The committed
-``telestich_dataset.jsonl`` is the dataset (curriculum-ordered; regeneration
-is a deliberate manual step via ``telestich_datagen.py``). Launch uploads
-datasets + bundle and starts a GPU run (explicit, confirmed — it spends
-credits).
+`python main.py validate` splits the committed dataset, uploads the dataset and
+bundle, and runs local and hosted checks. `python main.py launch` follows the
+same path before asking to spend credits.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -28,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import logging
 import math
@@ -35,7 +34,6 @@ import os
 import random
 import re
 import sys
-import uuid
 from collections import Counter
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -45,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 import pronouncing  # pyright: ignore[reportMissingImports]
+from benchmax.bundle import dump_bundle
 from benchmax.envs import (
     BaseEnv,
     BaseRollout,
@@ -59,6 +58,7 @@ from benchmax.envs import (
     canonical_example_id,
 )
 from benchmax.envs.base import resolve_dataset_path
+from benchmax.envs.environment import Environment
 from benchmax.envs.logging import rollout_context as bind_rollout_context
 from benchmax.rewards import (
     Judge,
@@ -67,6 +67,7 @@ from benchmax.rewards import (
     evaluate_rubric_ranking,
     extract_completion_text,
 )
+from castform.platform import ensure_session, upload_assets
 from english_words import get_english_words_set  # pyright: ignore[reportMissingImports]
 from wordfreq import word_frequency  # pyright: ignore[reportMissingImports]
 
@@ -401,13 +402,10 @@ def check_hard_rules(poem: str | None, target: str) -> dict:
         return result(True, False, "", 0)
     good = n - misses
     detail = "; ".join(
-        f"line {i + 1} ('{last_word(lines[i]) or '∅'}'→needs '{chars[i]}')"
-        for i in miss_idx
+        f"line {i + 1} ('{last_word(lines[i]) or '∅'}'→needs '{chars[i]}')" for i in miss_idx
     )
     if good / n > MIN_CORRECT_FRAC:  # more than 25% of lines correct → partial credit
-        max_partial = (
-            math.ceil((1 - MIN_CORRECT_FRAC) * n) - 1
-        )  # most misses still above the bar
+        max_partial = math.ceil((1 - MIN_CORRECT_FRAC) * n) - 1  # most misses still above the bar
         return result(
             False,
             True,
@@ -462,9 +460,7 @@ def _rhyme_analysis(
     for a in range(len(idx)):
         for b in range(a + 1, len(idx)):
             i, j = idx[a], idx[b]
-            if endings[i] != endings[j] and any(
-                x == y for x in parts[i] for y in parts[j]
-            ):
+            if endings[i] != endings[j] and any(x == y for x in parts[i] for y in parts[j]):
                 adj[i].add(j)
                 adj[j].add(i)
     visited, clusters = set(), []
@@ -496,9 +492,7 @@ def rhyme_detail(lines: list[str]) -> str:
         "; ".join("+".join(f"L{i + 1}:{endings[i]}" for i in c) for c in rhyming)
         or "no rhyming pairs"
     )
-    unmatched = [
-        f"L{i + 1}:{endings[i]}" for i in idx if not any(i in c for c in rhyming)
-    ]
+    unmatched = [f"L{i + 1}:{endings[i]}" for i in idx if not any(i in c for c in rhyming)]
     largest = max((len(c) for c in rhyming), default=0)
     tail = f"; unmatched {unmatched}" if unmatched else ""
     return f"largest rhyme {largest}/{len(idx)} → {density:.2f} | {groups}{tail}"
@@ -627,9 +621,7 @@ class _Rollout:
     reuse: float = 0.0  # ending-word reuse vs siblings (0=unique, 1=all shared)
     ending_detail: str = ""  # per-ending share counts, for the breakdown log
     len_eff: float = 0.0  # length efficiency in [0,1] (1 = within budget; logged)
-    in_top_band: bool = (
-        False  # in the group's top occupied bucket → earns secondary bonuses
-    )
+    in_top_band: bool = False  # in the group's top occupied bucket → earns secondary bonuses
     components: dict = field(default_factory=dict)
 
 
@@ -669,9 +661,7 @@ def _rating_to_band(r: float) -> float:
     return 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, _ELO_K * (r - _ELO_R0)))))
 
 
-def _make_slices(
-    n: int, size: int = ELO_SLICE, stride: int = ELO_STRIDE
-) -> list[list[int]]:
+def _make_slices(n: int, size: int = ELO_SLICE, stride: int = ELO_STRIDE) -> list[list[int]]:
     """Overlapping poem-index slices over 0..n-1: wrap-around windows of `size` at `stride`,
     plus an extra slice for any index the stride left covered <2× — so every poem appears in
     ≥2 slices for cross-comparison. n ≤ size → one slice of all poems."""
@@ -737,9 +727,7 @@ def _count_tool_calls(messages: Messages) -> int:
         if not isinstance(message, Mapping) or message.get("role") != "assistant":
             continue
         tool_calls = message.get("tool_calls")
-        if isinstance(tool_calls, Sequence) and not isinstance(
-            tool_calls, (str, bytes)
-        ):
+        if isinstance(tool_calls, Sequence) and not isinstance(tool_calls, (str, bytes)):
             count += len(tool_calls)
         content = message.get("content")
         if isinstance(content, str):
@@ -796,8 +784,7 @@ def _programmatic_feedback(poem: str, target: str) -> str | None:
     if a != n:
         verb = f"add {n - a} line(s)" if a < n else f"remove {a - n} line(s)"
         notes.append(
-            f"Line count: you have {a} line(s) but '{target}' needs {n} "
-            f"(one per letter) — {verb}."
+            f"Line count: you have {a} line(s) but '{target}' needs {n} (one per letter) — {verb}."
         )
 
     # per line: stack ALL of that line's issues into one entry, in line order. The
@@ -810,9 +797,7 @@ def _programmatic_feedback(poem: str, target: str) -> str | None:
         lw = last_word(lines[i])
         issues: list[str] = []
         if req is not None and got != req:
-            issues.append(
-                f"must end in '{req}', but \"{lw or lines[i]}\" ends in '{got or '∅'}'"
-            )
+            issues.append(f"must end in '{req}', but \"{lw or lines[i]}\" ends in '{got or '∅'}'")
         elif en:
             need = f" ending in '{req}'" if req is not None else ""
             if lw in _FORCED_ENDINGS:
@@ -833,8 +818,7 @@ def _programmatic_feedback(poem: str, target: str) -> str | None:
             )
         if contains_hidden_word(lines[i], target, language):
             issues.append(
-                f'contains the hidden word "{target}" — keep it hidden in the last '
-                f"letters only"
+                f'contains the hidden word "{target}" — keep it hidden in the last letters only'
             )
         if issues:
             line_msgs.append(f"   - line {i + 1}: " + "; ".join(issues))
@@ -848,7 +832,6 @@ def _programmatic_feedback(poem: str, target: str) -> str | None:
 # ENV CLASS
 # ══════════════════════════════════════════════════════════════════════
 class TelestichEnv(BaseEnv):
-    reward_keys = ("quality", "rhyme", "diversity", "conciseness")
     system_prompt = """\
 A telestich is a poem whose lines, read by their LAST letters top to bottom, \
 spell a hidden word the user gives you. Use the word the user names as a single \
@@ -934,9 +917,7 @@ then stop."""
             max_turns=max_tool_calls + 1 if max_turns is None else max_turns,
             max_tool_calls=max_tool_calls,
         )
-        self._system_prompt = (
-            self.system_prompt if system_prompt is None else system_prompt
-        )
+        self._system_prompt = self.system_prompt if system_prompt is None else system_prompt
         self._judge = Judge(
             model=JUDGE_MODEL,
             base_url=judge_base_url,
@@ -953,11 +934,16 @@ then stop."""
         }
 
     async def create_dataset(
-        self, split: DatasetSplit, base_dir: Path
+        self,
+        split: DatasetSplit,
+        base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> JsonlDataset[JsonRow]:
         return JsonlDataset(
             resolve_dataset_path(base_dir, self._dataset_paths[split]),
             row_to_example=self._example_from_row,
+            max_examples=max_examples,
         )
 
     def _example_from_row(self, row: JsonRow) -> Example[JsonRow]:
@@ -1111,9 +1097,7 @@ then stop."""
             )
             return list(res.scores)
 
-        batches = [
-            poems[i : i + JUDGE_BATCH] for i in range(0, len(poems), JUDGE_BATCH)
-        ]
+        batches = [poems[i : i + JUDGE_BATCH] for i in range(0, len(poems), JUDGE_BATCH)]
         results = await asyncio.gather(*(_score_batch(b) for b in batches))
         return [s for batch_scores in results for s in batch_scores]
 
@@ -1143,8 +1127,7 @@ then stop."""
             res = await evaluate_rubric_ranking(
                 rubric=QUALITY_RUBRIC,
                 question=prompt,
-                responses=[poems[i] for i in sl]
-                + [anchor.response for anchor in anchors],
+                responses=[poems[i] for i in sl] + [anchor.response for anchor in anchors],
                 judge=self._judge,
             )
             sc = res.scores
@@ -1196,9 +1179,7 @@ then stop."""
         factor = max(0.0, 1.0 - r.n_tool_calls / self._max_tool_calls)
         return W_TOOL_EFF * r.q * factor
 
-    def _apply_secondary(
-        self, rolls: list[_Rollout], correct: list[_Rollout], budget: int
-    ) -> None:
+    def _apply_secondary(self, rolls: list[_Rollout], correct: list[_Rollout], budget: int) -> None:
         """Compute every rollout's reward components onto its record. Gated poems →
         all-zero. Partial poems → graded partial_score quality, no bonuses. Correct poems:
         rhyme (any), plus diversity and conciseness (folds in the tool-efficiency
@@ -1208,18 +1189,13 @@ then stop."""
             for local, r in enumerate(correct):
                 r.reuse = reuse[local]
                 r.ending_detail = ", ".join(
-                    f"{w}(shared×{c})" if c else f"{w}(unique)"
-                    for w, c in reuse_detail[local]
+                    f"{w}(shared×{c})" if c else f"{w}(unique)" for w, c in reuse_detail[local]
                 )
 
         # the group's top occupied bucket among correct poems — secondary bonuses
         # apply only here, so even an all-"below" group still gets a gradient.
         top_band = next(
-            (
-                b
-                for b in ("above", "mid", "below")
-                if any(r.bucket == b for r in correct)
-            ),
+            (b for b in ("above", "mid", "below") if any(r.bucket == b for r in correct)),
             None,
         )
 
@@ -1235,9 +1211,7 @@ then stop."""
                     "conciseness": 0.0,
                 }
                 continue
-            if (
-                r.partial
-            ):  # small graded reward (r.q == partial_score); no judging/bonuses
+            if r.partial:  # small graded reward (r.q == partial_score); no judging/bonuses
                 r.components = {
                     "quality": round(r.q, 4),
                     "rhyme": 0.0,
@@ -1309,8 +1283,7 @@ then stop."""
             )
         else:
             conc_line = (
-                f"  conciseness = +0.0000 (none — bucket '{r.bucket}' is "
-                f"not the group's top band)"
+                f"  conciseness = +0.0000 (none — bucket '{r.bucket}' is not the group's top band)"
             )
         return (
             f"[TelestichEnv][why] poem {r.rollout_id} — {r.bucket.upper()} bucket, "
@@ -1341,8 +1314,7 @@ then stop."""
 
         # ── Stage 0: parse each rollout once into a record ──
         rolls = [
-            self._build_rollout(index, rollout, target)
-            for index, rollout in enumerate(rollouts)
+            self._build_rollout(index, rollout, target) for index, rollout in enumerate(rollouts)
         ]
         correct = [r for r in rolls if r.correct]
         partial = [r for r in rolls if r.partial]
@@ -1355,9 +1327,7 @@ then stop."""
         if n_gated:
             # counts-by-kind, worst-offender first, so failures read at a glance
             cats = Counter(
-                _gate_category(r.reason)
-                for r in rolls
-                if not r.correct and not r.partial
+                _gate_category(r.reason) for r in rolls if not r.correct and not r.partial
             )
             breakdown = ", ".join(f"{cat} {ct}" for cat, ct in cats.most_common())
             logger.info(f"[TelestichEnv]   stage1 gated {n_gated}: {breakdown}")
@@ -1422,32 +1392,37 @@ then stop."""
 
 MODEL = os.environ.get("TELESTICH_MODEL", "Qwen/Qwen3.5-4B")
 VALIDATE_MODEL = os.environ.get("TELESTICH_VALIDATE_MODEL", "gpt-5.4-mini")
-RUN_NAME = os.environ.get("TELESTICH_RUN_NAME", "")
+RUN_NAME = os.environ.get("TELESTICH_RUN_NAME", "telestich")
 RUNTIME_DEPENDENCIES = ["english_words", "openai", "pronouncing", "wordfreq"]
 DATASET_PATH = Path(__file__).parent / "telestich_dataset.jsonl"
+DATA_DIR = Path(__file__).parent / "data"
+TRAIN_FILE = DATA_DIR / "train.jsonl"
+EVAL_FILE = DATA_DIR / "eval.jsonl"
+TRAINING_ARGS = {"model": MODEL}
+SPLIT_SEED = 42
 
 
 def _rows() -> list[dict]:
     if not DATASET_PATH.exists():
         return []
-    return [
-        json.loads(line)
-        for line in DATASET_PATH.read_text().splitlines()
-        if line.strip()
-    ]
+    return [json.loads(line) for line in DATASET_PATH.read_text().splitlines() if line.strip()]
 
 
-def generate_data(*, force: bool) -> None:
-    rows = _rows()
-    if rows and not force:
-        print(
-            f"data: {DATASET_PATH.name} present ({len(rows)} examples, curriculum order) — skipping"
-        )
-        return
-    raise SystemExit(
-        "data: the committed telestich_dataset.jsonl is the source of truth; "
-        "regeneration is a deliberate manual step via telestich_datagen.py"
-    )
+def generate_data(*, force: bool) -> dict[str, Path]:
+    dataset_files = {
+        "train.jsonl": TRAIN_FILE,
+        "eval.jsonl": EVAL_FILE,
+    }
+    if TRAIN_FILE.exists() and EVAL_FILE.exists() and not force:
+        print(f"data: using existing {TRAIN_FILE.name} / {EVAL_FILE.name}")
+        return dataset_files
+
+    train_rows, eval_rows = _split_rows()
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(TRAIN_FILE, train_rows)
+    _write_jsonl(EVAL_FILE, eval_rows)
+    print(f"data: wrote {len(train_rows)} train / {len(eval_rows)} eval examples")
+    return dataset_files
 
 
 def _split_rows() -> tuple[list[dict], list[dict]]:
@@ -1457,124 +1432,132 @@ def _split_rows() -> tuple[list[dict], list[dict]]:
     if len(examples) < 2:
         raise SystemExit(f"Need >=2 examples, got {len(examples)}.")
     n_eval = max(1, len(examples) // 10)
-    eval_idx = set(random.sample(range(len(examples)), n_eval))
+    eval_idx = set(random.Random(SPLIT_SEED).sample(range(len(examples)), n_eval))
     eval_rows = [e for i, e in enumerate(examples) if i in eval_idx]
     train_rows = [e for i, e in enumerate(examples) if i not in eval_idx]
     return train_rows, eval_rows
 
 
-def confirm_gpu_launch(run_name: str) -> bool:
-    """Require an explicit acknowledgement before uploading and spending credits."""
-
-    reply = (
-        input(f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] ")
-        .strip()
-        .lower()
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text(
+        "".join(f"{json.dumps(row, ensure_ascii=False)}\n" for row in rows),
+        encoding="utf-8",
     )
-    return reply in ("y", "yes")
 
 
-def build_training_bundle(constructor_args: dict[str, str]):
-    from benchmax.bundle import dump_bundle
+def validate(env: TelestichEnv, uploaded_assets: Any) -> Any:
+    from castform import validate_environment
 
-    return dump_bundle(
+    report = asyncio.run(
+        validate_environment(
+            env,
+            model=VALIDATE_MODEL,
+            split="eval",
+            base_dir=DATA_DIR,
+            remote_assets=uploaded_assets,
+            max_context_tokens=2048,
+        )
+    )
+    _print_validation(report)
+    return report
+
+
+def launch(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
+    from castform import config
+    from castform.platform.client import TrainerClient
+
+    if not assume_yes:
+        reply = input("launch training on GPUs? this spends credits. [y/N] ")
+        if reply.strip().lower() not in ("y", "yes"):
+            print("launch: cancelled")
+            return None
+
+    with TrainerClient() as trainer:
+        run_id = trainer.launch_training_run(
+            name=RUN_NAME,
+            launcher_args=TRAINING_ARGS,
+            **dataclasses.asdict(uploaded_assets),
+        )
+    print(f"launch: started {run_id}")
+    print(f"view: {config.web_app_url()}/train/{run_id}")
+    return run_id
+
+
+def _print_validation(report: Any) -> None:
+    for location in ("local", "remote"):
+        outcomes = getattr(report, location)
+        if outcomes is None:
+            continue
+        errors = getattr(report, f"{location}_errors")
+        for rollout_id, outcome in outcomes.items():
+            if rollout_id in errors:
+                print(f"❌ {location} {rollout_id}: {errors[rollout_id]}")
+            else:
+                mark = (
+                    "✅"
+                    if outcome.termination_reason in Environment.scorable_termination_reasons
+                    else "❌"
+                )
+                error_suffix = f" error={outcome.error}" if outcome.error else ""
+                print(
+                    f"{mark} {location} {rollout_id}: "
+                    f"{outcome.termination_reason} {dict(outcome.rewards)}{error_suffix}"
+                )
+        for rollout_id, error in errors.items():
+            if rollout_id not in outcomes:
+                print(f"❌ {location} {rollout_id}: {error}")
+    print("✅ validation passed" if report.ok else "❌ validation failed")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=("data", "validate", "launch"),
+        default="validate",
+    )
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the launch confirmation",
+    )
+    args = parser.parse_args(argv)
+    total_stages = {"data": 1, "validate": 4, "launch": 5}[args.action]
+
+    print(f"[stage 1/{total_stages}] generating data")
+    dataset_files = generate_data(force=args.force)
+    if args.action == "data":
+        return 0
+
+    from castform import config
+
+    ensure_session()
+    constructor_args = {"judge_base_url": config.llm_url()}
+    print(f"[stage 2/{total_stages}] bundling environment")
+    bundled_environment = dump_bundle(
         TelestichEnv,
         constructor_args=constructor_args,
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
-
-
-def validate() -> Any:
-    from castform import config, validate_environment
-
-    train_rows, _ = _split_rows()
-    env = TelestichEnv(judge_base_url=config.llm_url())
-    report = asyncio.run(
-        validate_environment(
-            env,
-            example=env._example_from_row(train_rows[0]),
-            model=VALIDATE_MODEL,
-            base_url=config.llm_url(),
-        )
+    print(f"[stage 3/{total_stages}] uploading environment and dataset")
+    uploaded_assets = upload_assets(
+        bundle=bundled_environment,
+        dataset_files=dataset_files,
+        run_name=RUN_NAME,
     )
-    for rollout_id, outcome in report.local.items():
-        print(
-            f"  {rollout_id}: total={sum(outcome.rewards.values()):.3f} "
-            f"{dict(outcome.rewards)}"
-        )
-    return report
-
-
-def launch(*, assume_yes: bool) -> str | None:
-    from castform import config
-    from castform.platform.client import TrainerClient
-    from castform.platform.training_run import upload_training_run
-
-    train_rows, eval_rows = _split_rows()
-    print(f"{len(train_rows)} train (curriculum order) / {len(eval_rows)} eval.")
-    run_name = RUN_NAME or f"telestich-{uuid.uuid4().hex[:8]}"
-    if not assume_yes and not confirm_gpu_launch(run_name):
-        print("Launch aborted.")
-        return None
-
-    # The trainer mirrors the uploaded dataset prefix to the machine and hands
-    # it to the env as base_dir, where the default train.jsonl/eval.jsonl live.
-    constructor_args = {"judge_base_url": config.llm_url()}
-    uploaded = upload_training_run(
-        bundle=build_training_bundle(constructor_args),
-        train_dataset=train_rows,
-        eval_dataset=eval_rows,
-        run_name=run_name,
-    )
-    with TrainerClient() as trainer:
-        run_id = trainer.launch_training_run(
-            env_cls_path=uploaded.env_cls_path,
-            env_metadata_path=uploaded.env_metadata_path,
-            dataset_path=uploaded.dataset_path,
-            name=run_name,
-            launcher_args={"model": MODEL},
-        )
-    print(f"✓ Launched run_id={run_id}")
-    print(f"  View / cancel at: {config.web_app_url()}/train/{run_id}")
-    return run_id
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="main.py",
-        description="Run the castform loop for this env: data → validate → launch.",
-    )
-    parser.add_argument(
-        "stage",
-        nargs="?",
-        default="all",
-        choices=["data", "validate", "launch", "all"],
-        help="Stage to run (default: all = data → validate, then STOP).",
-    )
-    parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
-    parser.add_argument(
-        "-y",
-        "--yes",
-        action="store_true",
-        help="Skip the launch confirmation (it spends GPU credits).",
-    )
-    args = parser.parse_args(argv)
-
-    from castform.platform import ensure_session
-
-    ok = True
-    if args.stage in ("data", "all"):
-        generate_data(force=args.force)
-    if args.stage in ("validate", "all"):
-        ensure_session()
-        report = validate()
-        ok = report is not None and report.ok
-    if args.stage == "launch":
-        ensure_session()
-        ok = launch(assume_yes=args.yes) is not None
-    return 0 if ok else 1
+    print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
+    print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
+    print(f"  dataset_path: {uploaded_assets.dataset_path}")
+    print(f"[stage 4/{total_stages}] validating environment")
+    report = validate(TelestichEnv(**constructor_args), uploaded_assets)
+    if not report.ok:
+        return 1
+    if args.action == "launch":
+        print(f"[stage 5/{total_stages}] launching training")
+        launch(uploaded_assets, assume_yes=args.yes)
+    return 0
 
 
 if __name__ == "__main__":

@@ -54,8 +54,10 @@ _TERMINATION_REASON_BY_EXCEPTION = {
     "SandboxBuildFailedError": "sandbox_error",
     "VerifierTimeoutError": "verifier_timeout",
 }
+# Every scorable budget stop a harness may self-report; "finished" defers to
+# exception classification instead.
 _HARNESS_REPORTED_TERMINATION_REASONS = frozenset(
-    {"context_exceeded", "output_exceeded"}
+    {"context_exceeded", "output_exceeded", "max_turns_exceeded", "tool_budget_exceeded"}
 )
 
 
@@ -72,18 +74,11 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
 
         return self._requires_public_model_endpoint
 
-    @property
-    def reward_keys(self) -> Sequence[str]:
-        """Return the verifier reward shape declared at construction time."""
-
-        return self._reward_keys
-
     def __init__(
         self,
         *,
         dataset: DatasetConfig,
         trial: HarborTrialTemplate,
-        reward_keys: Sequence[str],
         sandbox_credentials: SandboxCredentials | None = None,
         eval_dataset: DatasetConfig | None = None,
         eval_ratio: float = 0.1,
@@ -105,21 +100,23 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         )
         self._eval_ratio = float(eval_ratio)
         self._trial = _with_environment_defaults(trial)
-        self._reward_keys = _normalize_reward_keys(reward_keys)
         self._sandbox_credentials = sandbox_credentials
         self._requires_public_model_endpoint = requires_public_model_endpoint
         self._trial_slots = (
-            asyncio.Semaphore(max_concurrent_trials)
-            if max_concurrent_trials is not None
-            else None
+            asyncio.Semaphore(max_concurrent_trials) if max_concurrent_trials is not None else None
         )
-        self._dataset_cache: dict[Path, HarborDataset] = {}
+        self._dataset_cache: dict[
+            tuple[Path, DatasetSplit | None, int | None],
+            HarborDataset,
+        ] = {}
         self._dataset_cache_lock = asyncio.Lock()
 
     async def create_dataset(
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> Dataset[TaskConfig]:
         """Return the explicit eval source or a ratio-split primary snapshot."""
 
@@ -128,7 +125,20 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
 
         if self._eval_dataset is not None:
             config = self._dataset if split == "train" else self._eval_dataset
-            return await self._resolve_dataset(config, Path(base_dir) / split)
+            return await self._resolve_dataset(
+                config,
+                Path(base_dir) / split,
+                max_examples=max_examples,
+            )
+
+        if max_examples is not None:
+            return await self._resolve_dataset(
+                self._dataset,
+                Path(base_dir) / "main",
+                split=split,
+                eval_ratio=self._eval_ratio,
+                max_examples=max_examples,
+            )
 
         complete = await self._resolve_dataset(
             self._dataset,
@@ -138,26 +148,35 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         if split == "eval" and not eval_:
             if self._eval_ratio == 0:
                 raise ValueError("HarborEnv automatic eval is disabled by eval_ratio=0")
-            raise ValueError(
-                "HarborEnv automatic eval requires at least two dataset examples"
-            )
+            raise ValueError("HarborEnv automatic eval requires at least two dataset examples")
         return train if split == "train" else eval_
 
     async def _resolve_dataset(
         self,
         config: DatasetConfig,
         snapshot_dir: Path,
+        *,
+        split: DatasetSplit | None = None,
+        eval_ratio: float | None = None,
+        max_examples: int | None = None,
     ) -> HarborDataset:
         """Resolve each configured source once per local snapshot directory."""
 
-        cache_key = snapshot_dir.expanduser().resolve()
+        cache_key = (
+            snapshot_dir.expanduser().resolve(),
+            split,
+            max_examples,
+        )
         async with self._dataset_cache_lock:
             cached = self._dataset_cache.get(cache_key)
             if cached is None:
                 cached = await HarborDataset.create(
                     config,
-                    base_dir=cache_key,
+                    base_dir=cache_key[0],
                     disable_verification=_verifier_disabled(self._trial.verifier),
+                    split=split,
+                    eval_ratio=eval_ratio,
+                    max_examples=max_examples,
                 )
                 self._dataset_cache[cache_key] = cached
             return cached
@@ -242,9 +261,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                 timeout_multiplier=self._trial.timeout_multiplier,
                 agent_timeout_multiplier=self._trial.agent_timeout_multiplier,
                 verifier_timeout_multiplier=self._trial.verifier_timeout_multiplier,
-                agent_setup_timeout_multiplier=(
-                    self._trial.agent_setup_timeout_multiplier
-                ),
+                agent_setup_timeout_multiplier=(self._trial.agent_setup_timeout_multiplier),
                 environment_build_timeout_multiplier=(
                     self._trial.environment_build_timeout_multiplier
                 ),
@@ -256,8 +273,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
             )
 
             logger.info(
-                "harbor.rollout.start rollout_id=%s task=%s sandbox=%s "
-                "harness=%s model=%s",
+                "harbor.rollout.start rollout_id=%s task=%s sandbox=%s harness=%s model=%s",
                 request.rollout_id,
                 request.example.id,
                 _sandbox_name(self._trial),
@@ -275,17 +291,14 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                 )
                 rollout = _zero_reward_rollout(
                     request.rollout_id,
-                    reward_keys=self._reward_keys,
-                    termination_reason=_exception_termination_reason(
-                        type(error).__name__
-                    ),
+                    termination_reason=_exception_termination_reason(type(error).__name__),
+                    error=f"{type(error).__name__}: {error}",
                 )
             else:
                 rollout = _rollout_attempt(
                     request.rollout_id,
                     result,
                     trial_dir=Path(trial_config.trials_dir) / request.rollout_id,
-                    reward_keys=self._reward_keys,
                 )
             logger.info(
                 "harbor.rollout.done rollout_id=%s termination_reason=%s rewards=%s",
@@ -304,7 +317,6 @@ def _rollout_attempt(
     result: TrialResult,
     *,
     trial_dir: Path,
-    reward_keys: Sequence[str],
 ) -> RolloutAttempt:
     """Normalize every completed Harbor trial into a scored rollout attempt."""
 
@@ -316,8 +328,7 @@ def _rollout_attempt(
             detail = "the verifier returned no rewards"
         else:
             detail = (
-                f"{result.exception_info.exception_type}: "
-                f"{result.exception_info.exception_message}"
+                f"{result.exception_info.exception_type}: {result.exception_info.exception_message}"
             )
         logger.error(
             "harbor.rollout.zero_reward rollout_id=%s error=%s",
@@ -326,37 +337,35 @@ def _rollout_attempt(
         )
         return _zero_reward_rollout(
             rollout_id,
-            reward_keys=reward_keys,
             termination_reason=(
                 "verifier_error"
                 if result.exception_info is None and termination_reason == "finished"
                 else termination_reason
             ),
+            error=detail,
         )
 
     if result.exception_info is not None:
+        detail = (
+            f"{result.exception_info.exception_type}: {result.exception_info.exception_message}"
+        )
         logger.error(
-            "harbor.rollout.zero_reward rollout_id=%s error=%s: %s",
+            "harbor.rollout.zero_reward rollout_id=%s error=%s",
             rollout_id,
-            result.exception_info.exception_type,
-            result.exception_info.exception_message,
+            detail,
         )
         return _zero_reward_rollout(
             rollout_id,
-            reward_keys=reward_keys,
             termination_reason=termination_reason,
+            error=detail,
         )
 
     normalized_rewards = {str(key): float(value) for key, value in rewards.items()}
     rewardkit_criteria = _rewardkit_criteria(trial_dir)
-    if "partial_credit" in reward_keys and "partial_credit" not in normalized_rewards:
-        if result.exception_info is None and "reward" in normalized_rewards:
-            partial_credit = _rewardkit_partial_credit(rewardkit_criteria)
-            normalized_rewards["partial_credit"] = (
-                0.0 if partial_credit is None else partial_credit
-            )
-        else:
-            normalized_rewards["partial_credit"] = 0.0
+    if "partial_credit" not in normalized_rewards and "reward" in normalized_rewards:
+        partial_credit = _rewardkit_partial_credit(rewardkit_criteria)
+        if partial_credit is not None:
+            normalized_rewards["partial_credit"] = partial_credit
     _log_rewardkit_criteria(rollout_id, rewardkit_criteria)
     return RolloutAttempt(
         rollout_id=rollout_id,
@@ -368,33 +377,53 @@ def _rollout_attempt(
 def _zero_reward_rollout(
     rollout_id: str,
     *,
-    reward_keys: Sequence[str],
     termination_reason: str,
+    error: str | None = None,
 ) -> RolloutAttempt:
     """Keep a failed Harbor rollout in its group without inventing reward signal."""
 
     return RolloutAttempt(
         rollout_id=rollout_id,
         termination_reason=termination_reason,
-        rewards={key: 0.0 for key in reward_keys},
+        rewards={},
+        error=error,
     )
+
+
+def _harness_reported_reason(metadata: object) -> str | None:
+    """The harness's self-reported budget stop, if it declared one.
+
+    The generic contract is ``metadata["termination_reason"]``; the legacy
+    ``harvey_metrics.termination_reason`` key stays as a fallback. A clean
+    ``finished`` defers to exception classification, and anything outside the
+    recognized set is logged rather than silently dropped.
+    """
+
+    if not isinstance(metadata, Mapping):
+        return None
+    reason = metadata.get("termination_reason")
+    if reason is None:
+        harvey_metrics = metadata.get("harvey_metrics")
+        if isinstance(harvey_metrics, Mapping):
+            reason = harvey_metrics.get("termination_reason")
+    if reason is None or reason == "finished":
+        return None
+    if reason not in _HARNESS_REPORTED_TERMINATION_REASONS:
+        logger.warning(
+            "harbor.rollout.unrecognized_harness_termination_reason reason=%r",
+            reason,
+        )
+        return None
+    return cast(str, reason)
 
 
 def _result_termination_reason(result: TrialResult) -> str:
     """Prefer an explicit harness budget stop, then classify Harbor failures."""
 
     agent_result = getattr(result, "agent_result", None)
-    metadata = getattr(agent_result, "metadata", None)
-    harvey_metrics = (
-        metadata.get("harvey_metrics") if isinstance(metadata, Mapping) else None
-    )
-    reason = (
-        harvey_metrics.get("termination_reason")
-        if isinstance(harvey_metrics, Mapping)
-        else None
-    )
-    if reason in _HARNESS_REPORTED_TERMINATION_REASONS:
-        return cast(str, reason)
+    reason = _harness_reported_reason(getattr(agent_result, "metadata", None))
+    if reason is not None:
+        return reason
     if result.exception_info is None:
         return "finished"
     return _exception_termination_reason(result.exception_info.exception_type)
@@ -404,21 +433,6 @@ def _exception_termination_reason(exception_type: str) -> str:
     """Classify raised and returned Harbor failures through one vocabulary."""
 
     return _TERMINATION_REASON_BY_EXCEPTION.get(exception_type, "harness_error")
-
-
-def _normalize_reward_keys(reward_keys: Sequence[str]) -> tuple[str, ...]:
-    """Validate Harbor's explicit verifier reward schema eagerly."""
-
-    if isinstance(reward_keys, (str, bytes)) or not isinstance(reward_keys, Sequence):
-        raise TypeError("reward_keys must be a sequence of strings")
-    keys = tuple(reward_keys)
-    if not keys:
-        raise ValueError("reward_keys must declare at least one verifier reward")
-    if any(not isinstance(key, str) or not key.strip() for key in keys):
-        raise ValueError("reward_keys must contain non-empty strings")
-    if len(set(keys)) != len(keys):
-        raise ValueError("reward_keys must not contain duplicates")
-    return keys
 
 
 def _rewardkit_criteria(trial_dir: Path) -> list[Mapping[str, object]] | None:
@@ -520,8 +534,7 @@ def _log_rewardkit_criteria(
 
     total_weight = sum(float(item["weight"]) for item in normalized)
     weighted_score = (
-        sum(float(item["weight"]) * float(item["value"]) for item in normalized)
-        / total_weight
+        sum(float(item["weight"]) * float(item["value"]) for item in normalized) / total_weight
         if total_weight > 0
         else 0.0
     )
@@ -611,7 +624,7 @@ def _sandbox_name(trial: HarborTrialTemplate) -> str:
 
 
 def _with_environment_defaults(trial: HarborTrialTemplate) -> HarborTrialTemplate:
-    """Apply BenchMax provider defaults without replacing user settings."""
+    """Apply benchmax provider defaults without replacing user settings."""
 
     from harbor.models.environment_type import EnvironmentType
 
@@ -654,24 +667,18 @@ def _validate_configuration(
     )
 
     if not isinstance(dataset, DatasetConfig):
-        raise TypeError(
-            f"dataset must be Harbor DatasetConfig, got {type(dataset).__name__}"
-        )
+        raise TypeError(f"dataset must be Harbor DatasetConfig, got {type(dataset).__name__}")
     if eval_dataset is not None and not isinstance(eval_dataset, DatasetConfig):
         raise TypeError(
             "eval_dataset must be Harbor DatasetConfig when provided, got "
             f"{type(eval_dataset).__name__}"
         )
     if not isinstance(trial, HarborTrialTemplate):
-        raise TypeError(
-            f"trial must be HarborTrialTemplate, got {type(trial).__name__}"
-        )
+        raise TypeError(f"trial must be HarborTrialTemplate, got {type(trial).__name__}")
     if not isinstance(trial.agent, (AgentConfig, BundledHarborAgent)):
         raise TypeError("trial.agent must be Harbor AgentConfig or BundledHarborAgent")
     agent_config = (
-        trial.agent.config
-        if isinstance(trial.agent, BundledHarborAgent)
-        else trial.agent
+        trial.agent.config if isinstance(trial.agent, BundledHarborAgent) else trial.agent
     )
     if getattr(agent_config, "model_name", None):
         raise ValueError(
@@ -693,9 +700,7 @@ def _validate_configuration(
         or not 0 <= eval_ratio < 1
     ):
         raise ValueError("eval_ratio must satisfy 0 <= eval_ratio < 1")
-    if sandbox_credentials is not None and not isinstance(
-        sandbox_credentials, SandboxCredentials
-    ):
+    if sandbox_credentials is not None and not isinstance(sandbox_credentials, SandboxCredentials):
         raise TypeError(
             "sandbox_credentials must implement SandboxCredentials, got "
             f"{type(sandbox_credentials).__name__}"
@@ -723,8 +728,7 @@ def _validate_sandbox_credentials(
     sandbox = str(getattr(environment.type, "value", environment.type))
     if sandbox in {"modal", "daytona"} and credentials is None:
         raise ValueError(
-            f"configured Harbor sandbox {sandbox!r} requires explicit "
-            "sandbox_credentials"
+            f"configured Harbor sandbox {sandbox!r} requires explicit sandbox_credentials"
         )
     if credentials is None or credentials.provider is None:
         return

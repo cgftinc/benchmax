@@ -159,41 +159,6 @@ class ModelConfig:
 
 
 @dataclass
-class RolloutLimits:
-    """Rollout execution limits."""
-
-    max_turns: int = 16
-    max_tool_calls: int = 24
-    max_completion_tokens: int = 2048
-    timeout: float = 120.0
-
-
-@dataclass
-class EnvBundleConfig:
-    """Environment bundle selectors for rollout components."""
-
-    env_cls_path: str = ""
-    env_metadata_path: str = ""
-    env_cls_file: str = ""
-    env_metadata_file: str = ""
-
-    def as_bytes_bundle(self) -> tuple[bytes | None, bytes | None]:
-        cls_bytes: bytes | None = None
-        meta_bytes: bytes | None = None
-        if self.env_cls_file:
-            cls_bytes = Path(self.env_cls_file).read_bytes()
-        if self.env_metadata_file:
-            meta_bytes = Path(self.env_metadata_file).read_bytes()
-        return cls_bytes, meta_bytes
-
-    def has_paths(self) -> bool:
-        return bool(self.env_cls_path and self.env_metadata_path)
-
-    def has_files(self) -> bool:
-        return bool(self.env_cls_file and self.env_metadata_file)
-
-
-@dataclass
 class CorpusConfig:
     """Corpus source selection."""
 
@@ -379,21 +344,6 @@ class GroundingLLMFilterConfig:
 
 
 @dataclass
-class LLMEnvFilterConfig:
-    """Rollout-backed filter settings."""
-
-    enabled: bool = True
-    model: str = "gpt-5.4"
-    api_key: str = ""
-    base_url: str = field(default_factory=config.llm_url)
-    judge_model: str = "gpt-5.4-mini"
-    judge_api_key: str = ""
-    judge_base_url: str = field(default_factory=config.llm_url)
-    env_bundle: EnvBundleConfig = field(default_factory=EnvBundleConfig)
-    rollout_limits: RolloutLimits = field(default_factory=RolloutLimits)
-
-
-@dataclass
 class HopCountValidityCfg:
     """Config for the hop-count validity filter."""
 
@@ -431,7 +381,6 @@ class FilteringConfig:
     retrieval_llm: RetrievalLLMFilterConfig = field(default_factory=RetrievalLLMFilterConfig)
     grounding_llm: GroundingLLMFilterConfig = field(default_factory=GroundingLLMFilterConfig)
     hop_count_validity: HopCountValidityCfg = field(default_factory=HopCountValidityCfg)
-    env_rollout: LLMEnvFilterConfig = field(default_factory=LLMEnvFilterConfig)
 
 
 @dataclass
@@ -572,15 +521,6 @@ class PipelineConfig:
         if not self.filtering.hop_count_validity.judge_base_url:
             self.filtering.hop_count_validity.judge_base_url = shared_llm_base_url
 
-        if not self.filtering.env_rollout.api_key:
-            self.filtering.env_rollout.api_key = shared_llm_key
-        if not self.filtering.env_rollout.base_url:
-            self.filtering.env_rollout.base_url = shared_llm_base_url
-        if not self.filtering.env_rollout.judge_api_key:
-            self.filtering.env_rollout.judge_api_key = shared_llm_key
-        if not self.filtering.env_rollout.judge_base_url:
-            self.filtering.env_rollout.judge_base_url = shared_llm_base_url
-
         if not self.refinement.api_key:
             self.refinement.api_key = shared_llm_key
         if not self.refinement.base_url:
@@ -695,9 +635,7 @@ class PipelineContext:
     # queue runs, so the context stays picklable across the prepare/run boundary.
     _async_sems: dict = field(default_factory=dict, repr=False, compare=False)
 
-    def model_semaphore(
-        self, model: str, base_url: str | None = None
-    ) -> asyncio.Semaphore:
+    def model_semaphore(self, model: str, base_url: str | None = None) -> asyncio.Semaphore:
         """Lazily-built ``asyncio.Semaphore`` bounding in-flight LLM calls to one
         serving deployment, keyed per running loop + (base_url, model).
 
@@ -719,9 +657,7 @@ class PipelineContext:
         key = (id(loop), "search")
         sem = self._async_sems.get(key)
         if sem is None:
-            sem = asyncio.Semaphore(
-                _resolve_int_env(_SEARCH_CONCURRENCY_ENV, _DEFAULT_CONCURRENCY)
-            )
+            sem = asyncio.Semaphore(_resolve_int_env(_SEARCH_CONCURRENCY_ENV, _DEFAULT_CONCURRENCY))
             self._async_sems[key] = sem
         return sem
 

@@ -2,7 +2,17 @@ from collections.abc import Iterator, Sequence
 
 from benchmax.envs.shared_types import Example
 
-__all__ = ["Dataset"]
+__all__ = ["Dataset", "validate_max_examples"]
+
+
+def validate_max_examples(max_examples: int | None) -> int | None:
+    """Validate the optional source-construction limit shared by environments."""
+
+    if max_examples is None:
+        return None
+    if isinstance(max_examples, bool) or not isinstance(max_examples, int) or max_examples <= 0:
+        raise ValueError("max_examples must be a positive integer or None")
+    return max_examples
 
 
 class Dataset[Payload]:

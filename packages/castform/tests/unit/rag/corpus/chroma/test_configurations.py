@@ -44,10 +44,9 @@ def _fake_schema(*, has_bm25: bool, enabled: bool = True):
         enabled=enabled,
         config=SimpleNamespace(embedding_function=object()),
     )
-    value_type = SimpleNamespace(
-        sparse_vector=SimpleNamespace(sparse_vector_index=index)
-    )
+    value_type = SimpleNamespace(sparse_vector=SimpleNamespace(sparse_vector_index=index))
     return SimpleNamespace(keys={BM25_KEY: value_type})
+
 
 # ---------------------------------------------------------------------------
 # Capabilities
@@ -668,9 +667,7 @@ class TestSearchModeClamp:
         source._search_with_scores = lambda spec: captured.append(spec.get("mode")) or []  # type: ignore[method-assign,return-value]
         for requested in ("vector", "hybrid", None):
             captured.clear()
-            source.search_related(
-                Chunk(content="src", metadata=()), ["q"], top_k=3, mode=requested
-            )
+            source.search_related(Chunk(content="src", metadata=()), ["q"], top_k=3, mode=requested)
             assert captured == ["lexical"], requested
 
     def test_unsafe_dense_without_bm25_raises(self):
@@ -681,9 +678,7 @@ class TestSearchModeClamp:
         _set_ef_name(source, "default")  # unsafe
 
         with pytest.raises(LocalEmbeddingDownloadDisallowedError):
-            source.search_related(
-                Chunk(content="src", metadata=()), ["q"], top_k=3, mode="vector"
-            )
+            source.search_related(Chunk(content="src", metadata=()), ["q"], top_k=3, mode="vector")
 
     def test_vector_stays_vector_when_safe_and_no_lexical(self):
         """Safe dense (hosted EF) + vector-only collection -> vector."""
@@ -698,9 +693,7 @@ class TestSearchModeClamp:
         captured: list[str | None] = []
         orig = source._search_with_scores
         source._search_with_scores = lambda spec: (captured.append(spec.get("mode")), orig(spec))[1]  # type: ignore[method-assign]
-        source.search_related(
-            Chunk(content="src", metadata=()), ["q"], top_k=3, mode="vector"
-        )
+        source.search_related(Chunk(content="src", metadata=()), ["q"], top_k=3, mode="vector")
         assert captured == ["vector"]
 
     def test_downgraded_modes_clamp_stale_hybrid_request_to_vector(self):
@@ -741,9 +734,7 @@ class TestSearchModeClamp:
             return []
 
         source._search_with_scores = _capture  # type: ignore[method-assign]
-        source.search_related(
-            Chunk(content="src", metadata=()), ["q"], top_k=3, mode="hybrid"
-        )
+        source.search_related(Chunk(content="src", metadata=()), ["q"], top_k=3, mode="hybrid")
         assert captured == ["lexical"]
 
     def test_search_related_refreshes_modes_from_client(self):
@@ -794,9 +785,7 @@ class TestSearchRelatedProtocol:
         )
         source = make_source(col, files=NoFileFakeFiles())
         primary = Chunk(content="source", metadata=())
-        results = source.search_related(
-            primary, ["query"], top_k=5, hybrid={"vector_weight": 1.0}
-        )
+        results = source.search_related(primary, ["query"], top_k=5, hybrid={"vector_weight": 1.0})
         assert len(results) == 1
 
 
@@ -830,10 +819,14 @@ class TestContentAttr:
             query_results_per_call=[
                 make_query_result(
                     [""],
-                    metas=[{
-                        "title": "My Title", "body": "My Body",
-                        "file_path": "a.md", "chunk_index": 0,
-                    }],
+                    metas=[
+                        {
+                            "title": "My Title",
+                            "body": "My Body",
+                            "file_path": "a.md",
+                            "chunk_index": 0,
+                        }
+                    ],
                 ),
             ],
             count=5,

@@ -1,36 +1,85 @@
-# Harvey
+# harvey
 
-Trains `Qwen/Qwen3.5-35B-A3B` on
-[`harveyai/lab:latest`](https://hub.harborframework.com/datasets/harveyai/lab/latest)
-using Harvey's native agent loop, Modal sandboxes, and the dataset's Claude
-Sonnet judge.
+a harbor environment built with [`HarborEnv`](../../packages/benchmax/src/benchmax/envs/harbor/README.md) that trains on [`harveyai/lab@latest`](https://hub.harborframework.com/datasets/harveyai/lab/latest) legal-work tasks using harvey's native harness loop in modal sandboxes.
 
-From the BenchMax workspace root:
+## example task
+
+each trial gives the agent a legal task over a set of documents; the dataset's rubric judge scores the deliverable:
+
+```
+task: Review the documents in /workspace/documents and draft the requested
+      analysis.
+agent: harvey's harness loop reads the documents with tools and writes the
+       deliverable to /workspace/output
+judge: the dataset's rubric judge scores the output
+```
+
+## launch training
 
 ```bash
-uv sync
 cd examples/harvey
 
-# Import the castform Modal profile into this shell (requires jq).
-modal_config="$(MODAL_PROFILE=castform uv run modal config show --no-redact)"
-export MODAL_TOKEN_ID="$(jq -r .token_id <<<"$modal_config")"
-export MODAL_TOKEN_SECRET="$(jq -r .token_secret <<<"$modal_config")"
-unset modal_config
-
-export ANTHROPIC_API_KEY='<anthropic-api-key>'
+# extract modal credentials from the castform profile
+export MODAL_TOKEN_ID=$(MODAL_PROFILE=castform uv run python -c "from modal.config import config; print(config['token_id'])")
+export MODAL_TOKEN_SECRET=$(MODAL_PROFILE=castform uv run python -c "from modal.config import config; print(config['token_secret'])")
+echo "modal token id: $MODAL_TOKEN_ID (secret: ${#MODAL_TOKEN_SECRET} chars)"
 
 uv run python main.py launch \
+  --modal-token-id $MODAL_TOKEN_ID \
+  --modal-token-secret $MODAL_TOKEN_SECRET \
   --judge-provider anthropic \
-  --judge-model 'anthropic/claude-sonnet-4-6'
+  --judge-model 'anthropic/claude-sonnet-4-6' \
+  --judge-api-key "$ANTHROPIC_API_KEY"
 
-# Cost-efficient GPT judge alternative: replace ANTHROPIC_API_KEY and the
-# command above with the commented configuration below.
-#
-# export OPENAI_API_KEY='<dedicated-castform-api-key>'
-# export OPENAI_BASE_URL='https://llm.castform.com/v1'
-# export OPENAI_API_BASE='https://llm.castform.com/v1'
+# no anthropic key? use the gpt judge through the castform endpoint that
+# matches your active profile (llm.castform.dev for staging, llm.castform.com
+# for prod):
 #
 # uv run python main.py launch \
+#   --modal-token-id $MODAL_TOKEN_ID \
+#   --modal-token-secret $MODAL_TOKEN_SECRET \
 #   --judge-provider openai \
-#   --judge-model 'openai/gpt-5.4-nano'
+#   --judge-model 'openai/gpt-5.4-nano' \
+#   --judge-api-key "$CASTFORM_API_KEY" \
+#   --judge-base-url 'https://llm.castform.dev/v1'
+
+# if iterating on the env, validate first: replace `launch` with `validate` above
+```
+
+the dataset resolves through harbor at trainer runtime, so launch only uploads the environment bundle, validates it, then asks for confirmation before spending credits (pass `--yes` to skip). all credentials are mandatory arguments and are bundled into the constructor args so trainer-side trials can reach modal and the judge.
+
+validate stops after the checks: it runs sample rollouts with a standard model, locally and in a hosted sandbox, just to confirm the environment runs end to end. both locations run real modal sandbox trials.
+
+## environment
+
+```python
+class HarveyLabHarborEnv(HarborEnv):
+    def __init__(..., harness=None):
+        super().__init__(
+            dataset=DatasetConfig(name="harveyai/lab", ref="latest"),
+            trial=HarborTrialTemplate(
+                agent=harness or harvey_harness(),
+                environment=TrialEnvironmentConfig(type=EnvironmentType.MODAL),
+                verifier=TrialVerifierConfig(env=verifier_env),
+            ),
+            sandbox_credentials=ModalCredentials(...),
+        )
+```
+
+the verifier env carries the judge credentials and model. harbor resolves the dataset, runs each rollout as a sandboxed trial, and settles the reward with the dataset's judge.
+
+## harness
+
+the agent harness lives in [`harness/`](harness/): harvey's native loop adapted to run inside a harbor environment. at launch, `main.py` sparse-clones harvey's LAB harness tree (a pinned ref; override with `HARBOR_HARVEY_GIT_URL` / `HARBOR_HARVEY_GIT_REF`) and captures it into the bundle (~0.7 MB), so authoring needs git and github access once but trial hosts need neither.
+
+the harness is the default, not a requirement. pass any `BundledHarborAgent` as `harness=` to run a different agent loop against the same dataset and judge:
+
+```python
+env = HarveyLabHarborEnv(
+    ...,
+    harness=BundledHarborAgent(
+        config=TrialAgentConfig(import_path="my_agent:MyAgent"),
+        source=BundledAgentSource.from_directory(Path("my-harness"), files=("my_agent.py",)),
+    ),
+)
 ```

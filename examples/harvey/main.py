@@ -1,11 +1,11 @@
 """Harvey LAB Harbor environment using Harvey's native harness loop.
 
-`python main.py [data|validate|launch|all]` drives the loop. The dataset
-(harveyai/lab@latest) resolves through Harbor at trainer runtime, so the data
-stage has nothing to download. Validation runs two real Modal sandbox trials.
-Launch uploads the bundle and starts a GPU run (explicit, confirmed — it
-spends credits). Credentials: Modal from MODAL_TOKEN_ID/MODAL_TOKEN_SECRET; the
-verifier provider and model come from --judge-provider and --judge-model.
+The dataset (harveyai/lab@latest) resolves through Harbor at trainer runtime,
+so only the environment bundle is uploaded. Validation runs real Modal sandbox
+trials. All credentials are mandatory CLI arguments
+(--modal-token-id / --modal-token-secret / --judge-api-key); they are bundled
+into the environment constructor args so trainer-side trials can reach Modal
+and the judge.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -14,15 +14,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
+import dataclasses
 import re
 import sys
 import tempfile
-import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
+from benchmax.bundle import dump_bundle
+from benchmax.envs.environment import Environment
 from benchmax.envs.harbor import (
     BundledAgentSource,
     BundledHarborAgent,
@@ -30,6 +31,7 @@ from benchmax.envs.harbor import (
     HarborTrialTemplate,
     ModalCredentials,
 )
+from castform.platform import ensure_session, upload_assets
 from harbor import (
     DatasetConfig,
     EnvironmentType,
@@ -38,11 +40,55 @@ from harbor import (
     TrialVerifierConfig,
 )
 
-_AGENT_SOURCE = BundledAgentSource.from_directory(
-    Path(__file__).parent,
+_HARNESS_SOURCE = BundledAgentSource.from_directory(
+    Path(__file__).parent / "harness",
     files=("harvey_agent.py", "harvey_runtime.py"),
 )
 _ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def harvey_harness(
+    *,
+    max_timeout_secs: float | None = None,
+    source: BundledAgentSource | None = None,
+) -> BundledHarborAgent:
+    """The default harness: Harvey's native agent loop bundled from ``harness/``.
+
+    With the two-file default source, the agent sparse-clones Harvey's LAB tree
+    on the trial host; pass ``source=_lab_source_bundle()`` to ship the tree in
+    the bundle instead. This function must not reference harness.harvey_agent:
+    the env class points at it, so any such reference would drag the module
+    (and its thread lock) into the bundle pickle.
+    """
+
+    return BundledHarborAgent(
+        config=TrialAgentConfig(
+            import_path="harvey_agent:HarveyHarnessAgent",
+            max_timeout_sec=max_timeout_secs,
+        ),
+        source=source or _HARNESS_SOURCE,
+    )
+
+
+def _lab_source_bundle() -> BundledAgentSource:
+    """Clone Harvey's LAB tree here and capture it alongside the harness files.
+
+    Trial hosts (the hosted validation sandbox, the trainer) then need neither
+    git nor GitHub egress.
+    """
+
+    from harness.harvey_agent import IGNORED_UPLOAD_NAMES, fetch_harvey_source
+
+    lab_root = fetch_harvey_source()
+    files = dict(_HARNESS_SOURCE.files)
+    for path in sorted(lab_root.rglob("*")):
+        relative = path.relative_to(lab_root)
+        if not path.is_file() or IGNORED_UPLOAD_NAMES.intersection(relative.parts):
+            continue
+        files[f"harvey-labs/{relative.as_posix()}"] = path.read_bytes()
+    return BundledAgentSource.from_files(files)
+
+
 _RESERVED_VERIFIER_ENV = frozenset({"JUDGE_CONCURRENCY", "REWARDKIT_JUDGE"})
 
 
@@ -66,33 +112,37 @@ def _validated_verifier_env(verifier_env: Mapping[str, str]) -> dict[str, str]:
 JudgeProvider = Literal["anthropic", "openai"]
 
 
-def _verifier_env_for_provider(provider: JudgeProvider) -> dict[str, str]:
+def _verifier_env_for_provider(
+    provider: JudgeProvider,
+    *,
+    api_key: str,
+    base_url: str | None = None,
+) -> dict[str, str]:
+    if not isinstance(api_key, str) or not api_key:
+        raise ValueError("judge api_key must be a non-empty string")
+
     if provider == "anthropic":
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("set ANTHROPIC_API_KEY for the Anthropic judge")
+        if base_url:
+            raise ValueError("base_url is only supported with the openai judge provider")
         return {"ANTHROPIC_API_KEY": api_key}
 
     if provider == "openai":
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("set OPENAI_API_KEY for the OpenAI-compatible judge")
         environment = {
             "OPENAI_API_KEY": api_key,
             # harveyai/lab declares this variable even when RewardKit is
             # explicitly overridden to use an OpenAI-compatible judge.
             "ANTHROPIC_API_KEY": "unused-for-openai-judge",
         }
-        for name in ("OPENAI_BASE_URL", "OPENAI_API_BASE"):
-            if value := os.environ.get(name):
-                environment[name] = value
+        if base_url:
+            environment["OPENAI_BASE_URL"] = base_url
+            environment["OPENAI_API_BASE"] = base_url
         return environment
 
     raise ValueError(f"unsupported judge provider: {provider}")
 
 
 class HarveyLabHarborEnv(HarborEnv):
-    """Harvey's latest LAB dataset on Modal with the native Harvey harness."""
+    """Harvey's latest LAB dataset on Modal; the agent harness defaults to Harvey's own."""
 
     def __init__(
         self,
@@ -101,6 +151,7 @@ class HarveyLabHarborEnv(HarborEnv):
         verifier_env: Mapping[str, str],
         judge_model: str,
         judge_concurrency: int = 1,
+        harness: BundledHarborAgent | None = None,
         max_agent_timeout_secs: float | None = None,
         max_concurrent_trials: int | None = 1000,
         eval_ratio: float = 0.1,
@@ -108,13 +159,16 @@ class HarveyLabHarborEnv(HarborEnv):
         sandbox_timeout_secs: int | None = None,
         sandbox_idle_timeout_secs: int | None = None,
     ) -> None:
+        if harness is not None and max_agent_timeout_secs is not None:
+            raise ValueError(
+                "max_agent_timeout_secs applies only to the default harness; "
+                "set max_timeout_sec on the custom harness config instead"
+            )
         if not isinstance(judge_model, str) or not judge_model:
             raise ValueError("judge_model must be a non-empty string")
         validated_verifier_env = _validated_verifier_env(verifier_env)
         if judge_concurrency < 1:
             raise ValueError("judge_concurrency must be positive")
-        if not 0 < eval_ratio < 1:
-            raise ValueError("eval_ratio must be in (0, 1)")
         if modal_app_name is not None and not modal_app_name.strip():
             raise ValueError("modal_app_name must be non-empty when provided")
         for name, value in (
@@ -142,16 +196,11 @@ class HarveyLabHarborEnv(HarborEnv):
         }
         super().__init__(
             dataset=DatasetConfig(name="harveyai/lab", ref="latest"),
-            reward_keys=("reward", "partial_credit"),
             eval_ratio=eval_ratio,
             trial=HarborTrialTemplate(
-                agent=BundledHarborAgent(
-                    config=TrialAgentConfig(
-                        import_path="harvey_agent:HarveyHarnessAgent",
-                        max_timeout_sec=max_agent_timeout_secs,
-                    ),
-                    source=_AGENT_SOURCE,
-                ),
+                agent=harness
+                if harness is not None
+                else harvey_harness(max_timeout_secs=max_agent_timeout_secs),
                 environment=TrialEnvironmentConfig(
                     type=EnvironmentType.MODAL,
                     kwargs=environment_kwargs,
@@ -169,148 +218,148 @@ class HarveyLabHarborEnv(HarborEnv):
 MODEL = "Qwen/Qwen3.5-35B-A3B"
 VALIDATE_MODEL = "gpt-5.4-mini"
 RUNTIME_DEPENDENCIES = ["harbor[modal]>=0.18.0,<0.19"]
+RUN_NAME = "harvey"
+TRAINING_ARGS = {"model": MODEL}
 
 
-def _modal_credentials_from_process() -> ModalCredentials:
-    token_id = os.environ.get("MODAL_TOKEN_ID")
-    token_secret = os.environ.get("MODAL_TOKEN_SECRET")
-    if not token_id or not token_secret:
-        raise ValueError("set both MODAL_TOKEN_ID and MODAL_TOKEN_SECRET")
-    return ModalCredentials(token_id=token_id, token_secret=token_secret)
-
-
-def _constructor_args(
-    *,
-    judge_provider: JudgeProvider,
-    judge_model: str,
-    judge_concurrency: int,
-) -> dict[str, Any]:
-    try:
-        verifier_env = _verifier_env_for_provider(judge_provider)
-    except ValueError as error:
-        raise SystemExit(str(error)) from None
-    try:
-        sandbox_credentials = _modal_credentials_from_process()
-    except ValueError as error:
-        raise SystemExit(f"could not load Modal credentials: {error}") from None
+def _constructor_args(args: argparse.Namespace) -> dict[str, Any]:
     return {
-        "sandbox_credentials": sandbox_credentials,
-        "verifier_env": verifier_env,
-        "judge_model": judge_model,
-        "judge_concurrency": judge_concurrency,
+        "sandbox_credentials": ModalCredentials(
+            token_id=args.modal_token_id, token_secret=args.modal_token_secret
+        ),
+        "verifier_env": _verifier_env_for_provider(
+            args.judge_provider,
+            api_key=args.judge_api_key,
+            base_url=args.judge_base_url,
+        ),
+        "judge_model": args.judge_model,
+        "judge_concurrency": args.judge_concurrency,
+        # Hermetic harness: the LAB tree rides in the bundle instead of being
+        # cloned on the trial host.
+        "harness": harvey_harness(source=_lab_source_bundle()),
     }
 
 
 def generate_data(*, force: bool) -> None:
     del force
-    print(
-        "data: harveyai/lab@latest resolves through Harbor at runtime — nothing to download"
-    )
+    print("data: harveyai/lab@latest resolves through Harbor at runtime — nothing to download")
 
 
-def validate(
-    *,
-    judge_provider: JudgeProvider,
-    judge_model: str,
-    judge_concurrency: int,
-) -> Any:
+def validate(env: HarveyLabHarborEnv, uploaded_assets: Any) -> Any:
     from castform import validate_environment
 
-    env = HarveyLabHarborEnv(
-        **_constructor_args(
-            judge_provider=judge_provider,
-            judge_model=judge_model,
-            judge_concurrency=judge_concurrency,
-        )
-    )
+    print("validate: running real modal sandbox trials — this stage takes a few minutes")
     with tempfile.TemporaryDirectory() as tmp:
-        dataset = asyncio.run(env.create_dataset("eval", Path(tmp)))
-        example = dataset[0]
-        print(f"validating with example {example.id[:16]}... on Modal")
         report = asyncio.run(
-            validate_environment(env, example=example, model=VALIDATE_MODEL)
+            validate_environment(
+                env,
+                model=VALIDATE_MODEL,
+                split="eval",
+                base_dir=Path(tmp),
+                remote_assets=uploaded_assets,
+                # Small enough that the budget stop ends trials in minutes
+                # instead of the full 30-turn loop; 4096 was measured too
+                # small for even the first model call.
+                max_context_tokens=6144,
+                # Modal sandbox build plus a several-turn trial still exceeds
+                # the 120s local default.
+                local_timeout_seconds=1800,
+            )
         )
-    for rollout_id, outcome in report.local.items():
-        print(
-            f"  {rollout_id}: termination={outcome.termination_reason} "
-            f"rewards={dict(outcome.rewards)}"
-        )
+    _print_validation(report)
     return report
 
 
-def launch(
-    *,
-    assume_yes: bool,
-    judge_provider: JudgeProvider,
-    judge_model: str,
-    judge_concurrency: int,
-) -> str | None:
-    from benchmax.bundle import dump_bundle
+def launch(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
     from castform import config
     from castform.platform.client import TrainerClient
-    from castform.platform.training_run import upload_training_run
 
-    run_name = f"harvey-{uuid.uuid4().hex[:8]}"
     if not assume_yes:
-        reply = input(
-            f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] "
-        )
+        reply = input("launch training on GPUs? this spends credits. [y/N] ")
         if reply.strip().lower() not in ("y", "yes"):
-            print("Launch aborted.")
+            print("launch: cancelled")
             return None
 
-    # Bundle-only upload: Harbor resolves the dataset at trainer runtime.
-    bundle = dump_bundle(
-        HarveyLabHarborEnv,
-        constructor_args=_constructor_args(
-            judge_provider=judge_provider,
-            judge_model=judge_model,
-            judge_concurrency=judge_concurrency,
-        ),
-        pip_dependencies=RUNTIME_DEPENDENCIES,
-    )
-    uploaded = upload_training_run(bundle=bundle, run_name=run_name)
     with TrainerClient() as trainer:
         run_id = trainer.launch_training_run(
-            env_cls_path=uploaded.env_cls_path,
-            env_metadata_path=uploaded.env_metadata_path,
-            name=run_name,
-            launcher_args={"model": MODEL},
+            name=RUN_NAME,
+            launcher_args=TRAINING_ARGS,
+            **dataclasses.asdict(uploaded_assets),
         )
-    print(f"✓ Launched run_id={run_id}")
-    print(f"  View / cancel at: {config.web_app_url()}/train/{run_id}")
+    print(f"launch: started {run_id}")
+    print(f"view: {config.web_app_url()}/train/{run_id}")
     return run_id
 
 
+def _print_validation(report: Any) -> None:
+    for location in ("local", "remote"):
+        outcomes = getattr(report, location)
+        if outcomes is None:
+            continue
+        errors = getattr(report, f"{location}_errors")
+        for rollout_id, outcome in outcomes.items():
+            if rollout_id in errors:
+                print(f"❌ {location} {rollout_id}: {errors[rollout_id]}")
+            else:
+                mark = (
+                    "✅"
+                    if outcome.termination_reason in Environment.scorable_termination_reasons
+                    else "❌"
+                )
+                error_suffix = f" error={outcome.error}" if outcome.error else ""
+                print(
+                    f"{mark} {location} {rollout_id}: "
+                    f"{outcome.termination_reason} {dict(outcome.rewards)}{error_suffix}"
+                )
+        for rollout_id, error in errors.items():
+            if rollout_id not in outcomes:
+                print(f"❌ {location} {rollout_id}: {error}")
+    print("✅ validation passed" if report.ok else "❌ validation failed")
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="main.py",
-        description="Run the castform loop for this env: data → validate → launch.",
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument(
-        "stage",
+        "action",
         nargs="?",
-        default="all",
-        choices=["data", "validate", "launch", "all"],
-        help="Stage to run (default: all = data → validate, then STOP).",
+        choices=("data", "validate", "launch"),
+        default="validate",
     )
+    parser.add_argument("--force", action="store_true")
     parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
-    parser.add_argument(
-        "-y",
         "--yes",
         action="store_true",
-        help="Skip the launch confirmation (it spends GPU credits).",
+        help="skip the launch confirmation",
+    )
+    parser.add_argument(
+        "--modal-token-id",
+        required=True,
+        help="Modal token id for sandbox trials (bundled into constructor args).",
+    )
+    parser.add_argument(
+        "--modal-token-secret",
+        required=True,
+        help="Modal token secret for sandbox trials (bundled into constructor args).",
     )
     parser.add_argument(
         "--judge-provider",
         choices=["anthropic", "openai"],
+        required=True,
         help="Credential convention used by the verifier.",
     )
     parser.add_argument(
         "--judge-model",
+        required=True,
         help="RewardKit/LiteLLM model name used by the verifier.",
+    )
+    parser.add_argument(
+        "--judge-api-key",
+        required=True,
+        help="Judge API key for --judge-provider (bundled into constructor args).",
+    )
+    parser.add_argument(
+        "--judge-base-url",
+        help="OpenAI-compatible judge base URL (only with --judge-provider openai).",
     )
     parser.add_argument(
         "--judge-concurrency",
@@ -319,37 +368,38 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum concurrent judge calls (default: 1).",
     )
     args = parser.parse_args(argv)
-    if args.stage in ("validate", "launch", "all"):
-        if not args.judge_provider:
-            parser.error("--judge-provider is required for validate and launch")
-        if not args.judge_model:
-            parser.error("--judge-model is required for validate and launch")
+    if args.judge_base_url and args.judge_provider != "openai":
+        parser.error("--judge-base-url is only supported with --judge-provider openai")
+    total_stages = {"data": 1, "validate": 4, "launch": 5}[args.action]
 
-    from castform.platform import ensure_session
+    print(f"[stage 1/{total_stages}] generating data")
+    generate_data(force=args.force)
+    if args.action == "data":
+        return 0
 
-    ok = True
-    if args.stage in ("data", "all"):
-        generate_data(force=args.force)
-    if args.stage in ("validate", "all"):
-        ensure_session()
-        report = validate(
-            judge_provider=args.judge_provider,
-            judge_model=args.judge_model,
-            judge_concurrency=args.judge_concurrency,
-        )
-        ok = report is not None and report.ok
-    if args.stage == "launch":
-        ensure_session()
-        ok = (
-            launch(
-                assume_yes=args.yes,
-                judge_provider=args.judge_provider,
-                judge_model=args.judge_model,
-                judge_concurrency=args.judge_concurrency,
-            )
-            is not None
-        )
-    return 0 if ok else 1
+    # Built after the data early-return: harvey's harness capture clones the
+    # LAB tree, which the data stage must not pay for.
+    constructor_args = _constructor_args(args)
+    ensure_session()
+    print(f"[stage 2/{total_stages}] bundling environment")
+    bundled_environment = dump_bundle(
+        HarveyLabHarborEnv,
+        constructor_args=constructor_args,
+        pip_dependencies=RUNTIME_DEPENDENCIES,
+    )
+    print(f"[stage 3/{total_stages}] uploading environment")
+    uploaded_assets = upload_assets(bundle=bundled_environment, run_name=RUN_NAME)
+    print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
+    print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
+    print(f"  dataset_path: {uploaded_assets.dataset_path}")
+    print(f"[stage 4/{total_stages}] validating environment")
+    report = validate(HarveyLabHarborEnv(**constructor_args), uploaded_assets)
+    if not report.ok:
+        return 1
+    if args.action == "launch":
+        print(f"[stage 5/{total_stages}] launching training")
+        launch(uploaded_assets, assume_yes=args.yes)
+    return 0
 
 
 if __name__ == "__main__":

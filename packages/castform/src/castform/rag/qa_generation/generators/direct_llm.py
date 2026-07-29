@@ -245,13 +245,9 @@ def _render_template_safe(template: str, variables: dict[str, Any]) -> str:
     try:
         return render_template(template, variables)
     except KeyError:
-        protected = template.replace("{{", _ESCAPED_OPEN_BRACE).replace(
-            "}}", _ESCAPED_CLOSE_BRACE
-        )
+        protected = template.replace("{{", _ESCAPED_OPEN_BRACE).replace("}}", _ESCAPED_CLOSE_BRACE)
         required_fields = set(_TEMPLATE_FIELD_RE.findall(protected))
-        missing_fields = sorted(
-            field for field in required_fields if field not in variables
-        )
+        missing_fields = sorted(field for field in required_fields if field not in variables)
         if not missing_fields:
             raise
 
@@ -326,9 +322,7 @@ def _parse_qa_response(raw_text: str) -> tuple[str, str, list[int] | None]:
             raw_chunks_used = payload.get("chunks_used")
             chunks_used: list[int] | None = None
             if isinstance(raw_chunks_used, list):
-                chunks_used = [
-                    int(i) for i in raw_chunks_used if isinstance(i, (int, float))
-                ]
+                chunks_used = [int(i) for i in raw_chunks_used if isinstance(i, (int, float))]
             return question, answer, chunks_used
 
     question_match = _QUESTION_RE.search(text)
@@ -419,9 +413,7 @@ class DirectLLMGenerator:
         is reused after a loop is GC'd, so a bare id can alias a dead loop)."""
         loop = asyncio.get_running_loop()
         client = self._async_client
-        stale = (
-            client is None or client.is_closed() or self._async_client_loop is not loop
-        )
+        stale = client is None or client.is_closed() or self._async_client_loop is not loop
         if stale:
             auth = model_auth_for_endpoint(
                 api_key=self.cfg.api_key,
@@ -483,13 +475,9 @@ class DirectLLMGenerator:
             raw_text = completion.choices[0].message.content or ""
             question, answer, chunks_used = _parse_qa_response(raw_text)
             if not question or not answer:
-                logger.warning(
-                    "Skipping task %s: failed to parse QA response.", pt.task.task_id
-                )
+                logger.warning("Skipping task %s: failed to parse QA response.", pt.task.task_id)
                 continue
-            generated.append(
-                self._build_generated_qa(pt, question, answer, chunks_used)
-            )
+            generated.append(self._build_generated_qa(pt, question, answer, chunks_used))
         return generated
 
     async def _generate_batched(
@@ -536,9 +524,7 @@ class DirectLLMGenerator:
                 context.rng.shuffle(seq)
                 style_sequences[qa_type_key] = seq
 
-        style_iters: dict[str, Iterator[str]] = {
-            k: iter(v) for k, v in style_sequences.items()
-        }
+        style_iters: dict[str, Iterator[str]] = {k: iter(v) for k, v in style_sequences.items()}
 
         prepared: list[_PreparedTask] = []
         show_prep_progress = self.cfg.show_batch_progress and len(tasks) > 1
@@ -547,9 +533,7 @@ class DirectLLMGenerator:
             if seed_chunk is None and corpus_pool:
                 seed_chunk = context.rng.choice(corpus_pool)
             if seed_chunk is None:
-                logger.warning(
-                    "Skipping task %s: no seed chunk available.", task.task_id
-                )
+                logger.warning("Skipping task %s: no seed chunk available.", task.task_id)
                 continue
 
             anchor = await self.linker.alink(
@@ -565,9 +549,7 @@ class DirectLLMGenerator:
             needs_secondaries = (task.target_hop_count or 1) > 1
             if needs_secondaries and not anchor.secondary_chunks and corpus_pool:
                 tried = {getattr(seed_chunk, "hash", id(seed_chunk))}
-                candidates = [
-                    c for c in corpus_pool if getattr(c, "hash", id(c)) not in tried
-                ]
+                candidates = [c for c in corpus_pool if getattr(c, "hash", id(c)) not in tried]
                 context.rng.shuffle(candidates)
                 for alt_seed in candidates[:3]:
                     anchor = await self.linker.alink(
@@ -611,12 +593,8 @@ class DirectLLMGenerator:
             builtin_default = (
                 _LOOKUP_TEMPLATE if resolved_qa_type == "lookup" else _DEFAULT_TEMPLATE
             )
-            template = self.cfg.prompt_templates_by_qa_type.get(
-                resolved_qa_type, builtin_default
-            )
-            reasoning_mode_instruction = _REASONING_MODE_INSTRUCTIONS.get(
-                task.reasoning_mode, ""
-            )
+            template = self.cfg.prompt_templates_by_qa_type.get(resolved_qa_type, builtin_default)
+            reasoning_mode_instruction = _REASONING_MODE_INSTRUCTIONS.get(task.reasoning_mode, "")
             variables = {
                 "qa_type": resolved_qa_type,
                 "target_hop_count": resolved_hop_count,
@@ -687,17 +665,13 @@ class DirectLLMGenerator:
         for pt, response in zip(prepared, result.responses):
             if response is None:
                 n_api_fail += 1
-                logger.warning(
-                    "Skipping task %s: batch LLM call failed.", pt.task.task_id
-                )
+                logger.warning("Skipping task %s: batch LLM call failed.", pt.task.task_id)
                 continue
 
             raw = response.answer or ""
             if not raw.strip():
                 n_empty += 1
-                logger.warning(
-                    "Skipping task %s: LLM returned empty response.", pt.task.task_id
-                )
+                logger.warning("Skipping task %s: LLM returned empty response.", pt.task.task_id)
                 continue
 
             question, answer, chunks_used = _parse_qa_response(raw)
@@ -711,9 +685,7 @@ class DirectLLMGenerator:
                     raw[:300],
                 )
                 continue
-            generated.append(
-                self._build_generated_qa(pt, question, answer, chunks_used)
-            )
+            generated.append(self._build_generated_qa(pt, question, answer, chunks_used))
 
         total = len(prepared)
         n_ok = len(generated)
@@ -766,9 +738,7 @@ class DirectLLMGenerator:
                 "target_hop_count_requested": pt.requested_hop_count,
                 "reasoning_mode": pt.task.reasoning_mode,
                 "anchor_bundle": anchor,
-                "linking_hints": dict(anchor.structural_hints)
-                if anchor.structural_hints
-                else {},
+                "linking_hints": dict(anchor.structural_hints) if anchor.structural_hints else {},
                 "generation_mode": "llm_direct",
                 "refinement_count": 0,
                 "same_seed_refinement_count": 0,

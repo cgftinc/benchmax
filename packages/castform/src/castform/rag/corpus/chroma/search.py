@@ -69,9 +69,7 @@ class ChromaSearch:
         self._embed_fn = embed_fn
         self._enable_bm25 = enable_bm25
         self._content_attr = content_attr
-        self._token_provider = as_token_provider(
-            token_provider, env_token("CHROMA_API_KEY")
-        )
+        self._token_provider = as_token_provider(token_provider, env_token("CHROMA_API_KEY"))
         self._client: Any = None
 
     def _resolve_api_key(self) -> str | None:
@@ -132,9 +130,7 @@ class ChromaSearch:
         dense_embed_is_safe = self._embed_fn is not None or client.dense_embed_is_safe()
         if not dense_embed_is_safe:
             if not has_lexical:
-                raise LocalEmbeddingDownloadDisallowedError(
-                    "chroma", self._collection_name
-                )
+                raise LocalEmbeddingDownloadDisallowedError("chroma", self._collection_name)
             mode = "lexical"
         elif mode == "auto":
             if "hybrid" in modes:
@@ -145,8 +141,7 @@ class ChromaSearch:
                 mode = "vector"
         elif mode not in modes:
             raise ValueError(
-                f"ChromaSearch does not support mode '{mode}'. "
-                f"Available modes: {sorted(modes)}"
+                f"ChromaSearch does not support mode '{mode}'. Available modes: {sorted(modes)}"
             )
 
         if client.search_api and mode in ("lexical", "hybrid"):
@@ -170,9 +165,7 @@ class ChromaSearch:
         return [
             {
                 "content": client.extract_content(r["content"], r["metadata"]),
-                "source": str(
-                    r["metadata"].get("file") or r["metadata"].get("file_path") or ""
-                ),
+                "source": str(r["metadata"].get("file") or r["metadata"].get("file_path") or ""),
                 "metadata": r["metadata"],
                 "score": float(r.get("score", 0.0) or 0.0),
             }

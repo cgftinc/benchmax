@@ -34,12 +34,6 @@ _SCORE_EXTRACTION_KEYS: dict[str, list[str]] = {
         "redundant_chunks",
         "difficulty_score",
     ],
-    "env_rollout": [
-        "confidence",
-        "tool_calls",
-        "target_hop_count",
-        "reason_code",
-    ],
 }
 
 

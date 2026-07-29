@@ -36,9 +36,7 @@ CONTEXT = "Cluster these negotiation strategies by underlying approach."
 
 def _skip_if_no_creds() -> None:
     if not _api_key:
-        pytest.skip(
-            "CASTFORM_API_KEY required for live LLM diversity integration tests"
-        )
+        pytest.skip("CASTFORM_API_KEY required for live LLM diversity integration tests")
 
 
 @pytest.mark.integration
@@ -106,9 +104,7 @@ class TestLLMClustering:
 
         result = await cluster_texts(texts, LLM_CONFIG, context=CONTEXT)
 
-        assert result.n_clusters == 4, (
-            f"Expected 4 unique clusters, got {result.n_clusters}"
-        )
+        assert result.n_clusters == 4, f"Expected 4 unique clusters, got {result.n_clusters}"
         assert all(d == 1.0 for d in result.divisors), (
             f"All divisors should be 1.0 for unique strategies: {result.divisors}"
         )

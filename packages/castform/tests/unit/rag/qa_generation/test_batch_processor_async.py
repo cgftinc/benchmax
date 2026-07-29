@@ -31,9 +31,7 @@ class _FakeAsyncClient:
         self._fail_on = fail_on or set()
         self.in_flight = 0
         self.max_in_flight = 0
-        self.chat = SimpleNamespace(
-            completions=SimpleNamespace(create=self._create)
-        )
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     async def _create(self, **kwargs):
         self.in_flight += 1
@@ -69,12 +67,18 @@ async def test_shared_semaphore_bounds_concurrency_globally(force_async):
     # Two concurrent batches sharing one semaphore — peak in-flight must stay <= 3.
     await asyncio.gather(
         batch_process_async(
-            client=client, model="m", prompts=[f"a{i}" for i in range(8)],
-            show_progress=False, semaphore=sem,
+            client=client,
+            model="m",
+            prompts=[f"a{i}" for i in range(8)],
+            show_progress=False,
+            semaphore=sem,
         ),
         batch_process_async(
-            client=client, model="m", prompts=[f"b{i}" for i in range(8)],
-            show_progress=False, semaphore=sem,
+            client=client,
+            model="m",
+            prompts=[f"b{i}" for i in range(8)],
+            show_progress=False,
+            semaphore=sem,
         ),
     )
     assert client.max_in_flight <= 3, f"semaphore breached: {client.max_in_flight}"
@@ -83,8 +87,11 @@ async def test_shared_semaphore_bounds_concurrency_globally(force_async):
 async def test_unbounded_without_shared_semaphore_uses_max_concurrent(force_async):
     client = _FakeAsyncClient()
     await batch_process_async(
-        client=client, model="m", prompts=[f"p{i}" for i in range(10)],
-        show_progress=False, max_concurrent=4,
+        client=client,
+        model="m",
+        prompts=[f"p{i}" for i in range(10)],
+        show_progress=False,
+        max_concurrent=4,
     )
     assert client.max_in_flight <= 4  # per-call Semaphore(max_concurrent)
 

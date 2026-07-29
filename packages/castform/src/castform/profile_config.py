@@ -51,9 +51,7 @@ def _normalize_profile(name: str, value: Any) -> dict[str, str]:
     if name == DEFAULT_PROFILE and not profile:
         profile["domain"] = DEFAULT_DOMAIN
     if not profile:
-        raise RuntimeError(
-            f"Castform profile {name!r} needs a domain or explicit service URLs."
-        )
+        raise RuntimeError(f"Castform profile {name!r} needs a domain or explicit service URLs.")
     return profile
 
 

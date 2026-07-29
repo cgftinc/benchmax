@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import main as example
+import pytest
+from benchmax.envs.harbor import ModalCredentials
+
+CREDENTIAL_ARGS = [
+    "--modal-token-id",
+    "modal-id",
+    "--modal-token-secret",
+    "modal-secret",
+]
+
+
+def test_launch_reuses_the_assets_that_were_validated(monkeypatch) -> None:
+    bundled_environment = object()
+    uploaded_assets = SimpleNamespace(
+        env_cls_path="envs/test/env-cls.pkl",
+        env_metadata_path="envs/test/env-metadata.json",
+        dataset_path=None,
+    )
+    report = SimpleNamespace(ok=True)
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(example, "generate_data", lambda **kwargs: None)
+    monkeypatch.setattr(
+        example,
+        "dump_bundle",
+        lambda cls, *, constructor_args, pip_dependencies: (
+            calls.append(("bundle", constructor_args)) or bundled_environment
+        ),
+    )
+    monkeypatch.setattr(
+        example,
+        "upload_assets",
+        lambda **kwargs: calls.append(("upload", kwargs)) or uploaded_assets,
+    )
+    monkeypatch.setattr(
+        example,
+        "validate",
+        lambda env, received: calls.append(("validate", received)) or report,
+    )
+    monkeypatch.setattr(
+        example,
+        "launch",
+        lambda received, **kwargs: calls.append(("launch", received)) or "run-id",
+    )
+    monkeypatch.setattr(example, "ensure_session", lambda: None)
+
+    assert example.main(["launch", "--yes", *CREDENTIAL_ARGS]) == 0
+    assert calls == [
+        (
+            "bundle",
+            {"sandbox_credentials": ModalCredentials("modal-id", "modal-secret")},
+        ),
+        ("upload", {"bundle": bundled_environment, "run_name": "aime"}),
+        ("validate", uploaded_assets),
+        ("launch", uploaded_assets),
+    ]
+
+
+def test_main_requires_credential_arguments(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        example.main(["data"])
+
+    stderr = capsys.readouterr().err
+    for name in ("--modal-token-id", "--modal-token-secret"):
+        assert name in stderr

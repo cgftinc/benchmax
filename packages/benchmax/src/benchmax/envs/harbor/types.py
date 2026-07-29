@@ -62,9 +62,7 @@ class HarborTrialTemplate:
             "agent_timeout_multiplier": self.agent_timeout_multiplier,
             "verifier_timeout_multiplier": self.verifier_timeout_multiplier,
             "agent_setup_timeout_multiplier": self.agent_setup_timeout_multiplier,
-            "environment_build_timeout_multiplier": (
-                self.environment_build_timeout_multiplier
-            ),
+            "environment_build_timeout_multiplier": (self.environment_build_timeout_multiplier),
         }
         for name, value in multipliers.items():
             if value is not None and value <= 0:

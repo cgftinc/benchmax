@@ -33,9 +33,10 @@ class JudgeError(RolloutFailure):
 class Judge:
     """Configuration for an OpenAI-compatible reward judge.
 
-    ``auth`` is resolved immediately before every request. An
-    :class:`~benchmax.auth.InjectedAuth` therefore remains serializable in a
-    bundle while the runtime supplies the real credential at execution time.
+    ``auth`` is resolved immediately before every request. Castform environments
+    use :class:`~benchmax.auth.InjectedAuth` for its managed LLM endpoint;
+    user-managed external endpoints normally use
+    :class:`~benchmax.auth.StaticBearerAuth`.
     """
 
     model: str
@@ -90,9 +91,7 @@ class Judge:
         if not math.isfinite(float(temperature)):
             raise ValueError("judge temperature must be finite")
         if max_tokens is not None and (
-            isinstance(max_tokens, bool)
-            or not isinstance(max_tokens, int)
-            or max_tokens < 1
+            isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1
         ):
             raise ValueError("judge max_tokens must be positive or None")
 
@@ -123,9 +122,7 @@ class Judge:
             try:
                 response = await client.chat.completions.create(**request)
                 raw = (
-                    (response.choices[0].message.content or "").strip()
-                    if response.choices
-                    else ""
+                    (response.choices[0].message.content or "").strip() if response.choices else ""
                 )
                 if not raw:
                     raise ValueError("judge returned an empty response")
@@ -140,9 +137,7 @@ class Judge:
                 await client.close()
 
         assert last_auth_error is not None
-        raise JudgeError(f"judge authentication failed: {last_auth_error}") from (
-            last_auth_error
-        )
+        raise JudgeError(f"judge authentication failed: {last_auth_error}") from (last_auth_error)
 
 
 def _parse_json_object(raw: str) -> dict[str, Any]:

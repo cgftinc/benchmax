@@ -32,7 +32,7 @@ class BundlingError(Exception):
 
 
 class IncompatibleRuntimeError(Exception):
-    """Bundle metadata is incompatible with the current BenchMax runtime."""
+    """Bundle metadata is incompatible with the current benchmax runtime."""
 
 
 class IncompatiblePythonError(IncompatibleRuntimeError):
@@ -40,7 +40,7 @@ class IncompatiblePythonError(IncompatibleRuntimeError):
 
 
 class IncompatibleBenchmaxError(IncompatibleRuntimeError):
-    """Loader's BenchMax major.minor doesn't match the bundle's benchmax_version."""
+    """Loader's benchmax major.minor doesn't match the bundle's benchmax_version."""
 
 
 # register_pickle_by_value mutates process-global state; serialize against races.
@@ -70,9 +70,7 @@ class BundleMetadata:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a non-empty string")
-        if self.env_class_source is not None and not isinstance(
-            self.env_class_source, str
-        ):
+        if self.env_class_source is not None and not isinstance(self.env_class_source, str):
             raise TypeError("env_class_source must be a string or None")
 
     def to_json_bytes(self) -> bytes:
@@ -102,7 +100,7 @@ class BundleMetadata:
         if unknown:
             raise ValueError(
                 f"bundle metadata has unsupported keys {unknown}; "
-                "re-bundle with a current BenchMax release"
+                "re-bundle with a current benchmax release"
             )
         try:
             pip_dependencies = d["pip_dependencies"]
@@ -153,7 +151,7 @@ def bundle_digest(bundle: Bundle) -> str:
 
 
 def validate_bundle_compatibility(metadata: BundleMetadata) -> None:
-    """Reject metadata built for a different Python or BenchMax runtime.
+    """Reject metadata built for a different Python or benchmax runtime.
 
     This check never reads the pickle or installs environment dependencies, so
     execution runtimes can call it before performing either higher-risk step.
@@ -172,20 +170,20 @@ def validate_bundle_compatibility(metadata: BundleMetadata) -> None:
     current_benchmax = _benchmax_version()
     if metadata.benchmax_version == "unknown" or current_benchmax == "unknown":
         raise IncompatibleBenchmaxError(
-            "Cannot verify BenchMax compatibility because the bundle or "
-            "runtime version is unknown. Install BenchMax as a versioned package."
+            "Cannot verify benchmax compatibility because the bundle or "
+            "runtime version is unknown. Install benchmax as a versioned package."
         )
     bundle_series = _version_major_minor(metadata.benchmax_version)
     current_series = _version_major_minor(current_benchmax)
     if bundle_series is None or current_series is None:
         raise IncompatibleBenchmaxError(
-            f"Cannot parse BenchMax versions (bundle {metadata.benchmax_version}, "
+            f"Cannot parse benchmax versions (bundle {metadata.benchmax_version}, "
             f"runtime {current_benchmax}); expected major.minor[.patch]."
         )
     if bundle_series != current_series:
         raise IncompatibleBenchmaxError(
-            f"Bundle was packaged with BenchMax {metadata.benchmax_version} "
-            f"but this runtime uses BenchMax {current_benchmax}; "
+            f"Bundle was packaged with benchmax {metadata.benchmax_version} "
+            f"but this runtime uses benchmax {current_benchmax}; "
             "major.minor versions must match."
         )
 
@@ -236,7 +234,7 @@ def dump_bundle(
     benchmax_version = _benchmax_version()
     if benchmax_version == "unknown":
         raise BundlingError(
-            "Cannot determine the BenchMax package version; install BenchMax as "
+            "Cannot determine the benchmax package version; install benchmax as "
             "a versioned package before creating a bundle"
         )
     local_modules = local_modules or []
@@ -247,17 +245,14 @@ def dump_bundle(
         for mod in local_modules:
             if not isinstance(mod, ModuleType):
                 raise BundlingError(
-                    f"local_modules must contain module objects, got "
-                    f"{type(mod).__name__}: {mod!r}"
+                    f"local_modules must contain module objects, got {type(mod).__name__}: {mod!r}"
                 )
             cloudpickle.register_pickle_by_value(mod)
         try:
             try:
                 pickled = cloudpickle.dumps((env_class, constructor_args))
             except Exception as e:
-                raise BundlingError(
-                    f"Failed to serialize {env_class.__name__}: {e}"
-                ) from e
+                raise BundlingError(f"Failed to serialize {env_class.__name__}: {e}") from e
         finally:
             for mod in local_modules:
                 try:
@@ -281,9 +276,7 @@ def dump_bundle(
                     registered.append(mod)
                 for _ in range(10):
                     pending = [
-                        m
-                        for m in _unregistered_local_refs(pickled, project_roots)
-                        if m not in seen
+                        m for m in _unregistered_local_refs(pickled, project_roots) if m not in seen
                     ]
                     if not pending:
                         break
@@ -373,8 +366,7 @@ def load_bundle(
     *,
     instantiate: bool = True,
 ) -> (
-    Environment[Any, RolloutAttempt]
-    | tuple[type[Environment[Any, RolloutAttempt]], dict[str, Any]]
+    Environment[Any, RolloutAttempt] | tuple[type[Environment[Any, RolloutAttempt]], dict[str, Any]]
 ):
     """Unpickle and (optionally) instantiate.
 
@@ -387,7 +379,7 @@ def load_bundle(
             If False, return ``(env_class, constructor_args)``.
 
     Raises:
-        IncompatibleRuntimeError: bundle's Python or BenchMax version differs.
+        IncompatibleRuntimeError: bundle's Python or benchmax version differs.
         BundlingError: corrupt bytes or a class that does not implement Environment.
     """
     validate_bundle_compatibility(bundle.metadata)
@@ -405,8 +397,7 @@ def load_bundle(
     env_class, constructor_args = payload
     if not (isinstance(env_class, type) and issubclass(env_class, Environment)):
         raise BundlingError(
-            f"Unpickled class is {type(env_class).__name__}, "
-            "not an Environment implementation."
+            f"Unpickled class is {type(env_class).__name__}, not an Environment implementation."
         )
     if not isinstance(constructor_args, dict):
         raise BundlingError(
@@ -468,8 +459,7 @@ def _ensure_safe_python_version() -> None:
     v = sys.version_info
     if (v.major, v.minor) == (3, 13):
         raise BundlingError(
-            f"Python {v.major}.{v.minor}.{v.micro} is unsupported. "
-            "Use Python 3.12 or >= 3.14."
+            f"Python {v.major}.{v.minor}.{v.micro} is unsupported. Use Python 3.12 or >= 3.14."
         )
 
 
@@ -483,9 +473,7 @@ def unregistered_local_refs(pickled: bytes) -> list[str]:
 
     refs = _referenced_modules(pickled)
     project_roots = tuple(
-        root
-        for name in refs
-        if (root := _project_root_for_module_name(name)) is not None
+        root for name in refs if (root := _project_root_for_module_name(name)) is not None
     )
     return _unregistered_local_refs(pickled, project_roots)
 
@@ -639,9 +627,7 @@ def _imports_from_code(
     instructions = tuple(dis.get_instructions(code))
     names.update(_literal_dynamic_imports(instructions))
     for index, instruction in enumerate(instructions):
-        if instruction.opname != "IMPORT_NAME" or not isinstance(
-            instruction.argval, str
-        ):
+        if instruction.opname != "IMPORT_NAME" or not isinstance(instruction.argval, str):
             continue
         level = 0
         fromlist: object = None
@@ -697,14 +683,8 @@ def _literal_dynamic_imports(
             start -= 1
         call_setup = instructions[start + 1 : call_index]
         uses_import_callable = any(
-            (
-                item.opname == "LOAD_GLOBAL"
-                and item.argval in {"__import__", "import_module"}
-            )
-            or (
-                item.opname in {"LOAD_ATTR", "LOAD_METHOD"}
-                and item.argval == "import_module"
-            )
+            (item.opname == "LOAD_GLOBAL" and item.argval in {"__import__", "import_module"})
+            or (item.opname in {"LOAD_ATTR", "LOAD_METHOD"} and item.argval == "import_module")
             for item in call_setup
         )
         if not uses_import_callable:
@@ -713,9 +693,7 @@ def _literal_dynamic_imports(
             (
                 item.argval
                 for item in call_setup
-                if item.opname == "LOAD_CONST"
-                and isinstance(item.argval, str)
-                and item.argval
+                if item.opname == "LOAD_CONST" and isinstance(item.argval, str) and item.argval
             ),
             None,
         )
@@ -810,8 +788,7 @@ def _module_has_declared_distribution(
     top_level = module_name.partition(".")[0]
     distributions = importlib_metadata.packages_distributions().get(top_level, ())
     return any(
-        canonicalize_name(distribution) in declared_distributions
-        for distribution in distributions
+        canonicalize_name(distribution) in declared_distributions for distribution in distributions
     )
 
 
@@ -962,8 +939,7 @@ def _module_is_project_local(
         module = _module_from_spec(module_name, spec)
 
     return any(
-        not _is_site_package_path(path)
-        and any(path.is_relative_to(root) for root in project_roots)
+        not _is_site_package_path(path) and any(path.is_relative_to(root) for root in project_roots)
         for path in _module_source_paths(module)
     )
 

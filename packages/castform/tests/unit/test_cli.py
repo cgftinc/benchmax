@@ -89,15 +89,9 @@ def test_whoami_not_logged_in(monkeypatch):
 
 
 def test_whoami_logged_in_shows_email(monkeypatch, capsys):
-    monkeypatch.setattr(
-        credentials, "read_castform_session", lambda *_args: {"access_token": "x"}
-    )
-    claims = base64.urlsafe_b64encode(json.dumps({"email": "a@b.com"}).encode()).rstrip(
-        b"="
-    )
-    monkeypatch.setattr(
-        credentials, "_session_jwt", lambda *_args: f"h.{claims.decode()}.s"
-    )
+    monkeypatch.setattr(credentials, "read_castform_session", lambda *_args: {"access_token": "x"})
+    claims = base64.urlsafe_b64encode(json.dumps({"email": "a@b.com"}).encode()).rstrip(b"=")
+    monkeypatch.setattr(credentials, "_session_jwt", lambda *_args: f"h.{claims.decode()}.s")
     assert cli._cmd_whoami(argparse.Namespace()) == 0
     assert "a@b.com" in capsys.readouterr().out
 

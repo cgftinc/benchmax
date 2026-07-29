@@ -2,7 +2,7 @@
 
 ``platform_bearer`` authenticates Castform platform operations. It is
 deliberately not a model credential resolver: judges, embeddings, and tool LLM
-calls use BenchMax ``ModelAuth`` exclusively.
+calls use benchmax ``ModelAuth`` exclusively.
 
 Precedence (per call):
 
@@ -238,14 +238,10 @@ def write_castform_session(
     _write_credentials_store(store)
 
 
-def clear_castform_session(
-    profile: str | None = None, *, all_profiles: bool = False
-) -> None:
+def clear_castform_session(profile: str | None = None, *, all_profiles: bool = False) -> None:
     """Clear one profile's session, or every session when explicitly requested."""
     with _SESSION_JWT_LOCK:
-        _SESSION_JWT_CACHE.update(
-            {"token": None, "src": None, "exp": 0.0, "profile": None}
-        )
+        _SESSION_JWT_CACHE.update({"token": None, "src": None, "exp": 0.0, "profile": None})
     store = _credentials_store()
     if all_profiles:
         store["profiles"] = {}
@@ -275,9 +271,7 @@ def session_auth_token(profile: str | None = None) -> str:
     if expires_at is not None and (
         not isinstance(expires_at, (int, float)) or expires_at <= time.time()
     ):
-        raise RuntimeError(
-            "The selected Castform session has expired; run `castform login` again."
-        )
+        raise RuntimeError("The selected Castform session has expired; run `castform login` again.")
     return access_token
 
 
@@ -386,9 +380,7 @@ def _session_jwt(profile: str | None = None) -> str | None:
     if jwt:
         exp = _jwt_exp(jwt)
         if exp <= time.time():
-            exp = (
-                time.time() + _MINT_FALLBACK_TTL
-            )  # no parseable exp → don't re-mint per call
+            exp = time.time() + _MINT_FALLBACK_TTL  # no parseable exp → don't re-mint per call
         with _SESSION_JWT_LOCK:
             _SESSION_JWT_CACHE.update(
                 {"token": jwt, "src": access_token, "exp": exp, "profile": selected}

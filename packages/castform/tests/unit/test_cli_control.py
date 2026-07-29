@@ -34,9 +34,7 @@ def _patch(monkeypatch, **kw) -> _FakeClient:
 
 
 def test_stop_launched_run(monkeypatch, capsys):
-    client = _patch(
-        monkeypatch, result={"success": True, "message": "Job cancellation requested"}
-    )
+    client = _patch(monkeypatch, result={"success": True, "message": "Job cancellation requested"})
     assert control._cmd_stop(argparse.Namespace(run_id="r1")) == 0
     assert client.cancelled == "r1"
     assert "Job cancellation requested" in capsys.readouterr().out

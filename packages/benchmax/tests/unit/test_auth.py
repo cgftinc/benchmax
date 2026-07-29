@@ -52,9 +52,7 @@ def test_static_bearer_auth_repr_redacts_token() -> None:
     assert "secret" not in repr(StaticBearerAuth("secret"))
 
 
-async def test_sync_request_auth_resolves_injected_provider_inside_running_loop() -> (
-    None
-):
+async def test_sync_request_auth_resolves_injected_provider_inside_running_loop() -> None:
     request = httpx.Request("POST", _CONTEXT.base_url)
     with bind_model_auth({"judge": StaticBearerAuth("runtime-secret")}):
         authenticated = list(

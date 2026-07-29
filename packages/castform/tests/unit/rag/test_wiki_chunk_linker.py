@@ -1,4 +1,5 @@
 """Tests for WikiChunkLinker and build_entity_chunk_graph."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ class FakeChunk:
     def __post_init__(self):
         if not self.hash:
             import hashlib
+
             self.hash = hashlib.sha256(self.content.encode()).hexdigest()[:16]
 
 
@@ -49,16 +51,31 @@ class FakeSource:
 
 def _make_chunks() -> list[FakeChunk]:
     return [
-        FakeChunk("PostHog is an analytics platform with Feature Flags",
-                   hash="chunk_a", metadata={"file": "docs/posthog.md"}),
-        FakeChunk("Feature Flags enable gradual rollouts in PostHog",
-                   hash="chunk_b", metadata={"file": "docs/flags.md"}),
-        FakeChunk("React Native SDK supports Feature Flags",
-                   hash="chunk_c", metadata={"file": "docs/react-native.md"}),
-        FakeChunk("Error Tracking monitors application crashes",
-                   hash="chunk_d", metadata={"file": "docs/errors.md"}),
-        FakeChunk("PostHog Error Tracking integrates with Sentry",
-                   hash="chunk_e", metadata={"file": "docs/errors.md"}),
+        FakeChunk(
+            "PostHog is an analytics platform with Feature Flags",
+            hash="chunk_a",
+            metadata={"file": "docs/posthog.md"},
+        ),
+        FakeChunk(
+            "Feature Flags enable gradual rollouts in PostHog",
+            hash="chunk_b",
+            metadata={"file": "docs/flags.md"},
+        ),
+        FakeChunk(
+            "React Native SDK supports Feature Flags",
+            hash="chunk_c",
+            metadata={"file": "docs/react-native.md"},
+        ),
+        FakeChunk(
+            "Error Tracking monitors application crashes",
+            hash="chunk_d",
+            metadata={"file": "docs/errors.md"},
+        ),
+        FakeChunk(
+            "PostHog Error Tracking integrates with Sentry",
+            hash="chunk_e",
+            metadata={"file": "docs/errors.md"},
+        ),
     ]
 
 
@@ -77,7 +94,6 @@ def _make_entities() -> list[EntityPattern]:
 
 
 class TestBuildEntityChunkGraph:
-
     def test_builds_bipartite_graph(self):
         chunks = _make_chunks()
         patterns = _make_entities()
@@ -139,7 +155,6 @@ class TestBuildEntityChunkGraph:
 
 
 class TestWikiChunkLinker:
-
     def _build_linker(self) -> tuple[WikiChunkLinker, list[FakeChunk]]:
         chunks = _make_chunks()
         patterns = _make_entities()
@@ -214,9 +229,7 @@ class TestWikiChunkLinker:
         bundle = linker.link(chunks[0], target_hop_count=3)
 
         if len(bundle.secondary_chunks) >= 2:
-            files = [
-                c.metadata.get("file", "") for c in bundle.secondary_chunks
-            ]
+            files = [c.metadata.get("file", "") for c in bundle.secondary_chunks]
             # At least one secondary should be from a different file
             primary_file = chunks[0].metadata.get("file", "")
             assert any(f != primary_file for f in files)

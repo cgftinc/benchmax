@@ -10,6 +10,7 @@ bundled pip wheel, so no external package service is on the per-trial path.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shlex
 import shutil
@@ -36,6 +37,7 @@ _WHEEL_PLATFORMS = (
     "manylinux_2_28_x86_64",
 )
 _CONTAINER_WHEELS_DIR = "/opt/miniswe-wheels"
+_CACHE_COMPLETE_MARKER = ".complete"
 
 _prefetch_lock = threading.Lock()
 
@@ -71,18 +73,31 @@ def prefetch_wheels(
     if cache is None:
         cache = wheel_cache_dir()
     with _prefetch_lock:
-        if cache.is_dir():
+        if (
+            cache.is_dir()
+            and (cache / _CACHE_COMPLETE_MARKER).is_file()
+            and any(cache.glob("*.whl"))
+            and any(cache.glob("pip-*.whl"))
+        ):
             return cache
+        # A previous interrupted download or upload can leave an empty cache
+        # directory. Never treat directory existence alone as completion.
+        shutil.rmtree(cache, ignore_errors=True)
         staging = Path(f"{cache}.tmp-{os.getpid()}")
         shutil.rmtree(staging, ignore_errors=True)
+        uv = shutil.which("uv")
+        if uv:
+            downloader = [uv, "tool", "run", "--from", "pip", "pip"]
+        elif importlib.util.find_spec("pip") is not None:
+            downloader = [sys.executable, "-m", "pip"]
+        else:
+            raise RuntimeError("wheel prefetch requires uv or an installed pip module")
         batches = [(packages, no_deps)]
         if extra_no_deps:
             batches.append((extra_no_deps, True))
         for batch, batch_no_deps in batches:
             command = [
-                sys.executable,
-                "-m",
-                "pip",
+                *downloader,
                 "download",
                 *batch,
                 *(["--no-deps"] if batch_no_deps else []),
@@ -105,6 +120,7 @@ def prefetch_wheels(
                 raise RuntimeError(
                     f"wheel prefetch failed (exit {result.returncode}):\n{result.stderr}"
                 )
+        (staging / _CACHE_COMPLETE_MARKER).write_text("ok\n")
         try:
             staging.rename(cache)
         except OSError:
@@ -216,9 +232,7 @@ class VendoredMiniSweAgent(MiniSweAgent):
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
-        await self._upload_source(
-            environment, "mini_swe_probe.py", _CONTAINER_PROBE_PATH
-        )
+        await self._upload_source(environment, "mini_swe_probe.py", _CONTAINER_PROBE_PATH)
 
     @override
     async def run(
@@ -276,10 +290,7 @@ class UpstreamMiniSweAgent(VendoredMiniSweAgent):
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
-        cache = (
-            Path(tempfile.gettempdir())
-            / f"miniswe-upstream-wheels-{MINI_SWE_AGENT_VERSION}"
-        )
+        cache = Path(tempfile.gettempdir()) / f"miniswe-upstream-wheels-{MINI_SWE_AGENT_VERSION}"
         wheels = prefetch_wheels(
             _UPSTREAM_LIBS,
             cache=cache,
@@ -287,9 +298,7 @@ class UpstreamMiniSweAgent(VendoredMiniSweAgent):
         )
         await environment.upload_dir(wheels, _CONTAINER_WHEELS_DIR)
         for name in _UPSTREAM_FILES:
-            await self._upload_source(
-                environment, name, f"{_CONTAINER_UPSTREAM_DIR}/{name}"
-            )
+            await self._upload_source(environment, name, f"{_CONTAINER_UPSTREAM_DIR}/{name}")
         await self.exec_as_root(
             environment,
             command=(

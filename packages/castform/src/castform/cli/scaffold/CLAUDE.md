@@ -38,35 +38,39 @@ Before changing a stage, load its skill:
 - `RUNTIME_DEPENDENCIES` is the explicit list installed with the rollout bundle.
   Keep it limited to packages imported while the environment is running.
 
-Most custom environments extend `BaseEnv`. Declare `reward_keys` as the complete
-final reward shape and return exactly those keys from successful reward hooks.
-Operational rollout or judge failures return the same keys with zero values, a
-non-`finished` `termination_reason`, and an error log. They do not cancel or
-distort siblings. Do not turn a configuration or programming error into a reward.
+Most custom environments extend `BaseEnv`. Successful reward hooks return their
+named reward components. Operational rollout or judge failures return no
+rewards, a non-`finished` `termination_reason`, and an error log. They do not
+cancel or distort siblings. Do not turn a configuration or programming error
+into a reward.
 
 Local validation obtains its example through the environment's public
 `create_dataset` method, then calls `validate_environment` once with exactly two
-siblings. Review both outcomes; a completed zero reward is valid, while a zeroed
-result with a failure termination reason is not. Validation is local-only in this
-workflow.
+siblings through ephemeral tracked llm-proxy sessions. The generated validation
+config shares one context budget across local and hosted execution and applies a
+wall-clock backstop to the complete local lifecycle. Review both outcomes; a
+completed zero reward is valid, while an empty result with a failure termination
+reason is not. Hosted validation uses the exact uploaded assets that launch would
+consume.
 
 ## Bundle and launch boundary
 
 The launch stage must remain visibly ordered:
 
-1. validate the environment;
-2. obtain explicit human confirmation that GPU training spends credits;
-3. call `dump_bundle` with explicit `pip_dependencies`;
-4. pass that exact `Bundle` to `upload_training_run(bundle=...)`, supplying only
+1. call `dump_bundle` with explicit `pip_dependencies`;
+2. pass that exact `Bundle` to `upload_assets(bundle=...)`, supplying only
    dataset splits that should be uploaded;
-5. pass the uploaded paths to `TrainerClient.launch_training_run`.
+3. validate the exact uploaded assets, locally and in a hosted sandbox;
+4. obtain explicit human confirmation that GPU training spends credits;
+5. pass the same uploaded paths to `TrainerClient.launch_training_run` — the
+   run trains on precisely what was validated.
 
-BenchMax captures project-local Python modules automatically. For source from a
+benchmax captures project-local Python modules automatically. For source from a
 different project, either pass the module through `local_modules=` to capture it
 or name its installed distribution in `pip_dependencies` to keep it remote.
-Undeclared cross-project source fails bundling. For Castform model endpoints
-use `InjectedAuth`; only an external endpoint of your own warrants a direct
-`StaticBearerAuth`, whose key is pickled into the bundle. Harbor sandbox
+Undeclared cross-project source fails bundling. For the Castform LLM endpoint
+use `InjectedAuth` so Castform supplies the current session credential. For an
+external endpoint use its explicit `StaticBearerAuth`; that key is pickled into the bundle. Harbor sandbox
 credentials are currently explicit constructor inputs and deserve extra care when
 reviewing a bundle.
 

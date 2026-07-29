@@ -653,9 +653,7 @@ class ChromaChunkSource:
         # linker's "inference" preference for vector.
         if not self._chroma.dense_embed_is_safe():
             if not has_lexical:
-                raise LocalEmbeddingDownloadDisallowedError(
-                    "chroma", self._chroma.collection_name
-                )
+                raise LocalEmbeddingDownloadDisallowedError("chroma", self._chroma.collection_name)
             use_hybrid = False
             use_lexical = True
         elif mode == "lexical":

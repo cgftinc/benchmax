@@ -32,7 +32,7 @@ when the project does not use the default eval/train filenames. Use the text or
 JSON output and the run page printed at launch.
 
 When reviewing stored outcomes, distinguish a valid zero score from execution
-failure using available logs and stored error fields. BenchMax produces a non-
+failure using available logs and stored error fields. benchmax produces a non-
 `finished` termination reason locally, but carrying that field faithfully through
 the trainer and hosted rollout views is pending downstream integration; do not
 claim a stored run exposes it until the platform does.

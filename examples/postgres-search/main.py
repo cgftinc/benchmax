@@ -16,10 +16,10 @@ The old components stay available as opt-in helpers (:data:`CONCISENESS_RUBRIC`,
 :func:`judge_answer_quality`, :func:`score_search_efficiency`) for subclasses that
 override ``compute_reward``.
 
-`python main.py [data|validate|launch|all]` follows the standard example
-shape, but this env is a LIBRARY base: it needs a provisioned corpus
-(corpora-service) plus question/answer datasets, which this repository does
-not ship. The stages state exactly what is missing instead of pretending.
+`python main.py [data|validate|launch]` follows the standard example shape, but
+this env is a library base: it needs a provisioned corpus (corpora-service)
+plus question/answer datasets, which this repository does not ship. The
+actions state exactly what is missing instead of pretending.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -63,9 +63,7 @@ logger = logging.getLogger(__name__)
 
 _CITATION_RE = re.compile(r"\[Source:\s*([^\]]+)\]", re.IGNORECASE)
 
-_ANSWER_BLOCK_RE = re.compile(
-    r"<answer\s*>(.*?)</answer\s*>", re.IGNORECASE | re.DOTALL
-)
+_ANSWER_BLOCK_RE = re.compile(r"<answer\s*>(.*?)</answer\s*>", re.IGNORECASE | re.DOTALL)
 _ANSWER_OPEN_RE = re.compile(r"<answer\s*>", re.IGNORECASE)
 
 
@@ -323,8 +321,9 @@ class SearchEnv(BaseEnv):
         search: A :class:`SearchClient` instance (pickle-safe).
         judge_base_url: Base URL for the LLM judge API (required).
         judge_model: Model name for the LLM judge (required).
-        judge_auth: Explicit, serializable judge auth declaration. Defaults to
-            ``InjectedAuth("judge")`` for runtime-provided call-time credentials.
+        judge_auth: Explicit judge auth declaration. Defaults to
+            ``InjectedAuth("judge")`` for the Castform-managed LLM endpoint;
+            user-managed external endpoints should pass ``StaticBearerAuth``.
         judge_timeout: Timeout for judge API calls.
         w_correctness: Weight for the correctness component (the gate).
         w_retrieval_hit: Weight for the UNGATED retrieval_hit component (recall
@@ -345,8 +344,6 @@ class SearchEnv(BaseEnv):
         "citation_precision": 0.0,
         "answer_length": 0.0,
     }
-    reward_keys = tuple(_ZERO_REWARDS)
-
     SYSTEM_PROMPT_TEMPLATE = """\
 Answer the given question by searching over {corpus_description}.
 
@@ -373,9 +370,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
 """
 
     @classmethod
-    def render_system_prompt(
-        cls, *, corpus_description: str, max_search_calls: int
-    ) -> str:
+    def render_system_prompt(cls, *, corpus_description: str, max_search_calls: int) -> str:
         """Render :attr:`SYSTEM_PROMPT_TEMPLATE` into a system-prompt string.
 
         Assign the result to a subclass's ``system_prompt`` class attribute
@@ -426,9 +421,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             max_turns=max_search_calls + 1 if max_turns is None else max_turns,
             max_tool_calls=max_search_calls,
         )
-        self._system_prompt = (
-            self.system_prompt if system_prompt is None else system_prompt
-        )
+        self._system_prompt = self.system_prompt if system_prompt is None else system_prompt
 
         self._search = search
         self._judge = Judge(
@@ -469,9 +462,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             search_props["mode"] = {
                 "type": "string",
                 "enum": modes,
-                "description": (
-                    f"Search mode. Available: {modes}. Default: {self._default_mode}."
-                ),
+                "description": (f"Search mode. Available: {modes}. Default: {self._default_mode}."),
             }
 
         search_tool: Tool = {
@@ -501,11 +492,16 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     # ------------------------------------------------------------------
 
     async def create_dataset(
-        self, split: DatasetSplit, base_dir: Path
+        self,
+        split: DatasetSplit,
+        base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> JsonlDataset[JsonRow]:
         return JsonlDataset(
             base_dir / f"{split}.jsonl",
             row_to_example=self._example_from_row,
+            max_examples=max_examples,
         )
 
     async def list_tools(self) -> list[Tool]:
@@ -688,18 +684,12 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     ) -> tuple[float, float]:
         """Citation (recall, precision) via the free :func:`score_citations`
         helper, honoring a subclass's ``_canonicalize_id`` override."""
-        return score_citations(
-            answer_text, reference_chunks, canonicalize=self._canonicalize_id
-        )
+        return score_citations(answer_text, reference_chunks, canonicalize=self._canonicalize_id)
 
-    def _extract_reference_ids(
-        self, reference_chunks: list[dict[str, Any]]
-    ) -> set[str]:
+    def _extract_reference_ids(self, reference_chunks: list[dict[str, Any]]) -> set[str]:
         """Document-level source IDs from reference chunks (uses ``_canonicalize_id``,
         which subclasses may override for corpus-specific extraction)."""
-        return extract_reference_ids(
-            reference_chunks, canonicalize=self._canonicalize_id
-        )
+        return extract_reference_ids(reference_chunks, canonicalize=self._canonicalize_id)
 
     def _parse_citations(self, text: str) -> set[str]:
         """Parse ``[Source: <id>]`` citations, honoring ``_canonicalize_id``."""
@@ -741,25 +731,25 @@ def launch(*, assume_yes: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="main.py",
-        description="Standard example stages; this env needs a provisioned corpus.",
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument(
-        "stage",
+        "action",
         nargs="?",
-        default="all",
-        choices=["data", "validate", "launch", "all"],
+        default="validate",
+        choices=("data", "validate", "launch"),
     )
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("-y", "--yes", action="store_true")
+    parser.add_argument("--yes", action="store_true")
     args = parser.parse_args(argv)
 
-    if args.stage in ("data", "all"):
+    if args.action == "data":
+        print("[stage 1/1] generating data")
         generate_data(force=args.force)
-    if args.stage in ("validate", "all"):
+    if args.action == "validate":
+        print("[stage 1/1] validating environment")
         validate()
-    if args.stage == "launch":
+    if args.action == "launch":
+        print("[stage 1/1] launching training")
         launch(assume_yes=args.yes)
     return 0
 

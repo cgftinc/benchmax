@@ -1,9 +1,11 @@
 from pathlib import Path
+from types import SimpleNamespace
 
-from aime_agent import MINI_SWE_AGENT_VERSION
+import pytest
 from benchmax.bundle import dump_bundle, load_bundle
-from benchmax.envs.harbor import BundledHarborAgent, ModalCredentials
-from harbor import EnvironmentType
+from benchmax.envs.harbor import BundledAgentSource, BundledHarborAgent, ModalCredentials
+from harbor import EnvironmentType, TrialAgentConfig
+from harness.aime_agent import MINI_SWE_AGENT_VERSION, prefetch_wheels
 from main import AimeMiniSweHarborEnv
 
 
@@ -16,7 +18,6 @@ def test_aime_constructor_uses_latest_dataset_and_bundled_agent() -> None:
     assert env._dataset.ref == "latest"
     assert env._eval_ratio == 0.1
     assert env._sandbox_credentials is credentials
-    assert env.reward_keys == ("reward", "partial_credit")
     trial = env._trial
     assert isinstance(trial.agent, BundledHarborAgent)
     assert trial.agent.config.import_path == "aime_agent:UpstreamMiniSweAgent"
@@ -34,6 +35,33 @@ def test_aime_agent_timeout_flows_into_trial_config() -> None:
     assert env._trial.agent.config.max_timeout_sec == 120.0
 
 
+def _custom_harness() -> BundledHarborAgent:
+    return BundledHarborAgent(
+        config=TrialAgentConfig(import_path="my_agent:MyAgent"),
+        source=BundledAgentSource.from_files({"my_agent.py": b"class MyAgent: ..."}),
+    )
+
+
+def test_custom_harness_replaces_the_default() -> None:
+    harness = _custom_harness()
+
+    env = AimeMiniSweHarborEnv(
+        sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+        harness=harness,
+    )
+
+    assert env._trial.agent is harness
+
+
+def test_custom_harness_rejects_the_default_only_timeout() -> None:
+    with pytest.raises(ValueError, match="max_agent_timeout_secs"):
+        AimeMiniSweHarborEnv(
+            sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+            harness=_custom_harness(),
+            max_agent_timeout_secs=120.0,
+        )
+
+
 def test_aime_bundles_carry_the_fixed_modal_credentials() -> None:
     """Sandbox credentials are fixed keys that ride in bundles."""
 
@@ -48,3 +76,23 @@ def test_aime_bundles_carry_the_fixed_modal_credentials() -> None:
     credentials = constructor_args["sandbox_credentials"]
     assert credentials.token_id == "modal-id"
     assert credentials.token_secret == "modal-secret"
+
+
+def test_wheel_prefetch_rebuilds_an_incomplete_cache(tmp_path, monkeypatch) -> None:
+    cache = tmp_path / "wheels"
+    cache.mkdir()
+
+    def fake_download(command, **_kwargs):
+        destination = Path(command[command.index("--dest") + 1])
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "pip-1.0-py3-none-any.whl").write_bytes(b"wheel")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("harness.aime_agent.shutil.which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr("harness.aime_agent.subprocess.run", fake_download)
+
+    result = prefetch_wheels(packages=("pip",), cache=cache)
+
+    assert result == cache
+    assert (cache / ".complete").read_text() == "ok\n"
+    assert list(cache.glob("pip-*.whl"))

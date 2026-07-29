@@ -1,7 +1,7 @@
 [project]
 name = "benchmax-example-telestich"
 version = "0.1.0"
-description = "Telestich poetry environment for Benchmax"
+description = "Telestich poetry environment for benchmax"
 requires-python = "==3.12.*"
 dependencies = [
     "benchmax",

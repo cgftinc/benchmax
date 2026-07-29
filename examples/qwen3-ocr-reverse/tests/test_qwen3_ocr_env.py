@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 from benchmax.envs import BaseRollout
 from main import OCR_PROMPT_TEMPLATE, Qwen3OCREnv
@@ -54,9 +53,7 @@ def test_preprocess_uses_arrow_safe_content_shape() -> None:
             "answer": "12",
         }
     )
-    assert {
-        type(message["content"]) for message in example.payload["prompt_messages"]
-    } == {list}
+    assert {type(message["content"]) for message in example.payload["prompt_messages"]} == {list}
 
 
 def test_reward_empty_ref_and_pred_is_three() -> None:
@@ -112,42 +109,6 @@ def test_env_compute_reward_and_lifecycle() -> None:
         await env.aclose()
 
     asyncio.run(_run())
-
-
-def test_convert_infinity_doc_rows_writes_images(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("INFINITY_DOC_DATASET_DIR", str(tmp_path))
-    monkeypatch.setenv("INFINITY_DOC_DATASET", "infly/Infinity-Doc-55K")
-    monkeypatch.setenv("INFINITY_DOC_SPLIT", "train")
-
-    class FakeImage:
-        def convert(self, mode: str) -> FakeImage:
-            assert mode == "RGB"
-            return self
-
-        def save(self, path: Path, format: str = "PNG") -> None:
-            assert format == "PNG"
-            Path(path).write_bytes(b"png")
-
-    rows = Qwen3OCREnv._convert_infinity_doc_rows(
-        [
-            {
-                "id": "doc-1",
-                "image": FakeImage(),
-                "gt": "# Title",
-                "attributes": {"lang": "en"},
-            }
-        ],
-        "train_images",
-        [7],
-    )
-
-    assert len(rows) == 1
-    assert rows[0]["prompt"] == OCR_PROMPT_TEMPLATE
-    assert rows[0]["answer"] == "# Title"
-    assert rows[0]["metadata"]["source_index_after_shuffle"] == 7
-    image_path = Path(rows[0]["images"][0])
-    assert image_path.exists()
-    assert image_path.parent == tmp_path / "train_images"
 
 
 def test_preprocess_falls_back_to_ocr_prompt_template() -> None:

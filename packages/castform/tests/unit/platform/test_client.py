@@ -15,8 +15,7 @@ from castform.platform.client import (
 )
 from castform.platform.exceptions import (
     AuthenticationError,
-    RolloutNotFound,
-    RolloutServerError,
+    RolloutError,
 )
 
 # ---------------------------------------------------------------------------
@@ -90,13 +89,13 @@ def test_launch_training_run_surfaces_server_warnings():
             json={
                 "runId": "run-warn",
                 "warnings": [
-                    '"max_rollout_len" = 32000 exceeds soft cap of 16384; proceed with caution.'
+                    '"max_context_len" = 40000 exceeds soft cap of 32768; proceed with caution.'
                 ],
             },
         )
 
     trainer = _make_trainer_with_transport(handler)
-    with pytest.warns(UserWarning, match=r"max_rollout_len.*16384"):
+    with pytest.warns(UserWarning, match=r"max_context_len.*32768"):
         run_id = trainer.launch_training_run(
             env_cls_path="x/env-cls.pkl",
             env_metadata_path="x/env-metadata.json",
@@ -142,14 +141,14 @@ def test_launch_training_run_filters_reserved_paths_from_launcher_args():
         launcher_args={
             "env_cls_path": "sneaky",
             "dataset_path": "sneaky",
-            "max_rollout_len": 4000,
+            "max_context_len": 4000,
         },
     )
 
     # dataset_path was not supplied as a kwarg, so it must not appear at all.
     assert "dataset_path" not in captured["body"]["args"]
     assert captured["body"]["args"]["env_cls_path"] == "a"
-    assert captured["body"]["args"]["max_rollout_len"] == 4000
+    assert captured["body"]["args"]["max_context_len"] == 4000
 
 
 def test_launch_training_run_rejects_training_run_type_kwarg():
@@ -213,12 +212,12 @@ _SAMPLE_LAUNCH_ARGS = [
         "min": 0,
     },
     {
-        "name": "max_rollout_len",
-        "label": "max rollout length",
+        "name": "max_context_len",
+        "label": "max context length",
         "type": "integer",
         "required": False,
-        "description": "Total tokens generated across the whole rollout.",
-        "warnAbove": 16384,
+        "description": "Total prompt and response tokens across the whole rollout.",
+        "warnAbove": 32768,
     },
     {
         "name": "model",
@@ -252,7 +251,7 @@ def test_list_launch_args_hits_endpoint_and_parses_response():
 
     # warnAbove (camelCase from the API) maps to warn_above (snake_case in Python).
     msl = specs[1]
-    assert msl.warn_above == 16384
+    assert msl.warn_above == 32768
 
     model = specs[2]
     assert model.enum == ("Qwen/Qwen3-4B-Instruct-2507",)
@@ -276,8 +275,8 @@ def test_print_launch_args_prints_each_spec(capsys):
 
     out = capsys.readouterr().out
     assert "learning_rate" in out
-    assert "max_rollout_len" in out
-    assert "warn_above=16384" in out
+    assert "max_context_len" in out
+    assert "warn_above=32768" in out
     assert "Qwen/Qwen3-4B-Instruct-2507" in out
 
 
@@ -302,77 +301,6 @@ def test_rollout_client_explicit_server_url_wins(monkeypatch):
     monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "staging.castform.com")
     client = RolloutClient(api_key="k", server_url="https://override.example/")
     assert client._server_url == "https://override.example"
-
-
-def test_rollout_client_targets_platform_service_v1(monkeypatch):
-    """Rollouts route through platform-service (the API-key gate): it validates
-    the sk_ key and mints an act_as JWT for rollout-service. The request path is
-    /v1/rollout/stream (platform mounts the proxy at /v1)."""
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
-    monkeypatch.delenv("CASTFORM_PLATFORM_URL", raising=False)
-
-    import httpx as httpx_mod
-
-    captured: dict[str, Any] = {}
-
-    class _CM:
-        def __enter__(self):
-            return httpx_mod.Response(503, content=b"stop before SSE loop")
-
-        def __exit__(self, *a):
-            return False
-
-    def _fake_stream(method, url, **kw):
-        captured["url"] = url
-        return _CM()
-
-    monkeypatch.setattr(httpx_mod, "stream", _fake_stream)
-
-    client = RolloutClient(api_key="k")
-    with pytest.raises(RolloutServerError):
-        client.stream_rollout(
-            raw_example={"prompt": "hi"},
-            env_cls_path="a",
-            env_metadata_path="b",
-            llm_api_key="model-key",
-        )
-
-    assert captured["url"] == "https://api.castform.com/v1/rollout/stream"
-
-
-# ---------------------------------------------------------------------------
-# S2: stream_rollout refuses to forward platform key to a third-party LLM host
-# ---------------------------------------------------------------------------
-
-
-def test_stream_rollout_refuses_to_forward_platform_key_to_third_party_llm(monkeypatch):
-    """S2 regression: when llm_base_url points outside the platform LLM endpoint,
-    an explicit llm_api_key is required."""
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
-
-    client = RolloutClient(api_key="platform-key")
-    with pytest.raises(ValueError, match="llm_api_key is required"):
-        client.stream_rollout(
-            raw_example={"prompt": "hi"},
-            env_cls_path="a",
-            env_metadata_path="b",
-            llm_base_url="https://api.openai.com/v1",  # third-party
-            llm_api_key="",  # missing — should raise
-        )
-
-
-def test_stream_rollout_requires_explicit_key_for_platform_llm_endpoint(monkeypatch):
-    """A platform bootstrap key is never silently reused as a model key."""
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
-
-    client = RolloutClient(api_key="platform-key", server_url="https://rollout.example")
-
-    with pytest.raises(ValueError, match="never reused as model credentials"):
-        client.stream_rollout(
-            raw_example={"prompt": "hi"},
-            env_cls_path="a",
-            env_metadata_path="b",
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -428,151 +356,12 @@ def test_trainer_client_resolves_bearer_per_request():
     assert seen == ["Bearer tok-1", "Bearer tok-2"]
 
 
-def test_stream_rollout_keeps_platform_and_model_credentials_separate(monkeypatch):
-    """The platform seam authenticates only platform-service; the model key is
-    explicit and independent."""
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
-    monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
-    monkeypatch.setenv("CASTFORM_API_KEY", "sk_seam")
-
-    import httpx as httpx_mod
-
-    captured: dict[str, Any] = {}
-
-    class _StubCM:
-        def __init__(self, payload, headers):
-            captured["payload"] = payload
-            captured["headers"] = headers
-
-        def __enter__(self):
-            raise RuntimeError("stub: skipping SSE loop")
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(
-        httpx_mod,
-        "stream",
-        lambda method, url, json=None, headers=None, **kw: _StubCM(json, headers),
-    )
-
-    client = RolloutClient(server_url="https://rollout.example")
-    with pytest.raises(RuntimeError, match="stub"):
-        client.stream_rollout(
-            raw_example={"prompt": "hi"},
-            env_cls_path="a",
-            env_metadata_path="b",
-            llm_api_key="explicit-model-key",
-        )
-
-    assert captured["headers"]["Authorization"] == "Bearer sk_seam"
-    assert captured["payload"]["llm"]["api_key"] == "explicit-model-key"
-
-
-def test_stream_rollout_raises_without_any_credential(monkeypatch, tmp_path):
-    """No explicit key and no seam credential → fail loudly before the network."""
-    monkeypatch.delenv("ACT_AS_TOKEN_PATH", raising=False)
-    monkeypatch.delenv("CASTFORM_API_KEY", raising=False)
-    # Isolate from a logged-in dev's ~/.castform/credentials.json fallback — else the
-    # resolver mints a real token and hits the network instead of failing loudly.
-    monkeypatch.setenv("CASTFORM_CREDENTIALS_PATH", str(tmp_path / "none.json"))
-
-    client = RolloutClient(server_url="https://rollout.example")
-    with pytest.raises(RuntimeError, match="No Castform platform credential"):
-        client.stream_rollout(
-            raw_example={"prompt": "hi"},
-            env_cls_path="a",
-            env_metadata_path="b",
-            llm_api_key="model-key",
-        )
-
-
-# ---------------------------------------------------------------------------
-# A1: typed errors for HTTP status codes
-# ---------------------------------------------------------------------------
-
-
-def _stream_with_status(monkeypatch, status: int, body: bytes = b""):
-    """Make httpx.stream return a Response with the given status."""
-    import httpx as httpx_mod
-
-    class _CM:
-        def __enter__(self):
-            return httpx_mod.Response(status, content=body)
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(httpx_mod, "stream", lambda *a, **kw: _CM())
-
-
-def test_stream_rollout_raises_authentication_error_on_401(monkeypatch):
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
-    _stream_with_status(monkeypatch, 401, b"bad token")
-
-    client = RolloutClient(api_key="bad")
-    with pytest.raises(AuthenticationError) as exc_info:
-        client.stream_rollout(
-            raw_example={"prompt": "hi"},
-            env_cls_path="a",
-            env_metadata_path="b",
-            llm_api_key="model-key",
-        )
-    assert exc_info.value.status_code == 401
-
-
-def test_stream_rollout_raises_authentication_error_on_403(monkeypatch):
-    """platform-service's optionalAuth gate rejects a bad/expired key as 403
-    ('sign in to run rollouts'), not 401 — surface it as an auth error too."""
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
-    _stream_with_status(monkeypatch, 403, b"Demo mode is disabled")
-
-    client = RolloutClient(api_key="bad")
-    with pytest.raises(AuthenticationError) as exc_info:
-        client.stream_rollout(
-            raw_example={"prompt": "hi"},
-            env_cls_path="a",
-            env_metadata_path="b",
-            llm_api_key="model-key",
-        )
-    assert exc_info.value.status_code == 403
-
-
-def test_stream_rollout_raises_rollout_not_found_on_404(monkeypatch):
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
-    _stream_with_status(monkeypatch, 404, b"no such endpoint")
-
-    client = RolloutClient(api_key="k")
-    with pytest.raises(RolloutNotFound):
-        client.stream_rollout(
-            raw_example={"prompt": "hi"},
-            env_cls_path="a",
-            env_metadata_path="b",
-            llm_api_key="model-key",
-        )
-
-
-def test_stream_rollout_raises_rollout_server_error_on_5xx(monkeypatch):
-    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
-    _stream_with_status(monkeypatch, 503, b"down for maintenance")
-
-    client = RolloutClient(api_key="k")
-    with pytest.raises(RolloutServerError):
-        client.stream_rollout(
-            raw_example={"prompt": "hi"},
-            env_cls_path="a",
-            env_metadata_path="b",
-            llm_api_key="model-key",
-        )
-
-
 # ---------------------------------------------------------------------------
 # run_group — one-example batch + batch-SSE consumption
 
 
-def test_run_group_parses_batch_sse(monkeypatch):
-    """run_group POSTs a one-example batch (samples_per_example=N) to
-    /v1/rollout/batch/stream and collects the rollout_completed events."""
+def test_run_group_posts_group_native_dataset_contract(monkeypatch):
+    """run_group pins the worker-created Dataset to its first item."""
     monkeypatch.setenv("CASTFORM_PLATFORM_URL", "https://api.castform.com")
     import httpx as httpx_mod
 
@@ -614,26 +403,27 @@ def test_run_group_parses_batch_sse(monkeypatch):
 
     client = RolloutClient(api_key="k")
     events = client.run_group(
-        {"prompt": "hi"},
         samples=2,
-        env_cls_bytes=b"x",
-        env_metadata_bytes=b"y",
-        llm_api_key="model-key",
+        env_cls_path="env/cls.pkl",
+        env_metadata_path="env/meta.json",
+        dataset_path="datasets/frozen",
+        model="test-model",
         verbose=False,
     )
 
     assert captured["url"] == "https://api.castform.com/v1/rollout/batch/stream"
-    assert captured["json"]["options"]["samples_per_example"] == 2
-    # One group → one worker (siblings co-locate); pinning this avoids an empty
-    # second worker crashing on a no-example partition.
-    assert captured["json"]["concurrent_workers"] == 1
+    assert captured["json"]["group_size"] == 2
+    assert captured["json"]["max_examples"] == 1
+    assert captured["json"]["model"] == {"name": "test-model"}
+    assert captured["json"]["dataset_path"] == "datasets/frozen"
+    assert "sampling" not in captured["json"]
+    assert "llm" not in captured["json"]
+    assert "options" not in captured["json"]
     assert len(events) == 2
     assert events[1]["group_reward_error"] == "ValueError: boom"
 
 
-def test_run_group_ignores_worker_error(monkeypatch):
-    """A worker_error event (e.g. a stray empty-partition worker) is non-fatal:
-    run_group keeps the rollout_completed events instead of raising."""
+def test_run_group_rejects_worker_error(monkeypatch):
     monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
     import httpx as httpx_mod
 
@@ -669,14 +459,10 @@ def test_run_group_ignores_worker_error(monkeypatch):
     monkeypatch.setattr(httpx_mod, "stream", lambda *a, **k: _CM())
 
     client = RolloutClient(api_key="k")
-    events = client.run_group(
-        {"prompt": "hi"},
-        samples=2,
-        env_cls_bytes=b"x",
-        env_metadata_bytes=b"y",
-        llm_api_key="model-key",
-        verbose=False,
-    )
-    # worker_error didn't raise; both real rollouts came through.
-    assert len(events) == 2
-    assert all(e["success"] for e in events)
+    with pytest.raises(RolloutError, match="empty partition"):
+        client.run_group(
+            samples=2,
+            env_cls_path="env/cls.pkl",
+            env_metadata_path="env/meta.json",
+            verbose=False,
+        )

@@ -3,7 +3,6 @@
 from castform.rag.qa_generation.filters.deterministic_guards import (
     DeterministicGuardsFilter,
 )
-from castform.rag.qa_generation.filters.env_rollout import EnvRolloutFilter
 from castform.rag.qa_generation.filters.grounding_llm import GroundingLLMFilter
 from castform.rag.qa_generation.filters.hop_count_validity import (
     HopCountValidityFilter,
@@ -17,5 +16,4 @@ __all__ = [
     "HopCountValidityFilter",
     "QualityGateFilter",
     "RetrievalLLMFilter",
-    "EnvRolloutFilter",
 ]

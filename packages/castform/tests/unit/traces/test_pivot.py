@@ -103,9 +103,7 @@ class TestHeuristicTrivial:
         ex = _example(
             turn_index=2,
             completion_content="",
-            completion_tool_calls=[
-                ToolCall(name="cancel_order", arguments='{"order_id": "#123"}')
-            ],
+            completion_tool_calls=[ToolCall(name="cancel_order", arguments='{"order_id": "#123"}')],
         )
         assert _is_heuristic_trivial(ex, 2) is False
 
@@ -114,8 +112,8 @@ class TestHeuristicTrivial:
             turn_index=2,
             completion_content="",
             completion_tool_calls=[
-                ToolCall(name="get_user_details", arguments='{}'),
-                ToolCall(name="get_order_details", arguments='{}'),
+                ToolCall(name="get_user_details", arguments="{}"),
+                ToolCall(name="get_order_details", arguments="{}"),
             ],
         )
         assert _is_heuristic_trivial(ex, 2) is False
@@ -399,10 +397,12 @@ class TestPivotCheckpointManager:
 
     def test_truncated_jsonl_recovery(self, tmp_path):
         cp = PivotCheckpointManager(tmp_path / "ckpt", model="gpt-5.4-nano")
-        cp.save_batch([
-            PivotRating("t1", 0, 0.9, "pivot", "good"),
-            PivotRating("t1", 1, 0.3, "trivial", "good"),
-        ])
+        cp.save_batch(
+            [
+                PivotRating("t1", 0, 0.9, "pivot", "good"),
+                PivotRating("t1", 1, 0.3, "trivial", "good"),
+            ]
+        )
         # Simulate crash: append truncated line
         with (cp.checkpoint_dir / cp._RATINGS_FILE).open("a") as fh:
             fh.write('{"trace_id": "t1", "turn_index": 2, "importance_sc')
@@ -442,10 +442,12 @@ class TestPivotCheckpointManager:
 
     def test_jsonl_format(self, tmp_path):
         cp = PivotCheckpointManager(tmp_path / "ckpt", model="gpt-5.4-nano")
-        cp.save_batch([
-            PivotRating("t1", 0, 0.9, "pivot", "test1"),
-            PivotRating("t2", 1, 0.3, "trivial", "test2"),
-        ])
+        cp.save_batch(
+            [
+                PivotRating("t1", 0, 0.9, "pivot", "test1"),
+                PivotRating("t2", 1, 0.3, "trivial", "test2"),
+            ]
+        )
 
         lines = (cp.checkpoint_dir / cp._RATINGS_FILE).read_text().strip().split("\n")
         assert len(lines) == 2
@@ -462,15 +464,16 @@ class TestProgressCallback:
             for i in range(20)
         ]
         traces = [_trace(trace_id=f"t{i}") for i in range(20)]
-        ratings = [
-            PivotRating(f"t{i}", i, 0.9, "pivot", "test") for i in range(20)
-        ]
+        ratings = [PivotRating(f"t{i}", i, 0.9, "pivot", "test") for i in range(20)]
 
         # With pre-computed ratings, no LLM calls happen and no progress
         # callback is invoked (ratings skip the LLM path entirely).
         calls: list[tuple[int, int]] = []
         result = apply_pivot_filter(
-            examples, traces, ratings=ratings, threshold=0.6,
+            examples,
+            traces,
+            ratings=ratings,
+            threshold=0.6,
             progress_callback=lambda done, total: calls.append((done, total)),
         )
         assert len(result.kept) == 20
@@ -492,11 +495,13 @@ def _make_mock_llm_client(call_tracker: list | None = None):
             call_tracker.append(1)
         resp = MagicMock()
         resp.choices = [MagicMock()]
-        resp.choices[0].message.content = json.dumps({
-            "importance_score": 0.8,
-            "category": "pivot",
-            "reasoning": "mock rating",
-        })
+        resp.choices[0].message.content = json.dumps(
+            {
+                "importance_score": 0.8,
+                "category": "pivot",
+                "reasoning": "mock rating",
+            }
+        )
         return resp
 
     client.chat.completions.create = AsyncMock(side_effect=mock_create)
@@ -508,7 +513,8 @@ class TestCheckpointResume:
         """Cached ratings are reused; only uncached turns hit the LLM."""
         examples = [
             _example(
-                trace_id=f"t{i}", turn_index=i,
+                trace_id=f"t{i}",
+                turn_index=i,
                 completion_content=f"I will process the complex decision for case {i} " * 5,
             )
             for i in range(20)
@@ -517,18 +523,18 @@ class TestCheckpointResume:
 
         # Pre-populate checkpoint with first 10 ratings
         cp = PivotCheckpointManager(tmp_path / "ckpt", model="test-model")
-        cp.save_batch([
-            PivotRating(f"t{i}", i, 0.8, "pivot", "cached")
-            for i in range(10)
-        ])
+        cp.save_batch([PivotRating(f"t{i}", i, 0.8, "pivot", "cached") for i in range(10)])
 
         llm_calls: list[int] = []
         client = _make_mock_llm_client(llm_calls)
 
         result = apply_pivot_filter(
-            examples, traces,
-            llm_client=client, model="test-model",
-            threshold=0.5, max_concurrency=2,
+            examples,
+            traces,
+            llm_client=client,
+            model="test-model",
+            threshold=0.5,
+            max_concurrency=2,
             checkpoint_dir=tmp_path / "ckpt",
         )
 
@@ -542,7 +548,8 @@ class TestCheckpointResume:
         """A fresh run with checkpoint_dir creates checkpoint files."""
         examples = [
             _example(
-                trace_id=f"t{i}", turn_index=i,
+                trace_id=f"t{i}",
+                turn_index=i,
                 completion_content=f"Complex decision-making response number {i} " * 5,
             )
             for i in range(20)
@@ -553,9 +560,12 @@ class TestCheckpointResume:
         ckpt_dir = tmp_path / "ckpt"
 
         apply_pivot_filter(
-            examples, traces,
-            llm_client=client, model="test-model",
-            threshold=0.5, max_concurrency=2,
+            examples,
+            traces,
+            llm_client=client,
+            model="test-model",
+            threshold=0.5,
+            max_concurrency=2,
             checkpoint_dir=ckpt_dir,
         )
 
@@ -572,7 +582,8 @@ class TestCheckpointResume:
         """Changing threshold reuses cached ratings without new LLM calls."""
         examples = [
             _example(
-                trace_id=f"t{i}", turn_index=i,
+                trace_id=f"t{i}",
+                turn_index=i,
                 completion_content=f"Substantive response for item {i} " * 5,
             )
             for i in range(20)
@@ -583,9 +594,12 @@ class TestCheckpointResume:
         calls_1: list[int] = []
         client = _make_mock_llm_client(calls_1)
         result_1 = apply_pivot_filter(
-            examples, traces,
-            llm_client=client, model="test-model",
-            threshold=0.5, max_concurrency=3,
+            examples,
+            traces,
+            llm_client=client,
+            model="test-model",
+            threshold=0.5,
+            max_concurrency=3,
             checkpoint_dir=tmp_path / "ckpt",
         )
 
@@ -593,9 +607,12 @@ class TestCheckpointResume:
         calls_2: list[int] = []
         client2 = _make_mock_llm_client(calls_2)
         result_2 = apply_pivot_filter(
-            examples, traces,
-            llm_client=client2, model="test-model",
-            threshold=0.7, max_concurrency=3,
+            examples,
+            traces,
+            llm_client=client2,
+            model="test-model",
+            threshold=0.7,
+            max_concurrency=3,
             checkpoint_dir=tmp_path / "ckpt",
         )
 
@@ -612,7 +629,8 @@ class TestProgressCallbackIntegration:
         """Progress callback receives (completed, total) during LLM batching."""
         examples = [
             _example(
-                trace_id=f"t{i}", turn_index=i,
+                trace_id=f"t{i}",
+                turn_index=i,
                 completion_content=f"Making a complex judgment call for case {i} " * 5,
             )
             for i in range(20)
@@ -623,9 +641,12 @@ class TestProgressCallbackIntegration:
         calls: list[tuple[int, int]] = []
 
         apply_pivot_filter(
-            examples, traces,
-            llm_client=client, model="test-model",
-            threshold=0.5, max_concurrency=2,
+            examples,
+            traces,
+            llm_client=client,
+            model="test-model",
+            threshold=0.5,
+            max_concurrency=2,
             checkpoint_dir=tmp_path / "ckpt",
             progress_callback=lambda done, total: calls.append((done, total)),
         )

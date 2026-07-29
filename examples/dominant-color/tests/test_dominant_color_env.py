@@ -141,9 +141,7 @@ def test_tile_images_are_dominated_by_the_answer_color() -> None:
     image = Image.open(io.BytesIO(base64.b64decode(uri.partition("base64,")[2])))
 
     def classify(tile_x: int, tile_y: int) -> str:
-        tile = image.crop(
-            (tile_x * 16, tile_y * 16, (tile_x + 1) * 16, (tile_y + 1) * 16)
-        )
+        tile = image.crop((tile_x * 16, tile_y * 16, (tile_x + 1) * 16, (tile_y + 1) * 16))
         pixels = list(tile.getdata())
         mean = [sum(channel) / len(pixels) for channel in zip(*pixels)]
         return min(

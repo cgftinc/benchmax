@@ -33,7 +33,7 @@ select = ["E", "F", "I", "N", "W", "UP"]
 # Long lines in these three are prompt text inside triple-quoted literals. A line
 # break there lands in the string, changing the prompt the model receives, so the
 # text is left exactly as written.
-"examples/aime/mini_swe_probe.py" = ["E501"]
+"examples/aime/harness/mini_swe_probe.py" = ["E501"]
 "packages/benchmax/src/benchmax/rewards/prompts.py" = ["E501"]
 "packages/castform/src/castform/rag/preprocess/email/filter_automated_email_qas.py" = ["E501"]
 # Same reason, and both files mix that prompt text with wrappable literals, so the

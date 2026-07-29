@@ -1,33 +1,21 @@
-# Harbor environments
+# harbor environments
 
-`HarborEnv` runs Harbor tasks without requiring a custom BenchMax subclass.
-Users configure the dataset, agent, sandbox, and verifier with Harbor's own
-models:
+`HarborEnv` is for existing Harbor tasks and harnesses where the Harbor agent, sandbox, and verifier own the rollout loop.
+
+see the [benchmax architecture](../../../../README.md#architecture) for the shared environment contract and [`examples/`](../../../../../../examples/) for complete environments.
+
+## configuration
+
+configure `HarborEnv` with Harbor's native dataset, agent, sandbox, and verifier models. most users configure it directly instead of subclassing it.
 
 ```python
-from harbor import (
-    DatasetConfig,
-    EnvironmentType,
-    TrialAgentConfig,
-    TrialEnvironmentConfig,
-    TrialVerifierConfig,
-)
-
-from benchmax.envs.harbor import (
-    HarborEnv,
-    HarborTrialTemplate,
-    ModalCredentials,
-)
-
 env = HarborEnv(
     dataset=DatasetConfig(name="org/dataset", ref="latest"),
-    reward_keys=("reward", "partial_credit"),
     eval_ratio=0.1,
     trial=HarborTrialTemplate(
         agent=TrialAgentConfig(name="mini-swe-agent"),
         environment=TrialEnvironmentConfig(type=EnvironmentType.MODAL),
         verifier=TrialVerifierConfig(
-            # Use the variable expected by this dataset's verifier.
             env={"JUDGE_MODEL": "openai/judge-model"},
         ),
     ),
@@ -38,97 +26,45 @@ env = HarborEnv(
 )
 ```
 
-`DatasetConfig` already supports local directories, Harbor packages,
-registries, and Git repositories. `HarborEnv.create_dataset()` resolves it into
-a content-addressed local snapshot; normal users do not implement a dataset.
+install `benchmax[harbor]` while authoring. include the selected provider in the bundle dependencies, such as `harbor[modal]>=0.18,<0.19` or `harbor[daytona]>=0.18,<0.19`.
 
-Choose evaluation configuration based on how the results will be used:
+## datasets
 
-| Configuration | Train | Eval | Intended use |
-| --- | --- | --- | --- |
-| `eval_dataset=...` | Complete primary dataset | Complete explicit dataset | Curated or benchmark evaluation |
-| No `eval_dataset`, `eval_ratio=0.1` | Remaining 90% | Deterministic 10% holdout | Convenient development signal |
-| No `eval_dataset`, `eval_ratio=0` | Complete primary dataset | Disabled | Training without evaluation |
+Harbor's `DatasetConfig` supports local directories, Harbor packages, registries, and git repositories. `HarborEnv.create_dataset` resolves the source into a content-addressed snapshot and returns the same fundamental benchmax `Dataset` type used by every environment.
 
-`eval_dataset` always takes precedence; `eval_ratio` is consulted only when no
-explicit eval dataset exists. Ratio splitting selects the lowest canonical task
-hashes, so source ordering and machine paths cannot change the split. Train and
-eval are complementary views over one resolved snapshot.
+choose evaluation data based on how the results will be used:
 
-The sandbox is selected explicitly by `TrialEnvironmentConfig.type` or its
-`import_path`. Credentials authenticate that selection but never choose it.
-Custom sandboxes normally implement Harbor's `BaseEnvironment` and use
-`import_path`; they do not subclass `HarborEnv`.
+| configuration | train | eval |
+| --- | --- | --- |
+| `eval_dataset=...` | complete primary dataset | complete explicit dataset |
+| `eval_ratio=0.1` | remaining 90% | deterministic 10% holdout |
+| `eval_ratio=0` | complete primary dataset | disabled |
 
-For Modal environments, BenchMax defaults Harbor's `app_name` to
-`harbor-benchmax`. Set `environment.kwargs["app_name"]` explicitly to group
-sandboxes under a different Modal App. Non-Modal environments are unaffected.
+an explicit `eval_dataset` takes precedence over `eval_ratio`. ratio splits use canonical task hashes, so source ordering and machine paths do not change membership.
 
-Modal and Daytona currently accept raw, explicit `sandbox_credentials`;
-`HarborEnv` does not read them from the launching shell. Review this constructor
-input before creating a bundle because sandbox credential reference injection is
-not implemented yet. `DaytonaCredentials` accepts
-either an API key or a JWT plus organization ID, with an optional named target.
-`ModalCredentials` lets the Modal client wait up to 60 seconds for API
-throttling by default; set `max_throttle_wait_seconds=0` to disable that retry.
+when `max_examples` is set, Harbor resolves at most that many examples for the selected split.
 
-The rollout request supplies the per-attempt TITO URL, key, and model.
-`HarborEnv` injects them only into the agent configuration and leaves
-verifier/judge configuration untouched. The request's model is the single
-source of the served model: it becomes an OpenAI-qualified Harbor model name
-(LiteLLM reads the `openai/` prefix as "use the OpenAI adapter against
-`OPENAI_BASE_URL`"), and the constructor rejects a preset `agent.model_name`.
-A harness that needs its own model alias implements that override itself.
-Because agents run inside remote sandboxes, `HarborEnv` declares
-`requires_public_model_endpoint=True` by default so the trainer routes model
-calls through a publicly reachable endpoint; pass `False` only when every
-sandbox can reach the trainer network directly.
-`reward_keys` must name the complete shape produced by this verifier. Harbor
-does not expose that schema itself, so BenchMax requires it explicitly instead
-of guessing from another rollout.
+## execution and scoring
 
-Harbor verifiers accept credentials only as static environment variables, so a
-verifier credential such as a judge API key is a fixed per-bundle value in
-`TrialVerifierConfig(env=...)`, exactly like the sandbox credential pair. Use a
-dedicated, revocable key rather than a personal one. Per-request rotation would
-require Harbor-side support for runtime verifier credentials.
+for each rollout, `HarborEnv` gives the task to the configured agent and sandbox. the harness produces the agent output, then its verifier or RewardKit scores the trial. `HarborEnv` preserves those reward components and includes RewardKit partial credit when available.
 
-Agent timeouts, context/output limits, nonzero harness exits, and sandbox,
-verifier, transport, or provider failures are logged and returned with the
-declared reward keys all zero. One failed trial does not cancel or distort its
-siblings. Request validation and task-configuration errors still fail loudly
-after siblings settle.
+the rollout request supplies the model endpoint and credential used by the agent. verifier and judge configuration remains separate. because agents usually run inside remote sandboxes, `HarborEnv` requests a publicly reachable model endpoint by default.
 
-Successful verifier rewards must exactly match `reward_keys`. When a successful
-trial also contains RewardKit's `verifier/reward-details.json`, `HarborEnv` adds
-the weighted criterion score as `partial_credit` when that key was declared and
-the verifier did not provide it.
+benchmax owns rollout-group concurrency. `max_concurrent_trials` can additionally cap how many Harbor sandbox trials this environment runs at once.
 
-Install `benchmax[harbor]` while authoring. Add the chosen Harbor provider extra
-to the rollout bundle's pip dependencies, for example `harbor[modal]>=0.18,<0.19`
-or `harbor[daytona]>=0.18,<0.19`.
+## sandboxes and credentials
 
-BenchMax owns rollout-group concurrency. A caller or trainer may add retry policy
-around that contract; BenchMax itself does not retry a group. Harbor's job-queue-
-only `agent.n_concurrent` and `agent.concurrency_group` settings are rejected
-rather than silently ignored. `max_concurrent_trials` caps how many sandbox
-trials this environment runs at once (unbounded by default); use it when the
-sandbox provider throttles concurrent sessions.
+the Harbor environment configuration selects the sandbox provider. credentials authenticate that provider but never select it.
 
-## Bundled custom agents
+Modal and Daytona currently use explicit `sandbox_credentials`. these values become part of the environment bundle, so use dedicated, revocable credentials rather than personal ones.
 
-Harbor resolves custom agents from a string import path after an environment has
-been deserialized. Capture custom agent code and its adjacent resources eagerly
-when defining the environment so that import does not depend on the authoring
-checkout:
+Harbor verifiers currently receive credentials as static environment variables in `TrialVerifierConfig`. runtime credential injection is available to the rollout agent, not to the verifier.
+
+## bundled custom agents
+
+custom agents can capture their Python source and adjacent resources so their import path does not depend on the author's checkout:
 
 ```python
-from pathlib import Path
-
-from harbor import TrialAgentConfig
-
-from benchmax.envs.harbor import BundledAgentSource, BundledHarborAgent
-
 agent_source = BundledAgentSource.from_directory(
     Path(__file__).parent,
     files=("my_agent.py", "helpers.py", "prompts/system.txt"),
@@ -139,18 +75,10 @@ agent = BundledHarborAgent(
 )
 ```
 
-The declared bytes, canonical relative paths, and a deterministic content ID
-travel with the environment. At runtime BenchMax materializes the tree once per
-process and imports it through a private content-addressed package namespace. It
-does not modify `sys.path`, and different source revisions cannot claim the same
-module name. The materialized tree remains available for the lifetime of the
-process because agent methods may read adjacent resources after construction.
-Individual Harbor trial configs contain only the resolved content-addressed
-import path; they do not duplicate the captured source tree.
+only explicitly listed files are captured. captured modules should use package-relative imports, and adjacent resources can be located from the agent module's `__file__`.
 
-Modules inside a captured package must use package-relative imports, such as
-`from .helpers import parse`. Top-level absolute imports such as `import helpers`
-would require changing the process-wide import path and are intentionally not
-supported. Adjacent resources may be located from the agent module's `__file__`.
-Only explicitly listed files are captured; directories, symlinks, caches, and
-undeclared checkout files are never included implicitly.
+## further reading
+
+- [benchmax architecture](../../../../README.md#architecture)
+- [Harbor examples](../../../../../../examples/)
+- [bundling](../../../../README.md#bundling)

@@ -32,11 +32,17 @@ class FakeChunk:
 
 
 def _make_entity(
-    name: str, etype: str = "entity", df: float = 0.05, quality_score: float = 0.9,
+    name: str,
+    etype: str = "entity",
+    df: float = 0.05,
+    quality_score: float = 0.9,
 ) -> EntityPattern:
     return EntityPattern(
-        name=name, type=etype, document_frequency=df,
-        idf_weight=1.0, quality_score=quality_score,
+        name=name,
+        type=etype,
+        document_frequency=df,
+        idf_weight=1.0,
+        quality_score=quality_score,
     )
 
 

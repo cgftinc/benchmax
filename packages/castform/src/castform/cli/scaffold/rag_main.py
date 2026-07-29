@@ -3,7 +3,7 @@
 The environment searches a hosted Castform corpus, answers inside
 ``<answer>...</answer>``, and earns separate correctness and citation rewards.
 Everything needed to understand and launch the run lives in this script; the
-concrete Postgres Search showcase under BenchMax examples is not a dependency.
+concrete Postgres Search showcase under benchmax examples is not a dependency.
 
 Before validating, set ``CORPUS_NAME`` to an existing hosted corpus and replace
 the committed seed JSONL with rows shaped as ``question``, ``answer``, and
@@ -20,7 +20,6 @@ import asyncio
 import dataclasses
 import json
 import re
-import sys
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,7 @@ from benchmax.envs import (
     BaseEnv,
     BaseRollout,
     DatasetSplit,
+    Environment,
     Example,
     InjectedAuth,
     JsonlDataset,
@@ -47,8 +47,8 @@ from benchmax.rewards import (
 
 from castform import config, validate_environment
 from castform.platform.client import TrainerClient
+from castform.platform.environment_assets import upload_assets
 from castform.platform.login import ensure_session
-from castform.platform.training_run import upload_training_run
 from castform.rag.corpus.postgres.search import PostgresSearch
 
 CORPUS_NAME = "my-corpus"
@@ -83,7 +83,6 @@ def _answer_text(messages: list[dict[str, Any]]) -> str:
 class CustomSearchEnv(BaseEnv):
     """Small search env backed by a named Castform corpus."""
 
-    reward_keys = ("answer_correctness", "citation_recall")
     system_prompt = f"""\
 Answer the question using the search tool. You may search at most
 {MAX_SEARCH_CALLS} times. Return the final response inside <answer>...</answer>
@@ -115,10 +114,13 @@ and cite supporting documents as [Source: <source_id>].
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> JsonlDataset[JsonRow]:
         return JsonlDataset(
             base_dir / f"{split}.jsonl",
             row_to_example=self._example_from_row,
+            max_examples=max_examples,
         )
 
     def _example_from_row(self, row: JsonRow) -> Example[JsonRow]:
@@ -172,11 +174,7 @@ and cite supporting documents as [Source: <source_id>].
         if not isinstance(query, str) or not query.strip():
             raise ValueError("search requires a non-empty string 'query'")
         limit = tool_args.get("limit", 10)
-        if (
-            isinstance(limit, bool)
-            or not isinstance(limit, int)
-            or not 1 <= limit <= 20
-        ):
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
             raise ValueError("search 'limit' must be an integer from 1 to 20")
         results = await self._search.search(
             query=query,
@@ -191,7 +189,7 @@ and cite supporting documents as [Source: <source_id>].
     async def compute_reward(self, rollout: BaseRollout) -> dict[str, float]:
         answer = _answer_text(rollout.messages)
         if not answer:
-            return {key: 0.0 for key in self.reward_keys}
+            return {"answer_correctness": 0.0, "citation_recall": 0.0}
 
         question = str(rollout.example_args.get("question") or "")
         ground_truth = str(rollout.example_args.get("ground_truth") or "")
@@ -212,18 +210,12 @@ and cite supporting documents as [Source: <source_id>].
                 metadata = chunk.get("metadata")
                 if not isinstance(metadata, dict):
                     continue
-                source = self._canonicalize_id(
-                    metadata.get("file") or metadata.get("file_path")
-                )
+                source = self._canonicalize_id(metadata.get("file") or metadata.get("file_path"))
                 if source:
                     gold_sources.add(source)
-        cited_sources = {
-            self._canonicalize_id(match) for match in _CITATION_RE.findall(answer)
-        }
+        cited_sources = {self._canonicalize_id(match) for match in _CITATION_RE.findall(answer)}
         citation_recall = (
-            len(gold_sources & cited_sources) / len(gold_sources)
-            if gold_sources
-            else 0.0
+            len(gold_sources & cited_sources) / len(gold_sources) if gold_sources else 0.0
         )
         return {
             "answer_correctness": clip01(judged.score),
@@ -233,11 +225,12 @@ and cite supporting documents as [Source: <source_id>].
 
 VALIDATE_CONFIG = {
     "model": "gpt-5.4-mini",
-    "include_remote": False,
+    "max_context_tokens": 2048,
+    "local_timeout_seconds": 120,
 }
 
 LAUNCH_CONFIG = {
-    "max_rollout_len": 16_384,
+    "max_context_len": 16_384,
     "num_epochs": 2,
 }
 
@@ -280,74 +273,70 @@ def generate_data(force: bool = False) -> bool:
     return False
 
 
-def _print_scorecard(report: Any) -> None:
-    for rollout_id, outcome in report.local.items():
-        rewards = dict(outcome.rewards)
-        total = sum(rewards.values())
-        print(
-            f"  {rollout_id}: termination_reason={outcome.termination_reason} "
-            f"total={total:.3f} rewards={rewards}"
+def _print_validation(report: Any) -> None:
+    for location in ("local", "remote"):
+        outcomes = getattr(report, location)
+        if outcomes is None:
+            continue
+        errors = getattr(report, f"{location}_errors")
+        for rollout_id, outcome in outcomes.items():
+            if rollout_id in errors:
+                print(f"❌ {location} {rollout_id}: {errors[rollout_id]}")
+            else:
+                mark = (
+                    "✅"
+                    if outcome.termination_reason in Environment.scorable_termination_reasons
+                    else "❌"
+                )
+                error_suffix = f" error={outcome.error}" if outcome.error else ""
+                print(
+                    f"{mark} {location} {rollout_id}: "
+                    f"{outcome.termination_reason} {dict(outcome.rewards)}{error_suffix}"
+                )
+        for rollout_id, error in errors.items():
+            if rollout_id not in outcomes:
+                print(f"❌ {location} {rollout_id}: {error}")
+    print("✅ validation passed" if report.ok else "❌ validation failed")
+
+
+def validate(env: CustomSearchEnv, uploaded_assets: Any) -> Any:
+    """Validate the exact uploaded assets, locally and in a hosted sandbox."""
+    report = asyncio.run(
+        validate_environment(
+            env,
+            model=str(VALIDATE_CONFIG["model"]),
+            split="train",
+            base_dir=Path("."),
+            remote_assets=uploaded_assets,
+            max_context_tokens=int(VALIDATE_CONFIG["max_context_tokens"]),
+            local_timeout_seconds=float(VALIDATE_CONFIG["local_timeout_seconds"]),
         )
-    print(f"validate: {'PASS' if report.ok else 'FAIL'}")
-
-
-async def _run_validation(env: CustomSearchEnv) -> Any:
-    dataset = await env.create_dataset("train", Path("."))
-    if not dataset:
-        raise ValueError(f"{TRAIN_FILE} contains no validation examples")
-    return await validate_environment(
-        env,
-        example=dataset[0],
-        model=str(VALIDATE_CONFIG["model"]),
-        include_remote=bool(VALIDATE_CONFIG.get("include_remote", False)),
     )
-
-
-def validate() -> Any:
-    env = CustomSearchEnv(**ENV_ARGS)
-    report = asyncio.run(_run_validation(env))
-    _print_scorecard(report)
+    _print_validation(report)
     return report
 
 
-def launch(assume_yes: bool = False) -> str | None:
-    report = validate()
-    if not report.ok:
-        print("launch: validation failed; refusing to launch.", file=sys.stderr)
-        return None
+def launch(uploaded_assets: Any, *, assume_yes: bool = False) -> str | None:
+    """Confirm, then train on GPUs with the assets that were just validated."""
     if not assume_yes:
         reply = (
-            input(
-                f"Launch '{_run_name()}' on GPUs — this spends credits. Continue? [y/N] "
-            )
+            input(f"Launch '{_run_name()}' on GPUs — this spends credits. Continue? [y/N] ")
             .strip()
             .lower()
         )
         if reply not in ("y", "yes"):
             print("launch: aborted.")
             return None
-
-    bundle = dump_bundle(
-        CustomSearchEnv,
-        constructor_args=ENV_ARGS,
-        pip_dependencies=RUNTIME_DEPENDENCIES,
-    )
-    uploaded = upload_training_run(
-        bundle=bundle,
-        train_dataset=_load_jsonl(TRAIN_FILE),
-        eval_dataset=_load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else [],
-        run_name=_run_name(),
-    )
+    # LAUNCH_CONFIG feeds the launcher, minus the reserved keys: `name` is the
+    # run name; `type` is not a wire arg. The server rejects any unknown key.
     launcher_args = {
-        key: value
-        for key, value in LAUNCH_CONFIG.items()
-        if key not in ("name", "type")
+        key: value for key, value in LAUNCH_CONFIG.items() if key not in ("name", "type")
     }
     with TrainerClient() as client:
         run_id = client.launch_training_run(
             name=_run_name(),
             launcher_args=launcher_args or None,
-            **dataclasses.asdict(uploaded),
+            **dataclasses.asdict(uploaded_assets),
         )
     print(f"launch: started run {run_id}")
     return run_id
@@ -356,15 +345,16 @@ def launch(assume_yes: bool = False) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="Run the Castform loop for this env: data -> validate -> launch.",
+        description="Run the castform loop for this env: data → upload → validate → launch.",
     )
     parser.add_argument(
-        "stage",
+        "action",
         nargs="?",
-        default="all",
-        choices=["data", "validate", "launch", "all"],
+        default="validate",
+        choices=["data", "validate", "launch"],
+        help="data stops after datasets; validate stops after checks; launch trains.",
     )
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--force", action="store_true", help="Regenerate datasets even if present.")
     parser.add_argument(
         "-y",
         "--yes",
@@ -372,17 +362,39 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip the launch confirmation (it spends GPU credits).",
     )
     args = parser.parse_args(argv)
+    total_stages = {"data": 1, "validate": 4, "launch": 5}[args.action]
 
-    ok = True
-    if args.stage in ("data", "all"):
-        ok = generate_data(force=args.force)
-    if args.stage in ("validate", "all") and ok:
-        ensure_session()  # local data preparation does not require platform login
-        ok = bool(validate().ok)
-    if args.stage == "launch":
-        ensure_session()
-        ok = launch(assume_yes=args.yes) is not None
-    return 0 if ok else 1
+    print(f"[stage 1/{total_stages}] generating data")
+    if not generate_data(force=args.force):
+        return 1
+    if args.action == "data":
+        return 0
+
+    ensure_session()  # data preparation stays usable without platform login
+    print(f"[stage 2/{total_stages}] bundling environment")
+    bundled_environment = dump_bundle(
+        CustomSearchEnv,
+        constructor_args=ENV_ARGS,
+        pip_dependencies=RUNTIME_DEPENDENCIES,
+    )
+    print(f"[stage 3/{total_stages}] uploading environment and dataset")
+    uploaded_assets = upload_assets(
+        bundle=bundled_environment,
+        train_dataset=_load_jsonl(TRAIN_FILE),
+        eval_dataset=(_load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else None),
+        run_name=_run_name(),
+    )
+    print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
+    print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
+    print(f"  dataset_path: {uploaded_assets.dataset_path}")
+    print(f"[stage 4/{total_stages}] validating environment")
+    report = validate(CustomSearchEnv(**ENV_ARGS), uploaded_assets)
+    if not report.ok:
+        return 1
+    if args.action == "launch":
+        print(f"[stage 5/{total_stages}] launching training")
+        return 0 if launch(uploaded_assets, assume_yes=args.yes) is not None else 1
+    return 0
 
 
 if __name__ == "__main__":

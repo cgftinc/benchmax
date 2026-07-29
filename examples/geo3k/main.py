@@ -5,9 +5,9 @@ geometry-diagram questions with \\boxed{...} answers and may call ``zoom`` to
 magnify a diagram region (the crop returns as an image inside the tool
 response). Reward is boxed-answer correctness.
 
-`python main.py [data|validate|launch|all]` drives the loop. The data stage
-prefetches the HuggingFace snapshot into ./data (skip if present; --force to
-refresh). Launch is an explicit, confirmed step — it spends GPU credits.
+`python main.py validate` caches the hugging face dataset, uploads the bundle,
+and runs local and hosted checks. `python main.py launch` follows the same path
+before asking to spend credits.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -17,18 +17,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import dataclasses
 import io
 import logging
 import re
 import sys
 import urllib.request
-import uuid
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from benchmax.bundle import dump_bundle
 from benchmax.envs.base import BaseEnv, BaseRollout, JsonRow, Tool
-from benchmax.envs.dataset import Dataset
+from benchmax.envs.dataset import Dataset, validate_max_examples
+from benchmax.envs.environment import Environment
 from benchmax.envs.identity import canonical_example_id
 from benchmax.envs.shared_types import (
     DatasetSplit,
@@ -36,12 +38,14 @@ from benchmax.envs.shared_types import (
     RewardMap,
     RolloutFailure,
 )
+from castform.platform import ensure_session, upload_assets
 
 logger = logging.getLogger(__name__)
 
 # Reject degenerate zoom boxes below this normalized edge length.
 _MIN_ZOOM_EDGE = 0.02
 _URL_FETCH_TIMEOUT_SECONDS = 30
+DATASET_REPO = "chenhegu/geo3k_imgurl"
 
 
 class Geo3KEnv(BaseEnv):
@@ -52,8 +56,6 @@ class Geo3KEnv(BaseEnv):
     templates render it with real vision tokens). Reward stays boxed-answer
     correctness — zooming is a capability, never a requirement.
     """
-
-    reward_keys = ("correctness",)
 
     # Mild nudge, not the probe's forcing phrasing: training should reinforce
     # zooming where it helps, not mandate it on legible diagrams.
@@ -66,7 +68,7 @@ class Geo3KEnv(BaseEnv):
     def __init__(
         self,
         *,
-        dataset_name: str = "chenhegu/geo3k_imgurl",
+        dataset_name: str = DATASET_REPO,
         train_split: str = "train",
         eval_split: str = "test",
         max_train_examples: int | None = None,
@@ -93,6 +95,8 @@ class Geo3KEnv(BaseEnv):
         self,
         split: DatasetSplit,
         base_dir: Path,
+        *,
+        max_examples: int | None = None,
     ) -> Dataset[JsonRow]:
         rows = _load_rows(
             self._dataset_name,
@@ -100,7 +104,10 @@ class Geo3KEnv(BaseEnv):
             cache_dir=base_dir / "geo3k",
         )
         rows = rows.shuffle(seed=self._sample_seed)
-        limit = self._limits[split]
+        configured_limit = self._limits[split]
+        requested_limit = validate_max_examples(max_examples)
+        limits = [limit for limit in (configured_limit, requested_limit) if limit is not None]
+        limit = min(limits) if limits else None
         if limit is not None:
             if limit <= 0:
                 raise ValueError("Geo3K example limits must be positive")
@@ -186,9 +193,7 @@ class _DiagramContext:
         payload = getattr(self._example, "payload", None) or {}
         source = _first_image_source(payload)
         if source is None:
-            raise RolloutFailure(
-                "harness_error", "geo3k example carries no diagram image"
-            )
+            raise RolloutFailure("harness_error", "geo3k example carries no diagram image")
         try:
             self._env._images[self._rollout_id] = _load_image(source)
         except Exception as exc:
@@ -220,9 +225,7 @@ def _load_image(source: str) -> Any:
         _, _, encoded = source.partition("base64,")
         raw = base64.b64decode(encoded)
     else:
-        with urllib.request.urlopen(
-            source, timeout=_URL_FETCH_TIMEOUT_SECONDS
-        ) as response:
+        with urllib.request.urlopen(source, timeout=_URL_FETCH_TIMEOUT_SECONDS) as response:
             raw = response.read()
     image = Image.open(io.BytesIO(raw))
     image.load()
@@ -285,9 +288,7 @@ def _load_rows(dataset_name: str, *, split: str, cache_dir: Path) -> Any:
 
 def _final_boxed_answer(rollout: BaseRollout) -> str | None:
     for message in reversed(rollout.messages):
-        if message.get("role") != "assistant" or not isinstance(
-            message.get("content"), str
-        ):
+        if message.get("role") != "assistant" or not isinstance(message.get("content"), str):
             continue
         text = message["content"]
         start = text.rfind("\\boxed{")
@@ -318,9 +319,7 @@ class Geo3KDataset(Dataset[JsonRow]):
         *,
         system_prompt: str | None = None,
     ) -> None:
-        super().__init__(
-            [_example(dict(row), system_prompt=system_prompt) for row in rows]
-        )
+        super().__init__([_example(dict(row), system_prompt=system_prompt) for row in rows])
 
 
 def _example(row: JsonRow, *, system_prompt: str | None = None) -> Example[JsonRow]:
@@ -371,12 +370,16 @@ def _normalize_data_uri(value: str) -> str:
 
 MODEL = "Qwen/Qwen3-VL-4B-Instruct"
 VALIDATE_MODEL = "gpt-5.4-mini"
-# Caps sample the shuffled split (sample_seed) at trainer runtime.
-ENV_ARGS = {"max_train_examples": 256, "max_eval_examples": 32}
+ENV_ARGS: dict[str, Any] = {}
 # `datasets` loads the HF snapshot in create_dataset; pillow decodes images.
 RUNTIME_DEPENDENCIES = ["datasets>=4.0.0", "pillow>=10"]
-
 DATA_DIR = Path(__file__).parent / "data"
+RUN_NAME = "geo3k"
+TRAINING_ARGS = {
+    "model": MODEL,
+    "max_train_examples": 256,
+    "max_eval_examples": 32,
+}
 
 
 def generate_data(*, force: bool) -> None:
@@ -385,100 +388,117 @@ def generate_data(*, force: bool) -> None:
         print(f"data: {marker} present — skipping (--force to redo)")
         return
     env = Geo3KEnv(**ENV_ARGS)
-    train = asyncio.run(env.create_dataset("train", DATA_DIR))
-    evaluation = asyncio.run(env.create_dataset("eval", DATA_DIR))
-    print(
-        f"data: fetched {len(train)} train / {len(evaluation)} eval examples into {marker}"
-    )
+    asyncio.run(env.create_dataset("train", DATA_DIR, max_examples=1))
+    asyncio.run(env.create_dataset("eval", DATA_DIR, max_examples=1))
+    print(f"data: cached {DATASET_REPO} in {marker}")
 
 
-def validate() -> Any:
+def validate(env: Geo3KEnv, uploaded_assets: Any) -> Any:
     from castform import validate_environment
 
-    env = Geo3KEnv(**ENV_ARGS)
-    dataset = asyncio.run(env.create_dataset("eval", DATA_DIR))
     report = asyncio.run(
-        validate_environment(env, example=dataset[0], model=VALIDATE_MODEL)
-    )
-    for rollout_id, outcome in report.local.items():
-        print(
-            f"  {rollout_id}: termination={outcome.termination_reason} "
-            f"rewards={dict(outcome.rewards)}"
+        validate_environment(
+            env,
+            model=VALIDATE_MODEL,
+            split="eval",
+            base_dir=DATA_DIR,
+            remote_assets=uploaded_assets,
+            max_context_tokens=2048,
         )
+    )
+    _print_validation(report)
     return report
 
 
-def launch(*, assume_yes: bool) -> str | None:
-    from benchmax.bundle import dump_bundle
+def launch(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
     from castform import config
     from castform.platform.client import TrainerClient
-    from castform.platform.training_run import upload_training_run
 
-    run_name = f"geo3k-{uuid.uuid4().hex[:8]}"
     if not assume_yes:
-        reply = input(
-            f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] "
-        )
+        reply = input("launch training on GPUs? this spends credits. [y/N] ")
         if reply.strip().lower() not in ("y", "yes"):
-            print("Launch aborted.")
+            print("launch: cancelled")
             return None
 
-    # Bundle-only upload: the env resolves its dataset from HuggingFace at
-    # trainer runtime, so no dataset blobs ship with the run.
-    bundle = dump_bundle(
+    with TrainerClient() as trainer:
+        run_id = trainer.launch_training_run(
+            name=RUN_NAME,
+            launcher_args=TRAINING_ARGS,
+            **dataclasses.asdict(uploaded_assets),
+        )
+    print(f"launch: started {run_id}")
+    print(f"view: {config.web_app_url()}/train/{run_id}")
+    return run_id
+
+
+def _print_validation(report: Any) -> None:
+    for location in ("local", "remote"):
+        outcomes = getattr(report, location)
+        if outcomes is None:
+            continue
+        errors = getattr(report, f"{location}_errors")
+        for rollout_id, outcome in outcomes.items():
+            if rollout_id in errors:
+                print(f"❌ {location} {rollout_id}: {errors[rollout_id]}")
+            else:
+                mark = (
+                    "✅"
+                    if outcome.termination_reason in Environment.scorable_termination_reasons
+                    else "❌"
+                )
+                error_suffix = f" error={outcome.error}" if outcome.error else ""
+                print(
+                    f"{mark} {location} {rollout_id}: "
+                    f"{outcome.termination_reason} {dict(outcome.rewards)}{error_suffix}"
+                )
+        for rollout_id, error in errors.items():
+            if rollout_id not in outcomes:
+                print(f"❌ {location} {rollout_id}: {error}")
+    print("✅ validation passed" if report.ok else "❌ validation failed")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=("data", "validate", "launch"),
+        default="validate",
+    )
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the launch confirmation",
+    )
+    args = parser.parse_args(argv)
+    total_stages = {"data": 1, "validate": 4, "launch": 5}[args.action]
+
+    print(f"[stage 1/{total_stages}] generating data")
+    generate_data(force=args.force)
+    if args.action == "data":
+        return 0
+
+    ensure_session()
+    print(f"[stage 2/{total_stages}] bundling environment")
+    bundled_environment = dump_bundle(
         Geo3KEnv,
         constructor_args=ENV_ARGS,
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
-    uploaded = upload_training_run(bundle=bundle, run_name=run_name)
-    with TrainerClient() as trainer:
-        run_id = trainer.launch_training_run(
-            env_cls_path=uploaded.env_cls_path,
-            env_metadata_path=uploaded.env_metadata_path,
-            name=run_name,
-            launcher_args={"model": MODEL},
-        )
-    print(f"✓ Launched run_id={run_id}")
-    print(f"  View / cancel at: {config.web_app_url()}/train/{run_id}")
-    return run_id
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="main.py",
-        description="Run the castform loop for this env: data → validate → launch.",
-    )
-    parser.add_argument(
-        "stage",
-        nargs="?",
-        default="all",
-        choices=["data", "validate", "launch", "all"],
-        help="Stage to run (default: all = data → validate, then STOP).",
-    )
-    parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
-    parser.add_argument(
-        "-y",
-        "--yes",
-        action="store_true",
-        help="Skip the launch confirmation (it spends GPU credits).",
-    )
-    args = parser.parse_args(argv)
-
-    from castform.platform import ensure_session
-
-    ok = True
-    if args.stage in ("data", "all"):
-        generate_data(force=args.force)
-    if args.stage in ("validate", "all"):
-        ensure_session()
-        report = validate()
-        ok = report is not None and report.ok
-    if args.stage == "launch":
-        ensure_session()
-        ok = launch(assume_yes=args.yes) is not None
-    return 0 if ok else 1
+    print(f"[stage 3/{total_stages}] uploading environment")
+    uploaded_assets = upload_assets(bundle=bundled_environment, run_name=RUN_NAME)
+    print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
+    print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
+    print(f"  dataset_path: {uploaded_assets.dataset_path}")
+    print(f"[stage 4/{total_stages}] validating environment")
+    report = validate(Geo3KEnv(**ENV_ARGS), uploaded_assets)
+    if not report.ok:
+        return 1
+    if args.action == "launch":
+        print(f"[stage 5/{total_stages}] launching training")
+        launch(uploaded_assets, assume_yes=args.yes)
+    return 0
 
 
 if __name__ == "__main__":

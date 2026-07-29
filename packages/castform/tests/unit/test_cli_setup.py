@@ -89,9 +89,7 @@ def test_setup_codex_writes_agents_skills(tmp_path):
     assert ".agents/skills" in guide
     assert ".claude/skills" not in guide
     assert "Keep correctness dominant" in guide
-    view_progress = (
-        tmp_path / ".agents" / "skills" / "view-progress" / "SKILL.md"
-    ).read_text()
+    view_progress = (tmp_path / ".agents" / "skills" / "view-progress" / "SKILL.md").read_text()
     assert "castform runs rollout" in view_progress
     assert "--view" not in view_progress
 
@@ -138,14 +136,12 @@ def test_setup_force_overwrites(tmp_path):
 def test_setup_content_cites_real_verbs(tmp_path):
     setup._cmd_setup(_ns(tmp_path, agent="claude"))
     guide = (tmp_path / "CLAUDE.md").read_text()
-    launch_skill = (
-        tmp_path / ".claude" / "skills" / "launch-run" / "SKILL.md"
-    ).read_text()
+    launch_skill = (tmp_path / ".claude" / "skills" / "launch-run" / "SKILL.md").read_text()
     assert "python main.py validate" in guide
     assert "python main.py launch" in guide
     assert "castform launch" not in guide + launch_skill
-    assert "max_rollout_len" in launch_skill
-    assert "upload_training_run(bundle=bundle" in launch_skill
+    assert "max_context_len" in launch_skill
+    assert "upload_assets(bundle=bundle" in launch_skill
 
 
 def test_setup_generic_ships_seed_env_and_data(tmp_path, monkeypatch):
@@ -205,7 +201,9 @@ def test_setup_template_rag_writes_searchenv(tmp_path):
     assert issubclass(env_cls, BaseEnv)
     assert isinstance(env_cls(), BaseEnv)  # no-arg construct, no network
     assert env_cls().max_turns == 7
-    assert mod.LAUNCH_CONFIG["max_rollout_len"] == 16384
+    assert mod.VALIDATE_CONFIG["max_context_tokens"] == 2048
+    assert mod.VALIDATE_CONFIG["local_timeout_seconds"] == 120
+    assert mod.LAUNCH_CONFIG["max_context_len"] == 16384
 
 
 def test_setup_template_rag_writes_seed_and_datasets(tmp_path, monkeypatch):
@@ -245,7 +243,7 @@ spec = importlib.util.spec_from_file_location('generated_rag_main', 'main.py')
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
-assert module.CustomSearchEnv().reward_keys == ('answer_correctness', 'citation_recall')
+assert module.CustomSearchEnv()
 """
     subprocess.run([sys.executable, "-c", code], cwd=tmp_path, check=True)
 

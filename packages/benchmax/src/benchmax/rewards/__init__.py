@@ -1,4 +1,4 @@
-"""Reward primitives for BenchMax environments."""
+"""Reward primitives for benchmax environments."""
 
 from .adaptive import (
     AdaptiveRubrics,
