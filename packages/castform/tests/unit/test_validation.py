@@ -385,3 +385,68 @@ async def test_castform_auth_refuses_a_third_party_endpoint(monkeypatch) -> None
 
     with pytest.raises(RuntimeError, match="non-Castform model endpoint"):
         await CastformModelAuth().headers_for_request(context)
+
+
+async def test_local_validation_retries_a_transient_trace_failure(monkeypatch) -> None:
+    class FlakySessionClient(FakeModelSessionClient):
+        async def collect(self, session):
+            self.collected.append(session.session_id)
+            first_attempt = FlakySessionClient.instances.index(self) == 0
+            return {"num_calls": 0 if first_attempt else 1, "truncated": False}
+
+    monkeypatch.setattr("castform.validation.ModelSessionClient", FlakySessionClient)
+    env = RecordingEnvironment()
+
+    report = await validate_environment(
+        env,
+        model="test-model",
+        model_auth=StaticBearerAuth("rollout-token"),
+    )
+
+    assert report.ok
+    assert not report.local_errors
+    assert len(env.groups) == 2
+
+
+async def test_remote_validation_retries_a_transient_failure(monkeypatch) -> None:
+    attempts: list[int] = []
+
+    class FlakyRolloutClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_group(self, **kwargs):
+            attempts.append(len(attempts))
+            transient = len(attempts) == 1
+            return [
+                {
+                    "rollout_id": "remote-1",
+                    "success": not transient,
+                    "rewards": {} if transient else {"score": 1.0},
+                    "termination_reason": "harness_error" if transient else "finished",
+                    "error": "upstream 524" if transient else None,
+                },
+                {
+                    "rollout_id": "remote-2",
+                    "success": True,
+                    "rewards": {"score": 1.0},
+                    "termination_reason": "finished",
+                },
+            ]
+
+    monkeypatch.setattr("castform.validation.RolloutClient", FlakyRolloutClient)
+
+    report = await validate_environment(
+        RecordingEnvironment(),
+        model="test-model",
+        model_auth=StaticBearerAuth("rollout-token"),
+        remote_assets=UploadedEnvironmentAssets(
+            env_cls_path="envs/run/env-cls.pkl",
+            env_metadata_path="envs/run/env-metadata.json",
+            dataset_path=None,
+        ),
+    )
+
+    assert report.ok
+    assert not report.remote_errors
+    assert len(attempts) == 2

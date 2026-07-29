@@ -88,51 +88,67 @@ async def validate_environment(
     else:
         resolved_auth_bindings = dict(auth_bindings)
 
-    local, local_errors, rollout_ids = await _run_local_validation(
-        env=env,
-        model=model,
-        split=split,
-        base_dir=base_dir,
-        model_auth=resolved_model_auth,
-        auth_bindings=resolved_auth_bindings,
-        proxy_base_url=resolved_base_url,
-        max_context_tokens=max_context_tokens,
-        timeout_seconds=local_timeout_seconds,
-    )
+    # One bounded retry per phase: a transient upstream failure (a flaky
+    # model-call 5xx) should not force a full re-run of the whole pipeline.
+    # A genuine environment defect still fails on the second attempt.
+    for attempt in range(2):
+        local, local_errors, rollout_ids = await _run_local_validation(
+            env=env,
+            model=model,
+            split=split,
+            base_dir=base_dir,
+            model_auth=resolved_model_auth,
+            auth_bindings=resolved_auth_bindings,
+            proxy_base_url=resolved_base_url,
+            max_context_tokens=max_context_tokens,
+            timeout_seconds=local_timeout_seconds,
+        )
+        if not local_errors or attempt:
+            break
+        logger.warning(
+            "castform.validation.local_retry failures=%s — retrying the local phase once",
+            local_errors,
+        )
 
     if set(local) != set(rollout_ids):
         raise ValueError(f"local validation returned unexpected rollout IDs: {sorted(local)}")
 
     remote: dict[str, RolloutOutcome] | None = None
+    remote_errors: dict[str, str] = {}
     if remote_assets is not None:
         client = RolloutClient(server_url=platform_url)
-        events = await asyncio.to_thread(
-            client.run_group,
-            samples=2,
-            env_cls_path=remote_assets.env_cls_path,
-            env_metadata_path=remote_assets.env_metadata_path,
-            dataset_path=remote_assets.dataset_path,
-            split=split,
-            model=model,
-            max_context_tokens=max_context_tokens,
-            verbose=False,
-        )
-        if len(events) != 2:
-            raise ValueError(f"hosted validation returned {len(events)} rollouts; expected 2")
-        remote = {}
-        remote_errors: dict[str, str] = {}
-        for index, event in enumerate(events):
-            rollout_id = str(event.get("rollout_id") or f"remote-{index}")
-            if event.get("success") is not True:
-                remote_errors[rollout_id] = str(
-                    event.get("error") or "rollout produced no usable model trace"
-                )
-            remote[rollout_id] = RolloutOutcome(
-                rewards=dict(event.get("rewards") or {}),
-                termination_reason=str(event.get("termination_reason") or "unknown"),
+        for attempt in range(2):
+            events = await asyncio.to_thread(
+                client.run_group,
+                samples=2,
+                env_cls_path=remote_assets.env_cls_path,
+                env_metadata_path=remote_assets.env_metadata_path,
+                dataset_path=remote_assets.dataset_path,
+                split=split,
+                model=model,
+                max_context_tokens=max_context_tokens,
+                verbose=False,
             )
-    else:
-        remote_errors = {}
+            if len(events) != 2:
+                raise ValueError(f"hosted validation returned {len(events)} rollouts; expected 2")
+            remote = {}
+            remote_errors = {}
+            for index, event in enumerate(events):
+                rollout_id = str(event.get("rollout_id") or f"remote-{index}")
+                if event.get("success") is not True:
+                    remote_errors[rollout_id] = str(
+                        event.get("error") or "rollout produced no usable model trace"
+                    )
+                remote[rollout_id] = RolloutOutcome(
+                    rewards=dict(event.get("rewards") or {}),
+                    termination_reason=str(event.get("termination_reason") or "unknown"),
+                )
+            if not remote_errors or attempt:
+                break
+            logger.warning(
+                "castform.validation.remote_retry failures=%s — retrying the hosted phase once",
+                remote_errors,
+            )
 
     return ValidationReport(
         local=local,
