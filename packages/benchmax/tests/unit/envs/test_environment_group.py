@@ -232,6 +232,42 @@ async def test_group_scorer_defect_settles_the_group_without_crashing(
     assert "group verifier crashed" in caplog.text
 
 
+async def test_group_defect_keeps_budget_stop_labels(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Same precedence as HarborEnv: a budget stop outranks a group scoring error."""
+
+    class MixedTerminationEnv(_ScoredEnv):
+        async def run_rollout(
+            self,
+            request: RolloutRequest[dict[str, Any]],
+        ) -> RolloutAttempt:
+            attempt = await super().run_rollout(request)
+            if request.rollout_id == "rollout-1":
+                return RolloutAttempt(
+                    rollout_id=attempt.rollout_id,
+                    termination_reason="context_exceeded",
+                    rewards={},
+                )
+            return attempt
+
+        async def compute_group_rewards(self, rollouts):
+            raise RuntimeError("group verifier crashed")
+
+    example = Example(id="example-1", payload={"rollout-1": 0.0, "rollout-2": 0.0})
+    requests = [_request(f"rollout-{index}", example) for index in range(1, 3)]
+
+    outcomes = await MixedTerminationEnv(group_size=2).run_group(requests)
+
+    assert outcomes["rollout-1"].termination_reason == "context_exceeded"
+    assert outcomes["rollout-2"].termination_reason == "group_reward_error"
+    assert all(outcome.rewards == {} for outcome in outcomes.values())
+    assert all(
+        outcome.error == "RuntimeError: group verifier crashed" for outcome in outcomes.values()
+    )
+    assert "group verifier crashed" in caplog.text
+
+
 async def test_operational_group_judge_failure_empties_the_complete_group(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -35,6 +35,8 @@ class RolloutFailure(RuntimeError):  # noqa: N818 — public exported name
         _validate_termination_reason(termination_reason)
         if termination_reason == "finished":
             raise ValueError("a rollout failure cannot terminate as 'finished'")
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("RolloutFailure message must be a non-empty string")
         super().__init__(message)
         self.termination_reason = termination_reason
 
@@ -87,11 +89,17 @@ class RolloutRequest[Payload]:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RolloutAttempt:
-    """One completed environment execution before group rewards are merged."""
+    """One completed environment execution before group rewards are merged.
+
+    ``error`` carries the first settlement failure message (a scoring hook or
+    trial infrastructure error). ``termination_reason`` stays what stopped the
+    rollout, so a budget stop is never masked by a later error.
+    """
 
     rollout_id: str
     termination_reason: str
     rewards: RewardMap | None = None
+    error: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.rollout_id, str) or not self.rollout_id.strip():
@@ -99,6 +107,7 @@ class RolloutAttempt:
         _validate_termination_reason(self.termination_reason)
         if self.rewards is not None:
             _validate_rewards(self.rewards)
+        _validate_error(self.error)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,19 +124,29 @@ class RolloutOutcome:
     ``harness_error``, ``sandbox_error``, ``verifier_timeout``,
     ``verifier_error``, ``model_error``, ``tool_error``, ``judge_error``, and
     ``unknown``.
+
+    ``error`` carries the first settlement failure message, if any; the
+    reason above stays what stopped the rollout.
     """
 
     rewards: RewardMap
     termination_reason: str
+    error: str | None = None
 
     def __post_init__(self) -> None:
         _validate_termination_reason(self.termination_reason)
         _validate_rewards(self.rewards)
+        _validate_error(self.error)
 
 
 def _validate_termination_reason(termination_reason: str) -> None:
     if not isinstance(termination_reason, str) or not termination_reason.strip():
         raise ValueError("termination_reason must be a non-empty string")
+
+
+def _validate_error(error: str | None) -> None:
+    if error is not None and (not isinstance(error, str) or not error.strip()):
+        raise ValueError("error must be None or a non-empty string")
 
 
 def _validate_rewards(rewards: RewardMap) -> None:

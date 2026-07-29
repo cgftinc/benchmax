@@ -115,6 +115,7 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
                 _log_operational_failure(request.rollout_id, result)
                 outcomes[request.rollout_id] = _failure_outcome(
                     result.termination_reason,
+                    error=str(result),
                 )
             elif isinstance(result, BaseException):
                 contract_errors.append(result)
@@ -124,6 +125,7 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
                 outcomes[result.rollout_id] = RolloutOutcome(
                     rewards=dict(result.rewards or {}),
                     termination_reason=result.termination_reason,
+                    error=result.error,
                 )
             else:
                 if result.termination_reason != "finished":
@@ -156,19 +158,28 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
                 _log_operational_failure("group", failure)
                 for rollout in rollouts:
                     outcomes[rollout.rollout_id] = _failure_outcome(
-                        failure.termination_reason,
+                        settle_termination_reason(
+                            rollout.termination_reason,
+                            failure.termination_reason,
+                        ),
+                        error=rollout.error or str(failure),
                     )
             except Exception as error:
                 _log_group_reward_defect(error)
                 for rollout in rollouts:
                     outcomes[rollout.rollout_id] = _failure_outcome(
-                        "group_reward_error",
+                        settle_termination_reason(
+                            rollout.termination_reason,
+                            "group_reward_error",
+                        ),
+                        error=rollout.error or f"{type(error).__name__}: {error}",
                     )
             else:
                 for rollout in rollouts:
                     outcomes[rollout.rollout_id] = RolloutOutcome(
                         rewards=merged[rollout.rollout_id],
                         termination_reason=rollout.termination_reason,
+                        error=rollout.error,
                     )
 
         return {rollout_id: outcomes[rollout_id] for rollout_id in rollout_ids}
@@ -222,13 +233,27 @@ def _validate_group_requests[Payload](
 
 def _failure_outcome(
     termination_reason: str,
+    *,
+    error: str | None = None,
 ) -> RolloutOutcome:
     """Create an empty-reward outcome for an operational failure."""
 
     return RolloutOutcome(
         rewards={},
         termination_reason=termination_reason,
+        error=error,
     )
+
+
+def settle_termination_reason(attempt_reason: str, failure_reason: str) -> str:
+    """A reward-stage failure relabels only a clean finish.
+
+    Same precedence as HarborEnv: a budget stop (context_exceeded,
+    max_turns_exceeded, ...) outranks a later scoring error, which is logged
+    and zeroes rewards without masking what actually stopped the rollout.
+    """
+
+    return failure_reason if attempt_reason == "finished" else attempt_reason
 
 
 def _validate_failure_rewards(

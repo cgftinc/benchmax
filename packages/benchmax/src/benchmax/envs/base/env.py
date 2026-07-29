@@ -15,7 +15,7 @@ from benchmax.auth import ModelRequestContext
 from benchmax.envs.base.dataset import JsonRow
 from benchmax.envs.base.openai_types import Message, Messages, Tool
 from benchmax.envs.dataset import Dataset
-from benchmax.envs.environment import Environment
+from benchmax.envs.environment import Environment, settle_termination_reason
 from benchmax.envs.shared_types import (
     DatasetSplit,
     Example,
@@ -263,8 +263,12 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     )
                     return replace(
                         rollout,
-                        termination_reason=failure.termination_reason,
+                        termination_reason=settle_termination_reason(
+                            termination_reason,
+                            failure.termination_reason,
+                        ),
                         rewards={},
+                        error=str(failure),
                     )
                 except Exception as error:
                     # compute_reward is user code: a defect settles this one
@@ -279,8 +283,12 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     )
                     return replace(
                         rollout,
-                        termination_reason="reward_error",
+                        termination_reason=settle_termination_reason(
+                            termination_reason,
+                            "reward_error",
+                        ),
                         rewards={},
+                        error=f"{type(error).__name__}: {error}",
                     )
                 return replace(rollout, rewards=rewards)
 

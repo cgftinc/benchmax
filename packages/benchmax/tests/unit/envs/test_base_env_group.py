@@ -833,7 +833,7 @@ async def test_base_env_merges_individual_and_group_reward_dimensions() -> None:
     }
 
 
-async def test_duplicate_individual_and_group_reward_keys_settle_the_group(
+async def test_duplicate_individual_and_group_components_settle_the_group(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class ConflictingMathEnv(_MathEnv):
@@ -864,6 +864,57 @@ async def test_duplicate_individual_and_group_reward_keys_settle_the_group(
     assert outcome.termination_reason == "group_reward_error"
     assert outcome.rewards == {}
     assert "duplicate keys" in caplog.text
+
+
+async def test_compute_reward_defect_keeps_a_budget_stop_label(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Same precedence as HarborEnv: a budget stop outranks a scoring error."""
+
+    class BrokenBudgetRewardEnv(_ToolMathEnv):
+        def __init__(self) -> None:
+            super().__init__(max_tool_calls=1)
+            self.max_turns = 1
+
+        async def compute_reward(self, rollout: BaseRollout) -> RewardMap:
+            raise KeyError("missing ground_truth column")
+
+    example = Example(
+        id="math-budget-broken-reward",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "What is 6 × 7?"}],
+            "answer": "42",
+        },
+    )
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (
+            200,
+            completion_response(
+                content=None,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "multiply",
+                            "arguments": '{"left":6,"right":7}',
+                        },
+                    }
+                ],
+            ),
+        )
+    ) as server:
+        outcomes = await BrokenBudgetRewardEnv().run_group(
+            _requests(server, example, ["rollout-1"])
+        )
+
+    outcome = outcomes["rollout-1"]
+    assert outcome.termination_reason == "max_turns_exceeded"
+    assert outcome.rewards == {}
+    assert outcome.error == "KeyError: 'missing ground_truth column'"
+    assert "missing ground_truth column" in caplog.text
 
 
 async def test_compute_reward_defect_settles_the_rollout_as_reward_error(

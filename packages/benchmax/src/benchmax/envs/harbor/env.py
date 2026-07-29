@@ -288,6 +288,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                 rollout = _zero_reward_rollout(
                     request.rollout_id,
                     termination_reason=_exception_termination_reason(type(error).__name__),
+                    error=f"{type(error).__name__}: {error}",
                 )
             else:
                 rollout = _rollout_attempt(
@@ -337,18 +338,22 @@ def _rollout_attempt(
                 if result.exception_info is None and termination_reason == "finished"
                 else termination_reason
             ),
+            error=detail,
         )
 
     if result.exception_info is not None:
+        detail = (
+            f"{result.exception_info.exception_type}: {result.exception_info.exception_message}"
+        )
         logger.error(
-            "harbor.rollout.zero_reward rollout_id=%s error=%s: %s",
+            "harbor.rollout.zero_reward rollout_id=%s error=%s",
             rollout_id,
-            result.exception_info.exception_type,
-            result.exception_info.exception_message,
+            detail,
         )
         return _zero_reward_rollout(
             rollout_id,
             termination_reason=termination_reason,
+            error=detail,
         )
 
     normalized_rewards = {str(key): float(value) for key, value in rewards.items()}
@@ -369,6 +374,7 @@ def _zero_reward_rollout(
     rollout_id: str,
     *,
     termination_reason: str,
+    error: str | None = None,
 ) -> RolloutAttempt:
     """Keep a failed Harbor rollout in its group without inventing reward signal."""
 
@@ -376,6 +382,7 @@ def _zero_reward_rollout(
         rollout_id=rollout_id,
         termination_reason=termination_reason,
         rewards={},
+        error=error,
     )
 
 
