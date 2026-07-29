@@ -6,8 +6,9 @@ per-stage skills into each agent's skills dir (claude → ``.claude/skills/``,
 codex → ``.agents/skills/``, with the body's path references retargeted), a
 starter prompt, and a standalone ``pyproject.toml`` + runnable seed ``main.py`` +
 tiny seed datasets per template (``generic`` → a minimal single-turn env,
-``rag`` → a hosted-corpus search env) so ``python main.py validate`` runs on day
-one. ``--no-template`` skips the seed (docs + skills only; the agent writes
+``rag`` → a hosted-corpus search env, ``sft`` → an env-less supervised
+fine-tuning dataset) so ``python main.py validate`` runs on day one.
+``--no-template`` skips the seed (docs + skills only; the agent writes
 ``main.py`` from the design-environment skill). Does NOT open the agent.
 The scaffold prose duplicates the web-app generator (``buildAgentContextBody``)
 for now — accepted divergence debt; keep aligned.
@@ -60,6 +61,14 @@ _TEMPLATE_SEEDS = {
         "main": "rag_main.py",
         "train": "rag_train_dataset.jsonl",
         "eval": "rag_eval_dataset.jsonl",
+    },
+    # Env-less: no env class and no reward, hence no `tests` entry. Seeds are
+    # canonical text chat rows — the multimodal row stays opt-in inside
+    # `sft_main.py` (it needs a vision base model), never written as a seed.
+    "sft": {
+        "main": "sft_main.py",
+        "train": "sft_train_dataset.jsonl",
+        "eval": "sft_eval_dataset.jsonl",
     },
 }
 
@@ -389,11 +398,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--template",
-        choices=["generic", "rag"],
+        choices=["generic", "rag", "sft"],
         default="generic",
         help="Env seed: 'generic' = a minimal single-turn env, 'rag' = a hosted-"
-        "corpus search env (both ship a pyproject, runnable main.py, and tiny "
-        "datasets; default: generic)",
+        "corpus search env, 'sft' = an env-less supervised fine-tuning dataset "
+        "(all three ship a pyproject, runnable main.py, and tiny datasets; "
+        "default: generic)",
     )
     p.add_argument(
         "--no-template",

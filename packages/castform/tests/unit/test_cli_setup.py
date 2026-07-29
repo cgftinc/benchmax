@@ -266,6 +266,67 @@ def test_setup_template_rag_force_overwrites(tmp_path):
     assert "CustomSearchEnv" in main_py and main_py != "MINE"
 
 
+def test_setup_template_sft_writes_dataset_project(tmp_path, monkeypatch):
+    """--template sft ships the env-less SFT main.py verbatim plus tiny chat-format
+    seed datasets at the shared train.jsonl / eval.jsonl destinations. There is no
+    env class and no reward, so no seed env test is written."""
+    monkeypatch.setattr(setup, "version", lambda distribution: "0.1.2")
+    assert setup._cmd_setup(_ns(tmp_path, template="sft")) == 0
+
+    packaged = (
+        Path(setup.__file__).parent / "scaffold" / "sft_main.py"
+    ).read_text()
+    assert (tmp_path / "main.py").read_text() == packaged  # written verbatim
+    assert not (tmp_path / "tests" / "test_env.py").exists()
+
+    for name in ("train.jsonl", "eval.jsonl"):
+        rows = _read_jsonl(tmp_path / name)
+        assert rows, name
+        for row in rows:
+            assert set(row) == {"messages"}
+            assert {m["role"] for m in row["messages"]} == {"user", "assistant"}
+
+    project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
+    assert project["project"]["dependencies"] == [
+        "benchmax==0.1.2",
+        "castform==0.1.2",  # env-less: no rag extra
+    ]
+
+
+def test_setup_template_sft_seeds_match_the_template_inline_seed(tmp_path):
+    """The written seeds and `python main.py data` must produce the same rows —
+    otherwise regenerating the dataset from the template silently changes it."""
+    assert setup._cmd_setup(_ns(tmp_path, template="sft")) == 0
+    module = load_module(tmp_path / "main.py")
+    assert _read_jsonl(tmp_path / "train.jsonl") == module._SEED_TRAIN
+    assert _read_jsonl(tmp_path / "eval.jsonl") == module._SEED_EVAL
+    # the multimodal demonstration stays opt-in data inside the template only
+    assert module._SEED_MULTIMODAL not in module._SEED_TRAIN
+    assert "image_url" not in (tmp_path / "train.jsonl").read_text()
+
+
+def test_setup_template_sft_validates_day_one(tmp_path):
+    """The scaffolded project passes its local validate stage with zero edits."""
+    assert setup._cmd_setup(_ns(tmp_path, template="sft")) == 0
+    done = subprocess.run(
+        [sys.executable, "main.py", "validate"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "validate: pass" in done.stdout
+
+
+def test_setup_template_sft_refuses_existing_main_py(tmp_path, capsys):
+    """The hollow-pass guard covers the sft template too: an existing main.py and
+    no --force must fail loudly and leave the file untouched."""
+    (tmp_path / "main.py").write_text("MINE")
+    assert setup._cmd_setup(_ns(tmp_path, template="sft")) == 1
+    assert (tmp_path / "main.py").read_text() == "MINE"  # untouched
+    assert "already exists" in capsys.readouterr().err
+
+
 def test_setup_force_replaces_main_py_but_keeps_datasets(tmp_path):
     """--force clears the main.py overwrite guard but must NOT clobber datasets —
     real project-generated output is never overwritten by the placeholder seed."""
