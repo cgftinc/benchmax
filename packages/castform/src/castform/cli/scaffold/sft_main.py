@@ -24,9 +24,10 @@ Two launch gates sit in front of the wire, and they are independent:
   `LAUNCH_CONFIG["allow_experimental_weights"]` is true.
 * Live launch is gated on `castform.platform.client.SFT_LAUNCH_SUPPORTED`
   (False as of writing — the platform does not accept env-less sft launch
-  args yet). The check runs BEFORE any upload, so nothing is orphaned in
-  storage behind an API that cannot succeed. The upload→launch path below is
-  fully implemented and unit-tested; it just cannot reach a real platform yet.
+  args yet). It is the FIRST thing `launch()` checks, ahead of the login, the
+  confirmation prompt and the upload, so a run the platform cannot accept
+  costs nothing and orphans nothing. The upload→launch path below is fully
+  implemented and unit-tested; it just cannot reach a real platform yet.
 """
 
 from __future__ import annotations
@@ -314,14 +315,28 @@ def _launcher_args() -> dict[str, Any]:
 
 
 def launch(assume_yes: bool = False) -> str | None:
-    """Validate-gate, weight-gate, capability-gate, confirm, then upload + launch
-    an SFT training run (spends credits). Returns the run id, or None if
-    gated/aborted.
+    """Capability-gate, validate-gate, weight-gate, confirm, log in, then upload
+    + launch an SFT training run (spends credits). Returns the run id, or None
+    if gated/aborted.
+
+    Every side effect — the login, the prompt, the upload, the POST — lives
+    inside this function, behind the capability gate, so an importer calling
+    `launch()` directly is gated exactly like `main(["launch"])` is.
 
     The train/eval pair is loaded ONCE, up front — the same objects that get
     validated are the ones passed to `upload_sft_run`, so a file edit or swap
     between validate and confirm cannot bypass the schema/weight gates.
     """
+    # First, ahead of every side effect: no login, prompt or upload behind an
+    # API that cannot succeed yet.
+    if not platform_client.SFT_LAUNCH_SUPPORTED:
+        print(
+            "launch: the platform does not accept env-less sft runs yet "
+            "(castform.platform.client.SFT_LAUNCH_SUPPORTED is False).",
+            file=sys.stderr,
+        )
+        return None
+
     train, eval_dataset = _load_datasets()
     report = _validate_loaded(train, eval_dataset)  # never spend GPU on broken data
     if report is None or not report.ok:
@@ -331,7 +346,7 @@ def launch(assume_yes: bool = False) -> str | None:
         )
         return None
 
-    # Weight gate: a separate capability from SFT_LAUNCH_SUPPORTED below — the
+    # Weight gate: a separate capability from SFT_LAUNCH_SUPPORTED above — the
     # validate notice alone does not clear it. Strict bool (not truthiness) —
     # a typo'd string value must fail loudly, never silently clear the gate.
     if report.masking_summary.rows_with_weight and not sft_config_bool(
@@ -347,16 +362,6 @@ def launch(assume_yes: bool = False) -> str | None:
 
     launcher_args = _launcher_args()
 
-    # Capability gate before upload — no orphaned storage behind an API that
-    # cannot succeed yet.
-    if not platform_client.SFT_LAUNCH_SUPPORTED:
-        print(
-            "launch: the platform does not accept env-less sft runs yet "
-            "(castform.platform.client.SFT_LAUNCH_SUPPORTED is False).",
-            file=sys.stderr,
-        )
-        return None
-
     if not assume_yes:
         reply = (
             input(
@@ -369,6 +374,9 @@ def launch(assume_yes: bool = False) -> str | None:
             print("launch: aborted.")
             return None
 
+    # Credential last: every gate above is local, so nothing declined or blocked
+    # ever triggers a login.
+    ensure_session()
     uploaded = upload_sft_run(train=train, eval=eval_dataset, run_name=_run_name())
 
     with TrainerClient() as client:
@@ -409,13 +417,11 @@ def main(argv: list[str] | None = None) -> int:
         ok = True
         if args.stage in ("data", "all"):
             generate_data(force=args.force)
-        # data and validate are local-only — launch is the one stage that talks
-        # to the platform, so it is the only one that needs a credential.
         if args.stage in ("validate", "all"):
             report = validate()
             ok = report is not None and report.ok  # non-zero exit on a failed validate
+        # `launch` owns its own credential — see `launch()`, which gates before it.
         if args.stage == "launch":
-            ensure_session()
             ok = launch(assume_yes=args.yes) is not None  # None = gated/aborted/failed
     except (SftScaffoldError, SftConfigError) as exc:
         print(f"error: {exc}", file=sys.stderr)  # no raw traceback (local paths)

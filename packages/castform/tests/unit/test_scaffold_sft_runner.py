@@ -28,11 +28,14 @@ _SFT_SEED = Path(scaffold_pkg.__file__).parent / "sft_main.py"
 @pytest.fixture
 def mod(tmp_path, monkeypatch):
     """Load the sft seed as a module (its `__main__` block does not fire) with
-    the cwd pointed at an empty project dir."""
+    the cwd pointed at an empty project dir.
+
+    `ensure_session` is deliberately NOT neutralized here: a blanket no-op would
+    hide a login fired behind a closed gate. Tests that legitimately reach the
+    wire neutralize it themselves (`_stub_launchable`).
+    """
     monkeypatch.chdir(tmp_path)
-    module = load_module(_SFT_SEED)
-    monkeypatch.setattr(module, "ensure_session", lambda *a, **k: None)
-    return module
+    return load_module(_SFT_SEED)
 
 
 def _row(text: str = "hello") -> dict:
@@ -155,7 +158,12 @@ def test_generate_data_refuses_eval_without_train(mod, tmp_path):
 
 
 def _forbid_platform_calls(mod, monkeypatch) -> None:
-    """Turn any upload or launch into a test failure."""
+    """Turn any login, prompt, upload or launch into a test failure."""
+    monkeypatch.setattr(
+        mod,
+        "ensure_session",
+        lambda *a, **k: pytest.fail("requested a login behind a closed gate"),
+    )
     monkeypatch.setattr(
         mod,
         "upload_sft_run",
@@ -180,13 +188,20 @@ def test_sft_launch_capability_is_still_off():
 def test_real_capability_false_blocks_before_any_upload_or_post(
     mod, tmp_path, monkeypatch, capsys
 ):
-    """With the REAL flag (False): exit 1, zero upload, zero POST."""
+    """With the REAL flag (False): exit 1 and ZERO side effects — no login, no
+    prompt, no upload, no POST — from either entrypoint.
+
+    The login matters as much as the upload: `ensure_session` can open an
+    interactive device flow, so firing it before the capability check would make
+    an unlaunchable run demand credentials.
+    """
     _write_jsonl(tmp_path / "train.jsonl", [_row()])
     _write_jsonl(tmp_path / "eval.jsonl", [_row("eval")])
     _forbid_platform_calls(mod, monkeypatch)
 
     assert mod.launch(assume_yes=True) is None
     assert mod.main(["launch"]) == 1
+    assert mod.main(["launch", "-y"]) == 1
     assert "SFT_LAUNCH_SUPPORTED is False" in capsys.readouterr().err
 
 
@@ -246,8 +261,11 @@ def _stub_launchable(mod, monkeypatch) -> tuple[list[str], dict]:
     """
     monkeypatch.setattr(client_module, "SFT_LAUNCH_SUPPORTED", True)
     order: list[str] = []
-    captured: dict = {}
+    captured: dict = {"logins": 0}
     storage = FakeStorageClient()
+
+    def fake_ensure_session(*args, **kwargs):
+        captured["logins"] += 1
 
     real_validate = mod.validate_sft_dataset
 
@@ -273,6 +291,7 @@ def _stub_launchable(mod, monkeypatch) -> tuple[list[str], dict]:
         )
         return client
 
+    monkeypatch.setattr(mod, "ensure_session", fake_ensure_session)
     monkeypatch.setattr(mod, "validate_sft_dataset", recording_validate)
     monkeypatch.setattr(mod, "upload_sft_run", recording_upload)
     monkeypatch.setattr(mod, "TrainerClient", make_client)
@@ -289,6 +308,7 @@ def test_capability_true_runs_validate_then_upload_then_submit(
 
     assert mod.launch(assume_yes=True) == "sft-run-1"
     assert order == ["validate", "upload", "submit"]
+    assert captured["logins"] == 1  # the open path still authenticates
     # both splits reached storage before the run was submitted
     assert [key.rsplit("/", 1)[-1] for key, _ in captured["storage"].uploads] == [
         "train.jsonl",
@@ -332,3 +352,4 @@ def test_launch_declined_at_confirm_uploads_nothing(mod, tmp_path, monkeypatch):
     assert mod.launch() is None
     assert order == ["validate"]
     assert not captured["storage"].uploads
+    assert captured["logins"] == 0  # declining never costs a login
