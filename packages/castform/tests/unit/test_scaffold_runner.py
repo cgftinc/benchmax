@@ -177,7 +177,7 @@ def test_validate_passes_uploaded_assets_and_config(mod, tmp_path, monkeypatch):
     assert captured["base_dir"] == Path(".")
     assert captured["remote_assets"] is remote_assets
     assert captured["model"] == str(mod.VALIDATE_CONFIG["model"])
-    assert captured["max_context_len"] == 2048
+    assert captured["max_context_tokens"] == 2048
     assert captured["local_timeout_seconds"] == 120.0
 
 
@@ -268,7 +268,9 @@ def test_launch_confirmed_spreads_uploaded_paths(mod, monkeypatch):
     # LAUNCH_CONFIG feeds launcher_args, minus reserved keys
     assert "type" not in (launched["launcher_args"] or {})
     assert "name" not in (launched["launcher_args"] or {})
-    assert launched["launcher_args"]["max_context_len"] == mod.LAUNCH_CONFIG["max_context_len"]
+    assert launched["launcher_args"]["max_context_tokens"] == mod.LAUNCH_CONFIG[
+        "max_context_tokens"
+    ]
 
 
 def test_launch_assume_yes_skips_prompt(mod, monkeypatch):

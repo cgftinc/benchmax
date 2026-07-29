@@ -140,7 +140,7 @@ def test_setup_content_cites_real_verbs(tmp_path):
     assert "python main.py validate" in guide
     assert "python main.py launch" in guide
     assert "castform launch" not in guide + launch_skill
-    assert "max_context_len" in launch_skill
+    assert "max_context_tokens" in launch_skill
     assert "upload_assets(bundle=bundle" in launch_skill
 
 
@@ -201,9 +201,9 @@ def test_setup_template_rag_writes_searchenv(tmp_path):
     assert issubclass(env_cls, BaseEnv)
     assert isinstance(env_cls(), BaseEnv)  # no-arg construct, no network
     assert env_cls().max_turns == 7
-    assert mod.VALIDATE_CONFIG["max_context_len"] == 2048
+    assert mod.VALIDATE_CONFIG["max_context_tokens"] == 2048
     assert mod.VALIDATE_CONFIG["local_timeout_seconds"] == 120
-    assert mod.LAUNCH_CONFIG["max_context_len"] == 16384
+    assert mod.LAUNCH_CONFIG["max_context_tokens"] == 16384
 
 
 def test_setup_template_rag_writes_seed_and_datasets(tmp_path, monkeypatch):

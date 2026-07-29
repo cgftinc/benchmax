@@ -372,7 +372,7 @@ class TrainerClient:
                 Omit it when the environment resolves data at runtime.
             name: Optional name for the training run
             launcher_args: Extra launcher args forwarded to the server
-                (e.g. {"max_context_len": 4000}). Bundle and optional dataset
+                (e.g. {"max_context_tokens": 4000}). Bundle and optional dataset
                 path parameters always take precedence over this mapping.
         Returns:
             The training run ID.

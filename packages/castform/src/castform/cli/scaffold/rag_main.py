@@ -225,12 +225,12 @@ and cite supporting documents as [Source: <source_id>].
 
 VALIDATE_CONFIG = {
     "model": "gpt-5.4-mini",
-    "max_context_len": 2048,
+    "max_context_tokens": 2048,
     "local_timeout_seconds": 120,
 }
 
 LAUNCH_CONFIG = {
-    "max_context_len": 16_384,
+    "max_context_tokens": 16_384,
     "num_epochs": 2,
 }
 
@@ -308,7 +308,7 @@ def validate(env: CustomSearchEnv, uploaded_assets: Any) -> Any:
             split="train",
             base_dir=Path("."),
             remote_assets=uploaded_assets,
-            max_context_len=int(VALIDATE_CONFIG["max_context_len"]),
+            max_context_tokens=int(VALIDATE_CONFIG["max_context_tokens"]),
             local_timeout_seconds=float(VALIDATE_CONFIG["local_timeout_seconds"]),
         )
     )
