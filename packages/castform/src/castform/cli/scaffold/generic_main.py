@@ -51,7 +51,6 @@ class CustomEnv(BaseEnv):
     # Advertised to the model each rollout (optional; default ""). Keep it short.
     system_prompt = "Answer the question concisely and directly."
     max_turns = 1
-    reward_keys = ("overlap", "contains_gold", "answered")
 
     async def create_dataset(
         self,

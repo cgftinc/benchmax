@@ -40,7 +40,6 @@ TOOL_PADDING_CHARS = 1_000
 class MathEnv(BaseEnv):
     """Solve mixed arithmetic with four tools."""
 
-    reward_keys = ("correctness",)
     max_turns = 3
 
     def __init__(self) -> None:

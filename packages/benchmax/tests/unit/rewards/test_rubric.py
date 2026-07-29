@@ -15,9 +15,7 @@ from benchmax.rewards import (
 def test_rubric_normalizes_positive_and_negative_ranges():
     score_map = {-1: "bad", 1: "okay", 3: "good"}
     positive = Rubric("quality", "description", score_map=score_map)
-    negative = Rubric(
-        "flaw", "description", polarity="negative", score_map=score_map
-    )
+    negative = Rubric("flaw", "description", polarity="negative", score_map=score_map)
     assert positive.reward_for(1) == pytest.approx(0.5)
     assert negative.reward_for(1) == pytest.approx(0.5)
     assert positive.reward_for(-1) == 0.0

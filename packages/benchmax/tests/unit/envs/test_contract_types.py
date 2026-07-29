@@ -20,9 +20,7 @@ def test_rollout_request_contains_one_attempt_specific_connection() -> None:
     assert "secret-session-key" not in repr(request)
 
 
-def test_rollout_attempt_may_have_individual_rewards_or_wait_for_group_scoring() -> (
-    None
-):
+def test_rollout_attempt_may_have_individual_rewards_or_wait_for_group_scoring() -> None:
     scored = RolloutAttempt(
         rollout_id="rollout-1",
         termination_reason="finished",
@@ -40,7 +38,6 @@ def test_rollout_attempt_may_have_individual_rewards_or_wait_for_group_scoring()
 @pytest.mark.parametrize(
     "rewards",
     [
-        {},
         {"correctness": True},
         {"correctness": math.nan},
         {"": 1.0},
@@ -49,6 +46,12 @@ def test_rollout_attempt_may_have_individual_rewards_or_wait_for_group_scoring()
 def test_final_reward_map_rejects_ambiguous_values(rewards) -> None:
     with pytest.raises(ValueError):
         RolloutOutcome(rewards=rewards, termination_reason="finished")
+
+
+def test_empty_reward_map_is_valid_for_an_operational_failure() -> None:
+    outcome = RolloutOutcome(rewards={}, termination_reason="model_error")
+
+    assert outcome.rewards == {}
 
 
 def test_zero_is_a_valid_named_reward() -> None:

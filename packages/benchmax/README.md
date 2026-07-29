@@ -57,10 +57,10 @@ with `HarborEnv`, the Harbor agent and harness define the available tools and ho
 
 `run_group` receives multiple rollout requests for the same example, runs them concurrently, waits for all siblings, and returns one `RolloutOutcome` for each request.
 
-every environment declares `reward_keys`, which defines the complete reward shape for every outcome. operational failures return the same keys with zero values and do not cancel successful siblings. partial attempts that reach a context, output, turn, or tool limit can still be scored.
+successful scoring hooks return their named reward components. operational failures return no rewards and do not cancel successful siblings; the trainer treats absent components as zero. partial attempts that reach a context, output, turn, or tool limit can still be scored.
 
 - `BaseEnv` runs the model and tool loop, then passes the transcript and example payload to `compute_reward`. `compute_group_rewards` can score the completed sibling group.
-- `HarborEnv` runs the configured Harbor agent and sandbox, then maps its verifier or RewardKit output into the declared reward shape.
+- `HarborEnv` runs the configured Harbor agent and sandbox, then preserves its verifier or RewardKit reward components.
 
 ### helpers
 

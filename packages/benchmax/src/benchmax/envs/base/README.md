@@ -27,7 +27,6 @@ def to_example(row):
 
 
 class MathEnv(BaseEnv):
-    reward_keys = ("correct",)
     max_turns = 3
 
     async def create_dataset(
@@ -66,7 +65,7 @@ override `list_tools` to return OpenAI-compatible function definitions and `run_
 
 `compute_reward` scores one completed transcript. `compute_group_rewards` can add scores that compare or otherwise depend on the completed sibling group.
 
-`reward_keys` declares the complete output shape. the shared environment runtime handles partial attempts and operational failures consistently; see [execution and scoring](../../../../README.md#execution-and-scoring).
+successful scoring hooks return the reward components they produce. operational failures carry no rewards, while the trainer treats absent components as zero; see [execution and scoring](../../../../README.md#execution-and-scoring).
 
 for deterministic helpers, judges, rubrics, ranking, and diversity scoring, see the [rewards guide](../../rewards/README.md).
 

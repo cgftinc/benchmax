@@ -119,7 +119,6 @@ async def validate_environment(
         )
         if len(events) != 2:
             raise ValueError(f"hosted validation returned {len(events)} rollouts; expected 2")
-        zero_rewards = {str(key): 0.0 for key in env.reward_keys}
         remote = {}
         remote_errors: dict[str, str] = {}
         for index, event in enumerate(events):
@@ -129,7 +128,7 @@ async def validate_environment(
                     event.get("error") or "rollout produced no usable model trace"
                 )
             remote[rollout_id] = RolloutOutcome(
-                rewards=dict(event.get("rewards") or zero_rewards),
+                rewards=dict(event.get("rewards") or {}),
                 termination_reason=str(event.get("termination_reason") or "unknown"),
             )
     else:

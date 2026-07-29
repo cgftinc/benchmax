@@ -249,7 +249,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                 if termination_reason not in self.scorable_termination_reasons:
                     return replace(
                         rollout,
-                        rewards={key: 0.0 for key in self.reward_keys},
+                        rewards={},
                     )
                 try:
                     rewards = await self.compute_reward(rollout)
@@ -264,7 +264,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     return replace(
                         rollout,
                         termination_reason=failure.termination_reason,
-                        rewards={key: 0.0 for key in self.reward_keys},
+                        rewards={},
                     )
                 except Exception as error:
                     # compute_reward is user code: a defect settles this one
@@ -280,7 +280,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                     return replace(
                         rollout,
                         termination_reason="reward_error",
-                        rewards={key: 0.0 for key in self.reward_keys},
+                        rewards={},
                     )
                 return replace(rollout, rewards=rewards)
 

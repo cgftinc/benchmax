@@ -16,9 +16,7 @@ async def test_generate_adaptive_rubrics_returns_typed_polarities(judge_factory)
         [
             json.dumps(
                 {
-                    "positive_rubrics": [
-                        {"title": "Specific", "description": "uses detail"}
-                    ],
+                    "positive_rubrics": [{"title": "Specific", "description": "uses detail"}],
                     "negative_rubrics": [
                         {"title": "Contradiction", "description": "contradicts itself"}
                     ],

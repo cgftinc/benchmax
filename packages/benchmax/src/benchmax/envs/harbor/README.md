@@ -11,7 +11,6 @@ configure `HarborEnv` with Harbor's native dataset, agent, sandbox, and verifier
 ```python
 env = HarborEnv(
     dataset=DatasetConfig(name="org/dataset", ref="latest"),
-    reward_keys=("reward", "partial_credit"),
     eval_ratio=0.1,
     trial=HarborTrialTemplate(
         agent=TrialAgentConfig(name="mini-swe-agent"),
@@ -47,7 +46,7 @@ when `max_examples` is set, Harbor resolves at most that many examples for the s
 
 ## execution and scoring
 
-for each rollout, `HarborEnv` gives the task to the configured agent and sandbox. the harness produces the agent output, then its verifier or RewardKit scores the trial. `HarborEnv` maps those results into `reward_keys`.
+for each rollout, `HarborEnv` gives the task to the configured agent and sandbox. the harness produces the agent output, then its verifier or RewardKit scores the trial. `HarborEnv` preserves those reward components and includes RewardKit partial credit when available.
 
 the rollout request supplies the model endpoint and credential used by the agent. verifier and judge configuration remains separate. because agents usually run inside remote sandboxes, `HarborEnv` requests a publicly reachable model endpoint by default.
 

@@ -17,7 +17,6 @@ def test_aime_constructor_uses_latest_dataset_and_bundled_agent() -> None:
     assert env._dataset.ref == "latest"
     assert env._eval_ratio == 0.1
     assert env._sandbox_credentials is credentials
-    assert env.reward_keys == ("reward", "partial_credit")
     trial = env._trial
     assert isinstance(trial.agent, BundledHarborAgent)
     assert trial.agent.config.import_path == "aime_agent:UpstreamMiniSweAgent"

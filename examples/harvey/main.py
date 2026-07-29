@@ -142,7 +142,6 @@ class HarveyLabHarborEnv(HarborEnv):
         }
         super().__init__(
             dataset=DatasetConfig(name="harveyai/lab", ref="latest"),
-            reward_keys=("reward", "partial_credit"),
             eval_ratio=eval_ratio,
             trial=HarborTrialTemplate(
                 agent=BundledHarborAgent(

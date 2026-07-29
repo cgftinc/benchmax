@@ -38,18 +38,18 @@ Before changing a stage, load its skill:
 - `RUNTIME_DEPENDENCIES` is the explicit list installed with the rollout bundle.
   Keep it limited to packages imported while the environment is running.
 
-Most custom environments extend `BaseEnv`. Declare `reward_keys` as the complete
-final reward shape and return exactly those keys from successful reward hooks.
-Operational rollout or judge failures return the same keys with zero values, a
-non-`finished` `termination_reason`, and an error log. They do not cancel or
-distort siblings. Do not turn a configuration or programming error into a reward.
+Most custom environments extend `BaseEnv`. Successful reward hooks return their
+named reward components. Operational rollout or judge failures return no
+rewards, a non-`finished` `termination_reason`, and an error log. They do not
+cancel or distort siblings. Do not turn a configuration or programming error
+into a reward.
 
 Local validation obtains its example through the environment's public
 `create_dataset` method, then calls `validate_environment` once with exactly two
 siblings through ephemeral tracked llm-proxy sessions. The generated validation
 config shares one context budget across local and hosted execution and applies a
 wall-clock backstop to the complete local lifecycle. Review both outcomes; a
-completed zero reward is valid, while a zeroed result with a failure termination
+completed zero reward is valid, while an empty result with a failure termination
 reason is not. Hosted validation uses the exact uploaded assets that launch would
 consume.
 

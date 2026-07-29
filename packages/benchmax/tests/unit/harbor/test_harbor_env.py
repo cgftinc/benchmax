@@ -34,8 +34,6 @@ from harbor.models.trial.config import (
 )
 from harbor.trial.trial import Trial
 
-_REWARD_KEYS = ("reward", "partial_credit")
-
 
 class _UserHarness(BaseAgent):
     """Small import-path agent used to prove user harness resolution."""
@@ -61,9 +59,7 @@ class _UserHarness(BaseAgent):
 @pytest.mark.parametrize("reason", ["context_exceeded", "output_exceeded"])
 def test_harbor_prefers_harvey_reported_budget_termination(reason: str) -> None:
     result = SimpleNamespace(
-        agent_result=SimpleNamespace(
-            metadata={"harvey_metrics": {"termination_reason": reason}}
-        ),
+        agent_result=SimpleNamespace(metadata={"harvey_metrics": {"termination_reason": reason}}),
         exception_info=None,
     )
 
@@ -98,12 +94,8 @@ def test_harbor_preserves_budget_termination_with_or_without_verifier_rewards(
     rewards: dict[str, float] | None,
 ) -> None:
     result = SimpleNamespace(
-        agent_result=SimpleNamespace(
-            metadata={"harvey_metrics": {"termination_reason": reason}}
-        ),
-        verifier_result=(
-            SimpleNamespace(rewards=rewards) if rewards is not None else None
-        ),
+        agent_result=SimpleNamespace(metadata={"harvey_metrics": {"termination_reason": reason}}),
+        verifier_result=(SimpleNamespace(rewards=rewards) if rewards is not None else None),
         exception_info=None,
     )
 
@@ -111,11 +103,10 @@ def test_harbor_preserves_budget_termination_with_or_without_verifier_rewards(
         "rollout-1",
         result,
         trial_dir=tmp_path,
-        reward_keys=("reward",),
     )
 
     assert rollout.termination_reason == reason
-    assert rollout.rewards == (rewards or {"reward": 0.0})
+    assert rollout.rewards == (rewards or {})
 
 
 @pytest.mark.asyncio
@@ -144,7 +135,6 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
     )
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=("correctness",),
         trial=template,
         sandbox_credentials=credentials,
     )
@@ -197,7 +187,7 @@ async def test_harbor_group_isolates_trial_configs_and_routes_each_gateway(
 
     assert outcomes["rollout-1"].rewards == {"correctness": 1.0}
     assert outcomes["rollout-1"].termination_reason == "finished"
-    assert outcomes["rollout-2"].rewards == {"correctness": 0.0}
+    assert outcomes["rollout-2"].rewards == {}
     assert outcomes["rollout-2"].termination_reason == "harness_timeout"
     assert set(configs) == {"rollout-1", "rollout-2"}
 
@@ -229,7 +219,6 @@ async def test_harbor_limits_active_trials_across_groups(
 ) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -264,13 +253,9 @@ async def test_harbor_limits_active_trials_across_groups(
 
     monkeypatch.setattr(Trial, "create", staticmethod(create_trial))
     first_group = asyncio.create_task(
-        env.run_group(
-            [_request(tmp_path, rollout_id=f"rollout-{index}") for index in range(2)]
-        )
+        env.run_group([_request(tmp_path, rollout_id=f"rollout-{index}") for index in range(2)])
     )
-    second_group = asyncio.create_task(
-        env.run_group([_request(tmp_path, rollout_id="rollout-2")])
-    )
+    second_group = asyncio.create_task(env.run_group([_request(tmp_path, rollout_id="rollout-2")]))
 
     await asyncio.wait_for(two_started.wait(), timeout=1)
     await asyncio.sleep(0)
@@ -285,7 +270,6 @@ async def test_harbor_limits_active_trials_across_groups(
 def test_harbor_modal_environment_gets_benchmax_defaults(tmp_path: Path) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.MODAL),
@@ -305,7 +289,6 @@ def test_harbor_modal_environment_gets_benchmax_defaults(tmp_path: Path) -> None
 def test_harbor_modal_environment_preserves_user_overrides(tmp_path: Path) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(
@@ -332,7 +315,6 @@ def test_harbor_modal_environment_preserves_user_overrides(tmp_path: Path) -> No
 def test_harbor_non_modal_environment_has_no_modal_app_default(tmp_path: Path) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -347,7 +329,6 @@ def test_harbor_non_modal_environment_has_no_modal_app_default(tmp_path: Path) -
 def test_harbor_can_use_a_private_model_endpoint(tmp_path: Path) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -386,7 +367,6 @@ def test_harbor_resolves_builtin_and_user_harnesses(
 ) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=agent,
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -446,7 +426,7 @@ def test_modal_credentials_reject_invalid_throttle_wait(value: Any) -> None:
         ("SandboxBuildFailedError", {"correctness": 0.0}, "sandbox_error"),
     ],
 )
-async def test_harbor_infrastructure_failures_receive_zero_rewards(
+async def test_harbor_infrastructure_failures_receive_no_rewards(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -456,7 +436,6 @@ async def test_harbor_infrastructure_failures_receive_zero_rewards(
 ) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -468,9 +447,7 @@ async def test_harbor_infrastructure_failures_receive_zero_rewards(
     class FakeTrial:
         async def run(self) -> Any:
             return SimpleNamespace(
-                verifier_result=(
-                    SimpleNamespace(rewards=rewards) if rewards is not None else None
-                ),
+                verifier_result=(SimpleNamespace(rewards=rewards) if rewards is not None else None),
                 exception_info=SimpleNamespace(
                     exception_type=exception_type,
                     exception_message="infrastructure failed",
@@ -494,10 +471,7 @@ async def test_harbor_infrastructure_failures_receive_zero_rewards(
 
     outcomes = await env.run_group([request])
 
-    assert outcomes["rollout-1"].rewards == {
-        "reward": 0.0,
-        "partial_credit": 0.0,
-    }
+    assert outcomes["rollout-1"].rewards == {}
     assert outcomes["rollout-1"].termination_reason == termination_reason
     assert exception_type in caplog.text
 
@@ -510,7 +484,6 @@ async def test_harbor_missing_verifier_rewards_is_a_logged_terminal_failure(
 ) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=("custom_score",),
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -530,7 +503,7 @@ async def test_harbor_missing_verifier_rewards_is_a_logged_terminal_failure(
 
     outcomes = await env.run_group([_request(tmp_path, rollout_id="rollout-1")])
 
-    assert outcomes["rollout-1"].rewards == {"custom_score": 0.0}
+    assert outcomes["rollout-1"].rewards == {}
     assert outcomes["rollout-1"].termination_reason == "verifier_error"
     assert "verifier returned no rewards" in caplog.text
 
@@ -543,7 +516,6 @@ async def test_harbor_rollout_exception_does_not_cancel_siblings(
 ) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -580,15 +552,9 @@ async def test_harbor_rollout_exception_does_not_cancel_siblings(
         ]
     )
 
-    assert outcomes["rollout-1"].rewards == {
-        "reward": 0.0,
-        "partial_credit": 0.0,
-    }
+    assert outcomes["rollout-1"].rewards == {}
     assert outcomes["rollout-1"].termination_reason == "harness_error"
-    assert outcomes["rollout-2"].rewards == {
-        "reward": 1.0,
-        "partial_credit": 0.0,
-    }
+    assert outcomes["rollout-2"].rewards == {"reward": 1.0}
     assert completed == {"rollout-2"}
     assert "harbor.rollout.failed rollout_id=rollout-1" in caplog.text
     assert "sandbox crashed" in caplog.text
@@ -612,7 +578,6 @@ async def test_raised_harbor_failures_use_the_terminal_reason_vocabulary(
 ) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -635,10 +600,7 @@ async def test_raised_harbor_failures_use_the_terminal_reason_vocabulary(
 
     outcomes = await env.run_group([_request(tmp_path, rollout_id="rollout-1")])
 
-    assert outcomes["rollout-1"].rewards == {
-        "reward": 0.0,
-        "partial_credit": 0.0,
-    }
+    assert outcomes["rollout-1"].rewards == {}
     assert outcomes["rollout-1"].termination_reason == termination_reason
 
 
@@ -649,7 +611,6 @@ async def test_harbor_malformed_verifier_result_stays_loud_after_sibling_settles
 ) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=("reward",),
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -699,7 +660,6 @@ async def test_harbor_routes_the_request_model_through_the_openai_provider(
 ) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -734,10 +694,7 @@ async def test_harbor_routes_the_request_model_through_the_openai_provider(
     )
 
     assert captured_model == "openai/Qwen/Qwen3.5-4B"
-    assert outcomes["rollout-1"].rewards == {
-        "reward": 1.0,
-        "partial_credit": 0.0,
-    }
+    assert outcomes["rollout-1"].rewards == {"reward": 1.0}
 
 
 @pytest.mark.asyncio
@@ -750,7 +707,6 @@ async def test_harbor_enriches_native_rewards_with_rewardkit_partial_credit(
     trials_dir = tmp_path / "trials"
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -764,9 +720,7 @@ async def test_harbor_enriches_native_rewards_with_rewardkit_partial_credit(
             self.config = config
 
         async def run(self) -> Any:
-            verifier_dir = (
-                Path(self.config.trials_dir) / self.config.trial_name / "verifier"
-            )
+            verifier_dir = Path(self.config.trials_dir) / self.config.trial_name / "verifier"
             verifier_dir.mkdir(parents=True)
             (verifier_dir / "reward-details.json").write_text(
                 json.dumps(
@@ -811,9 +765,7 @@ async def test_harbor_enriches_native_rewards_with_rewardkit_partial_credit(
         "harbor.rewardkit.criteria rollout_id=rollout-1 total=2 passed=1 "
         'partial=1 failed=0 weighted_score=0.625000 values={"analysis":0.5,"citation":1.0}'
     ) in caplog.text
-    assert (
-        "harbor.rewardkit.misses rollout_id=rollout-1 shown=1 omitted=0"
-    ) in caplog.text
+    assert ("harbor.rewardkit.misses rollout_id=rollout-1 shown=1 omitted=0") in caplog.text
     assert '"name":"analysis"' in caplog.text
     assert '"reasoning":"The answer missed one issue."' in caplog.text
 
@@ -836,9 +788,7 @@ def test_rewardkit_logging_is_compact_and_asymmetric(
     )
 
     perfect_messages = [
-        record.getMessage()
-        for record in caplog.records
-        if "rollout-perfect" in record.getMessage()
+        record.getMessage() for record in caplog.records if "rollout-perfect" in record.getMessage()
     ]
     assert len(perfect_messages) == 1
     assert "harbor.rewardkit.criteria" in perfect_messages[0]
@@ -860,9 +810,7 @@ def test_rewardkit_logging_is_compact_and_asymmetric(
     )
 
     messages = [
-        record.getMessage()
-        for record in caplog.records
-        if "rollout-misses" in record.getMessage()
+        record.getMessage() for record in caplog.records if "rollout-misses" in record.getMessage()
     ]
     assert len(messages) == 2
     misses = next(message for message in messages if "rewardkit.misses" in message)
@@ -879,7 +827,6 @@ async def test_harbor_rejects_unsafe_rollout_id_before_creating_trial(
 ) -> None:
     env = HarborEnv(
         dataset=DatasetConfig(path=tmp_path),
-        reward_keys=_REWARD_KEYS,
         trial=HarborTrialTemplate(
             agent=AgentConfig(name="mini-swe-agent"),
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -908,7 +855,6 @@ def test_harbor_env_rejects_configuration_it_cannot_honor(tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="explicit sandbox_credentials"):
         HarborEnv(
             dataset=dataset,
-            reward_keys=_REWARD_KEYS,
             trial=HarborTrialTemplate(
                 agent=AgentConfig(name="mini-swe-agent"),
                 environment=EnvironmentConfig(type=EnvironmentType.MODAL),
@@ -918,7 +864,6 @@ def test_harbor_env_rejects_configuration_it_cannot_honor(tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="Benchmax owns rollout-group concurrency"):
         HarborEnv(
             dataset=dataset,
-            reward_keys=_REWARD_KEYS,
             trial=HarborTrialTemplate(
                 agent=AgentConfig(name="mini-swe-agent", n_concurrent=1),
                 environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
@@ -929,11 +874,8 @@ def test_harbor_env_rejects_configuration_it_cannot_honor(tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="model_name must be unset"):
         HarborEnv(
             dataset=dataset,
-            reward_keys=_REWARD_KEYS,
             trial=HarborTrialTemplate(
-                agent=AgentConfig(
-                    name="mini-swe-agent", model_name="openai/pinned-model"
-                ),
+                agent=AgentConfig(name="mini-swe-agent", model_name="openai/pinned-model"),
                 environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
                 verifier=verifier,
             ),
@@ -942,38 +884,11 @@ def test_harbor_env_rejects_configuration_it_cannot_honor(tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="eval_ratio"):
         HarborEnv(
             dataset=dataset,
-            reward_keys=_REWARD_KEYS,
             eval_ratio=1.0,
             trial=HarborTrialTemplate(
                 agent=AgentConfig(name="mini-swe-agent"),
                 environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
                 verifier=verifier,
-            ),
-        )
-
-
-@pytest.mark.parametrize(
-    ("reward_keys", "error_type"),
-    [
-        ("reward", TypeError),
-        ((), ValueError),
-        (("reward", "reward"), ValueError),
-        (("",), ValueError),
-    ],
-)
-def test_harbor_requires_an_explicit_valid_reward_schema(
-    tmp_path: Path,
-    reward_keys: Any,
-    error_type: type[Exception],
-) -> None:
-    with pytest.raises(error_type, match="reward_keys"):
-        HarborEnv(
-            dataset=DatasetConfig(path=tmp_path),
-            reward_keys=reward_keys,
-            trial=HarborTrialTemplate(
-                agent=AgentConfig(name="mini-swe-agent"),
-                environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
-                verifier=VerifierConfig(),
             ),
         )
 

@@ -87,9 +87,7 @@ async def test_harbor_dataset_identity_is_content_addressed_and_snapshotted(
     assert second[0].payload.path.is_relative_to(tmp_path / "cache-b")
 
     (first_source / "task" / "instruction.md").write_text("Changed later.")
-    assert first[0].payload.path.joinpath("instruction.md").read_text() == (
-        "Solve the task."
-    )
+    assert first[0].payload.path.joinpath("instruction.md").read_text() == ("Solve the task.")
 
     _write_task(second_source / "task", instruction="A different task.")
     changed = await HarborDataset.create(
@@ -270,7 +268,6 @@ def _make_env(
 ) -> HarborEnv:
     return HarborEnv(
         dataset=dataset,
-        reward_keys=("reward",),
         eval_dataset=eval_dataset,
         eval_ratio=eval_ratio,
         trial=HarborTrialTemplate(

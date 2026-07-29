@@ -58,8 +58,6 @@ def fake_model_sessions(monkeypatch):
 
 
 class RecordingEnvironment:
-    reward_keys = ("score",)
-
     def __init__(self) -> None:
         self.groups: list[list[Any]] = []
         self.dataset_calls: list[tuple[str, Path, int | None]] = []

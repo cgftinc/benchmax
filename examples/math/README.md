@@ -27,7 +27,6 @@ launch follows the same data, upload, and validation path, then asks for confirm
 
 ```python
 class MathEnv(BaseEnv):
-    reward_keys = ("correctness",)
     max_turns = 3
 
     async def create_dataset(...):

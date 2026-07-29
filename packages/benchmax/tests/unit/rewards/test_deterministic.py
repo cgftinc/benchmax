@@ -72,9 +72,12 @@ def test_tool_call_efficiency_decay_and_ranges():
     assert tool_call_efficiency(
         completion, correctness=0.5, reference_chunk_count=1, decay_rate=0.2
     ) == pytest.approx(0.5 * math.exp(-0.2))
-    assert tool_call_efficiency(
-        completion,
-        ranges=[(0, 2, 1.0), (3, 5, 0.4)],
-    ) == 0.4
+    assert (
+        tool_call_efficiency(
+            completion,
+            ranges=[(0, 2, 1.0), (3, 5, 0.4)],
+        )
+        == 0.4
+    )
     with pytest.raises(ValueError, match="non-negative"):
         tool_call_efficiency(completion, max_calls=-1)

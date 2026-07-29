@@ -69,8 +69,6 @@ _COLOR_PATTERN = re.compile(r"\b(" + "|".join([*PALETTE, "grey"]) + r")\b", re.I
 class DominantColorEnv(BaseEnv):
     """Show N dominant-color tile images one at a time; score ordered recall."""
 
-    reward_keys = ("correctness",)
-
     def __init__(
         self,
         *,

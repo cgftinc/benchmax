@@ -344,8 +344,6 @@ class SearchEnv(BaseEnv):
         "citation_precision": 0.0,
         "answer_length": 0.0,
     }
-    reward_keys = tuple(_ZERO_REWARDS)
-
     SYSTEM_PROMPT_TEMPLATE = """\
 Answer the given question by searching over {corpus_description}.
 

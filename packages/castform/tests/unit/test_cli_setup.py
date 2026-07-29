@@ -244,7 +244,7 @@ spec = importlib.util.spec_from_file_location('generated_rag_main', 'main.py')
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
-assert module.CustomSearchEnv().reward_keys == ('answer_correctness', 'citation_recall')
+assert module.CustomSearchEnv()
 """
     subprocess.run([sys.executable, "-c", code], cwd=tmp_path, check=True)
 

@@ -126,7 +126,6 @@ def _load_dataset_with_retries(load_dataset: Any, *args: Any, **kwargs: Any) -> 
 class Qwen3OCREnv(BaseEnv):
     """Tool-free multimodal env for document OCR / geometry VLM rollouts."""
 
-    reward_keys = ("answer_correct",)
     system_prompt: str = SYSTEM_PROMPT
     max_turns = 1
     max_tool_calls = 0

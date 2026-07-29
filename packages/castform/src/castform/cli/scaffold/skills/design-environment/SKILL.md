@@ -19,7 +19,6 @@ from benchmax.rewards import extract_completion_text
 
 
 class MyEnv(BaseEnv):
-    reward_keys = ("correct",)
     max_turns = 1
 
     async def create_dataset(
@@ -43,12 +42,11 @@ Preparation, cleaning and QA generation belong in the project data script.
 
 ## Reward contract
 
-- Declare the complete final shape in `reward_keys`.
-- Successful individual and group reward hooks must combine to exactly that shape.
+- Return named reward components from successful individual and group reward hooks.
 - Return finite numbers and make correctness the dominant signal.
 - Let judge, model, tool and sandbox operational failures propagate through the
-  typed runtime path. benchmax logs them and returns the declared keys all zero
-  with a non-`finished` termination reason.
+  typed runtime path. benchmax logs them and returns no rewards with a
+  non-`finished` termination reason.
 - Do not catch a judge failure and report it as a legitimate score.
 - Programming, malformed-result and configuration errors should remain loud.
 
@@ -79,6 +77,6 @@ Keep clients pickle-safe. Use `InjectedAuth` for calls through the Castform LLM 
 4. Load **verify-environment** and run the real two-sibling validation.
 5. Record every remote runtime import in `RUNTIME_DEPENDENCIES` for **launch-run**.
 
-For Harbor, require explicit `reward_keys`, sandbox credentials and the matching
-provider extra in the bundle dependencies, for example
+For Harbor, require sandbox credentials and the matching provider extra in the
+bundle dependencies, for example
 `harbor[modal]>=0.18,<0.19`.

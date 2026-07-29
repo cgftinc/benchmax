@@ -76,15 +76,9 @@ def _agent(source: BundledAgentSource) -> BundledHarborAgent:
 
 
 def test_source_identity_is_canonical_and_content_sensitive() -> None:
-    first = BundledAgentSource.from_files(
-        {"nested/helper.py": b"helper", "agent.py": b"agent"}
-    )
-    reordered = BundledAgentSource.from_files(
-        {"agent.py": b"agent", "nested/helper.py": b"helper"}
-    )
-    changed = BundledAgentSource.from_files(
-        {"agent.py": b"changed", "nested/helper.py": b"helper"}
-    )
+    first = BundledAgentSource.from_files({"nested/helper.py": b"helper", "agent.py": b"agent"})
+    reordered = BundledAgentSource.from_files({"agent.py": b"agent", "nested/helper.py": b"helper"})
+    changed = BundledAgentSource.from_files({"agent.py": b"changed", "nested/helper.py": b"helper"})
 
     assert first == reordered
     assert first.content_id == reordered.content_id
@@ -140,9 +134,7 @@ def test_prepared_agent_config_is_small_and_json_serializable(tmp_path: Path) ->
     serialized = json.loads(serialized_json)
 
     assert harbor_config.import_path.endswith(".agent:CleanAgent")
-    assert bundled.source.content_id.removeprefix("sha256:") in (
-        harbor_config.import_path
-    )
+    assert bundled.source.content_id.removeprefix("sha256:") in (harbor_config.import_path)
     assert serialized["kwargs"] == {"marker_from_config": "preserved"}
     assert "adjacent-resource-worked" not in serialized_json
     assert bundled.config.import_path == "agent:CleanAgent"
@@ -165,9 +157,7 @@ def test_bundled_agent_load_is_concurrency_safe(tmp_path: Path) -> None:
         agents = list(executor.map(create, range(24)))
 
     modules = {type(agent).__module__ for agent in agents}
-    assert modules == {
-        f"_benchmax_harbor_agent_{source.content_id.removeprefix('sha256:')}.agent"
-    }
+    assert modules == {f"_benchmax_harbor_agent_{source.content_id.removeprefix('sha256:')}.agent"}
     assert {agent.version() for agent in agents} == {"relative-import-worked"}
     assert {type(agent).__module__ for agent in agents} == modules
     assert {agent.resource for agent in agents} == {"adjacent-resource-worked"}
@@ -265,7 +255,6 @@ def test_serialized_agent_loads_without_authoring_source_or_sys_path(
         HarborEnv,
         constructor_args={
             "dataset": DatasetConfig(path=tmp_path / "dataset"),
-            "reward_keys": ("reward",),
             "trial": HarborTrialTemplate(
                 agent=bundled,
                 environment=EnvironmentConfig(type=EnvironmentType.DOCKER),

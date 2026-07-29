@@ -130,18 +130,12 @@ def test_public_compatibility_check_requires_same_version_series(
 
     # Same major.minor: patch drift is allowed.
     validate_bundle_compatibility(compatible)
-    validate_bundle_compatibility(
-        dataclasses.replace(compatible, benchmax_version="0.2.9.dev3")
-    )
+    validate_bundle_compatibility(dataclasses.replace(compatible, benchmax_version="0.2.9.dev3"))
 
     with pytest.raises(IncompatiblePythonError, match="Python 0.0"):
-        validate_bundle_compatibility(
-            dataclasses.replace(compatible, python_version="0.0")
-        )
+        validate_bundle_compatibility(dataclasses.replace(compatible, python_version="0.0"))
     with pytest.raises(IncompatibleBenchmaxError, match="major.minor"):
-        validate_bundle_compatibility(
-            dataclasses.replace(compatible, benchmax_version="0.1.2")
-        )
+        validate_bundle_compatibility(dataclasses.replace(compatible, benchmax_version="0.1.2"))
     with pytest.raises(IncompatibleBenchmaxError, match="Cannot parse"):
         validate_bundle_compatibility(
             dataclasses.replace(compatible, benchmax_version="not-a-version")
@@ -168,8 +162,6 @@ def test_load_checks_metadata_compatibility_before_unpickling() -> None:
 
 def test_dump_bundle_rejects_invalid_dependencies_before_serializing() -> None:
     class MinimalEnv(BaseEnv):
-        reward_keys = ("score",)
-
         async def create_dataset(self, split, base_dir):
             raise NotImplementedError
 

@@ -51,9 +51,10 @@ def judge_factory(monkeypatch):
         )
 
     return install
+
+
 @dataclass
 class StubJudge:
     judge: Judge
     calls: list[dict]
     clients: list[MagicMock]
-

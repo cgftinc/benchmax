@@ -105,9 +105,9 @@ class RolloutAttempt:
 class RolloutOutcome:
     """Result of a valid terminal rollout attempt.
 
-    Rewards are always named and non-empty, e.g. ``{"correctness": 1.0}``.
-    Operational failures use the environment's normal reward keys with every
-    value set to zero. Programming and contract errors still raise.
+    Successful attempts carry their named reward components, e.g.
+    ``{"correctness": 1.0}``. Operational failures may carry an empty mapping;
+    programming and contract errors still raise.
 
     ``termination_reason`` is extensible tracking metadata. Built-in reasons
     include ``finished``, ``context_exceeded``, ``output_exceeded``,
@@ -133,8 +133,6 @@ def _validate_termination_reason(termination_reason: str) -> None:
 def _validate_rewards(rewards: RewardMap) -> None:
     if not isinstance(rewards, Mapping):
         raise TypeError("rewards must be a mapping")
-    if not rewards:
-        raise ValueError("rewards must contain the env's reward keys")
     for key, value in rewards.items():
         if not isinstance(key, str) or not key.strip():
             raise ValueError("reward keys must be non-empty strings")

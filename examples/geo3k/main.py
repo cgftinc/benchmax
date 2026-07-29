@@ -53,8 +53,6 @@ class Geo3KEnv(BaseEnv):
     correctness — zooming is a capability, never a requirement.
     """
 
-    reward_keys = ("correctness",)
-
     # Mild nudge, not the probe's forcing phrasing: training should reinforce
     # zooming where it helps, not mandate it on legible diagrams.
     system_prompt: str = (

@@ -832,7 +832,6 @@ def _programmatic_feedback(poem: str, target: str) -> str | None:
 # ENV CLASS
 # ══════════════════════════════════════════════════════════════════════
 class TelestichEnv(BaseEnv):
-    reward_keys = ("quality", "rhyme", "diversity", "conciseness")
     system_prompt = """\
 A telestich is a poem whose lines, read by their LAST letters top to bottom, \
 spell a hidden word the user gives you. Use the word the user names as a single \

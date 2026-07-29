@@ -70,18 +70,11 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
 
         return self._requires_public_model_endpoint
 
-    @property
-    def reward_keys(self) -> Sequence[str]:
-        """Return the verifier reward shape declared at construction time."""
-
-        return self._reward_keys
-
     def __init__(
         self,
         *,
         dataset: DatasetConfig,
         trial: HarborTrialTemplate,
-        reward_keys: Sequence[str],
         sandbox_credentials: SandboxCredentials | None = None,
         eval_dataset: DatasetConfig | None = None,
         eval_ratio: float = 0.1,
@@ -103,7 +96,6 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         )
         self._eval_ratio = float(eval_ratio)
         self._trial = _with_environment_defaults(trial)
-        self._reward_keys = _normalize_reward_keys(reward_keys)
         self._sandbox_credentials = sandbox_credentials
         self._requires_public_model_endpoint = requires_public_model_endpoint
         self._trial_slots = (
@@ -295,7 +287,6 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                 )
                 rollout = _zero_reward_rollout(
                     request.rollout_id,
-                    reward_keys=self._reward_keys,
                     termination_reason=_exception_termination_reason(type(error).__name__),
                 )
             else:
@@ -303,7 +294,6 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                     request.rollout_id,
                     result,
                     trial_dir=Path(trial_config.trials_dir) / request.rollout_id,
-                    reward_keys=self._reward_keys,
                 )
             logger.info(
                 "harbor.rollout.done rollout_id=%s termination_reason=%s rewards=%s",
@@ -322,7 +312,6 @@ def _rollout_attempt(
     result: TrialResult,
     *,
     trial_dir: Path,
-    reward_keys: Sequence[str],
 ) -> RolloutAttempt:
     """Normalize every completed Harbor trial into a scored rollout attempt."""
 
@@ -343,7 +332,6 @@ def _rollout_attempt(
         )
         return _zero_reward_rollout(
             rollout_id,
-            reward_keys=reward_keys,
             termination_reason=(
                 "verifier_error"
                 if result.exception_info is None and termination_reason == "finished"
@@ -360,18 +348,15 @@ def _rollout_attempt(
         )
         return _zero_reward_rollout(
             rollout_id,
-            reward_keys=reward_keys,
             termination_reason=termination_reason,
         )
 
     normalized_rewards = {str(key): float(value) for key, value in rewards.items()}
     rewardkit_criteria = _rewardkit_criteria(trial_dir)
-    if "partial_credit" in reward_keys and "partial_credit" not in normalized_rewards:
-        if result.exception_info is None and "reward" in normalized_rewards:
-            partial_credit = _rewardkit_partial_credit(rewardkit_criteria)
-            normalized_rewards["partial_credit"] = 0.0 if partial_credit is None else partial_credit
-        else:
-            normalized_rewards["partial_credit"] = 0.0
+    if "partial_credit" not in normalized_rewards and "reward" in normalized_rewards:
+        partial_credit = _rewardkit_partial_credit(rewardkit_criteria)
+        if partial_credit is not None:
+            normalized_rewards["partial_credit"] = partial_credit
     _log_rewardkit_criteria(rollout_id, rewardkit_criteria)
     return RolloutAttempt(
         rollout_id=rollout_id,
@@ -383,7 +368,6 @@ def _rollout_attempt(
 def _zero_reward_rollout(
     rollout_id: str,
     *,
-    reward_keys: Sequence[str],
     termination_reason: str,
 ) -> RolloutAttempt:
     """Keep a failed Harbor rollout in its group without inventing reward signal."""
@@ -391,7 +375,7 @@ def _zero_reward_rollout(
     return RolloutAttempt(
         rollout_id=rollout_id,
         termination_reason=termination_reason,
-        rewards={key: 0.0 for key in reward_keys},
+        rewards={},
     )
 
 
@@ -415,21 +399,6 @@ def _exception_termination_reason(exception_type: str) -> str:
     """Classify raised and returned Harbor failures through one vocabulary."""
 
     return _TERMINATION_REASON_BY_EXCEPTION.get(exception_type, "harness_error")
-
-
-def _normalize_reward_keys(reward_keys: Sequence[str]) -> tuple[str, ...]:
-    """Validate Harbor's explicit verifier reward schema eagerly."""
-
-    if isinstance(reward_keys, (str, bytes)) or not isinstance(reward_keys, Sequence):
-        raise TypeError("reward_keys must be a sequence of strings")
-    keys = tuple(reward_keys)
-    if not keys:
-        raise ValueError("reward_keys must declare at least one verifier reward")
-    if any(not isinstance(key, str) or not key.strip() for key in keys):
-        raise ValueError("reward_keys must contain non-empty strings")
-    if len(set(keys)) != len(keys):
-        raise ValueError("reward_keys must not contain duplicates")
-    return keys
 
 
 def _rewardkit_criteria(trial_dir: Path) -> list[Mapping[str, object]] | None:

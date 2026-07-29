@@ -24,8 +24,6 @@ from tests.unit.fakes.model_server import LocalModelServer, completion_response
 
 
 class _MathEnv(BaseEnv):
-    reward_keys = ("correctness",)
-
     def __init__(
         self,
         *,
@@ -57,9 +55,7 @@ class _MathEnv(BaseEnv):
         answer = str(rollout.messages[-1].get("content", ""))
         expected = str(rollout.example_args["answer"])
         return {
-            "correctness": float(
-                rollout.termination_reason == "finished" and answer == expected
-            )
+            "correctness": float(rollout.termination_reason == "finished" and answer == expected)
         }
 
 
@@ -165,9 +161,9 @@ async def test_base_env_group_runs_end_to_end_through_distinct_http_endpoints() 
     assert {request.path for request in server.requests} == {
         f"/sessions/{rollout_id}/v1/chat/completions" for rollout_id in rollout_ids
     }
-    assert {
-        request.session_id: request.authorization for request in server.requests
-    } == {rollout_id: f"Bearer session-key-{rollout_id}" for rollout_id in rollout_ids}
+    assert {request.session_id: request.authorization for request in server.requests} == {
+        rollout_id: f"Bearer session-key-{rollout_id}" for rollout_id in rollout_ids
+    }
     assert all(
         request.body["messages"] == [{"role": "user", "content": "What is 6 times 7?"}]
         for request in server.requests
@@ -288,12 +284,12 @@ async def test_unrelated_bad_request_is_a_logged_model_failure(
         outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
 
     assert outcomes["rollout-1"].termination_reason == "model_error"
-    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
+    assert outcomes["rollout-1"].rewards == {}
     assert env.reward_calls == []
     assert "malformed messages" in caplog.text
 
 
-async def test_model_infrastructure_failure_is_zeroed_logged_and_not_retried(
+async def test_model_infrastructure_failure_is_empty_logged_and_not_retried(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     example = Example(
@@ -321,12 +317,12 @@ async def test_model_infrastructure_failure_is_zeroed_logged_and_not_retried(
 
     assert len(server.requests) == 1
     assert outcomes["rollout-1"].termination_reason == "model_error"
-    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
+    assert outcomes["rollout-1"].rewards == {}
     assert env.reward_calls == []
     assert "model unavailable" in caplog.text
 
 
-async def test_empty_model_response_is_zeroed_and_logged(
+async def test_empty_model_response_has_no_rewards_and_is_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     example = Example(
@@ -353,7 +349,7 @@ async def test_empty_model_response_is_zeroed_and_logged(
         outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
 
     assert outcomes["rollout-1"].termination_reason == "model_error"
-    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
+    assert outcomes["rollout-1"].rewards == {}
     assert env.reward_calls == []
     assert "response contained no choices" in caplog.text
 
@@ -392,19 +388,17 @@ async def test_unbound_runtime_auth_is_a_model_failure_without_cancelling_siblin
         outcomes = await env.run_group(requests)
 
     assert outcomes["rollout-1"].termination_reason == "model_error"
-    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
+    assert outcomes["rollout-1"].rewards == {}
     assert outcomes["rollout-2"].termination_reason == "finished"
     assert outcomes["rollout-2"].rewards == {"correctness": 1.0}
     assert [request.session_id for request in server.requests] == ["rollout-2"]
     assert "No runtime model-auth provider" in caplog.text
 
 
-async def test_failed_sibling_is_zeroed_and_excluded_from_group_scoring(
+async def test_failed_sibling_is_empty_and_excluded_from_group_scoring(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class RelativeMathEnv(_MathEnv):
-        reward_keys = ("correctness", "relative")
-
         def __init__(self) -> None:
             super().__init__()
             self.group_ids: list[str] = []
@@ -430,15 +424,10 @@ async def test_failed_sibling_is_zeroed_and_excluded_from_group_scoring(
         ),
         concurrent_calls=2,
     ) as server:
-        outcomes = await env.run_group(
-            _requests(server, example, ["rollout-1", "rollout-2"])
-        )
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1", "rollout-2"]))
 
     assert outcomes["rollout-1"].termination_reason == "model_error"
-    assert outcomes["rollout-1"].rewards == {
-        "correctness": 0.0,
-        "relative": 0.0,
-    }
+    assert outcomes["rollout-1"].rewards == {}
     assert outcomes["rollout-2"].termination_reason == "finished"
     assert outcomes["rollout-2"].rewards == {
         "correctness": 1.0,
@@ -448,7 +437,7 @@ async def test_failed_sibling_is_zeroed_and_excluded_from_group_scoring(
     assert "worker crashed" in caplog.text
 
 
-async def test_judge_failure_zeroes_only_that_sibling_and_is_logged(
+async def test_judge_failure_empties_only_that_sibling_and_is_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class JudgedMathEnv(_MathEnv):
@@ -469,12 +458,10 @@ async def test_judge_failure_zeroes_only_that_sibling_and_is_logged(
         lambda session_id, call_index, body: (200, completion_response(content="42")),
         concurrent_calls=2,
     ) as server:
-        outcomes = await env.run_group(
-            _requests(server, example, ["rollout-1", "rollout-2"])
-        )
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1", "rollout-2"]))
 
     assert outcomes["rollout-1"].termination_reason == "judge_error"
-    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
+    assert outcomes["rollout-1"].rewards == {}
     assert outcomes["rollout-2"].rewards == {"correctness": 1.0}
     assert "judge unavailable" in caplog.text
 
@@ -591,7 +578,7 @@ async def test_model_authored_tool_errors_are_returned_to_the_model() -> None:
     assert env.tool_calls == []
 
 
-async def test_unexpected_tool_failure_is_zeroed_logged_and_does_not_cancel_sibling(
+async def test_unexpected_tool_failure_is_empty_logged_and_does_not_cancel_sibling(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class FailingToolEnv(_ToolMathEnv):
@@ -633,12 +620,10 @@ async def test_unexpected_tool_failure_is_zeroed_logged_and_does_not_cancel_sibl
     env = FailingToolEnv(max_tool_calls=1)
 
     with LocalModelServer(respond) as server:
-        outcomes = await env.run_group(
-            _requests(server, example, ["rollout-1", "rollout-2"])
-        )
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1", "rollout-2"]))
 
     assert outcomes["rollout-1"].termination_reason == "tool_error"
-    assert outcomes["rollout-1"].rewards == {"correctness": 0.0}
+    assert outcomes["rollout-1"].rewards == {}
     assert outcomes["rollout-2"].termination_reason == "finished"
     assert outcomes["rollout-2"].rewards == {"correctness": 1.0}
     assert "tool backend crashed" in caplog.text
@@ -697,8 +682,6 @@ async def test_budget_exhaustion_runs_individual_and_group_scoring(
     executed_tool_calls: int,
 ) -> None:
     class BudgetScoringEnv(_ToolMathEnv):
-        reward_keys = ("partial", "group")
-
         def __init__(self) -> None:
             super().__init__(max_tool_calls=max_tool_calls)
             self.max_turns = max_turns
@@ -719,9 +702,7 @@ async def test_budget_exhaustion_runs_individual_and_group_scoring(
             self,
             rollouts: Sequence[BaseRollout],
         ) -> Mapping[str, RewardMap]:
-            self.group_termination_reasons = [
-                rollout.termination_reason for rollout in rollouts
-            ]
+            self.group_termination_reasons = [rollout.termination_reason for rollout in rollouts]
             return {rollout.rollout_id: {"group": 0.25} for rollout in rollouts}
 
     example = Example(
@@ -764,8 +745,6 @@ async def test_budget_exhaustion_runs_individual_and_group_scoring(
 
 async def test_base_env_group_only_reward_receives_complete_rollouts() -> None:
     class RelativeMathEnv(BaseEnv):
-        reward_keys = ("relative",)
-
         def __init__(self) -> None:
             super().__init__(max_turns=1)
             self.group_rollouts: list[BaseRollout] = []
@@ -778,13 +757,9 @@ async def test_base_env_group_only_reward_receives_complete_rollouts() -> None:
             rollouts: Sequence[BaseRollout],
         ) -> Mapping[str, RewardMap]:
             self.group_rollouts = list(rollouts)
-            contents = [
-                rollout.messages[-1].get("content") for rollout in self.group_rollouts
-            ]
+            contents = [rollout.messages[-1].get("content") for rollout in self.group_rollouts]
             assert all(isinstance(content, str) for content in contents)
-            values = [
-                float(content) for content in contents if isinstance(content, str)
-            ]
+            values = [float(content) for content in contents if isinstance(content, str)]
             maximum = max(values)
             return {
                 rollout.rollout_id: {"relative": float(value == maximum)}
@@ -820,8 +795,6 @@ async def test_base_env_group_only_reward_receives_complete_rollouts() -> None:
 
 async def test_base_env_merges_individual_and_group_reward_dimensions() -> None:
     class CombinedMathEnv(_MathEnv):
-        reward_keys = ("correctness", "group_rank")
-
         async def compute_group_rewards(
             self,
             rollouts: Sequence[BaseRollout],
@@ -848,9 +821,7 @@ async def test_base_env_merges_individual_and_group_reward_dimensions() -> None:
         ),
         concurrent_calls=2,
     ) as server:
-        outcomes = await env.run_group(
-            _requests(server, example, ["rollout-1", "rollout-2"])
-        )
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1", "rollout-2"]))
 
     assert outcomes["rollout-1"].rewards == {
         "correctness": 1.0,
@@ -891,8 +862,7 @@ async def test_duplicate_individual_and_group_reward_keys_settle_the_group(
 
     outcome = outcomes["rollout-1"]
     assert outcome.termination_reason == "group_reward_error"
-    assert set(outcome.rewards) == set(env.reward_keys)
-    assert all(value == 0.0 for value in outcome.rewards.values())
+    assert outcome.rewards == {}
     assert "duplicate keys" in caplog.text
 
 
@@ -917,14 +887,11 @@ async def test_compute_reward_defect_settles_the_rollout_as_reward_error(
             completion_response(content="42"),
         )
     ) as server:
-        outcomes = await BrokenRewardEnv().run_group(
-            _requests(server, example, ["rollout-1"])
-        )
+        outcomes = await BrokenRewardEnv().run_group(_requests(server, example, ["rollout-1"]))
 
     outcome = outcomes["rollout-1"]
     assert outcome.termination_reason == "reward_error"
-    assert set(outcome.rewards) == set(BrokenRewardEnv.reward_keys)
-    assert all(value == 0.0 for value in outcome.rewards.values())
+    assert outcome.rewards == {}
     assert "missing ground_truth column" in caplog.text
 
 
@@ -998,9 +965,7 @@ async def test_tool_content_parts_pass_through_to_the_transcript() -> None:
     ]
 
     class _RichToolEnv(_ToolMathEnv):
-        async def run_tool(
-            self, rollout_id: str, tool_name: str, **tool_args: Any
-        ) -> Any:
+        async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> Any:
             return parts
 
     env = _RichToolEnv(max_tool_calls=1)

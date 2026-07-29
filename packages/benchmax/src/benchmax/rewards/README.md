@@ -30,8 +30,6 @@ rubrics = (
 
 
 class AnswerEnv(BaseEnv):
-    reward_keys = ("rubric_correctness", "rubric_fabrication")
-
     async def compute_reward(self, rollout):
         return await score_rubrics(
             rollout.rollout_id,

@@ -11,9 +11,8 @@ harbor/              Concrete optional adapter over native Harbor configs
 
 Most custom environments inherit [`BaseEnv`](base/env.py). It supplies the
 conversation loop and optional tool dispatch. Subclasses own dataset semantics,
-stable identity, and rewards. Every environment explicitly declares its
-complete `reward_keys`; operational failures return that shape with all values
-zero and do not cancel or distort siblings.
+stable identity, and rewards. Operational failures return no rewards and do not
+cancel or distort siblings.
 
 Custom rollout loops can inherit `Environment` directly. `HarborEnv` follows
 this path because Harbor owns the complete harness loop. Most Harbor users only

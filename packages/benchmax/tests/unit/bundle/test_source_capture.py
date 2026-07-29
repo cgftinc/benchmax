@@ -58,9 +58,7 @@ def test_source_override_wins_over_introspection() -> None:
         local_modules=[_TEST_MODULE],
         env_class_source="# handed in by the caller\nclass Whatever: ...\n",
     )
-    assert bundle.metadata.env_class_source == (
-        "# handed in by the caller\nclass Whatever: ...\n"
-    )
+    assert bundle.metadata.env_class_source == ("# handed in by the caller\nclass Whatever: ...\n")
 
 
 def test_exec_defined_class_has_no_introspectable_source() -> None:
@@ -436,9 +434,7 @@ def _write_editable_project(
     dist_info = source_root / f"{module_name}-1.0.0.dist-info"
     dist_info.mkdir()
     (dist_info / "METADATA").write_text(
-        "Metadata-Version: 2.1\n"
-        f"Name: {module_name.replace('_', '-')}\n"
-        "Version: 1.0.0\n"
+        f"Metadata-Version: 2.1\nName: {module_name.replace('_', '-')}\nVersion: 1.0.0\n"
     )
     (dist_info / "top_level.txt").write_text(f"{module_name}\n")
     return source_root
@@ -477,9 +473,7 @@ def _write_editable_single_file_project(tmp_path: Path, module_name: str) -> Pat
     dist_info = project_root / f"{module_name}-1.0.0.dist-info"
     dist_info.mkdir()
     (dist_info / "METADATA").write_text(
-        "Metadata-Version: 2.1\n"
-        f"Name: {module_name.replace('_', '-')}\n"
-        "Version: 1.0.0\n"
+        f"Metadata-Version: 2.1\nName: {module_name.replace('_', '-')}\nVersion: 1.0.0\n"
     )
     (dist_info / "top_level.txt").write_text(f"{module_name}\n")
     return project_root
@@ -511,16 +505,14 @@ def _write_late_import_project(
     (package_dir / "helper.py").write_text('VALUE = "late-local-import"\n')
     if dynamic:
         marker_body = (
-            "import importlib\n"
-            f'return importlib.import_module("{module_name}.helper").VALUE'
+            f'import importlib\nreturn importlib.import_module("{module_name}.helper").VALUE'
         )
     elif unused_only:
         marker_body = 'return "no-import"'
     else:
         marker_body = f"import {module_name}.helper as helper\nreturn helper.VALUE"
     unused_function = (
-        f"def unused():\n    import {module_name}.helper as helper\n"
-        "    return helper.VALUE\n\n"
+        f"def unused():\n    import {module_name}.helper as helper\n    return helper.VALUE\n\n"
         if unused_only
         else ""
     )

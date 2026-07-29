@@ -30,9 +30,9 @@ For each sibling, inspect:
 - evidence that the response was actually scored by the intended reward;
 - any environment, tool, sandbox or judge error logs.
 
-A successful outcome has `termination_reason == "finished"` and exactly the
-environment's declared `reward_keys`. Its scores may legitimately all be zero. An
-operational failure has a different termination reason, the same keys all zero,
+A successful outcome has `termination_reason == "finished"` and the reward
+components produced by its scoring hooks. Its scores may legitimately all be
+zero. An operational failure has a different termination reason, no rewards,
 and a visible log entry. It must not cancel the other sibling.
 
 Do not call the baseline green when:

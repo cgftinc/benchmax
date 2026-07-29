@@ -83,7 +83,6 @@ def _answer_text(messages: list[dict[str, Any]]) -> str:
 class CustomSearchEnv(BaseEnv):
     """Small search env backed by a named Castform corpus."""
 
-    reward_keys = ("answer_correctness", "citation_recall")
     system_prompt = f"""\
 Answer the question using the search tool. You may search at most
 {MAX_SEARCH_CALLS} times. Return the final response inside <answer>...</answer>
@@ -190,7 +189,7 @@ and cite supporting documents as [Source: <source_id>].
     async def compute_reward(self, rollout: BaseRollout) -> dict[str, float]:
         answer = _answer_text(rollout.messages)
         if not answer:
-            return {key: 0.0 for key in self.reward_keys}
+            return {"answer_correctness": 0.0, "citation_recall": 0.0}
 
         question = str(rollout.example_args.get("question") or "")
         ground_truth = str(rollout.example_args.get("ground_truth") or "")

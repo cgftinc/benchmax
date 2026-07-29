@@ -59,7 +59,6 @@ class AimeMiniSweHarborEnv(HarborEnv):
     ) -> None:
         super().__init__(
             dataset=DatasetConfig(name="aime/aime", ref="latest"),
-            reward_keys=("reward", "partial_credit"),
             eval_ratio=0.1,
             trial=HarborTrialTemplate(
                 agent=BundledHarborAgent(
