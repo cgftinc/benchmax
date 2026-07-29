@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from types import SimpleNamespace
 
 import main as example
@@ -60,6 +61,7 @@ def test_launch_reuses_the_assets_that_were_validated(monkeypatch) -> None:
         lambda received, **kwargs: calls.append(("launch", received)) or "run-id",
     )
     monkeypatch.setattr(example, "ensure_session", lambda: None)
+    monkeypatch.setattr(example, "_check_judge_credentials", lambda args: None)
 
     assert example.main(["launch", "--yes", *CREDENTIAL_ARGS]) == 0
     stage, bundle_args = calls[0]
@@ -88,6 +90,63 @@ def test_main_requires_credential_arguments(capsys: pytest.CaptureFixture[str]) 
     stderr = capsys.readouterr().err
     for name in ("--modal-token-id", "--modal-token-secret", "--judge-api-key"):
         assert name in stderr
+
+
+def test_judge_preflight_rejects_a_bad_key(monkeypatch) -> None:
+    response = SimpleNamespace(
+        status_code=401,
+        text='{"error":{"code":"invalid_api_key"}}',
+        is_error=True,
+    )
+    monkeypatch.setattr(example.httpx, "get", lambda *args, **kwargs: response)
+
+    with pytest.raises(SystemExit) as excinfo:
+        example.main(["validate", *CREDENTIAL_ARGS])
+
+    assert "judge preflight: API key rejected (HTTP 401)" in str(excinfo.value)
+
+
+def test_judge_preflight_probes_the_openai_judge_model(monkeypatch, capsys) -> None:
+    probes: list[tuple[str, dict[str, object]]] = []
+
+    def fake_post(url, *, headers, json, timeout):
+        probes.append((url, json))
+        return SimpleNamespace(status_code=200, text="", is_error=False)
+
+    monkeypatch.setattr(example.httpx, "post", fake_post)
+    monkeypatch.setattr(example, "generate_data", lambda **kwargs: None)
+
+    example.main(
+        [
+            "data",
+            "--modal-token-id",
+            "modal-id",
+            "--modal-token-secret",
+            "modal-secret",
+            "--judge-provider",
+            "openai",
+            "--judge-model",
+            "openai/gpt-5.4-nano",
+            "--judge-api-key",
+            "castform-key",
+            "--judge-base-url",
+            "https://llm.castform.dev/v1",
+        ]
+    )
+    assert probes == []  # the data stage never talks to the judge
+
+    example._check_judge_credentials(
+        argparse.Namespace(
+            judge_provider="openai",
+            judge_model="openai/gpt-5.4-nano",
+            judge_api_key="castform-key",
+            judge_base_url="https://llm.castform.dev/v1",
+        )
+    )
+    (url, payload) = probes[-1]
+    assert url == "https://llm.castform.dev/v1/chat/completions"
+    assert payload["model"] == "gpt-5.4-nano"
+    assert "judge preflight: credentials accepted" in capsys.readouterr().out
 
 
 def test_main_rejects_base_url_for_anthropic(capsys: pytest.CaptureFixture[str]) -> None:

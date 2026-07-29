@@ -22,6 +22,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
+
 from benchmax.bundle import dump_bundle
 from benchmax.envs.environment import Environment
 from benchmax.envs.harbor import (
@@ -240,6 +242,44 @@ def _constructor_args(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _check_judge_credentials(args: argparse.Namespace) -> None:
+    """Fail fast on a bad judge key before any Modal trial spends money."""
+
+    model = args.judge_model.removeprefix(f"{args.judge_provider}/")
+    if args.judge_provider == "anthropic":
+        response = httpx.get(
+            "https://api.anthropic.com/v1/models",
+            headers={
+                "x-api-key": args.judge_api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            timeout=30,
+        )
+    else:
+        base_url = (args.judge_base_url or "https://api.openai.com/v1").rstrip("/")
+        response = httpx.post(
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {args.judge_api_key}"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_completion_tokens": 16,
+            },
+            timeout=60,
+        )
+    if response.status_code in (401, 403):
+        raise SystemExit(
+            f"judge preflight: API key rejected (HTTP {response.status_code}) — "
+            f"check --judge-api-key: {response.text[:200]}"
+        )
+    if response.is_error:
+        raise SystemExit(
+            f"judge preflight: {args.judge_provider} judge call failed "
+            f"(HTTP {response.status_code}): {response.text[:200]}"
+        )
+    print("judge preflight: credentials accepted")
+
+
 def generate_data(*, force: bool) -> None:
     del force
     print("data: harveyai/lab@latest resolves through Harbor at runtime — nothing to download")
@@ -371,6 +411,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.judge_base_url and args.judge_provider != "openai":
         parser.error("--judge-base-url is only supported with --judge-provider openai")
     total_stages = {"data": 1, "validate": 4, "launch": 5}[args.action]
+
+    # The data stage never talks to the judge, so it skips the preflight.
+    if args.action != "data":
+        _check_judge_credentials(args)
 
     print(f"[stage 1/{total_stages}] generating data")
     generate_data(force=args.force)
