@@ -363,6 +363,7 @@ class TrainerClient:
         dataset_path: str | None = None,
         name: str | None = None,
         launcher_args: dict[str, Any] | None = None,
+        trainer_ref: str | None = None,
     ) -> str:
         """Launch a new training run.
 
@@ -377,6 +378,8 @@ class TrainerClient:
             launcher_args: Extra launcher args forwarded to the server
                 (e.g. {"max_rollout_len": 4000}). Bundle and optional dataset
                 path parameters always take precedence over this mapping.
+            trainer_ref: Optional immutable trainer source reference. Sent as a
+                top-level launch field rather than as a trainer argument.
         Returns:
             The training run ID.
 
@@ -388,6 +391,7 @@ class TrainerClient:
             "env_cls_path",
             "env_metadata_path",
             "dataset_path",
+            "trainer_ref",
         }
         args: dict[str, Any] = {
             key: value
@@ -406,6 +410,8 @@ class TrainerClient:
             "name": name,
             "args": args,
         }
+        if trainer_ref is not None:
+            body["trainer_ref"] = trainer_ref
         response = self._http_client.post(
             "/v1/train/runs/launch",
             json=body,
