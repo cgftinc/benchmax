@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from benchmax.bundle import dump_bundle
+from benchmax.envs.environment import Environment
 from benchmax.envs.harbor import (
     BundledAgentSource,
     BundledHarborAgent,
@@ -302,9 +303,14 @@ def _print_validation(report: Any) -> None:
             if rollout_id in errors:
                 print(f"❌ {location} {rollout_id}: {errors[rollout_id]}")
             else:
+                mark = (
+                    "✅"
+                    if outcome.termination_reason in Environment.scorable_termination_reasons
+                    else "❌"
+                )
                 error_suffix = f" error={outcome.error}" if outcome.error else ""
                 print(
-                    f"✅ {location} {rollout_id}: "
+                    f"{mark} {location} {rollout_id}: "
                     f"{outcome.termination_reason} {dict(outcome.rewards)}{error_suffix}"
                 )
         for rollout_id, error in errors.items():
@@ -366,7 +372,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.judge_base_url and args.judge_provider != "openai":
         parser.error("--judge-base-url is only supported with --judge-provider openai")
-    constructor_args = _constructor_args(args)
     total_stages = {"data": 1, "validate": 4, "launch": 5}[args.action]
 
     print(f"[stage 1/{total_stages}] generating data")
@@ -374,6 +379,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "data":
         return 0
 
+    # Built after the data early-return: harvey's harness capture clones the
+    # LAB tree, which the data stage must not pay for.
+    constructor_args = _constructor_args(args)
     ensure_session()
     print(f"[stage 2/{total_stages}] bundling environment")
     bundled_environment = dump_bundle(

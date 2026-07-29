@@ -29,17 +29,19 @@ uv run python main.py launch \
   --modal-token-secret $MODAL_TOKEN_SECRET \
   --judge-provider anthropic \
   --judge-model 'anthropic/claude-sonnet-4-6' \
-  --judge-api-key '<anthropic-api-key>'
+  --judge-api-key "$ANTHROPIC_API_KEY"
 
-# cost-efficient gpt judge alternative:
+# no anthropic key? use the gpt judge through the castform endpoint that
+# matches your active profile (llm.castform.dev for staging, llm.castform.com
+# for prod):
 #
 # uv run python main.py launch \
 #   --modal-token-id $MODAL_TOKEN_ID \
 #   --modal-token-secret $MODAL_TOKEN_SECRET \
 #   --judge-provider openai \
 #   --judge-model 'openai/gpt-5.4-nano' \
-#   --judge-api-key '<dedicated-castform-api-key>' \
-#   --judge-base-url 'https://llm.castform.com/v1'
+#   --judge-api-key "$CASTFORM_API_KEY" \
+#   --judge-base-url 'https://llm.castform.dev/v1'
 
 # if iterating on the env, validate first: replace `launch` with `validate` above
 ```
@@ -68,7 +70,9 @@ the verifier env carries the judge credentials and model. harbor resolves the da
 
 ## harness
 
-the agent harness lives in [`harness/`](harness/): harvey's native loop adapted to run inside a harbor environment. it is the default, not a requirement. pass any `BundledHarborAgent` as `harness=` to run a different agent loop against the same dataset and judge:
+the agent harness lives in [`harness/`](harness/): harvey's native loop adapted to run inside a harbor environment. at launch, `main.py` sparse-clones harvey's LAB harness tree (a pinned ref; override with `HARBOR_HARVEY_GIT_URL` / `HARBOR_HARVEY_GIT_REF`) and captures it into the bundle (~0.7 MB), so authoring needs git and github access once but trial hosts need neither.
+
+the harness is the default, not a requirement. pass any `BundledHarborAgent` as `harness=` to run a different agent loop against the same dataset and judge:
 
 ```python
 env = HarveyLabHarborEnv(

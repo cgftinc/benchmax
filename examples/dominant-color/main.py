@@ -31,6 +31,7 @@ from typing import Any
 from benchmax.bundle import dump_bundle
 from benchmax.envs.base import BaseEnv, BaseRollout, JsonRow, Tool
 from benchmax.envs.dataset import Dataset, validate_max_examples
+from benchmax.envs.environment import Environment
 from benchmax.envs.identity import canonical_example_id
 from benchmax.envs.shared_types import DatasetSplit, Example, RewardMap
 from castform.platform import ensure_session, upload_assets
@@ -441,9 +442,14 @@ def _print_validation(report: Any) -> None:
             if rollout_id in errors:
                 print(f"❌ {location} {rollout_id}: {errors[rollout_id]}")
             else:
+                mark = (
+                    "✅"
+                    if outcome.termination_reason in Environment.scorable_termination_reasons
+                    else "❌"
+                )
                 error_suffix = f" error={outcome.error}" if outcome.error else ""
                 print(
-                    f"✅ {location} {rollout_id}: "
+                    f"{mark} {location} {rollout_id}: "
                     f"{outcome.termination_reason} {dict(outcome.rewards)}{error_suffix}"
                 )
         for rollout_id, error in errors.items():

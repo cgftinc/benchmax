@@ -54,7 +54,7 @@ harbor resolves the dataset, runs each rollout as a sandboxed trial, and settles
 
 ## harness
 
-the agent harness lives in [`harness/`](harness/): the upstream mini-swe-agent loop replicated with only the python standard library, so sandbox setup needs no apt, PyPI, or wheel transfer. it is the default, not a requirement. pass any `BundledHarborAgent` as `harness=` to run a different agent loop against the same dataset and verifier:
+the agent harness lives in [`harness/`](harness/): the upstream mini-swe-agent installed offline — wheels are prefetched on the trial host and uploaded into the sandbox, so the sandbox itself needs no apt or PyPI access. it is the default, not a requirement. pass any `BundledHarborAgent` as `harness=` to run a different agent loop against the same dataset and verifier:
 
 ```python
 env = AimeMiniSweHarborEnv(

@@ -26,6 +26,7 @@ from benchmax.envs import (
     canonical_example_id,
 )
 from benchmax.envs.base import resolve_dataset_path
+from benchmax.envs.environment import Environment
 from benchmax.rewards import extract_answer_block, extract_completion_text
 from castform.platform import ensure_session, upload_assets
 
@@ -198,7 +199,7 @@ def generate_data(*, force: bool = False) -> dict[str, Path]:
         "eval.jsonl": DATA_DIR / "eval.jsonl",
     }
     if all(path.exists() for path in dataset_files.values()) and not force:
-        print("data: using existing 40 train / 10 eval examples")
+        print(f"data: using existing {TRAIN_EXAMPLES} train / {EVAL_EXAMPLES} eval examples")
         return dataset_files
 
     from datasets import load_dataset
@@ -216,7 +217,7 @@ def generate_data(*, force: bool = False) -> dict[str, Path]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     _write_jsonl(dataset_files["train.jsonl"], rows[:TRAIN_EXAMPLES])
     _write_jsonl(dataset_files["eval.jsonl"], rows[TRAIN_EXAMPLES:])
-    print("data: wrote 40 train / 10 eval examples")
+    print(f"data: wrote {TRAIN_EXAMPLES} train / {EVAL_EXAMPLES} eval examples")
     return dataset_files
 
 
@@ -280,9 +281,14 @@ def _print_validation(report: Any) -> None:
             if rollout_id in errors:
                 print(f"❌ {location} {rollout_id}: {errors[rollout_id]}")
             else:
+                mark = (
+                    "✅"
+                    if outcome.termination_reason in Environment.scorable_termination_reasons
+                    else "❌"
+                )
                 error_suffix = f" error={outcome.error}" if outcome.error else ""
                 print(
-                    f"✅ {location} {rollout_id}: "
+                    f"{mark} {location} {rollout_id}: "
                     f"{outcome.termination_reason} {dict(outcome.rewards)}{error_suffix}"
                 )
         for rollout_id, error in errors.items():
