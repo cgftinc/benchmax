@@ -96,7 +96,7 @@ class AimeMiniSweHarborEnv(HarborEnv):
 
 # ── Runnable entrypoint ──────────────────────────────────────────────────────
 
-MODEL = "Qwen/Qwen3.5-35B-A3B"
+MODEL = "Qwen/Qwen3.5-4B"
 VALIDATE_MODEL = "gpt-5.4-mini"
 RUNTIME_DEPENDENCIES = ["harbor[modal]>=0.18.0,<0.19"]
 RUN_NAME = "aime"
