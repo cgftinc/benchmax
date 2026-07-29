@@ -332,6 +332,7 @@ async def test_harvey_agent_reads_metrics_from_sandbox_before_download(
             "turns": 3,
             "termination_reason": "context_exceeded",
         },
+        "termination_reason": "context_exceeded",
     }
 
 

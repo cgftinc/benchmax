@@ -398,6 +398,9 @@ class HarveyHarnessAgent(BaseAgent):
         context.metadata = {
             "harvey_run_id": run_id,
             "harvey_metrics": metrics,
+            # The generic harness contract HarborEnv reads; harvey_metrics
+            # stays for detail.
+            "termination_reason": metrics.get("termination_reason"),
         }
 
     def _run_id(self) -> str:

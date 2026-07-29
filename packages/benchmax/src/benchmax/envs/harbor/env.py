@@ -386,17 +386,40 @@ def _zero_reward_rollout(
     )
 
 
+def _harness_reported_reason(metadata: object) -> str | None:
+    """The harness's self-reported budget stop, if it declared one.
+
+    The generic contract is ``metadata["termination_reason"]``; the legacy
+    ``harvey_metrics.termination_reason`` key stays as a fallback. A clean
+    ``finished`` defers to exception classification, and anything outside the
+    recognized set is logged rather than silently dropped.
+    """
+
+    if not isinstance(metadata, Mapping):
+        return None
+    reason = metadata.get("termination_reason")
+    if reason is None:
+        harvey_metrics = metadata.get("harvey_metrics")
+        if isinstance(harvey_metrics, Mapping):
+            reason = harvey_metrics.get("termination_reason")
+    if reason is None or reason == "finished":
+        return None
+    if reason not in _HARNESS_REPORTED_TERMINATION_REASONS:
+        logger.warning(
+            "harbor.rollout.unrecognized_harness_termination_reason reason=%r",
+            reason,
+        )
+        return None
+    return cast(str, reason)
+
+
 def _result_termination_reason(result: TrialResult) -> str:
     """Prefer an explicit harness budget stop, then classify Harbor failures."""
 
     agent_result = getattr(result, "agent_result", None)
-    metadata = getattr(agent_result, "metadata", None)
-    harvey_metrics = metadata.get("harvey_metrics") if isinstance(metadata, Mapping) else None
-    reason = (
-        harvey_metrics.get("termination_reason") if isinstance(harvey_metrics, Mapping) else None
-    )
-    if reason in _HARNESS_REPORTED_TERMINATION_REASONS:
-        return cast(str, reason)
+    reason = _harness_reported_reason(getattr(agent_result, "metadata", None))
+    if reason is not None:
+        return reason
     if result.exception_info is None:
         return "finished"
     return _exception_termination_reason(result.exception_info.exception_type)

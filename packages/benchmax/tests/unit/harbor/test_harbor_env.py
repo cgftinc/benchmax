@@ -66,6 +66,33 @@ def test_harbor_prefers_harvey_reported_budget_termination(reason: str) -> None:
     assert _result_termination_reason(result) == reason
 
 
+@pytest.mark.parametrize("reason", ["context_exceeded", "output_exceeded"])
+def test_harbor_prefers_the_generic_harness_termination_key(reason: str) -> None:
+    result = SimpleNamespace(
+        agent_result=SimpleNamespace(
+            metadata={
+                "termination_reason": reason,
+                "harvey_metrics": {"termination_reason": "finished"},
+            }
+        ),
+        exception_info=None,
+    )
+
+    assert _result_termination_reason(result) == reason
+
+
+def test_harbor_harness_finished_defers_to_exception_classification() -> None:
+    result = SimpleNamespace(
+        agent_result=SimpleNamespace(metadata={"termination_reason": "finished"}),
+        exception_info=SimpleNamespace(
+            exception_type="AgentTimeoutError",
+            exception_message="agent timed out",
+        ),
+    )
+
+    assert _result_termination_reason(result) == "harness_timeout"
+
+
 @pytest.mark.parametrize(
     "metadata",
     [
@@ -73,6 +100,7 @@ def test_harbor_prefers_harvey_reported_budget_termination(reason: str) -> None:
         {},
         {"harvey_metrics": None},
         {"harvey_metrics": {"termination_reason": "unexpected"}},
+        {"termination_reason": "unexpected"},
     ],
 )
 def test_harbor_ignores_unrecognized_harness_termination_metadata(
@@ -84,6 +112,19 @@ def test_harbor_ignores_unrecognized_harness_termination_metadata(
     )
 
     assert _result_termination_reason(result) == "finished"
+
+
+def test_harbor_logs_unrecognized_harness_termination_reasons(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    result = SimpleNamespace(
+        agent_result=SimpleNamespace(metadata={"termination_reason": "gave_up"}),
+        exception_info=None,
+    )
+
+    assert _result_termination_reason(result) == "finished"
+    assert "unrecognized_harness_termination_reason" in caplog.text
+    assert "gave_up" in caplog.text
 
 
 @pytest.mark.parametrize("reason", ["context_exceeded", "output_exceeded"])
