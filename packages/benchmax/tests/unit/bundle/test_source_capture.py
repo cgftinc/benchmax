@@ -34,8 +34,6 @@ _TEST_MODULE = sys.modules[__name__]
 class MinimalEnv(BaseEnv):
     """Minimal valid BaseEnv subclass for bundling tests."""
 
-    reward_keys = ("score",)
-
     async def create_dataset(self, split, base_dir):
         raise NotImplementedError
 
@@ -68,7 +66,6 @@ def test_exec_defined_class_has_no_introspectable_source() -> None:
     source_code = (
         "from benchmax.envs import BaseEnv\n"
         "class GeneratedEnv(BaseEnv):\n"
-        "    reward_keys = ('score',)\n"
         "    async def create_dataset(self, *a, **k): raise NotImplementedError\n"
         "    async def compute_reward(self, *a, **k): return {'score': 0.0}\n"
     )
@@ -417,8 +414,6 @@ def _write_editable_project(
             from . import helper
 
             class EditableEnv(BaseEnv):
-                reward_keys = ("score",)
-
                 async def create_dataset(self, split, base_dir):
                     raise NotImplementedError
 
@@ -460,8 +455,6 @@ def _write_editable_single_file_project(tmp_path: Path, module_name: str) -> Pat
             from benchmax.envs import BaseEnv
 
             class EditableEnv(BaseEnv):
-                reward_keys = ("score",)
-
                 async def create_dataset(self, split, base_dir):
                     raise NotImplementedError
 
@@ -520,7 +513,6 @@ def _write_late_import_project(
         "from benchmax.envs import BaseEnv\n\n"
         f"{unused_function}"
         "class LateImportEnv(BaseEnv):\n"
-        '    reward_keys = ("score",)\n\n'
         "    async def create_dataset(self, split, base_dir):\n"
         "        raise NotImplementedError\n\n"
         "    async def compute_reward(self, *args, **kwargs):\n"
@@ -547,8 +539,6 @@ def _write_sibling_projects(tmp_path: Path) -> tuple[Path, Path]:
             from sibling_helpers import helper
 
             class SiblingEnv(BaseEnv):
-                reward_keys = ("score",)
-
                 async def create_dataset(self, split, base_dir):
                     raise NotImplementedError
 

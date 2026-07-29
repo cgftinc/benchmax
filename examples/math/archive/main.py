@@ -41,14 +41,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
-import uuid
-
-
 import logging
 import math
 import random
 import re
+import sys
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from html import unescape
 from pathlib import Path
@@ -57,15 +55,14 @@ from typing import Any
 from benchmax.envs.base import (
     BaseEnv,
     BaseRollout,
-    JsonRow,
     JsonlDataset,
+    JsonRow,
     Tool,
     resolve_dataset_path,
 )
-from benchmax.envs.identity import canonical_example_id
 from benchmax.envs.dataset import Dataset
-from benchmax.envs.shared_types import Example, DatasetSplit, RewardMap, RolloutFailure
-
+from benchmax.envs.identity import canonical_example_id
+from benchmax.envs.shared_types import DatasetSplit, Example, RewardMap, RolloutFailure
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +77,6 @@ SENTINEL_EMIT_KEY = "__fixture_emit_log"
 
 class MathEnv(BaseEnv):
     """Arithmetic tool-loop env backed by normalized train and eval JSONL files."""
-
-    reward_keys = ("correctness",)
 
     def __init__(
         self,
@@ -129,7 +124,7 @@ class MathEnv(BaseEnv):
 
         return list(_TOOLS)
 
-    def rollout_context(self, rollout_id: str, example: Any) -> "_MathRolloutContext":
+    def rollout_context(self, rollout_id: str, example: Any) -> _MathRolloutContext:
         """Stash row sentinels for the rollout and honour the context stages."""
 
         return _MathRolloutContext(self, rollout_id, example)
@@ -162,9 +157,7 @@ class MathEnv(BaseEnv):
         # prompt context AND persists in the rollout messages, so one knob
         # stresses both byte-pressure paths.
         if self._rng.random() < self._long_tool_probability:
-            logger.warning(
-                "[fixture] padding tool output to ~%d chars", self._long_tool_chars
-            )
+            logger.warning("[fixture] padding tool output to ~%d chars", self._long_tool_chars)
             return f"{result}\n{'x' * self._long_tool_chars}"
         return result
 
@@ -186,9 +179,7 @@ class MathEnv(BaseEnv):
         logger.info("[group_reward] observing group of %d", len(rollouts))
         for rollout in rollouts:
             if rollout.example_args.get(SENTINEL_FAIL_KEY) == "compute_group_reward":
-                raise RolloutFailure(
-                    "judge_error", "fixture sentinel: compute_group_reward"
-                )
+                raise RolloutFailure("judge_error", "fixture sentinel: compute_group_reward")
         return None
 
     def _score_rollout(self, rollout: BaseRollout) -> dict[str, float]:
@@ -213,9 +204,7 @@ class _MathRolloutContext:
         self._rollout_id = rollout_id
         payload = getattr(example, "payload", None)
         self._sentinels = {
-            key: value
-            for key, value in (payload or {}).items()
-            if key.startswith("__fixture_")
+            key: value for key, value in (payload or {}).items() if key.startswith("__fixture_")
         }
 
     async def __aenter__(self) -> None:
@@ -415,9 +404,7 @@ def generate_data(*, force: bool) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     TRAIN_FILE.write_text("".join(json.dumps(row) + "\n" for row in rows[:TRAIN_COUNT]))
     EVAL_FILE.write_text("".join(json.dumps(row) + "\n" for row in rows[TRAIN_COUNT:]))
-    print(
-        f"data: wrote {TRAIN_COUNT} train / {len(rows) - TRAIN_COUNT} eval rows to {DATA_DIR}"
-    )
+    print(f"data: wrote {TRAIN_COUNT} train / {len(rows) - TRAIN_COUNT} eval rows to {DATA_DIR}")
 
 
 def _local_rows(path: Path) -> list[dict]:
@@ -459,9 +446,7 @@ def launch(*, assume_yes: bool) -> str | None:
         raise SystemExit("data stage has not run; `python main.py data` first")
     run_name = f"mathenv-{uuid.uuid4().hex[:8]}"
     if not assume_yes:
-        reply = input(
-            f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] "
-        )
+        reply = input(f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] ")
         if reply.strip().lower() not in ("y", "yes"):
             print("Launch aborted.")
             return None
@@ -500,9 +485,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=["data", "validate", "launch", "all"],
         help="Stage to run (default: all = data → validate, then STOP).",
     )
-    parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
+    parser.add_argument("--force", action="store_true", help="Regenerate datasets even if present.")
     parser.add_argument(
         "-y",
         "--yes",

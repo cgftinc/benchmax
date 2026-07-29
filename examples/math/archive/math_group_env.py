@@ -12,10 +12,6 @@ from main import MathEnv
 class MathGroupEnv(MathEnv):
     """Exercise the group-only reward path using MathEnv's normal rollout loop."""
 
-    # Group-only scoring keeps the single historical key; the fixture's
-    # multi-key + bonus shape belongs to MathEnv's merged path.
-    reward_keys = ("correctness",)
-
     async def compute_reward(self, rollout: BaseRollout) -> None:
         """Leave individual attempts unscored until their group completes."""
 
@@ -28,9 +24,7 @@ class MathGroupEnv(MathEnv):
         """Score every completed attempt and key the result by rollout ID."""
 
         return {
-            rollout.rollout_id: {
-                "correctness": self._score_rollout(rollout)["correctness"]
-            }
+            rollout.rollout_id: {"correctness": self._score_rollout(rollout)["correctness"]}
             for rollout in rollouts
         }
 

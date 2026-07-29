@@ -101,9 +101,7 @@ async def test_math_env_runs_tools_and_discriminates_answers(tmp_path: Path) -> 
     assert outcomes["correct"].rewards == {"correctness": 1.0}
     assert outcomes["incorrect"].rewards == {"correctness": 0.0}
     final_calls = [request for request in server.requests if request.call_index == 3]
-    assert all(
-        request.body["messages"][-1]["content"] == "42.0" for request in final_calls
-    )
+    assert all(request.body["messages"][-1]["content"] == "42.0" for request in final_calls)
 
 
 def _fixture_rows(sentinel_stage: str) -> list[dict[str, object]]:
@@ -221,9 +219,7 @@ async def test_sentinel_failures_zero_their_group_and_spare_other_groups(
             assert healthy_outcomes[rollout_id].rewards == rewards, stage
 
 
-async def test_preprocessing_sentinel_logs_and_keeps_the_row(
-    tmp_path: Path, caplog
-) -> None:
+async def test_preprocessing_sentinel_logs_and_keeps_the_row(tmp_path: Path, caplog) -> None:
     rows = [{"task": "6*7", "answer": "42", "__fixture_fail_in": "preprocessing"}]
     _write_rows(tmp_path / "train.jsonl", rows)
     _write_rows(tmp_path / "eval.jsonl", rows)
