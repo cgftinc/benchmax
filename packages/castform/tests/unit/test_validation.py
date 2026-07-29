@@ -273,6 +273,33 @@ async def test_rollout_and_named_auth_remain_independent() -> None:
     assert FakeModelSessionClient.instances[-1].model_auth is rollout_auth
 
 
+async def test_local_validation_rejects_outcomes_with_settlement_errors() -> None:
+    class SettlementErrorEnvironment(RecordingEnvironment):
+        async def run_group(self, requests):
+            group = list(requests)
+            self.groups.append(group)
+            return {
+                request.rollout_id: RolloutOutcome(
+                    rewards={},
+                    termination_reason="context_exceeded",
+                    error="RewardFileNotFoundError: no reward file",
+                )
+                for request in group
+            }
+
+    report = await validate_environment(
+        SettlementErrorEnvironment(),
+        model="test-model",
+        model_auth=StaticBearerAuth("rollout-token"),
+    )
+
+    assert not report.ok
+    assert len(report.local_errors) == 2
+    assert set(report.local_errors.values()) == {
+        "environment error: RewardFileNotFoundError: no reward file"
+    }
+
+
 async def test_local_validation_rejects_an_empty_model_capture(
     fake_model_sessions,
 ) -> None:

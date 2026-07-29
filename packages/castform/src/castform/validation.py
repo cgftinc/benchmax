@@ -222,17 +222,26 @@ async def _run_local_validation(
                 local = dict(await env.run_group(requests))
 
                 stage = "model-trace collection"
-                local_errors: dict[str, str] = {}
+                # Mirror the hosted phase: a settlement failure recorded on the
+                # outcome (e.g. a broken judge key) fails validation even when
+                # the trial itself stopped on a scorable budget.
+                local_errors: dict[str, str] = {
+                    rollout_id: f"environment error: {outcome.error}"
+                    for rollout_id, outcome in local.items()
+                    if outcome.error is not None
+                }
                 for session in sessions:
                     try:
                         capture = await session_client.collect(session)
                     except Exception as error:
-                        local_errors[session.session_id] = f"model trace collection failed: {error}"
+                        local_errors.setdefault(
+                            session.session_id, f"model trace collection failed: {error}"
+                        )
                     else:
                         collected_ids.add(session.session_id)
                         if not capture.get("num_calls"):
-                            local_errors[session.session_id] = (
-                                "rollout produced no usable model trace"
+                            local_errors.setdefault(
+                                session.session_id, "rollout produced no usable model trace"
                             )
                 return local, local_errors, rollout_ids
     except TimeoutError as error:
