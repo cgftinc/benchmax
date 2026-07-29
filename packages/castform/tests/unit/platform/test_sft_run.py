@@ -8,7 +8,13 @@ import json
 from pathlib import Path
 
 import pytest
-from benchmax.sft import SftDataset, SftIssue, SftRow, load_sft_dataset
+from benchmax.sft import (
+    SftDataset,
+    SftIssue,
+    SftRow,
+    SftSerializationError,
+    load_sft_dataset,
+)
 from castform.platform import (
     SftDatasetInvalidError,
     UploadedSftRun,
@@ -106,27 +112,52 @@ def test_upload_sft_run_uploads_nothing_for_eval_when_omitted(tmp_path):
     assert result.eval_dataset_path is None
 
 
+def _upload_prefix(tmp_path, train_rows: list[dict], eval_rows: list[dict] | None) -> str:
+    """Run an upload under a fixed run_name and return the dataset prefix used."""
+    storage = FakeStorageClient()
+    upload_sft_run(
+        train=_write_dataset(tmp_path, "train.jsonl", train_rows),
+        eval=(
+            None
+            if eval_rows is None
+            else _write_dataset(tmp_path, "eval.jsonl", eval_rows)
+        ),
+        run_name="same-name",
+        storage_client=storage,  # type: ignore[arg-type]
+    )
+    return storage.uploads[0][0].rsplit("/", 1)[0]
+
+
 def test_upload_sft_run_hashes_train_only_and_train_plus_eval_differently(tmp_path):
     """The prefix hash covers the bytes actually uploaded, so adding an eval
     split cannot land on top of an earlier train-only run."""
-    train = _write_dataset(tmp_path, "train.jsonl", [_row()])
-    eval_dataset = _write_dataset(tmp_path, "eval.jsonl", [_row("eval")])
+    train_only = _upload_prefix(tmp_path, [_row("a")], None)
+    with_eval = _upload_prefix(tmp_path, [_row("a")], [_row("b")])
 
-    train_only = FakeStorageClient()
-    upload_sft_run(
-        train=train,
-        run_name="same-name",
-        storage_client=train_only,  # type: ignore[arg-type]
-    )
-    with_eval = FakeStorageClient()
-    upload_sft_run(
-        train=train,
-        eval=eval_dataset,
-        run_name="same-name",
-        storage_client=with_eval,  # type: ignore[arg-type]
-    )
+    assert train_only != with_eval
 
-    assert train_only.uploads[0][0] != with_eval.uploads[0][0]
+
+def test_upload_sft_run_hashes_distinguish_how_rows_are_split(tmp_path):
+    """Canonical JSONL is newline-terminated per row, so concatenating the two
+    splits loses the boundary between them: [a]+[b] and [a, b]+nothing would
+    hash the same bytes. The prefix must depend on the partition too, or a
+    re-split run silently reuses another run's directory."""
+    split_across = _upload_prefix(tmp_path, [_row("a")], [_row("b")])
+    all_in_train = _upload_prefix(tmp_path, [_row("a"), _row("b")], None)
+
+    assert split_across != all_in_train
+
+
+def test_upload_sft_run_hashes_distinguish_absent_eval_from_empty_eval(tmp_path):
+    """eval=None uploads only train.jsonl; an empty eval dataset also uploads an
+    empty eval.jsonl. Sharing a prefix would leave a stale eval.jsonl in place
+    for a later train-only run."""
+    absent_eval = _upload_prefix(tmp_path, [_row("a"), _row("b")], None)
+    empty_eval = _upload_prefix(tmp_path, [_row("a"), _row("b")], [])
+    split_across = _upload_prefix(tmp_path, [_row("a")], [_row("b")])
+
+    assert absent_eval != empty_eval
+    assert split_across != empty_eval
 
 
 def test_upload_sft_run_uploads_canonical_jsonl_bytes(tmp_path):
@@ -239,6 +270,87 @@ def test_upload_sft_run_refuses_a_hand_built_dataset_that_skipped_validation(tmp
         )
 
     assert storage.uploads == []
+
+
+def _notice_only_load_issue_dataset(tmp_path) -> SftDataset:
+    """A dataset whose rows all validate, carrying one notice-severity load issue.
+
+    load_sft_dataset only emits error-severity load issues today, so the
+    notice-severity case has to be built by hand — it is exactly the case
+    report.ok does not catch, since report.ok counts error severity only.
+    """
+    return SftDataset(
+        path=str(tmp_path / "partial.jsonl"),
+        rows=[SftRow("partial.jsonl", 1, _row())],
+        load_issues=[SftIssue("partial.jsonl", 7, "notice", "stopped reading early")],
+    )
+
+
+def test_upload_sft_run_refuses_a_notice_severity_load_issue(tmp_path):
+    """A load issue blocks whatever its severity: the rows present may not be
+    the whole dataset. report.ok would pass this pair, so the refusal has to
+    come from the load-issue gate — and as the domain exception, not the
+    SftSerializationError canonical_jsonl would have raised later."""
+    storage = FakeStorageClient()
+
+    with pytest.raises(SftDatasetInvalidError) as exc_info:
+        upload_sft_run(
+            train=_notice_only_load_issue_dataset(tmp_path),
+            run_name="notice-load-issue",
+            storage_client=storage,  # type: ignore[arg-type]
+        )
+
+    assert not isinstance(exc_info.value, SftSerializationError)
+    assert storage.uploads == []
+    # The gate must not be the report.ok gate in disguise.
+    assert exc_info.value.report is not None
+    assert exc_info.value.report.ok
+    message = str(exc_info.value)
+    assert "partial.jsonl:7" in message
+    assert "stopped reading early" in message
+
+
+def test_upload_sft_run_refuses_a_notice_severity_load_issue_before_the_client(
+    monkeypatch, tmp_path
+):
+    """The notice-severity load issue must be refused before the client exists,
+    not deep inside serialization with a StorageClient already built."""
+    import castform.platform.training_run as training_run
+
+    def explode(*args, **kwargs):
+        raise AssertionError("StorageClient constructed before the validation gate")
+
+    monkeypatch.setattr(training_run, "StorageClient", explode)
+
+    with pytest.raises(SftDatasetInvalidError):
+        upload_sft_run(
+            train=_notice_only_load_issue_dataset(tmp_path),
+            run_name="notice-no-client",
+        )
+
+
+def test_upload_sft_run_refuses_a_notice_severity_load_issue_on_the_eval_split(tmp_path):
+    """The eval split's load issues are gated on the same terms as train's."""
+    storage = FakeStorageClient()
+
+    with pytest.raises(SftDatasetInvalidError):
+        upload_sft_run(
+            train=_write_dataset(tmp_path, "train.jsonl", [_row()]),
+            eval=_notice_only_load_issue_dataset(tmp_path),
+            run_name="notice-eval",
+            storage_client=storage,  # type: ignore[arg-type]
+        )
+
+    assert storage.uploads == []
+
+
+def test_upload_sft_run_empty_eval_file_carries_no_load_issues(tmp_path):
+    """Guards the load-issue gate against over-refusing: an empty eval file is
+    reported as a notice on the validation report, never as a load issue, so it
+    must stay uploadable."""
+    empty_eval = _write_dataset(tmp_path, "eval.jsonl", [])
+
+    assert empty_eval.load_issues == []
 
 
 def test_upload_sft_run_refuses_before_constructing_a_storage_client(monkeypatch, tmp_path):

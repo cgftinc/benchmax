@@ -25,6 +25,7 @@ from typing import Any
 from benchmax.bundle import Bundle, bundle_digest
 from benchmax.sft import (
     SftDataset,
+    SftIssue,
     SftValidationReport,
     canonical_jsonl,
     validate_sft_dataset,
@@ -230,10 +231,15 @@ def upload_sft_run(
     """Validate an SFT train (+ optional eval) dataset pair and upload it.
 
     Default layout: ``datasets/<run_name>/<dataset_hash>/{train.jsonl,
-    eval.jsonl}``, where the hash is sha256 over the bytes actually uploaded,
-    truncated to 8 hex chars — so a train-only run and a train+eval run land
-    in different buckets. ``eval=None`` uploads nothing for eval and returns
-    ``None`` for ``eval_dataset_path``.
+    eval.jsonl}``. The hash is sha256 over a JSON fingerprint holding each
+    split's own sha256 under its own key, truncated to 8 hex chars.
+    Fingerprinting the splits separately keeps the train/eval boundary in the
+    digest — concatenating newline-terminated canonical JSONL would not, so
+    moving a row from eval to train, or supplying no eval at all versus an
+    empty one, would collide on a single prefix while uploading different
+    file sets. ``eval=None`` uploads nothing for eval and returns ``None``
+    for ``eval_dataset_path``; ``eval`` as an empty dataset still uploads an
+    empty ``eval.jsonl``, and the two get different prefixes.
 
     This is the upload side of the canonicalize -> validate -> upload
     boundary, and it enforces that boundary rather than documenting it. The
@@ -263,9 +269,10 @@ def upload_sft_run(
         UploadedSftRun with the train path and the optional eval path.
 
     Raises:
-        SftDatasetInvalidError: If the pair carries any error-severity issue
-            or the training split is empty. Carries the full validation
-            report; nothing has been uploaded.
+        SftDatasetInvalidError: If the training split is empty, if either
+            split carries a load issue of any severity, or if the pair
+            carries any error-severity validation issue. Carries the full
+            validation report; nothing has been uploaded.
     """
     report = validate_sft_dataset(train, eval)
     # Refuse before constructing a client or serializing anything. The empty
@@ -277,6 +284,18 @@ def upload_sft_run(
             report,
             f"refusing to upload SFT run {run_name!r}: the training dataset "
             f"{train.path!r} has no rows.",
+        )
+    load_issues = _load_issues(train, eval)
+    if load_issues:
+        # Any load issue blocks, whatever its severity — report.ok only counts
+        # error severity, so a notice-severity load issue would otherwise reach
+        # canonical_jsonl and surface as SftSerializationError after the client
+        # exists. Mirroring canonical_jsonl's contract keeps the refusal here,
+        # typed, and before any storage object is built.
+        raise SftDatasetInvalidError(
+            report,
+            f"refusing to upload SFT run {run_name!r}: the dataset pair did not "
+            f"load cleanly. {_issue_summary(load_issues)}",
         )
     if not report.ok:
         raise SftDatasetInvalidError(
@@ -297,8 +316,7 @@ def upload_sft_run(
     eval_jsonl = canonical_jsonl(eval) if eval is not None else None
 
     if dataset_prefix is None:
-        digest = hashlib.sha256(train_jsonl + (eval_jsonl or b"")).hexdigest()[:8]
-        dataset_prefix = f"datasets/{run_name}/{digest}"
+        dataset_prefix = f"datasets/{run_name}/{_dataset_digest(train_jsonl, eval_jsonl)}"
     _validate_blob_path(dataset_prefix, source="dataset_prefix/run_name")
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -321,19 +339,58 @@ def upload_sft_run(
     return UploadedSftRun(train_dataset_path=train_path, eval_dataset_path=eval_path)
 
 
+def _dataset_digest(train_jsonl: bytes, eval_jsonl: bytes | None) -> str:
+    """The 8-hex-char prefix segment identifying this exact pair of splits.
+
+    Each split is hashed on its own and the per-split digests are combined
+    through a JSON object keyed by split name, so the digest depends on how
+    the rows are partitioned and not merely on their concatenation. An absent
+    eval split hashes as JSON ``null``, distinguishing it from an empty eval
+    split whose canonical JSONL is ``b""`` — the two upload different file
+    sets and so must never share a prefix.
+    """
+    fingerprint = json.dumps(
+        {
+            "train": hashlib.sha256(train_jsonl).hexdigest(),
+            "eval": (
+                hashlib.sha256(eval_jsonl).hexdigest() if eval_jsonl is not None else None
+            ),
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(fingerprint).hexdigest()[:8]
+
+
+def _load_issues(train: SftDataset, eval: SftDataset | None) -> list[SftIssue]:
+    """Every load issue carried by the pair, train split first."""
+    issues = list(train.load_issues)
+    if eval is not None:
+        issues.extend(eval.load_issues)
+    return issues
+
+
+def _issue_summary(issues: list[SftIssue]) -> str:
+    """``issues`` rendered as one actionable line, capped at ``_MAX_REPORTED_ISSUES``.
+
+    Callers pass an already-filtered list; this helper does not decide which
+    severities block, since that differs per gate.
+    """
+    shown = "; ".join(
+        f"{issue.source_path}:{issue.physical_line}: {issue.message}"
+        for issue in issues[:_MAX_REPORTED_ISSUES]
+    )
+    remaining = len(issues) - _MAX_REPORTED_ISSUES
+    if remaining > 0:
+        shown = f"{shown}; (+{remaining} more)"
+    return f"{len(issues)} blocking issue(s) — {shown}"
+
+
 def _error_summary(report: SftValidationReport) -> str:
     """The report's blocking issues, rendered for a one-line refusal message."""
     errors = [issue for issue in report.issues if issue.severity == "error"]
     if not errors:
         return "no error-severity issues were reported."
-    shown = "; ".join(
-        f"{issue.source_path}:{issue.physical_line}: {issue.message}"
-        for issue in errors[:_MAX_REPORTED_ISSUES]
-    )
-    remaining = len(errors) - _MAX_REPORTED_ISSUES
-    if remaining > 0:
-        shown = f"{shown}; (+{remaining} more)"
-    return f"{len(errors)} blocking issue(s) — {shown}"
+    return _issue_summary(errors)
 
 
 def _collect_dataset_files(
