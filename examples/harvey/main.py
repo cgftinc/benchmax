@@ -249,6 +249,7 @@ def generate_data(*, force: bool) -> None:
 def validate(env: HarveyLabHarborEnv, uploaded_assets: Any) -> Any:
     from castform import validate_environment
 
+    print("validate: running real modal sandbox trials — this stage takes a few minutes")
     with tempfile.TemporaryDirectory() as tmp:
         report = asyncio.run(
             validate_environment(
@@ -257,11 +258,10 @@ def validate(env: HarveyLabHarborEnv, uploaded_assets: Any) -> Any:
                 split="eval",
                 base_dir=Path(tmp),
                 remote_assets=uploaded_assets,
-                # Big enough for the instruction and a few document-reading
-                # turns (the 2048 default kills the first call), small enough
-                # that the budget stop ends the trial quickly instead of
-                # running the full 30-turn loop.
-                max_context_tokens=8192,
+                # Small enough that the budget stop ends trials in minutes
+                # instead of the full 30-turn loop; 4096 was measured too
+                # small for even the first model call.
+                max_context_tokens=6144,
                 # Modal sandbox build plus a several-turn trial still exceeds
                 # the 120s local default.
                 local_timeout_seconds=1800,
@@ -302,9 +302,10 @@ def _print_validation(report: Any) -> None:
             if rollout_id in errors:
                 print(f"❌ {location} {rollout_id}: {errors[rollout_id]}")
             else:
+                error_suffix = f" error={outcome.error}" if outcome.error else ""
                 print(
                     f"✅ {location} {rollout_id}: "
-                    f"{outcome.termination_reason} {dict(outcome.rewards)}"
+                    f"{outcome.termination_reason} {dict(outcome.rewards)}{error_suffix}"
                 )
         for rollout_id, error in errors.items():
             if rollout_id not in outcomes:

@@ -130,6 +130,7 @@ def test_validation_scorecard_marks_accepted_outcomes_as_success(capsys) -> None
     outcome = SimpleNamespace(
         termination_reason="max_turns_exceeded",
         rewards={"correctness": 0.0},
+        error=None,
     )
     report = SimpleNamespace(
         ok=True,
@@ -145,3 +146,23 @@ def test_validation_scorecard_marks_accepted_outcomes_as_success(capsys) -> None
     assert "✅ local local-1: max_turns_exceeded" in output
     assert "✅ remote remote-1: max_turns_exceeded" in output
     assert "✅ validation passed" in output
+
+
+def test_validation_scorecard_shows_settlement_errors(capsys) -> None:
+    outcome = SimpleNamespace(
+        termination_reason="max_turns_exceeded",
+        rewards={},
+        error="KeyError: 'missing ground_truth column'",
+    )
+    report = SimpleNamespace(
+        ok=True,
+        local={"local-1": outcome},
+        remote=None,
+        local_errors={},
+        remote_errors={},
+    )
+
+    main._print_validation(report)
+
+    output = capsys.readouterr().out
+    assert "error=KeyError: 'missing ground_truth column'" in output
