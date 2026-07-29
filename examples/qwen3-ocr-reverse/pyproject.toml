@@ -1,9 +1,9 @@
 [project]
 name = "benchmax-example-qwen3-ocr"
 version = "0.1.0"
-description = "Qwen3 OCR environment for Benchmax"
+description = "Qwen3 OCR environment for benchmax"
 requires-python = "==3.12.*"
-dependencies = ["benchmax", "datasets>=4.0.0", "scipy>=1.16.0"]
+dependencies = ["benchmax", "castform", "datasets>=4.0.0", "scipy>=1.16.0"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

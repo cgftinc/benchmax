@@ -1,24 +1,67 @@
 # aime
 
-AIME competition math (`aime/aime@latest` via Harbor) solved inside Modal
-sandboxes by an offline-installed Mini-SWE agent — the upstream
-mini-swe-agent loop replicated with only the Python standard library, so
-sandbox setup needs no apt, PyPI, or wheel transfer.
+a harbor environment built with [`HarborEnv`](../../packages/benchmax/src/benchmax/envs/harbor/README.md) where an offline-installed mini-swe agent solves AIME competition math inside modal sandboxes.
 
-Purpose: the fast Harbor smoke — runtime dataset resolution, sandboxed
-agents calling the model through the run tunnel, and independent
-per-rollout failure settlement.
+## example task
 
-## Getting started
+each trial drops the agent into a sandbox with an AIME problem; the verifier scores the final answer all-or-nothing:
 
-```bash
-uv sync            # from the benchmax workspace root
-cd examples/aime
-# credentials: Modal from ~/.modal.toml
-uv run python main.py             # data (Harbor resolve) → validate: two real Modal trials (no launch)
-uv run python main.py launch      # train on GPUs (asks first; spends credits)
+```
+task: Find the number of ordered pairs (a, b) of positive integers with
+      a + b = 1000 where neither a nor b has a zero digit.
+agent: runs shell commands in the sandbox, e.g. a python one-liner to
+       enumerate the pairs
+answer: 738
 ```
 
-Sandbox payload (uploaded per trial by `aime_agent.py`): `mini_swe_probe.py`
-(the agent loop), `castform_model.py` (stdlib model client), and
-`run_mini_castform.py` (upstream-config driver).
+## launch training
+
+```bash
+cd examples/aime
+
+# extract modal credentials from the castform profile
+export MODAL_TOKEN_ID=$(MODAL_PROFILE=castform uv run python -c "from modal.config import config; print(config['token_id'])")
+export MODAL_TOKEN_SECRET=$(MODAL_PROFILE=castform uv run python -c "from modal.config import config; print(config['token_secret'])")
+echo "modal token id: $MODAL_TOKEN_ID (secret: ${#MODAL_TOKEN_SECRET} chars)"
+
+uv run python main.py launch --modal-token-id $MODAL_TOKEN_ID --modal-token-secret $MODAL_TOKEN_SECRET
+
+# if iterating on the env, validate first
+uv run python main.py validate --modal-token-id $MODAL_TOKEN_ID --modal-token-secret $MODAL_TOKEN_SECRET
+```
+
+the dataset (aime/aime@latest) resolves through harbor at trainer runtime, so launch only uploads the environment bundle, validates it, then asks for confirmation before spending credits (pass `--yes` to skip). the modal credentials are mandatory arguments and are bundled into the constructor args so trainer-side trials can reach modal.
+
+validate stops after the checks: it runs sample rollouts with a standard model, locally and in a hosted sandbox, just to confirm the environment runs end to end. both locations run real modal sandbox trials.
+
+## environment
+
+```python
+class AimeMiniSweHarborEnv(HarborEnv):
+    def __init__(..., harness=None):
+        super().__init__(
+            dataset=DatasetConfig(name="aime/aime", ref="latest"),
+            trial=HarborTrialTemplate(
+                agent=harness or mini_swe_harness(),
+                environment=TrialEnvironmentConfig(type=EnvironmentType.MODAL),
+                verifier=TrialVerifierConfig(),
+            ),
+            sandbox_credentials=ModalCredentials(...),
+        )
+```
+
+harbor resolves the dataset, runs each rollout as a sandboxed trial, and settles the reward with the dataset's verifier.
+
+## harness
+
+the agent harness lives in [`harness/`](harness/): the upstream mini-swe-agent loop replicated with only the python standard library, so sandbox setup needs no apt, PyPI, or wheel transfer. it is the default, not a requirement. pass any `BundledHarborAgent` as `harness=` to run a different agent loop against the same dataset and verifier:
+
+```python
+env = AimeMiniSweHarborEnv(
+    sandbox_credentials=...,
+    harness=BundledHarborAgent(
+        config=TrialAgentConfig(import_path="my_agent:MyAgent"),
+        source=BundledAgentSource.from_directory(Path("my-harness"), files=("my_agent.py",)),
+    ),
+)
+```

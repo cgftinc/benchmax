@@ -143,16 +143,7 @@ Blue windows wake into morning
     outcomes = await env.run_group(requests)
 
     assert all(outcome.termination_reason == "judge_error" for outcome in outcomes.values())
-    assert all(
-        outcome.rewards
-        == {
-            "quality": 0.0,
-            "rhyme": 0.0,
-            "diversity": 0.0,
-            "conciseness": 0.0,
-        }
-        for outcome in outcomes.values()
-    )
+    assert all(outcome.rewards == {} for outcome in outcomes.values())
     assert "ranking service unavailable" in caplog.text
 
 

@@ -1,10 +1,8 @@
 """Multimodal document / VLM env with Infinity-Doc OCR reward.
 
-`python main.py [data|validate|launch|all]` drives the loop: the data stage
-generates small synthetic rendered-text pages (data-URI PNGs with varied
-geometry) into ./data — no 55K-document Infinity-Doc fetch — and the answers
-carry the hard-mode reversed reading order. Launch uploads datasets + bundle
-and starts a GPU run (explicit, confirmed — it spends credits).
+`python main.py validate` generates small synthetic rendered-text pages,
+uploads the dataset and bundle, and runs local and hosted checks.
+`python main.py launch` follows the same path before asking to spend credits.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -14,17 +12,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import dataclasses
 import io
 import json
 import os
 import random
 import sys
 import time
-import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from benchmax.bundle import dump_bundle
 from benchmax.envs import (
     BaseEnv,
     BaseRollout,
@@ -36,6 +35,7 @@ from benchmax.envs import (
     canonical_example_id,
 )
 from benchmax.envs.base import resolve_dataset_path
+from castform.platform import ensure_session, upload_assets
 from qwen3_ocr_reward import infinity_doc_reward
 
 SYSTEM_PROMPT = ""
@@ -359,12 +359,18 @@ EVAL_COUNT = 16
 DATA_DIR = Path(__file__).parent / "data"
 TRAIN_FILE = DATA_DIR / "train.jsonl"
 EVAL_FILE = DATA_DIR / "eval.jsonl"
+RUN_NAME = "qwen3-ocr-reverse"
+TRAINING_ARGS = {"model": MODEL}
 
 
-def generate_data(*, force: bool) -> None:
+def generate_data(*, force: bool) -> dict[str, Path]:
+    dataset_files = {
+        "train.jsonl": TRAIN_FILE,
+        "eval.jsonl": EVAL_FILE,
+    }
     if TRAIN_FILE.exists() and EVAL_FILE.exists() and not force:
         print(f"data: {TRAIN_FILE} / {EVAL_FILE} present — skipping (--force to redo)")
-        return
+        return dataset_files
     rng = random.Random(20260720)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     TRAIN_FILE.write_text(
@@ -374,108 +380,109 @@ def generate_data(*, force: bool) -> None:
         "".join(json.dumps(row) + "\n" for row in _synthetic_rows(EVAL_COUNT, rng))
     )
     print(f"data: wrote {TRAIN_COUNT} train / {EVAL_COUNT} eval synthetic pages to {DATA_DIR}")
+    return dataset_files
 
 
-def _local_rows(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-
-
-def validate() -> Any:
+def validate(env: Qwen3OCREnv, uploaded_assets: Any) -> Any:
     from castform import validate_environment
 
-    if not EVAL_FILE.exists():
-        raise SystemExit("data stage has not run; `python main.py data` first")
-    env = Qwen3OCREnv()
     report = asyncio.run(
         validate_environment(
             env,
             model=VALIDATE_MODEL,
             split="eval",
             base_dir=DATA_DIR,
+            remote_assets=uploaded_assets,
+            max_context_tokens=2048,
         )
     )
-    for rollout_id, outcome in report.local.items():
-        print(
-            f"  {rollout_id}: termination={outcome.termination_reason} "
-            f"rewards={dict(outcome.rewards)}"
-        )
+    _print_validation(report)
     return report
 
 
-def launch(*, assume_yes: bool) -> str | None:
-    from benchmax.bundle import dump_bundle
+def launch(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
     from castform import config
     from castform.platform.client import TrainerClient
-    from castform.platform.environment_assets import upload_assets
 
-    if not (TRAIN_FILE.exists() and EVAL_FILE.exists()):
-        raise SystemExit("data stage has not run; `python main.py data` first")
-    run_name = f"qwen3-ocr-{uuid.uuid4().hex[:8]}"
     if not assume_yes:
-        reply = input(f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] ")
+        reply = input("launch training on GPUs? this spends credits. [y/N] ")
         if reply.strip().lower() not in ("y", "yes"):
-            print("Launch aborted.")
+            print("launch: cancelled")
             return None
 
-    # The trainer mirrors the uploaded dataset prefix to the machine and hands
-    # it to the env as base_dir, where the default train.jsonl/eval.jsonl live.
-    bundle = dump_bundle(
-        Qwen3OCREnv,
-        pip_dependencies=RUNTIME_DEPENDENCIES,
-    )
-    uploaded = upload_assets(
-        bundle=bundle,
-        train_dataset=_local_rows(TRAIN_FILE),
-        eval_dataset=_local_rows(EVAL_FILE),
-        run_name=run_name,
-    )
     with TrainerClient() as trainer:
         run_id = trainer.launch_training_run(
-            env_cls_path=uploaded.env_cls_path,
-            env_metadata_path=uploaded.env_metadata_path,
-            dataset_path=uploaded.dataset_path,
-            name=run_name,
-            launcher_args={"model": MODEL},
+            name=RUN_NAME,
+            launcher_args=TRAINING_ARGS,
+            **dataclasses.asdict(uploaded_assets),
         )
-    print(f"✓ Launched run_id={run_id}")
-    print(f"  View / cancel at: {config.web_app_url()}/train/{run_id}")
+    print(f"launch: started {run_id}")
+    print(f"view: {config.web_app_url()}/train/{run_id}")
     return run_id
 
 
+def _print_validation(report: Any) -> None:
+    for location in ("local", "remote"):
+        outcomes = getattr(report, location)
+        if outcomes is None:
+            continue
+        errors = getattr(report, f"{location}_errors")
+        for rollout_id, outcome in outcomes.items():
+            if rollout_id in errors:
+                print(f"❌ {location} {rollout_id}: {errors[rollout_id]}")
+            else:
+                print(
+                    f"✅ {location} {rollout_id}: "
+                    f"{outcome.termination_reason} {dict(outcome.rewards)}"
+                )
+        for rollout_id, error in errors.items():
+            if rollout_id not in outcomes:
+                print(f"❌ {location} {rollout_id}: {error}")
+    print("✅ validation passed" if report.ok else "❌ validation failed")
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="main.py",
-        description="Run the castform loop for this env: data → validate → launch.",
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument(
-        "stage",
+        "action",
         nargs="?",
-        default="all",
-        choices=["data", "validate", "launch", "all"],
-        help="Stage to run (default: all = data → validate, then STOP).",
+        choices=("data", "validate", "launch"),
+        default="validate",
     )
-    parser.add_argument("--force", action="store_true", help="Regenerate datasets even if present.")
+    parser.add_argument("--force", action="store_true")
     parser.add_argument(
-        "-y",
         "--yes",
         action="store_true",
-        help="Skip the launch confirmation (it spends GPU credits).",
+        help="skip the launch confirmation",
     )
     args = parser.parse_args(argv)
+    total_stages = {"data": 1, "validate": 4, "launch": 5}[args.action]
 
-    from castform.platform import ensure_session
+    print(f"[stage 1/{total_stages}] generating data")
+    dataset_files = generate_data(force=args.force)
+    if args.action == "data":
+        return 0
 
-    ok = True
-    if args.stage in ("data", "all"):
-        generate_data(force=args.force)
-    if args.stage in ("validate", "all"):
-        ensure_session()
-        report = validate()
-        ok = report is not None and report.ok
-    if args.stage == "launch":
-        ensure_session()
-        ok = launch(assume_yes=args.yes) is not None
-    return 0 if ok else 1
+    ensure_session()
+    print(f"[stage 2/{total_stages}] bundling environment")
+    bundled_environment = dump_bundle(
+        Qwen3OCREnv,
+        pip_dependencies=RUNTIME_DEPENDENCIES,
+    )
+    print(f"[stage 3/{total_stages}] uploading environment and dataset")
+    uploaded_assets = upload_assets(
+        bundle=bundled_environment,
+        dataset_files=dataset_files,
+        run_name=RUN_NAME,
+    )
+    print(f"[stage 4/{total_stages}] validating environment")
+    report = validate(Qwen3OCREnv(), uploaded_assets)
+    if not report.ok:
+        return 1
+    if args.action == "launch":
+        print(f"[stage 5/{total_stages}] launching training")
+        launch(uploaded_assets, assume_yes=args.yes)
+    return 0
 
 
 if __name__ == "__main__":

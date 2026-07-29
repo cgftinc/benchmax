@@ -5,6 +5,7 @@ description = "Harvey LAB Harbor environment using Harvey's native harness"
 requires-python = "==3.12.*"
 dependencies = [
     "benchmax",
+    "castform",
     "harbor[modal]>=0.18.0,<0.19",
     "httpx>=0.27.0",
     "openai>=2.15.0",
@@ -14,8 +15,11 @@ dependencies = [
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+# The harness is not installed: examples share one venv, and the agent reaches
+# trials as bundled bytes. Local imports resolve through the example directory.
 [tool.setuptools]
-py-modules = ["harvey_agent", "harvey_runtime"]
+py-modules = []
+packages = []
 
 [dependency-groups]
 dev = [

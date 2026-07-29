@@ -16,10 +16,10 @@ The old components stay available as opt-in helpers (:data:`CONCISENESS_RUBRIC`,
 :func:`judge_answer_quality`, :func:`score_search_efficiency`) for subclasses that
 override ``compute_reward``.
 
-`python main.py [data|validate|launch|all]` follows the standard example
-shape, but this env is a LIBRARY base: it needs a provisioned corpus
-(corpora-service) plus question/answer datasets, which this repository does
-not ship. The stages state exactly what is missing instead of pretending.
+`python main.py [data|validate|launch]` follows the standard example shape, but
+this env is a library base: it needs a provisioned corpus (corpora-service)
+plus question/answer datasets, which this repository does not ship. The
+actions state exactly what is missing instead of pretending.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -731,25 +731,25 @@ def launch(*, assume_yes: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="main.py",
-        description="Standard example stages; this env needs a provisioned corpus.",
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument(
-        "stage",
+        "action",
         nargs="?",
-        default="all",
-        choices=["data", "validate", "launch", "all"],
+        default="validate",
+        choices=("data", "validate", "launch"),
     )
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("-y", "--yes", action="store_true")
+    parser.add_argument("--yes", action="store_true")
     args = parser.parse_args(argv)
 
-    if args.stage in ("data", "all"):
+    if args.action == "data":
+        print("[stage 1/1] generating data")
         generate_data(force=args.force)
-    if args.stage in ("validate", "all"):
+    if args.action == "validate":
+        print("[stage 1/1] validating environment")
         validate()
-    if args.stage == "launch":
+    if args.action == "launch":
+        print("[stage 1/1] launching training")
         launch(assume_yes=args.yes)
     return 0
 

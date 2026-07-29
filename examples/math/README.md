@@ -2,24 +2,30 @@
 
 a small sanity-check environment built with [`BaseEnv`](../../packages/benchmax/src/benchmax/envs/base/README.md) that teaches a model to solve arithmetic expressions with four tools.
 
-## validate the environment
+## example task
 
-```bash
-cd examples/math
-uv run python main.py validate
+each row is an arithmetic expression; the model must use the tools and return the final number in answer tags:
+
 ```
-
-this downloads the public [`dawidmt/arithmetic50`](https://huggingface.co/datasets/dawidmt/arithmetic50) test split, uses the first 40 examples for training and the remaining 10 for evaluation, bundles and uploads the environment and dataset, then validates them locally and in a hosted sandbox. it does not launch training.
-
-use this command while iterating on the environment. validation runs the first evaluation example with a small model context so it stays fast.
+user: What is 31 + 4 * 12?
+tool: multiply(a=4, b=12) → 48
+tool: add(a=31, b=48) → 79
+assistant: <answer>79</answer>
+```
 
 ## launch training
 
 ```bash
+cd examples/math
 uv run python main.py launch
+
+# if iterating on the env, validate first
+uv run python main.py validate
 ```
 
-launch follows the same data, upload, and validation path, then asks for confirmation before starting training with the assets that were just validated. pass `--yes` to skip only the launch confirmation.
+launch downloads the public [`dawidmt/arithmetic50`](https://huggingface.co/datasets/dawidmt/arithmetic50) test split (40 training and 10 evaluation examples), uploads the environment and dataset, validates them, then asks for confirmation before spending credits (pass `--yes` to skip).
+
+validate stops after the checks: it runs sample rollouts with a standard model, locally and in a hosted sandbox, just to confirm the environment runs end to end.
 
 ## environment
 

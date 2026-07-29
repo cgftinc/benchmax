@@ -1,10 +1,11 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from aime_agent import MINI_SWE_AGENT_VERSION, prefetch_wheels
+import pytest
 from benchmax.bundle import dump_bundle, load_bundle
-from benchmax.envs.harbor import BundledHarborAgent, ModalCredentials
-from harbor import EnvironmentType
+from benchmax.envs.harbor import BundledAgentSource, BundledHarborAgent, ModalCredentials
+from harbor import EnvironmentType, TrialAgentConfig
+from harness.aime_agent import MINI_SWE_AGENT_VERSION, prefetch_wheels
 from main import AimeMiniSweHarborEnv
 
 
@@ -34,6 +35,33 @@ def test_aime_agent_timeout_flows_into_trial_config() -> None:
     assert env._trial.agent.config.max_timeout_sec == 120.0
 
 
+def _custom_harness() -> BundledHarborAgent:
+    return BundledHarborAgent(
+        config=TrialAgentConfig(import_path="my_agent:MyAgent"),
+        source=BundledAgentSource.from_files({"my_agent.py": b"class MyAgent: ..."}),
+    )
+
+
+def test_custom_harness_replaces_the_default() -> None:
+    harness = _custom_harness()
+
+    env = AimeMiniSweHarborEnv(
+        sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+        harness=harness,
+    )
+
+    assert env._trial.agent is harness
+
+
+def test_custom_harness_rejects_the_default_only_timeout() -> None:
+    with pytest.raises(ValueError, match="max_agent_timeout_secs"):
+        AimeMiniSweHarborEnv(
+            sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+            harness=_custom_harness(),
+            max_agent_timeout_secs=120.0,
+        )
+
+
 def test_aime_bundles_carry_the_fixed_modal_credentials() -> None:
     """Sandbox credentials are fixed keys that ride in bundles."""
 
@@ -60,8 +88,8 @@ def test_wheel_prefetch_rebuilds_an_incomplete_cache(tmp_path, monkeypatch) -> N
         (destination / "pip-1.0-py3-none-any.whl").write_bytes(b"wheel")
         return SimpleNamespace(returncode=0, stderr="")
 
-    monkeypatch.setattr("aime_agent.shutil.which", lambda _name: "/usr/bin/uv")
-    monkeypatch.setattr("aime_agent.subprocess.run", fake_download)
+    monkeypatch.setattr("harness.aime_agent.shutil.which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr("harness.aime_agent.subprocess.run", fake_download)
 
     result = prefetch_wheels(packages=("pip",), cache=cache)
 

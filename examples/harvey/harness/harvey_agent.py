@@ -50,6 +50,112 @@ IGNORED_UPLOAD_NAMES = {
 _source_lock = threading.Lock()
 
 
+def _slug(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-").replace(".", "-")
+
+
+def bundled_harvey_root() -> Path | None:
+    """The LAB source tree materialized next to this file from a bundle, if any."""
+
+    root = Path(__file__).with_name("harvey-labs")
+    return root if (root / "harness" / "run.py").is_file() else None
+
+
+def fetch_harvey_source(
+    *,
+    repository: str | None = None,
+    git_ref: str | None = None,
+) -> Path:
+    """Clone Harvey's sparse harness source once per host and return its root."""
+
+    repository = repository or os.environ.get("HARBOR_HARVEY_GIT_URL") or DEFAULT_HARVEY_REPOSITORY
+    git_ref = git_ref or os.environ.get("HARBOR_HARVEY_GIT_REF") or DEFAULT_HARVEY_GIT_REF
+    cache = Path(tempfile.gettempdir()) / f"castform-harvey-labs-{_slug(git_ref) or 'main'}"
+    with _source_lock:
+        if (cache / "harness" / "run.py").is_file():
+            return cache
+        if cache.exists():
+            shutil.rmtree(cache)
+        staging = Path(tempfile.mkdtemp(prefix=f"{cache.name}.tmp-"))
+        try:
+            clone = subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--filter=blob:none",
+                    "--sparse",
+                    "--no-checkout",
+                    "--depth",
+                    "1",
+                    repository,
+                    str(staging),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if clone.returncode != 0:
+                raise RuntimeError(
+                    "failed to clone Harvey LAB harness "
+                    f"from {repository}@{git_ref}: {clone.stderr.strip()}"
+                )
+            fetch = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(staging),
+                    "fetch",
+                    "--depth",
+                    "1",
+                    "origin",
+                    git_ref,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if fetch.returncode != 0:
+                raise RuntimeError(
+                    f"failed to fetch Harvey LAB ref {git_ref}: {fetch.stderr.strip()}"
+                )
+            sparse = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(staging),
+                    "sparse-checkout",
+                    "set",
+                    "--no-cone",
+                    *HARVEY_SPARSE_PATHS,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if sparse.returncode != 0:
+                raise RuntimeError(
+                    f"failed to configure the Harvey LAB sparse checkout: {sparse.stderr.strip()}"
+                )
+            checkout = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(staging),
+                    "checkout",
+                    "--detach",
+                    "FETCH_HEAD",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if checkout.returncode != 0:
+                raise RuntimeError(
+                    f"failed to check out Harvey LAB ref {git_ref}: {checkout.stderr.strip()}"
+                )
+            staging.rename(cache)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+    return cache
+
+
 class HarveyHarnessAgent(BaseAgent):
     """Run Harvey LAB's harness loop as a Harbor agent.
 
@@ -163,7 +269,9 @@ class HarveyHarnessAgent(BaseAgent):
 
     def _resolve_default_host_paths(self) -> None:
         if self.host_harvey_root is None:
-            self.host_harvey_root = self._prepare_harvey_source()
+            # A bundled LAB tree wins: it is the exact source that was
+            # validated, and trial hosts need neither git nor GitHub egress.
+            self.host_harvey_root = bundled_harvey_root() or self._prepare_harvey_source()
         if not (self.host_harvey_root / "harness" / "run.py").is_file():
             raise RuntimeError(f"Harvey LAB source is incomplete at {self.host_harvey_root}")
         if self.host_runtime_path is None:
@@ -176,95 +284,10 @@ class HarveyHarnessAgent(BaseAgent):
     def _prepare_harvey_source(self) -> Path:
         """Clone Harvey's sparse harness source once per trainer host."""
 
-        repository = self._env("HARBOR_HARVEY_GIT_URL") or DEFAULT_HARVEY_REPOSITORY
-        git_ref = self._env("HARBOR_HARVEY_GIT_REF") or DEFAULT_HARVEY_GIT_REF
-        cache = (
-            Path(tempfile.gettempdir()) / f"castform-harvey-labs-{self._slug(git_ref) or 'main'}"
+        return fetch_harvey_source(
+            repository=self._env("HARBOR_HARVEY_GIT_URL"),
+            git_ref=self._env("HARBOR_HARVEY_GIT_REF"),
         )
-        with _source_lock:
-            if (cache / "harness" / "run.py").is_file():
-                return cache
-            if cache.exists():
-                shutil.rmtree(cache)
-            staging = Path(tempfile.mkdtemp(prefix=f"{cache.name}.tmp-"))
-            try:
-                clone = subprocess.run(
-                    [
-                        "git",
-                        "clone",
-                        "--filter=blob:none",
-                        "--sparse",
-                        "--no-checkout",
-                        "--depth",
-                        "1",
-                        repository,
-                        str(staging),
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                if clone.returncode != 0:
-                    raise RuntimeError(
-                        "failed to clone Harvey LAB harness "
-                        f"from {repository}@{git_ref}: {clone.stderr.strip()}"
-                    )
-                fetch = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(staging),
-                        "fetch",
-                        "--depth",
-                        "1",
-                        "origin",
-                        git_ref,
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                if fetch.returncode != 0:
-                    raise RuntimeError(
-                        f"failed to fetch Harvey LAB ref {git_ref}: {fetch.stderr.strip()}"
-                    )
-                sparse = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(staging),
-                        "sparse-checkout",
-                        "set",
-                        "--no-cone",
-                        *HARVEY_SPARSE_PATHS,
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                if sparse.returncode != 0:
-                    raise RuntimeError(
-                        "failed to configure the Harvey LAB sparse checkout: "
-                        f"{sparse.stderr.strip()}"
-                    )
-                checkout = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(staging),
-                        "checkout",
-                        "--detach",
-                        "FETCH_HEAD",
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                if checkout.returncode != 0:
-                    raise RuntimeError(
-                        f"failed to check out Harvey LAB ref {git_ref}: {checkout.stderr.strip()}"
-                    )
-                staging.rename(cache)
-            finally:
-                if staging.exists():
-                    shutil.rmtree(staging)
-        return cache
 
     def _run_command(self, run_id: str, instruction: str) -> str:
         args = [

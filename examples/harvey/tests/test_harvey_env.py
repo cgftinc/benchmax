@@ -1,18 +1,17 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import main as harvey_main
 import pytest
 from benchmax.bundle import dump_bundle, load_bundle
 from benchmax.envs.harbor import (
+    BundledAgentSource,
     BundledHarborAgent,
     ModalCredentials,
 )
-from harbor import EnvironmentType, TrialVerifierConfig
-from harvey_agent import HarveyHarnessAgent
+from harbor import EnvironmentType, TrialAgentConfig, TrialVerifierConfig
+from harness.harvey_agent import HarveyHarnessAgent
 from main import (
     HarveyLabHarborEnv,
-    _modal_credentials_from_process,
     _verifier_env_for_provider,
 )
 
@@ -84,6 +83,84 @@ def test_harvey_constructor_rejects_invalid_modal_timeouts(
         )
 
 
+def test_bundled_harvey_root_prefers_the_materialized_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import harness.harvey_agent as agent_module
+
+    (tmp_path / "harvey-labs" / "harness").mkdir(parents=True)
+    (tmp_path / "harvey-labs" / "harness" / "run.py").write_text("")
+    monkeypatch.setattr(agent_module, "__file__", str(tmp_path / "harvey_agent.py"))
+
+    assert agent_module.bundled_harvey_root() == tmp_path / "harvey-labs"
+
+    (tmp_path / "harvey-labs" / "harness" / "run.py").unlink()
+    assert agent_module.bundled_harvey_root() is None
+
+
+def test_lab_source_bundle_captures_the_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main as harvey_main
+
+    (tmp_path / "harness").mkdir()
+    (tmp_path / "harness" / "run.py").write_text("print('run')")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref")
+    monkeypatch.setattr("harness.harvey_agent.fetch_harvey_source", lambda **kwargs: tmp_path)
+
+    files = dict(harvey_main._lab_source_bundle().files)
+
+    assert files["harvey-labs/harness/run.py"] == b"print('run')"
+    assert "harvey-labs/.git/HEAD" not in files
+    assert "harvey_agent.py" in files
+    assert "harvey_runtime.py" in files
+
+
+def test_harvey_harness_stays_lean_by_default() -> None:
+    import main as harvey_main
+
+    harness = harvey_main.harvey_harness()
+
+    assert {name for name, _ in harness.source.files} == {
+        "harvey_agent.py",
+        "harvey_runtime.py",
+    }
+
+
+def _custom_harness() -> BundledHarborAgent:
+    return BundledHarborAgent(
+        config=TrialAgentConfig(import_path="my_agent:MyAgent"),
+        source=BundledAgentSource.from_files({"my_agent.py": b"class MyAgent: ..."}),
+    )
+
+
+def test_custom_harness_replaces_the_default() -> None:
+    harness = _custom_harness()
+
+    env = HarveyLabHarborEnv(
+        sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+        verifier_env={"ANTHROPIC_API_KEY": "anthropic-key"},
+        judge_model="anthropic/claude-sonnet-4-6",
+        harness=harness,
+    )
+
+    assert env._trial.agent is harness
+
+
+def test_custom_harness_rejects_the_default_only_timeout() -> None:
+    with pytest.raises(ValueError, match="max_agent_timeout_secs"):
+        HarveyLabHarborEnv(
+            sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+            verifier_env={"ANTHROPIC_API_KEY": "anthropic-key"},
+            judge_model="anthropic/claude-sonnet-4-6",
+            harness=_custom_harness(),
+            max_agent_timeout_secs=120.0,
+        )
+
+
 def test_harvey_bundles_carry_the_explicit_verifier_environment() -> None:
     """Verifier and Modal credentials are fixed values that ride in bundles."""
 
@@ -146,24 +223,18 @@ def test_harvey_constructor_rejects_invalid_verifier_environment(
         )
 
 
-def test_verifier_env_for_anthropic_copies_only_anthropic_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-
-    assert _verifier_env_for_provider("anthropic") == {"ANTHROPIC_API_KEY": "anthropic-key"}
+def test_verifier_env_for_anthropic_uses_only_the_explicit_key() -> None:
+    assert _verifier_env_for_provider("anthropic", api_key="anthropic-key") == {
+        "ANTHROPIC_API_KEY": "anthropic-key"
+    }
 
 
-def test_verifier_env_for_openai_copies_standard_configuration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://llm.castform.com/v1")
-    monkeypatch.setenv("OPENAI_API_BASE", "https://llm.castform.com/v1")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "unrelated-anthropic-key")
-
-    assert _verifier_env_for_provider("openai") == {
+def test_verifier_env_for_openai_copies_standard_configuration() -> None:
+    assert _verifier_env_for_provider(
+        "openai",
+        api_key="openai-key",
+        base_url="https://llm.castform.com/v1",
+    ) == {
         "OPENAI_API_KEY": "openai-key",
         "OPENAI_BASE_URL": "https://llm.castform.com/v1",
         "OPENAI_API_BASE": "https://llm.castform.com/v1",
@@ -171,93 +242,19 @@ def test_verifier_env_for_openai_copies_standard_configuration(
     }
 
 
-@pytest.mark.parametrize(
-    ("provider", "missing_name"),
-    [("anthropic", "ANTHROPIC_API_KEY"), ("openai", "OPENAI_API_KEY")],
-)
-def test_verifier_env_for_provider_requires_api_key(
-    monkeypatch: pytest.MonkeyPatch,
-    provider: str,
-    missing_name: str,
-) -> None:
-    monkeypatch.delenv(missing_name, raising=False)
-
-    with pytest.raises(ValueError, match=missing_name):
-        _verifier_env_for_provider(provider)  # type: ignore[arg-type]
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+def test_verifier_env_for_provider_requires_api_key(provider: str) -> None:
+    with pytest.raises(ValueError, match="api_key"):
+        _verifier_env_for_provider(provider, api_key="")  # type: ignore[arg-type]
 
 
-def test_modal_credentials_from_process_prefers_explicit_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("MODAL_TOKEN_ID", "modal-id")
-    monkeypatch.setenv("MODAL_TOKEN_SECRET", "modal-secret")
-
-    credentials = _modal_credentials_from_process()
-
-    assert credentials.host_environment() == {
-        "MODAL_TOKEN_ID": "modal-id",
-        "MODAL_TOKEN_SECRET": "modal-secret",
-        "MODAL_MAX_THROTTLE_WAIT": "60",
-    }
-
-
-@pytest.mark.parametrize(
-    ("token_id", "token_secret"),
-    [
-        ("modal-id", None),
-        (None, "modal-secret"),
-        ("", ""),
-        (None, None),
-    ],
-)
-def test_modal_credentials_from_process_requires_both_values(
-    monkeypatch: pytest.MonkeyPatch,
-    token_id: str | None,
-    token_secret: str | None,
-) -> None:
-    if token_id is None:
-        monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
-    else:
-        monkeypatch.setenv("MODAL_TOKEN_ID", token_id)
-    if token_secret is None:
-        monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
-    else:
-        monkeypatch.setenv("MODAL_TOKEN_SECRET", token_secret)
-
-    with pytest.raises(ValueError, match="set both MODAL_TOKEN_ID"):
-        _modal_credentials_from_process()
-
-
-def test_main_passes_explicit_verifier_options_to_launch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_launch(**kwargs: object) -> str:
-        captured.update(kwargs)
-        return "run-id"
-
-    monkeypatch.setattr(harvey_main, "launch", fake_launch)
-    monkeypatch.setattr("castform.platform.ensure_session", lambda: None)
-
-    result = harvey_main.main(
-        [
-            "launch",
-            "--yes",
-            "--judge-provider",
+def test_verifier_env_rejects_base_url_for_anthropic() -> None:
+    with pytest.raises(ValueError, match="base_url"):
+        _verifier_env_for_provider(
             "anthropic",
-            "--judge-model",
-            "anthropic/claude-sonnet-4-6",
-        ]
-    )
-
-    assert result == 0
-    assert captured == {
-        "assume_yes": True,
-        "judge_provider": "anthropic",
-        "judge_model": "anthropic/claude-sonnet-4-6",
-        "judge_concurrency": 1,
-    }
+            api_key="anthropic-key",
+            base_url="https://llm.castform.com/v1",
+        )
 
 
 def test_harvey_agent_builds_harbor_task_command(tmp_path: Path) -> None:
