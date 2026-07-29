@@ -54,7 +54,11 @@ _TERMINATION_REASON_BY_EXCEPTION = {
     "SandboxBuildFailedError": "sandbox_error",
     "VerifierTimeoutError": "verifier_timeout",
 }
-_HARNESS_REPORTED_TERMINATION_REASONS = frozenset({"context_exceeded", "output_exceeded"})
+# Every scorable budget stop a harness may self-report; "finished" defers to
+# exception classification instead.
+_HARNESS_REPORTED_TERMINATION_REASONS = frozenset(
+    {"context_exceeded", "output_exceeded", "max_turns_exceeded", "tool_budget_exceeded"}
+)
 
 
 class HarborEnv(Environment["TaskConfig", RolloutAttempt]):

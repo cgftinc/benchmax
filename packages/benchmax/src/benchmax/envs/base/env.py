@@ -102,7 +102,9 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
 
         Raise :class:`RolloutFailure` for expected runtime failures to settle
         this rollout under that reason. Any other exception settles it as
-        ``reward_error``; a hook defect never crashes the run.
+        ``reward_error``; a hook defect never crashes the run. Either label
+        replaces only a clean finish — budget-stopped rollouts keep their own
+        reason and record the failure in ``error``.
         """
 
         return None

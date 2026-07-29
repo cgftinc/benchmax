@@ -72,7 +72,9 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
         Raise :class:`RolloutFailure` for expected runtime failures (judge
         outage, rate limit) to settle the group under that reason. Any other
         exception, or a misaligned or misshapen result, settles the group as
-        ``group_reward_error``; a hook defect never crashes the run.
+        ``group_reward_error``; a hook defect never crashes the run. Either
+        label replaces only clean finishes — budget-stopped attempts keep
+        their own reason and record the failure in ``error``.
         """
 
         return None

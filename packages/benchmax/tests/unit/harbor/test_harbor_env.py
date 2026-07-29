@@ -56,7 +56,10 @@ class _UserHarness(BaseAgent):
         pass
 
 
-@pytest.mark.parametrize("reason", ["context_exceeded", "output_exceeded"])
+@pytest.mark.parametrize(
+    "reason",
+    ["context_exceeded", "output_exceeded", "max_turns_exceeded", "tool_budget_exceeded"],
+)
 def test_harbor_prefers_harvey_reported_budget_termination(reason: str) -> None:
     result = SimpleNamespace(
         agent_result=SimpleNamespace(metadata={"harvey_metrics": {"termination_reason": reason}}),
@@ -66,7 +69,10 @@ def test_harbor_prefers_harvey_reported_budget_termination(reason: str) -> None:
     assert _result_termination_reason(result) == reason
 
 
-@pytest.mark.parametrize("reason", ["context_exceeded", "output_exceeded"])
+@pytest.mark.parametrize(
+    "reason",
+    ["context_exceeded", "output_exceeded", "max_turns_exceeded", "tool_budget_exceeded"],
+)
 def test_harbor_prefers_the_generic_harness_termination_key(reason: str) -> None:
     result = SimpleNamespace(
         agent_result=SimpleNamespace(

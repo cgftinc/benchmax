@@ -29,7 +29,7 @@ Environment
     ├── run_rollout(request) × group_size → RolloutAttempt × group_size
     ├── adapter-specific scoring
     ├── optional group-relative scoring
-    └── RolloutOutcome(rewards, termination_reason)
+    └── RolloutOutcome(rewards, termination_reason, error)
 ```
 
 every environment follows this shape. the environment decides what an example contains, how each attempt runs, which tools are available, and how the result is scored.
