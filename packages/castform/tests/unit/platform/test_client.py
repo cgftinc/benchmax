@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 import pytest
+from castform.platform import client as client_module
 from castform.platform.client import (
     LaunchArgSpec,
     RolloutClient,
@@ -15,6 +16,7 @@ from castform.platform.client import (
 )
 from castform.platform.exceptions import (
     AuthenticationError,
+    JobLaunchError,
     RolloutNotFound,
     RolloutServerError,
 )
@@ -195,6 +197,166 @@ def test_launch_training_run_reads_run_id_not_experiment_id():
         )
         == "the-id"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wire format: launch_sft_run nests training_mode + dataset paths in args
+# ---------------------------------------------------------------------------
+
+
+def _capture_sft_launch(
+    response: httpx.Response | None = None, **kwargs: Any
+) -> dict[str, Any]:
+    """Run launch_sft_run against a mock transport; return the captured request."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content.decode())
+        return response or httpx.Response(200, json={"runId": "sft-run-1"})
+
+    trainer = _make_trainer_with_transport(handler)
+    captured["run_id"] = trainer.launch_sft_run(**kwargs)
+    return captured
+
+
+def test_launch_sft_run_posts_exact_nested_args_body():
+    """The whole JSON body is asserted, not just the fields of interest.
+
+    Platform-service reads args.training_mode and IGNORES a top-level one
+    (silently falling through to an RL run), so an exact body is the only
+    assertion that catches the field drifting back out of `args`.
+    """
+    captured = _capture_sft_launch(
+        name="sft-run",
+        train_dataset_path="datasets/sft-run/abc123/train.jsonl",
+        eval_dataset_path="datasets/sft-run/abc123/eval.jsonl",
+    )
+
+    assert "/train/runs/launch" in captured["url"]
+    assert captured["run_id"] == "sft-run-1"
+    assert captured["body"] == {
+        "name": "sft-run",
+        "args": {
+            "training_mode": "sft",
+            "train_dataset_path": "datasets/sft-run/abc123/train.jsonl",
+            "eval_dataset_path": "datasets/sft-run/abc123/eval.jsonl",
+        },
+    }
+
+
+def test_launch_sft_run_omits_eval_dataset_path_when_none():
+    """No eval means the key is absent — not null, not an empty string."""
+    captured = _capture_sft_launch(
+        name="train-only",
+        train_dataset_path="datasets/train-only/abc123/train.jsonl",
+    )
+
+    assert captured["body"] == {
+        "name": "train-only",
+        "args": {
+            "training_mode": "sft",
+            "train_dataset_path": "datasets/train-only/abc123/train.jsonl",
+        },
+    }
+
+
+def test_launch_sft_run_merges_extra_launcher_args():
+    captured = _capture_sft_launch(
+        name="tuned",
+        train_dataset_path="t.jsonl",
+        launcher_args={"learning_rate": 1e-5, "max_seq_len": 4096},
+    )
+
+    assert captured["body"]["args"] == {
+        "training_mode": "sft",
+        "train_dataset_path": "t.jsonl",
+        "learning_rate": 1e-5,
+        "max_seq_len": 4096,
+    }
+
+
+def test_launch_sft_run_explicit_paths_win_over_launcher_args():
+    """launcher_args cannot override the training mode or the explicit paths."""
+    captured = _capture_sft_launch(
+        name="precedence",
+        train_dataset_path="explicit/train.jsonl",
+        eval_dataset_path="explicit/eval.jsonl",
+        launcher_args={
+            "training_mode": "rl",
+            "train_dataset_path": "sneaky/train.jsonl",
+            "eval_dataset_path": "sneaky/eval.jsonl",
+        },
+    )
+
+    assert captured["body"]["args"] == {
+        "training_mode": "sft",
+        "train_dataset_path": "explicit/train.jsonl",
+        "eval_dataset_path": "explicit/eval.jsonl",
+    }
+
+
+def test_launch_sft_run_launcher_args_cannot_smuggle_back_an_omitted_eval():
+    """eval_dataset_path=None decides the outcome last — the key stays absent."""
+    captured = _capture_sft_launch(
+        name="no-eval",
+        train_dataset_path="explicit/train.jsonl",
+        eval_dataset_path=None,
+        launcher_args={"eval_dataset_path": "sneaky/eval.jsonl"},
+    )
+
+    assert "eval_dataset_path" not in captured["body"]["args"]
+
+
+def test_launch_sft_run_surfaces_server_warnings():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"runId": "warned", "warnings": ["dataset is small"]}
+        )
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.warns(UserWarning, match="dataset is small"):
+        run_id = trainer.launch_sft_run(name="warned", train_dataset_path="t.jsonl")
+
+    assert run_id == "warned"
+
+
+def test_launch_sft_run_raises_job_launch_error_on_403():
+    """A 403 passes through as JobLaunchError with its status intact.
+
+    Includes the platform's current rejection of `training_mode` while
+    SFT_LAUNCH_SUPPORTED is False: it is a plain launch failure, never
+    reclassified into a bespoke "unsupported" type on a message heuristic.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": "unrecognized launch argument"})
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(JobLaunchError) as exc_info:
+        trainer.launch_sft_run(name="rejected", train_dataset_path="t.jsonl")
+
+    assert exc_info.value.status_code == 403
+    assert not isinstance(exc_info.value, AuthenticationError)
+    assert "unrecognized launch argument" in exc_info.value.message
+
+
+def test_launch_sft_run_raises_authentication_error_on_401():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "missing api key"})
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(AuthenticationError) as exc_info:
+        trainer.launch_sft_run(name="unauthorized", train_dataset_path="t.jsonl")
+
+    assert exc_info.value.status_code == 401
+
+
+def test_sft_launch_stays_unsupported_until_the_platform_accepts_it():
+    """The trainer side has not landed; the flag gates the scaffold launch path."""
+    assert client_module.SFT_LAUNCH_SUPPORTED is False
 
 
 # ---------------------------------------------------------------------------

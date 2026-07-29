@@ -30,6 +30,15 @@ from .exceptions import (
 
 logger = logging.getLogger(__name__)
 
+# Whether the platform accepts env-less SFT runs yet — flip to True once
+# platform-service validates `args.training_mode` instead of rejecting it (see
+# TrainerClient.launch_sft_run). Deliberately not consumed by this module: the
+# SDK stays a thin wire, and the scaffold launch path gates its pre-upload
+# guard on this flag. Read it as a module attribute
+# (`client.SFT_LAUNCH_SUPPORTED`) rather than importing the value, so a test
+# can stub the capability.
+SFT_LAUNCH_SUPPORTED = False
+
 
 @dataclass(frozen=True)
 class LaunchArgSpec:
@@ -418,6 +427,77 @@ class TrainerClient:
         for warning in body.get("warnings", []) or []:
             warnings.warn(f"launch warning: {warning}", stacklevel=2)
         return body["runId"]
+
+    def launch_sft_run(
+        self,
+        name: str,
+        train_dataset_path: str,
+        eval_dataset_path: str | None = None,
+        launcher_args: dict[str, Any] | None = None,
+    ) -> str:
+        """Launch a new env-less SFT training run.
+
+        A dedicated method rather than a mode on
+        :meth:`launch_training_run`: an SFT run carries no environment bundle
+        at all, so there is no set of bundle paths to make optional.
+
+        ``training_mode`` and the dataset paths are nested inside ``args``,
+        which is where platform-service reads and validates them; a
+        **top-level** ``training_mode`` is silently ignored and would fall
+        through to an RL run.
+
+        As of writing ``SFT_LAUNCH_SUPPORTED`` is ``False`` — the live
+        platform does not recognize ``training_mode`` yet, so this call is
+        expected to fail against it. Callers should gate on that flag before
+        reaching this method (and before uploading anything).
+
+        Args:
+            name: Name for the training run.
+            train_dataset_path: Blob path of the uploaded training dataset
+                (see :func:`castform.platform.upload_sft_run`).
+            eval_dataset_path: Blob path of the uploaded eval dataset, or
+                ``None`` to omit eval entirely. ``None`` OMITS the field from
+                the payload — no empty string, no null — mirroring
+                ``upload_sft_run``'s optional-eval behavior.
+            launcher_args: Extra launcher args forwarded to the server (e.g.
+                ``{"learning_rate": 1e-5}``). The explicit parameters above
+                always take precedence: ``launcher_args`` can neither override
+                the training mode or train path, nor smuggle an eval path back
+                in once ``eval_dataset_path`` has decided the outcome.
+
+        Returns:
+            The training run ID.
+
+        Raises:
+            AuthenticationError: If the API key is invalid (HTTP 401).
+            JobLaunchError: Any other launch failure — including the
+                platform's rejection of ``training_mode`` while
+                ``SFT_LAUNCH_SUPPORTED`` is ``False``.
+        """
+        args: dict[str, Any] = {
+            **(launcher_args or {}),
+            "training_mode": "sft",
+            "train_dataset_path": train_dataset_path,
+        }
+        # Reconcile the reserved eval key against the explicit parameter last,
+        # so launcher_args cannot reintroduce an eval path the caller omitted.
+        if eval_dataset_path is None:
+            args.pop("eval_dataset_path", None)
+        else:
+            args["eval_dataset_path"] = eval_dataset_path
+        body: dict[str, Any] = {
+            "name": name,
+            "args": args,
+        }
+        response = self._http_client.post(
+            "/v1/train/runs/launch",
+            json=body,
+        )
+        self._handle_response_errors(response)
+        response_body = response.json()
+        for warning in response_body.get("warnings", []) or []:
+            warnings.warn(f"launch warning: {warning}", stacklevel=2)
+        return response_body["runId"]
 
     def list_launch_args(self) -> list[LaunchArgSpec]:
         """Fetch the schema of launch args this platform accepts.

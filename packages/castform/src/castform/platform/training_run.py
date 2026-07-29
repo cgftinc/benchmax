@@ -1,12 +1,14 @@
-"""High-level helper for uploading a prepared training run.
+"""High-level helpers for uploading a prepared training run.
 
-Uploads a completed environment bundle and any caller-supplied datasets in a
-single call. The returned dataclass spreads into
-``TrainerClient.launch_training_run``.
+:func:`upload_training_run` uploads a completed environment bundle and any
+caller-supplied datasets in a single call; :func:`upload_sft_run` is its
+env-less counterpart, uploading only an SFT dataset pair. Each returned
+dataclass spreads into the matching ``TrainerClient`` launch method.
 
-Bundling remains a BenchMax concern. This helper deliberately accepts a
-``Bundle`` instead of environment construction inputs so Castform cannot
-silently rebuild or reinterpret the artifact selected by the caller.
+Bundling remains a BenchMax concern. These helpers deliberately accept a
+``Bundle`` / an already-loaded ``SftDataset`` instead of construction inputs,
+so Castform cannot silently rebuild or reinterpret the artifact the caller
+selected.
 """
 
 from __future__ import annotations
@@ -21,10 +23,17 @@ from pathlib import Path
 from typing import Any
 
 from benchmax.bundle import Bundle, bundle_digest
+from benchmax.sft import (
+    SftDataset,
+    SftValidationReport,
+    canonical_jsonl,
+    validate_sft_dataset,
+)
 
 from castform import config
 
 from .client import StorageClient
+from .exceptions import SftDatasetInvalidError
 
 
 @dataclass(frozen=True)
@@ -49,11 +58,37 @@ class UploadedTrainingRun:
     dataset_path: str | None = None
 
 
+@dataclass(frozen=True)
+class UploadedSftRun:
+    """Blob paths for an env-less SFT run's uploaded datasets.
+
+    Field names match ``TrainerClient.launch_sft_run`` kwargs so the result
+    spreads directly into the launch call::
+
+        uploaded = upload_sft_run(...)
+        run_id = trainer.launch_sft_run(
+            name="my-run",
+            **dataclasses.asdict(uploaded),
+        )
+
+    ``eval_dataset_path`` is ``None`` when no eval dataset was supplied to
+    :func:`upload_sft_run` — nothing is uploaded for eval in that case, and
+    ``launch_sft_run`` omits the field from the wire body.
+    """
+
+    train_dataset_path: str
+    eval_dataset_path: str | None = None
+
+
 # Mirrors the platform's blob-path guard (isSafeBlobPath): the upload endpoint
 # rejects keys whose segments fall outside this charset, since a stray
 # `?`/`#`/space breaks the trainer's SAS-URL parsing downstream. Fail loud here
 # with an actionable message instead of letting the user hit an opaque 400.
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# How many blocking issues an upload refusal names before summarizing the rest,
+# matching benchmax.sft's serialization refusal — the message stays readable.
+_MAX_REPORTED_ISSUES = 5
 
 
 def _validate_blob_path(path: str, *, source: str) -> None:
@@ -180,6 +215,125 @@ def upload_training_run(
             env_metadata_path=env_metadata_path,
             dataset_path=dataset_prefix,
         )
+
+
+def upload_sft_run(
+    *,
+    train: SftDataset,
+    eval: SftDataset | None = None,
+    run_name: str,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    dataset_prefix: str | None = None,
+    storage_client: StorageClient | None = None,
+) -> UploadedSftRun:
+    """Validate an SFT train (+ optional eval) dataset pair and upload it.
+
+    Default layout: ``datasets/<run_name>/<dataset_hash>/{train.jsonl,
+    eval.jsonl}``, where the hash is sha256 over the bytes actually uploaded,
+    truncated to 8 hex chars — so a train-only run and a train+eval run land
+    in different buckets. ``eval=None`` uploads nothing for eval and returns
+    ``None`` for ``eval_dataset_path``.
+
+    This is the upload side of the canonicalize -> validate -> upload
+    boundary, and it enforces that boundary rather than documenting it. The
+    pair is re-validated here even when the caller already validated it, and
+    an invalid pair raises :class:`SftDatasetInvalidError` **before any
+    storage call**, so a refused run cannot leave a half-uploaded dataset
+    behind. Rows are then serialized through
+    :func:`benchmax.sft.canonical_jsonl` only — there is no raw-rows entry
+    point into storage.
+
+    Args:
+        train: Loaded training dataset (see
+            :func:`benchmax.sft.load_sft_dataset`).
+        eval: Loaded eval dataset, or ``None`` to skip eval entirely.
+        run_name: Training run identifier; used as the storage path segment.
+        api_key: Platform API key. Optional — when omitted (and no
+            ``storage_client`` is passed) the bearer resolves per request via
+            the credential seam (``ACT_AS_TOKEN_PATH`` / ``CASTFORM_API_KEY``).
+        base_url: Platform base URL. Defaults to ``config.platform_url()``.
+        dataset_prefix: Override the default dataset directory. When set,
+            JSONL files land at ``<dataset_prefix>/{train.jsonl, eval.jsonl}``.
+        storage_client: BYOC. Pass an existing client to reuse its connection
+            pool, custom timeouts, or test fakes. Otherwise constructed from
+            ``api_key``/``base_url``.
+
+    Returns:
+        UploadedSftRun with the train path and the optional eval path.
+
+    Raises:
+        SftDatasetInvalidError: If the pair carries any error-severity issue
+            or the training split is empty. Carries the full validation
+            report; nothing has been uploaded.
+    """
+    report = validate_sft_dataset(train, eval)
+    # Refuse before constructing a client or serializing anything. The empty
+    # train check is deliberately explicit rather than leaning on report.ok's
+    # "nothing validated is not a pass" rule, so this gate keeps its meaning
+    # if that rule ever moves.
+    if not train.rows:
+        raise SftDatasetInvalidError(
+            report,
+            f"refusing to upload SFT run {run_name!r}: the training dataset "
+            f"{train.path!r} has no rows.",
+        )
+    if not report.ok:
+        raise SftDatasetInvalidError(
+            report,
+            f"refusing to upload SFT run {run_name!r}: the dataset pair did not "
+            f"validate. {_error_summary(report)}",
+        )
+
+    if storage_client is None:
+        # api_key optional: StorageClient resolves the bearer per request via
+        # the credential seam (ACT_AS_TOKEN_PATH / CASTFORM_API_KEY) when unset.
+        storage_client = StorageClient(
+            api_key=api_key,
+            base_url=base_url or config.platform_url(),
+        )
+
+    train_jsonl = canonical_jsonl(train)
+    eval_jsonl = canonical_jsonl(eval) if eval is not None else None
+
+    if dataset_prefix is None:
+        digest = hashlib.sha256(train_jsonl + (eval_jsonl or b"")).hexdigest()[:8]
+        dataset_prefix = f"datasets/{run_name}/{digest}"
+    _validate_blob_path(dataset_prefix, source="dataset_prefix/run_name")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = Path(tmp)
+
+        train_local = tmpdir / "train.jsonl"
+        train_local.write_bytes(train_jsonl)
+        train_path = storage_client.upload_local_file(
+            f"{dataset_prefix}/train.jsonl", train_local
+        )["blobPath"]
+
+        eval_path: str | None = None
+        if eval_jsonl is not None:
+            eval_local = tmpdir / "eval.jsonl"
+            eval_local.write_bytes(eval_jsonl)
+            eval_path = storage_client.upload_local_file(
+                f"{dataset_prefix}/eval.jsonl", eval_local
+            )["blobPath"]
+
+    return UploadedSftRun(train_dataset_path=train_path, eval_dataset_path=eval_path)
+
+
+def _error_summary(report: SftValidationReport) -> str:
+    """The report's blocking issues, rendered for a one-line refusal message."""
+    errors = [issue for issue in report.issues if issue.severity == "error"]
+    if not errors:
+        return "no error-severity issues were reported."
+    shown = "; ".join(
+        f"{issue.source_path}:{issue.physical_line}: {issue.message}"
+        for issue in errors[:_MAX_REPORTED_ISSUES]
+    )
+    remaining = len(errors) - _MAX_REPORTED_ISSUES
+    if remaining > 0:
+        shown = f"{shown}; (+{remaining} more)"
+    return f"{len(errors)} blocking issue(s) — {shown}"
 
 
 def _collect_dataset_files(
