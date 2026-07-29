@@ -372,3 +372,14 @@ def test_harvey_constructor_rejects_invalid_judge_concurrency(
             judge_model="anthropic/claude-sonnet-4-6",
             judge_concurrency=judge_concurrency,
         )
+
+
+def test_harvey_accepts_train_only_eval_ratio_zero() -> None:
+    env = HarveyLabHarborEnv(
+        sandbox_credentials=ModalCredentials("modal-id", "modal-secret"),
+        verifier_env={"ANTHROPIC_API_KEY": "anthropic-key"},
+        judge_model="anthropic/claude-sonnet-4-6",
+        eval_ratio=0.0,
+    )
+
+    assert env._eval_ratio == 0.0

@@ -169,8 +169,6 @@ class HarveyLabHarborEnv(HarborEnv):
         validated_verifier_env = _validated_verifier_env(verifier_env)
         if judge_concurrency < 1:
             raise ValueError("judge_concurrency must be positive")
-        if not 0 < eval_ratio < 1:
-            raise ValueError("eval_ratio must be in (0, 1)")
         if modal_app_name is not None and not modal_app_name.strip():
             raise ValueError("modal_app_name must be non-empty when provided")
         for name, value in (
