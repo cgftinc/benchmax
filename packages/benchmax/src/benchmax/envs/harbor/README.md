@@ -50,6 +50,8 @@ for each rollout, `HarborEnv` gives the task to the configured agent and sandbox
 
 the rollout request supplies the model endpoint and credential used by the agent. verifier and judge configuration remains separate. because agents usually run inside remote sandboxes, `HarborEnv` requests a publicly reachable model endpoint by default.
 
+configure the agent harness with compaction and summarization disabled: training assumes a linear chat history where each model call extends the previous messages. a harness that rewrites its context mid-rollout produces a transcript that cannot be trained on.
+
 benchmax owns rollout-group concurrency. `max_concurrent_trials` can additionally cap how many Harbor sandbox trials this environment runs at once.
 
 ## sandboxes and credentials
@@ -58,7 +60,7 @@ the Harbor environment configuration selects the sandbox provider. credentials a
 
 Modal and Daytona currently use explicit `sandbox_credentials`. these values become part of the environment bundle, so use dedicated, revocable credentials rather than personal ones.
 
-Harbor verifiers currently receive credentials as static environment variables in `TrialVerifierConfig`. runtime credential injection is available to the rollout agent, not to the verifier.
+Harbor verifiers receive credentials as static environment variables in `TrialVerifierConfig`. the only values injected at rollout time are the model endpoint and API key the agent uses; nothing is injected into the verifier.
 
 ## bundled custom agents
 
