@@ -268,7 +268,7 @@ def validate(env: Qwen3OCREnv, uploaded_assets: Any) -> Any:
             split="eval",
             base_dir=DATA_DIR,
             remote_assets=uploaded_assets,
-            max_context_tokens=2048,
+            max_context_len=2048,
         )
     )
     _print_validation(report)

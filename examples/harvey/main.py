@@ -260,7 +260,7 @@ def validate(env: HarveyLabHarborEnv, uploaded_assets: Any) -> Any:
                 # Small enough that the budget stop ends trials in minutes
                 # instead of the full 30-turn loop; 4096 was measured too
                 # small for even the first model call.
-                max_context_tokens=6144,
+                max_context_len=6144,
                 # Modal sandbox build plus a several-turn trial still exceeds
                 # the 120s local default.
                 local_timeout_seconds=1800,

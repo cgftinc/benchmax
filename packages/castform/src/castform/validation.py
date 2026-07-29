@@ -59,7 +59,7 @@ async def validate_environment(
     model_auth: ModelAuth | None = None,
     auth_bindings: Mapping[str, ModelAuth] | None = None,
     remote_assets: UploadedEnvironmentAssets | None = None,
-    max_context_tokens: int = 2048,
+    max_context_len: int = 2048,
     local_timeout_seconds: float | None = 120,
     platform_url: str | None = None,
 ) -> ValidationReport:
@@ -73,7 +73,7 @@ async def validate_environment(
     """
 
     _validate_limits(
-        max_context_tokens=max_context_tokens,
+        max_context_tokens=max_context_len,
         local_timeout_seconds=local_timeout_seconds,
     )
     resolved_base_url = config.llm_url()
@@ -100,7 +100,7 @@ async def validate_environment(
             model_auth=resolved_model_auth,
             auth_bindings=resolved_auth_bindings,
             proxy_base_url=resolved_base_url,
-            max_context_tokens=max_context_tokens,
+            max_context_tokens=max_context_len,
             timeout_seconds=local_timeout_seconds,
         )
         if not local_errors or attempt:
@@ -126,7 +126,7 @@ async def validate_environment(
                 dataset_path=remote_assets.dataset_path,
                 split=split,
                 model=model,
-                max_context_tokens=max_context_tokens,
+                max_context_tokens=max_context_len,
                 verbose=False,
             )
             if len(events) != 2:

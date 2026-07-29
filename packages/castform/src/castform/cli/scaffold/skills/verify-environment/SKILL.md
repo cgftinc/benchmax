@@ -18,7 +18,7 @@ containing exactly two siblings of that example locally and in the hosted
 sandbox. This exercises the public data materialization and deployment contract
 as part of validation. Hosted validation always runs against the exact assets
 that were just uploaded — the same ones a launch would train on. Keep the local and hosted rollout-model context
-budget shared through `VALIDATE_CONFIG["max_context_tokens"]`; the local
+budget shared through `VALIDATE_CONFIG["max_context_len"]`; the local
 wall-clock backstop is `VALIDATE_CONFIG["local_timeout_seconds"]`.
 
 ## Read both outcomes

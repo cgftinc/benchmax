@@ -177,7 +177,7 @@ def test_validate_passes_uploaded_assets_and_config(mod, tmp_path, monkeypatch):
     assert captured["base_dir"] == Path(".")
     assert captured["remote_assets"] is remote_assets
     assert captured["model"] == str(mod.VALIDATE_CONFIG["model"])
-    assert captured["max_context_tokens"] == 2048
+    assert captured["max_context_len"] == 2048
     assert captured["local_timeout_seconds"] == 120.0
 
 
