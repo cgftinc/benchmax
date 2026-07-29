@@ -9,7 +9,11 @@ import pytest
 def test_validate_action_uploads_and_reuses_the_same_assets(monkeypatch) -> None:
     dataset_files = {"train.jsonl": object(), "eval.jsonl": object()}
     bundled_environment = object()
-    assets = object()
+    assets = SimpleNamespace(
+        env_cls_path="envs/test/env-cls.pkl",
+        env_metadata_path="envs/test/env-metadata.json",
+        dataset_path=None,
+    )
     report = SimpleNamespace(ok=True)
     calls: list[tuple[str, object]] = []
 
@@ -48,7 +52,11 @@ def test_validate_action_uploads_and_reuses_the_same_assets(monkeypatch) -> None
 def test_launch_reuses_the_assets_that_were_validated(monkeypatch) -> None:
     dataset_files = {"train.jsonl": object(), "eval.jsonl": object()}
     bundled_environment = object()
-    assets = object()
+    assets = SimpleNamespace(
+        env_cls_path="envs/test/env-cls.pkl",
+        env_metadata_path="envs/test/env-metadata.json",
+        dataset_path=None,
+    )
     report = SimpleNamespace(ok=True)
     calls: list[tuple[str, object]] = []
 
@@ -91,7 +99,11 @@ def test_launch_reuses_the_assets_that_were_validated(monkeypatch) -> None:
 
 
 def test_failed_validation_does_not_launch(monkeypatch) -> None:
-    assets = object()
+    assets = SimpleNamespace(
+        env_cls_path="envs/test/env-cls.pkl",
+        env_metadata_path="envs/test/env-metadata.json",
+        dataset_path=None,
+    )
     monkeypatch.setattr(main, "generate_data", lambda **kwargs: {})
     monkeypatch.setattr(main, "dump_bundle", lambda *args, **kwargs: object())
     monkeypatch.setattr(main, "upload_assets", lambda **kwargs: assets)

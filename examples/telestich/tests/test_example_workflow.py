@@ -10,7 +10,11 @@ from benchmax.envs import Environment
 def test_launch_reuses_the_assets_that_were_validated(monkeypatch) -> None:
     dataset_files = {"train.jsonl": object(), "eval.jsonl": object()}
     bundled_environment = object()
-    uploaded_assets = object()
+    uploaded_assets = SimpleNamespace(
+        env_cls_path="envs/test/env-cls.pkl",
+        env_metadata_path="envs/test/env-metadata.json",
+        dataset_path=None,
+    )
     report = SimpleNamespace(ok=True)
     calls: list[tuple[str, object]] = []
 

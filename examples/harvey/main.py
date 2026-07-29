@@ -389,6 +389,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"[stage 3/{total_stages}] uploading environment")
     uploaded_assets = upload_assets(bundle=bundled_environment, run_name=RUN_NAME)
+    print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
+    print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
+    print(f"  dataset_path: {uploaded_assets.dataset_path}")
     print(f"[stage 4/{total_stages}] validating environment")
     report = validate(HarveyLabHarborEnv(**constructor_args), uploaded_assets)
     if not report.ok:

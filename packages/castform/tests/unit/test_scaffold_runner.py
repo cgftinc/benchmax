@@ -68,7 +68,11 @@ def test_rag_runtime_dependency_matches_the_generating_sdk(mod):
 def _patch_staged_recorders(mod, monkeypatch, *, report_ok: bool = True):
     calls: list = []
     bundle = object()
-    uploaded = object()
+    uploaded = types.SimpleNamespace(
+        env_cls_path="envs/test/env-cls.pkl",
+        env_metadata_path="envs/test/env-metadata.json",
+        dataset_path=None,
+    )
     monkeypatch.setattr(mod, "ensure_session", lambda *a, **k: calls.append(("session",)))
 
     def _data(**k):

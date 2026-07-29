@@ -1547,6 +1547,9 @@ def main(argv: list[str] | None = None) -> int:
         dataset_files=dataset_files,
         run_name=RUN_NAME,
     )
+    print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
+    print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
+    print(f"  dataset_path: {uploaded_assets.dataset_path}")
     print(f"[stage 4/{total_stages}] validating environment")
     report = validate(TelestichEnv(**constructor_args), uploaded_assets)
     if not report.ok:

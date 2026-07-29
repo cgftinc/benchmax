@@ -384,6 +384,9 @@ def main(argv: list[str] | None = None) -> int:
         eval_dataset=(_load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else None),
         run_name=_run_name(),
     )
+    print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
+    print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
+    print(f"  dataset_path: {uploaded_assets.dataset_path}")
     print(f"[stage 4/{total_stages}] validating environment")
     report = validate(CustomSearchEnv(**ENV_ARGS), uploaded_assets)
     if not report.ok:
