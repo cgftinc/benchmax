@@ -1,6 +1,7 @@
-"""Every scaffold seed's `main.py` runnable stage-runner: argparse dispatch +
-SDK-direct stages (data → validate → launch), with the SDK monkeypatched (no
-network). Parametrized over both seeds — the runner is env-type-agnostic."""
+"""Every scaffold seed's `main.py` staged runner: argparse dispatch + the
+upload-once path (data → bundle → upload → validate → launch), with the SDK
+monkeypatched (no network). Parametrized over both seeds — the runner is
+env-type-agnostic."""
 
 from __future__ import annotations
 
@@ -28,11 +29,17 @@ def mod(request, tmp_path, monkeypatch):
 
 
 def _fake_report(ok: bool = True):
-    outcome = types.SimpleNamespace(rewards={"score": 1.0}, termination_reason="finished")
+    outcome = types.SimpleNamespace(
+        rewards={"score": 1.0},
+        termination_reason="finished",
+        error=None,
+    )
     return types.SimpleNamespace(
         ok=ok,
         local={"validate-0": outcome, "validate-1": outcome},
         remote=None,
+        local_errors={},
+        remote_errors={},
     )
 
 
@@ -55,39 +62,46 @@ def test_rag_runtime_dependency_matches_the_generating_sdk(mod):
     assert mod.RUNTIME_DEPENDENCIES == [f"castform=={version('castform')}"]
 
 
-# ── argparse dispatch: the right stage fns, and the safe-prefix STOP ────────────
+# ── argparse dispatch: the staged upload-once flow ──────────────────────────────
 
 
-def _patch_stage_recorders(mod, monkeypatch):
+def _patch_staged_recorders(mod, monkeypatch, *, report_ok: bool = True):
     calls: list = []
-    monkeypatch.setattr(mod, "ensure_session", lambda *a, **k: None)
+    bundle = object()
+    uploaded = object()
+    monkeypatch.setattr(mod, "ensure_session", lambda *a, **k: calls.append(("session",)))
 
     def _data(**k):
         calls.append(("data", k))
         return True
 
-    def _validate():  # returns a passing report so main() exits 0
-        calls.append(("validate",))
-        return _fake_report(ok=True)
+    def _dump_bundle(env_class, **k):
+        calls.append(("bundle", env_class))
+        return bundle
 
-    def _launch(**k):  # returns a run id so main() exits 0
-        calls.append(("launch", k))
+    def _upload_assets(**k):
+        calls.append(("upload", k))
+        return uploaded
+
+    def _validate(env, received):
+        calls.append(("validate", received))
+        return _fake_report(ok=report_ok)
+
+    def _launch(received, **k):
+        calls.append(("launch", received, k))
         return "run-x"
 
     monkeypatch.setattr(mod, "generate_data", _data)
+    monkeypatch.setattr(mod, "dump_bundle", _dump_bundle)
+    monkeypatch.setattr(mod, "upload_assets", _upload_assets)
     monkeypatch.setattr(mod, "validate", _validate)
     monkeypatch.setattr(mod, "launch", _launch)
-    return calls
-
-
-def test_dispatch_validate_only(mod, monkeypatch):
-    calls = _patch_stage_recorders(mod, monkeypatch)
-    assert mod.main(["validate"]) == 0
-    assert calls == [("validate",)]
+    monkeypatch.setattr(mod, "_load_jsonl", lambda path: [{"row": 1}])
+    return calls, bundle, uploaded
 
 
 def test_dispatch_data_only(mod, monkeypatch):
-    calls = _patch_stage_recorders(mod, monkeypatch)
+    calls, _, _ = _patch_staged_recorders(mod, monkeypatch)
     assert mod.main(["data", "--force"]) == 0
     assert calls == [("data", {"force": True})]
 
@@ -102,94 +116,61 @@ def test_data_stage_does_not_require_login(mod, monkeypatch):
     assert mod.main(["data"]) == 0
 
 
-def test_validate_stage_ensures_session(mod, monkeypatch):
-    calls: list[str] = []
-    monkeypatch.setattr(mod, "ensure_session", lambda: calls.append("login"))
-    monkeypatch.setattr(mod, "validate", lambda: _fake_report(ok=True))
-    assert mod.main(["validate"]) == 0
-    assert calls == ["login"]
-
-
-def test_bare_and_all_run_data_then_validate_then_stop(mod, monkeypatch):
-    """Bare `python main.py` (and `all`) run the SAFE prefix data → validate and
-    STOP — launch is never automatic (GPU spend)."""
-    for argv in ([], ["all"]):
-        calls = _patch_stage_recorders(mod, monkeypatch)
+def test_bare_and_validate_run_the_upload_once_path_and_stop(mod, monkeypatch):
+    """Bare `python main.py` (and `validate`) run data → bundle → upload →
+    validate on the SAME uploaded assets, and never launch (GPU spend)."""
+    env_class = discover_env_class(mod)
+    for argv in ([], ["validate"]):
+        calls, bundle, uploaded = _patch_staged_recorders(mod, monkeypatch)
         assert mod.main(argv) == 0
-        assert calls == [("data", {"force": False}), ("validate",)]
-        assert not any(c[0] == "launch" for c in calls)
+        assert [c[0] for c in calls] == ["data", "session", "bundle", "upload", "validate"]
+        assert calls[2][1] is env_class
+        assert calls[3][1]["bundle"] is bundle
+        assert calls[4][1] is uploaded
 
 
-def test_dispatch_launch_passes_yes(mod, monkeypatch):
-    calls = _patch_stage_recorders(mod, monkeypatch)
-    assert mod.main(["launch"]) == 0
-    assert calls == [("launch", {"assume_yes": False})]
-    calls.clear()
-    assert mod.main(["launch", "-y"]) == 0
-    assert calls == [("launch", {"assume_yes": True})]
+def test_dispatch_launch_reuses_validated_assets_and_passes_yes(mod, monkeypatch):
+    for argv, assume_yes in ((["launch"], False), (["launch", "-y"], True)):
+        calls, _, uploaded = _patch_staged_recorders(mod, monkeypatch)
+        assert mod.main(argv) == 0
+        assert calls[-1] == ("launch", uploaded, {"assume_yes": assume_yes})
 
 
-def test_main_exit_1_on_validate_failure(mod, monkeypatch):
-    """A failed baseline must exit non-zero — CI / an agent can't treat a broken
-    validate as success."""
-    monkeypatch.setattr(mod, "ensure_session", lambda *a, **k: None)
-    monkeypatch.setattr(mod, "generate_data", lambda **k: None)
-    monkeypatch.setattr(mod, "validate", lambda: _fake_report(ok=False))
-    assert mod.main(["validate"]) == 1
-    assert mod.main([]) == 1  # bare = data → validate; a failing validate is non-zero
+def test_main_exit_1_on_validate_failure_and_gates_launch(mod, monkeypatch):
+    """A failed validation exits non-zero and blocks the launch stage."""
+    calls, _, _ = _patch_staged_recorders(mod, monkeypatch, report_ok=False)
+    assert mod.main(["launch"]) == 1
+    assert not any(c[0] == "launch" for c in calls)
+    assert mod.main([]) == 1
 
 
-def test_main_exit_1_when_launch_gated(mod, monkeypatch):
-    """launch() → None (validate-gate failed / user aborted / non-TTY refused) must
-    exit non-zero."""
-    monkeypatch.setattr(mod, "ensure_session", lambda *a, **k: None)
-    monkeypatch.setattr(mod, "launch", lambda **k: None)
+def test_main_exit_1_when_launch_aborted(mod, monkeypatch):
+    _patch_staged_recorders(mod, monkeypatch)
+    monkeypatch.setattr(mod, "launch", lambda *a, **k: None)
     assert mod.main(["launch"]) == 1
 
 
 # ── validate stage: script calls the public group-native function ───────────────
 
 
-def test_validate_delegates_dataset_loading_to_public_group_validation(mod, tmp_path, monkeypatch):
+def test_validate_passes_uploaded_assets_and_config(mod, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    field = "question" if hasattr(mod, "CustomSearchEnv") else "prompt"
-    (tmp_path / "train.jsonl").write_text(f'{{"{field}": "q"}}\n')
-    (tmp_path / "eval.jsonl").write_text(f'{{"{field}": "q2"}}\n')
-    captured: dict = {}
     env_class = discover_env_class(mod)
-    bundle = object()
+    captured: dict = {}
     remote_assets = object()
-
-    def fake_dump_bundle(cls, **kwargs):
-        captured["bundle"] = {
-            "env_class": cls,
-            **kwargs,
-        }
-        return bundle
-
-    def fake_upload_assets(**kwargs):
-        captured["upload"] = kwargs
-        return remote_assets
 
     async def fake_validate_environment(env, **kw):
         captured["env"] = env
         captured.update(kw)
         return _fake_report(ok=True)
 
-    monkeypatch.setattr(mod, "dump_bundle", fake_dump_bundle)
-    monkeypatch.setattr(mod, "upload_assets", fake_upload_assets)
     monkeypatch.setattr(mod, "validate_environment", fake_validate_environment)
-    report = mod.validate()
+    report = mod.validate(env_class(**mod.ENV_ARGS), remote_assets)
 
     assert report.ok
-    assert mod.VALIDATE_CONFIG["include_remote"] is True
     assert isinstance(captured["env"], env_class)
     assert captured["split"] == "train"
     assert captured["base_dir"] == Path(".")
-    assert captured["bundle"]["env_class"] is env_class
-    assert captured["upload"]["bundle"] is bundle
-    assert captured["upload"]["train_dataset"]
-    assert captured["upload"]["eval_dataset"]
     assert captured["remote_assets"] is remote_assets
     assert captured["model"] == str(mod.VALIDATE_CONFIG["model"])
     assert captured["max_context_tokens"] == 2048
@@ -200,58 +181,55 @@ def test_validate_surfaces_public_dataset_materialization_failure(mod, monkeypat
     async def fail_validation(*args, **kwargs):
         raise RuntimeError("dataset materialization failed")
 
-    mod.VALIDATE_CONFIG["include_remote"] = False
     monkeypatch.setattr(mod, "validate_environment", fail_validation)
+    env_class = discover_env_class(mod)
 
     with pytest.raises(RuntimeError, match="dataset materialization failed"):
-        mod.validate()
+        mod.validate(env_class(**mod.ENV_ARGS), None)
 
 
-def test_scorecard_prints_termination_reason_and_complete_reward_shape(mod, capsys):
-    outcome = types.SimpleNamespace(
-        rewards={"correct": 0.0, "format": 0.0},
+def test_scorecard_marks_error_settlements_and_shows_messages(mod, capsys):
+    good = types.SimpleNamespace(
+        rewards={"correct": 1.0},
+        termination_reason="finished",
+        error=None,
+    )
+    masked = types.SimpleNamespace(
+        rewards={},
+        termination_reason="max_turns_exceeded",
+        error="KeyError: 'ground_truth'",
+    )
+    bad = types.SimpleNamespace(
+        rewards={"correct": 0.0},
         termination_reason="judge_error",
+        error=None,
     )
     report = types.SimpleNamespace(
         ok=False,
-        local={"validate-0": outcome},
+        local={"validate-0": good, "validate-1": masked, "validate-2": bad},
+        remote=None,
+        local_errors={},
+        remote_errors={},
     )
 
-    mod._print_scorecard(report)
+    mod._print_validation(report)
 
     output = capsys.readouterr().out
-    assert "termination_reason=judge_error" in output
-    assert "rewards={'correct': 0.0, 'format': 0.0}" in output
-    assert "validate: FAIL" in output
+    assert "✅ local validate-0: finished" in output
+    assert "error=KeyError: 'ground_truth'" in output
+    assert "❌ local validate-2: judge_error" in output
+    assert "❌ validation failed" in output
 
 
-# ── launch stage: validate-gate, [y/N] confirm, and the asdict spread ───────────
+# ── launch stage: [y/N] confirm and the asdict spread ───────────────────────────
+
+_Uploaded = dataclasses.make_dataclass(
+    "Uploaded",
+    ["env_cls_path", "env_metadata_path", "dataset_path"],
+)
 
 
-def _patch_launch_sdk(mod, monkeypatch, launched: dict, *, validate_ok: bool = True):
-    monkeypatch.setattr(mod, "validate", lambda: _fake_report(ok=validate_ok))
-    bundle = object()
-
-    def fake_dump_bundle(env_class, **kwargs):
-        launched["_bundle_call"] = {"env_class": env_class, **kwargs}
-        return bundle
-
-    monkeypatch.setattr(mod, "dump_bundle", fake_dump_bundle)
-    Uploaded = dataclasses.make_dataclass(  # noqa: N806 — binds a class, not a variable
-        "Uploaded",
-        [
-            "env_cls_path",
-            "env_metadata_path",
-            "dataset_path",
-        ],
-    )
-
-    def fake_upload_assets(**kwargs):
-        launched["_upload_call"] = kwargs
-        return Uploaded("e", "m", "d")
-
-    monkeypatch.setattr(mod, "upload_assets", fake_upload_assets)
-
+def _patch_launch_client(mod, monkeypatch, launched: dict):
     class FakeClient:
         def __enter__(self):
             return self
@@ -266,62 +244,34 @@ def _patch_launch_sdk(mod, monkeypatch, launched: dict, *, validate_ok: bool = T
     monkeypatch.setattr(mod, "TrainerClient", lambda: FakeClient())
 
 
-def _seed_datasets(tmp_path):
-    (tmp_path / "train.jsonl").write_text('{"prompt": "q"}\n')
-    (tmp_path / "eval.jsonl").write_text('{"prompt": "q2"}\n')
-
-
-def test_launch_blocked_by_failing_validate(mod, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_launch_declined_at_confirm(mod, monkeypatch):
     launched: dict = {}
-    _patch_launch_sdk(mod, monkeypatch, launched, validate_ok=False)
-    monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError))
-    assert mod.launch() is None
-    assert not launched  # never reached upload/launch
-
-
-def test_launch_declined_at_confirm(mod, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _seed_datasets(tmp_path)
-    launched: dict = {}
-    _patch_launch_sdk(mod, monkeypatch, launched)
+    _patch_launch_client(mod, monkeypatch, launched)
     monkeypatch.setattr("builtins.input", lambda *a: "n")
-    assert mod.launch() is None
+    assert mod.launch(_Uploaded("e", "m", "d")) is None
     assert not launched  # aborted before spending credits
 
 
-def test_launch_confirmed_spreads_uploaded_paths(mod, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _seed_datasets(tmp_path)
+def test_launch_confirmed_spreads_uploaded_paths(mod, monkeypatch):
     launched: dict = {}
-    _patch_launch_sdk(mod, monkeypatch, launched)
+    _patch_launch_client(mod, monkeypatch, launched)
     monkeypatch.setattr("builtins.input", lambda *a: "y")
-    assert mod.launch() == "run-123"
+    assert mod.launch(_Uploaded("e", "m", "d")) == "run-123"
     # the 3 UploadedEnvironmentAssets fields spread through **dataclasses.asdict
     assert launched["env_cls_path"] == "e"
     assert launched["dataset_path"] == "d"
     assert launched["name"] == mod._run_name()
-    assert launched["_bundle_call"] == {
-        "env_class": discover_env_class(mod),
-        "constructor_args": mod.ENV_ARGS,
-        "pip_dependencies": mod.RUNTIME_DEPENDENCIES,
-    }
-    assert launched["_upload_call"]["bundle"] is not None
-    assert "env_class" not in launched["_upload_call"]
-    assert "pip_dependencies" not in launched["_upload_call"]
     # LAUNCH_CONFIG feeds launcher_args, minus reserved keys
     assert "type" not in (launched["launcher_args"] or {})
     assert "name" not in (launched["launcher_args"] or {})
     assert launched["launcher_args"]["max_context_len"] == mod.LAUNCH_CONFIG["max_context_len"]
 
 
-def test_launch_assume_yes_skips_prompt(mod, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _seed_datasets(tmp_path)
+def test_launch_assume_yes_skips_prompt(mod, monkeypatch):
     launched: dict = {}
-    _patch_launch_sdk(mod, monkeypatch, launched)
+    _patch_launch_client(mod, monkeypatch, launched)
     monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError))
-    assert mod.launch(assume_yes=True) == "run-123"
+    assert mod.launch(_Uploaded("e", "m", "d"), assume_yes=True) == "run-123"
     assert launched["name"] == mod._run_name()
 
 

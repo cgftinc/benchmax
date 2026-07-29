@@ -57,12 +57,13 @@ consume.
 
 The launch stage must remain visibly ordered:
 
-1. validate the environment;
-2. obtain explicit human confirmation that GPU training spends credits;
-3. call `dump_bundle` with explicit `pip_dependencies`;
-4. pass that exact `Bundle` to `upload_assets(bundle=...)`, supplying only
+1. call `dump_bundle` with explicit `pip_dependencies`;
+2. pass that exact `Bundle` to `upload_assets(bundle=...)`, supplying only
    dataset splits that should be uploaded;
-5. pass the uploaded paths to `TrainerClient.launch_training_run`.
+3. validate the exact uploaded assets, locally and in a hosted sandbox;
+4. obtain explicit human confirmation that GPU training spends credits;
+5. pass the same uploaded paths to `TrainerClient.launch_training_run` — the
+   run trains on precisely what was validated.
 
 benchmax captures project-local Python modules automatically. For source from a
 different project, either pass the module through `local_modules=` to capture it

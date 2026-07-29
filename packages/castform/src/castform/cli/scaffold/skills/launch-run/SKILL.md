@@ -17,16 +17,19 @@ Do not pass `--yes` unless the user has already explicitly authorized the cost.
 
 ## Required ordering
 
-Read the script and confirm that `launch()` does all of the following in order:
+Read the script and confirm that the launch action does all of the following
+in order:
 
-1. calls the same local `validate()` gate used during iteration;
-2. stops if either sibling did not finish;
-3. asks the human to confirm a credit-spending GPU launch;
-4. builds one `Bundle` with `dump_bundle`;
-5. passes that exact object to `upload_assets(bundle=bundle, ...)`;
-6. passes the returned paths to `TrainerClient.launch_training_run`.
+1. builds one `Bundle` with `dump_bundle`;
+2. passes that exact object to `upload_assets(bundle=bundle, ...)`;
+3. validates the uploaded assets (locally and in the hosted sandbox) and stops
+   on failure;
+4. asks the human to confirm a credit-spending GPU launch;
+5. passes the same uploaded paths to `TrainerClient.launch_training_run` — the
+   run trains on precisely what was validated.
 
-The upload helper must not silently rebundle the environment.
+The upload helper must not silently rebundle the environment, and launch must
+not re-upload.
 
 Dataset upload is explicit and optional. Supply `train_dataset` and/or
 `eval_dataset` only for splits Castform should upload. Omit them for data resolved

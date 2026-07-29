@@ -6,12 +6,12 @@ not the CLI, owns the reproducible training workflow:
 ```bash
 uv sync
 uv run python main.py data       # prepare or refresh project data
-uv run python main.py validate   # one local group with two siblings; no GPU
-uv run python main.py launch     # validate, confirm cost, upload and launch
+uv run python main.py validate   # upload, then check the assets locally + hosted; no GPU
+uv run python main.py launch     # the same path, confirm cost, then launch
 ```
 
-Bare `uv run python main.py` (the `all` stage) runs data preparation followed by
-validation and then stops. A launch is always a separate, confirmed action.
+Bare `uv run python main.py` runs data preparation, upload, and validation, and
+then stops. A launch is always a separate, confirmed action.
 `--force` regenerates data that already exists; `-y`/`--yes` skips launch
 confirmation prompts.
 
@@ -53,11 +53,11 @@ Use these skills in order:
 
 ## A green baseline
 
-A green baseline means both validation siblings finished, returned the declared
-reward keys, and produced believable task-specific scores. A zero score can be a
-valid completed result. An operational failure instead has a non-`finished`
-`termination_reason`, the same reward keys all set to zero, and a corresponding
-log entry.
+A green baseline means both validation siblings finished, returned their named
+reward components, and produced believable task-specific scores. A zero score
+can be a valid completed result. An operational failure instead has a
+non-`finished` `termination_reason`, empty rewards, an `error` message on the
+outcome, and a corresponding log entry.
 
 After a green baseline, decide deliberately:
 
