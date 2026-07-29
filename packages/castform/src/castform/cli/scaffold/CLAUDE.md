@@ -94,13 +94,13 @@ reviewing a bundle.
 Dataset uploads are optional. Omit a split argument when the environment resolves
 that data at runtime. Passing `[]` explicitly uploads an empty JSONL file.
 
-An SFT project has no bundle, so its launch stage is ordered differently:
-validate the dataset, clear the `allow_experimental_weights` gate if any row
-carries a per-message `weight`, check
-`castform.platform.client.SFT_LAUNCH_SUPPORTED`, confirm the cost, then
-`upload_sft_run` followed by `TrainerClient.launch_sft_run`. The capability
-check sits ahead of the upload deliberately, so a launch that cannot succeed
-leaves nothing behind in storage.
+An SFT project has no bundle, so its launch stage is ordered differently: check
+`castform.platform.client.SFT_LAUNCH_SUPPORTED` first, then validate the
+dataset, clear the `allow_experimental_weights` gate if any row carries a
+per-message `weight`, confirm the cost, and finally call `upload_sft_run`
+followed by `TrainerClient.launch_sft_run`. The capability check sits ahead of
+every side effect deliberately, so a launch that cannot succeed leaves nothing
+behind in storage.
 
 ## Reward review
 
