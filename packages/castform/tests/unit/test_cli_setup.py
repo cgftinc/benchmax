@@ -293,6 +293,32 @@ def test_setup_template_sft_writes_dataset_project(tmp_path, monkeypatch):
     ]
 
 
+def test_setup_template_sft_emits_env_less_onboarding(tmp_path, capsys):
+    """SFT setup copy matches its env-less, capability-first runtime."""
+    assert setup._cmd_setup(_ns(tmp_path, template="sft")) == 0
+    terminal = capsys.readouterr().out.lower()
+    getting_started = " ".join(
+        (tmp_path / "GETTING_STARTED.md").read_text().lower().split()
+    )
+
+    assert "prepare an sft dataset" in terminal
+    assert "capability check · currently stops before upload" in terminal
+    assert "project template" in terminal
+    assert "env template" not in terminal
+    assert "reasonable environment" not in terminal
+    assert "local group of 2" not in terminal
+
+    assert "env-less supervised fine-tuning dataset" in getting_started
+    assert "capability check; currently stops before upload" in getting_started
+    assert "first step is the platform capability check" in getting_started
+    assert "build a castform environment" not in getting_started
+    assert "general environment" not in getting_started
+    assert "sibling" not in getting_started
+    assert "validate, confirm cost, upload and launch" not in getting_started
+    for marker in ("rag:", "rl:", "sft:"):
+        assert marker not in getting_started
+
+
 def test_setup_template_sft_seeds_match_the_template_inline_seed(tmp_path):
     """The written seeds and `python main.py data` must produce the same rows —
     otherwise regenerating the dataset from the template silently changes it."""

@@ -108,31 +108,38 @@ def _retarget(text: str, agent: str) -> str:
     return text.replace(".claude/skills", _SKILLS_DIR[agent])
 
 
-# Env-conditional surfacing: content between ``<!-- rag:start -->`` and
-# ``<!-- rag:end -->`` (HTML comments, invisible when rendered) is RAG-specific —
-# a single-source doc that the setup mechanism tailors per template.
-_RAG_BLOCK_RE = re.compile(
-    r"^[ \t]*<!--\s*rag:start\s*-->.*?^[ \t]*<!--\s*rag:end\s*-->[ \t]*\n?",
-    re.DOTALL | re.MULTILINE | re.IGNORECASE,
-)
-_RAG_MARKER_RE = re.compile(
-    r"^[ \t]*<!--\s*rag:(?:start|end)\s*-->[ \t]*\n?",
-    re.MULTILINE | re.IGNORECASE,
-)
+# Template-conditional blocks keep the packaged docs as a single source while
+# setup emits only the guidance that matches the selected project.
+def _template_block_patterns(name: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
+    """Return regexes for a named ``<!-- name:start/end -->`` block and markers."""
+    escaped = re.escape(name)
+    block = re.compile(
+        rf"^[ \t]*<!--\s*{escaped}:start\s*-->.*?"
+        rf"^[ \t]*<!--\s*{escaped}:end\s*-->[ \t]*\n?",
+        re.DOTALL | re.MULTILINE | re.IGNORECASE,
+    )
+    markers = re.compile(
+        rf"^[ \t]*<!--\s*{escaped}:(?:start|end)\s*-->[ \t]*\n?",
+        re.MULTILINE | re.IGNORECASE,
+    )
+    return block, markers
+
+
+def _apply_conditional(text: str, name: str, *, keep: bool) -> str:
+    """Keep a named conditional's body or remove its complete block."""
+    block, markers = _template_block_patterns(name)
+    return markers.sub("", text) if keep else block.sub("", text)
 
 
 def _apply_template_conditionals(text: str, template: str) -> str:
-    """Tailor a scaffold doc to the env template. ``--template rag`` KEEPS the
-    RAG-specific blocks (dropping just the delimiter comments); every other template
-    STRIPS them, so a generic scaffold carries no RAG-specific guidance."""
-    if template == "rag":
-        return _RAG_MARKER_RE.sub("", text)
-    return _RAG_BLOCK_RE.sub("", text)
+    """Tailor scaffold docs to the selected RL, RAG, or SFT template."""
+    text = _apply_conditional(text, "rag", keep=template == "rag")
+    text = _apply_conditional(text, "rl", keep=template != "sft")
+    return _apply_conditional(text, "sft", keep=template == "sft")
 
 
-# The one prompt we surface in-terminal — kept in sync with GETTING_STARTED.md's
-# generic variant and the web onboarding copy. The other variants (rag / traces)
-# stay in GETTING_STARTED.md so the terminal stays a single clear call to action.
+# The template prompt surfaced in-terminal stays aligned with GETTING_STARTED.md.
+# RAG and trace variants remain in the guide instead of adding terminal choices.
 _PRIMARY_PROMPT = (
     "i want to start a training run to improve a model on <your task>. create a "
     "reasonable environment with relevant tools, generate a small synthetic "
@@ -140,10 +147,23 @@ _PRIMARY_PROMPT = (
     "either iterate or launch."
 )
 
+_SFT_PRIMARY_PROMPT = (
+    "i want to prepare an sft dataset for <your task>. generate a small set of "
+    "openai fine-tuning chat rows, validate them locally, review the scorecard, "
+    "and stop at the platform capability check before proposing any upload."
+)
+
 # (command, what it does) — the few verbs worth surfacing right after setup.
 _QUICK_COMMANDS = (
     ("python main.py validate", "baseline · local group of 2 · no GPU"),
     ("python main.py launch", "train on GPUs · spends credits"),
+    ("castform runs status <id>", "monitor a launched run"),
+    ("castform guide", "full walkthrough + more prompts"),
+)
+
+_SFT_QUICK_COMMANDS = (
+    ("python main.py validate", "local dataset scorecard · no gpu or rollouts"),
+    ("python main.py launch", "capability check · currently stops before upload"),
     ("castform runs status <id>", "monitor a launched run"),
     ("castform guide", "full walkthrough + more prompts"),
 )
@@ -159,7 +179,7 @@ def _wrap(text: str, width: int) -> list[str]:
     return textwrap.wrap(text, width) or [""]
 
 
-def _print_get_started() -> None:
+def _print_get_started(template: str) -> None:
     """Render the get-started block: an ``ask your agent`` divider over the one
     prompt to paste (plain indented lines — no box, so it copy-pastes clean),
     then a ``helpful commands`` divider over an unboxed command list. Command and
@@ -167,16 +187,18 @@ def _print_get_started() -> None:
     Degrades to plain text without color/TTY.
     """
     width = min(term_width() - 2, 72)
+    prompt = _SFT_PRIMARY_PROMPT if template == "sft" else _PRIMARY_PROMPT
+    commands = _SFT_QUICK_COMMANDS if template == "sft" else _QUICK_COMMANDS
 
     print()
     print("  " + rule_label("ask your agent", ORANGE, width))
-    for ln in _wrap(_PRIMARY_PROMPT, width - 2):
+    for ln in _wrap(prompt, width - 2):
         print("    " + paint(ln, italic=True))
 
     print()
     print("  " + rule_label("helpful commands", BLUE, width))
-    cmd_w = max(len(c) for c, _ in _QUICK_COMMANDS)
-    for cmd, desc in _QUICK_COMMANDS:
+    cmd_w = max(len(c) for c, _ in commands)
+    for cmd, desc in commands:
         print("    " + cmd.ljust(cmd_w) + "   " + paint(desc, _GREY))
     print()
 
@@ -360,7 +382,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         if env_writes:  # every template ships a seed main.py + datasets
             groups.append(
                 (
-                    "env template",
+                    "project template" if args.template == "sft" else "env template",
                     env_writes,
                     f"pyproject + main.py + datasets + tests ({args.template})",
                 )
@@ -376,7 +398,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         )
     )
 
-    _print_get_started()
+    _print_get_started(args.template)
     return 0
 
 
