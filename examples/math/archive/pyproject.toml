@@ -1,7 +1,7 @@
 [project]
 name = "benchmax-example-math"
 version = "0.1.0"
-description = "Minimal arithmetic tool-use environment"
+description = "Arithmetic tool-use environments for Benchmax"
 requires-python = "==3.12.*"
 dependencies = ["benchmax", "castform", "datasets>=4.0.0"]
 
@@ -10,8 +10,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["main"]
-packages = ["extensions"]
+# "main" stays installable: the trainer depends on this example for its
+# pipeline e2e (math_group_env imports MathEnv from main).
+py-modules = ["main", "math_group_env"]
 
 [dependency-groups]
 dev = ["pytest>=8.4.2", "pytest-asyncio>=1.2.0", "ruff>=0.14.2"]

@@ -66,7 +66,7 @@ After a green baseline, decide deliberately:
 
 The seed script uploads its JSONL splits. If the environment instead resolves a
 split at runtime—through Harbor, Git, or another provider—omit that split from
-`upload_environment_assets`. Use `None`/omission for no upload; `[]` uploads an empty
+`upload_assets`. Use `None`/omission for no upload; `[]` uploads an empty
 JSONL deliberately.
 
 ## Useful CLI commands

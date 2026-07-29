@@ -3,7 +3,7 @@ name = "benchmax"
 version = "0.2.0"
 description = "Platform-independent runtime for grouped LLM environments"
 readme = "README.md"
-authors = [{ name = "BenchMax Authors" }]
+authors = [{ name = "benchmax Authors" }]
 requires-python = "==3.12.*"
 dependencies = [
     "cloudpickle>=3.0.0",

@@ -60,11 +60,11 @@ The launch stage must remain visibly ordered:
 1. validate the environment;
 2. obtain explicit human confirmation that GPU training spends credits;
 3. call `dump_bundle` with explicit `pip_dependencies`;
-4. pass that exact `Bundle` to `upload_environment_assets(bundle=...)`, supplying only
+4. pass that exact `Bundle` to `upload_assets(bundle=...)`, supplying only
    dataset splits that should be uploaded;
 5. pass the uploaded paths to `TrainerClient.launch_training_run`.
 
-BenchMax captures project-local Python modules automatically. For source from a
+benchmax captures project-local Python modules automatically. For source from a
 different project, either pass the module through `local_modules=` to capture it
 or name its installed distribution in `pip_dependencies` to keep it remote.
 Undeclared cross-project source fails bundling. For the Castform LLM endpoint

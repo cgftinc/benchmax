@@ -4,7 +4,7 @@ Uploads a completed environment bundle and any caller-supplied datasets in a
 single call. The returned dataclass spreads into
 ``TrainerClient.launch_training_run``.
 
-Bundling remains a BenchMax concern. This helper deliberately accepts a
+Bundling remains a benchmax concern. This helper deliberately accepts a
 ``Bundle`` instead of environment construction inputs so Castform cannot
 silently rebuild or reinterpret the artifact selected by the caller.
 """
@@ -34,7 +34,7 @@ class UploadedEnvironmentAssets:
     Field names match ``TrainerClient.launch_training_run`` kwargs so the
     result spreads directly into the launch call::
 
-        uploaded = upload_environment_assets(...)
+        uploaded = upload_assets(...)
         run_id = trainer.launch_training_run(
             **dataclasses.asdict(uploaded),
         )
@@ -67,7 +67,7 @@ def _validate_blob_path(path: str, *, source: str) -> None:
             )
 
 
-def upload_environment_assets(
+def upload_assets(
     *,
     bundle: Bundle,
     train_dataset: list[dict[str, Any]] | None = None,
@@ -86,14 +86,14 @@ def upload_environment_assets(
         envs/<run_name>/<env_hash>/{env-cls.pkl, env-metadata.json}
         datasets/<run_name>/<dataset_hash>/<every dataset file>
 
-    Environment paths use BenchMax's complete-artifact digest, covering both
+    Environment paths use benchmax's complete-artifact digest, covering both
     the pickle and canonical metadata. The dataset prefix hashes every
     uploaded file's name and bytes. The hashes are truncated to 16 / 8 hex
     chars. When no dataset content is supplied, Castform uploads only the
     bundle and returns ``None`` for ``dataset_path``.
 
     Args:
-        bundle: Completed BenchMax environment bundle. Its pickle and metadata
+        bundle: Completed benchmax environment bundle. Its pickle and metadata
             are uploaded exactly as supplied.
         train_dataset: Optional training examples, written as ``train.jsonl``
             under the dataset prefix. ``None`` means the environment manages

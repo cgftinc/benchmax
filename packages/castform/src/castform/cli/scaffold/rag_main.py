@@ -3,7 +3,7 @@
 The environment searches a hosted Castform corpus, answers inside
 ``<answer>...</answer>``, and earns separate correctness and citation rewards.
 Everything needed to understand and launch the run lives in this script; the
-concrete Postgres Search showcase under BenchMax examples is not a dependency.
+concrete Postgres Search showcase under benchmax examples is not a dependency.
 
 Before validating, set ``CORPUS_NAME`` to an existing hosted corpus and replace
 the committed seed JSONL with rows shaped as ``question``, ``answer``, and
@@ -48,7 +48,7 @@ from benchmax.rewards import (
 from castform import config, validate_environment
 from castform.platform.client import TrainerClient
 from castform.platform.login import ensure_session
-from castform.platform.environment_assets import upload_environment_assets
+from castform.platform.environment_assets import upload_assets
 from castform.rag.corpus.postgres.search import PostgresSearch
 
 CORPUS_NAME = "my-corpus"
@@ -315,7 +315,7 @@ async def _run_validation(env: CustomSearchEnv) -> Any:
             constructor_args=ENV_ARGS,
             pip_dependencies=RUNTIME_DEPENDENCIES,
         )
-        remote_assets = upload_environment_assets(
+        remote_assets = upload_assets(
             bundle=bundle,
             train_dataset=_load_jsonl(TRAIN_FILE),
             eval_dataset=(_load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else None),
@@ -361,7 +361,7 @@ def launch(assume_yes: bool = False) -> str | None:
         constructor_args=ENV_ARGS,
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
-    uploaded = upload_environment_assets(
+    uploaded = upload_assets(
         bundle=bundle,
         train_dataset=_load_jsonl(TRAIN_FILE),
         eval_dataset=_load_jsonl(EVAL_FILE) if Path(EVAL_FILE).exists() else [],

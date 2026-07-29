@@ -171,7 +171,7 @@ def test_validate_delegates_dataset_loading_to_public_group_validation(
         }
         return bundle
 
-    def fake_upload_environment_assets(**kwargs):
+    def fake_upload_assets(**kwargs):
         captured["upload"] = kwargs
         return remote_assets
 
@@ -181,9 +181,7 @@ def test_validate_delegates_dataset_loading_to_public_group_validation(
         return _fake_report(ok=True)
 
     monkeypatch.setattr(mod, "dump_bundle", fake_dump_bundle)
-    monkeypatch.setattr(
-        mod, "upload_environment_assets", fake_upload_environment_assets
-    )
+    monkeypatch.setattr(mod, "upload_assets", fake_upload_assets)
     monkeypatch.setattr(mod, "validate_environment", fake_validate_environment)
     report = mod.validate()
 
@@ -252,13 +250,11 @@ def _patch_launch_sdk(mod, monkeypatch, launched: dict, *, validate_ok: bool = T
         ],
     )
 
-    def fake_upload_environment_assets(**kwargs):
+    def fake_upload_assets(**kwargs):
         launched["_upload_call"] = kwargs
         return Uploaded("e", "m", "d")
 
-    monkeypatch.setattr(
-        mod, "upload_environment_assets", fake_upload_environment_assets
-    )
+    monkeypatch.setattr(mod, "upload_assets", fake_upload_assets)
 
     class FakeClient:
         def __enter__(self):

@@ -145,7 +145,7 @@ def test_setup_content_cites_real_verbs(tmp_path):
     assert "python main.py launch" in guide
     assert "castform launch" not in guide + launch_skill
     assert "max_context_len" in launch_skill
-    assert "upload_environment_assets(bundle=bundle" in launch_skill
+    assert "upload_assets(bundle=bundle" in launch_skill
 
 
 def test_setup_generic_ships_seed_env_and_data(tmp_path, monkeypatch):

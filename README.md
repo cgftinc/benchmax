@@ -11,9 +11,9 @@ python 3.12 is required.
 ## install
 
 ```bash
-uv tool install castform
+uv tool install -U castform
 # or
-pip install castform
+pip install -U castform
 ```
 this will install both castform and benchmax
 

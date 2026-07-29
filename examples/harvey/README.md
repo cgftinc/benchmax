@@ -5,7 +5,7 @@ Trains `Qwen/Qwen3.5-35B-A3B` on
 using Harvey's native agent loop, Modal sandboxes, and the dataset's Claude
 Sonnet judge.
 
-From the BenchMax workspace root:
+From the benchmax workspace root:
 
 ```bash
 uv sync

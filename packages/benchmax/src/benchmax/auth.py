@@ -1,6 +1,6 @@
 """Explicit, call-time authentication for model requests.
 
-BenchMax defines only the runtime contract. Platform packages and execution
+benchmax defines only the runtime contract. Platform packages and execution
 runtimes provide concrete credential sources and bind injected credentials.
 """
 

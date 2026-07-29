@@ -32,7 +32,7 @@ class BundlingError(Exception):
 
 
 class IncompatibleRuntimeError(Exception):
-    """Bundle metadata is incompatible with the current BenchMax runtime."""
+    """Bundle metadata is incompatible with the current benchmax runtime."""
 
 
 class IncompatiblePythonError(IncompatibleRuntimeError):
@@ -40,7 +40,7 @@ class IncompatiblePythonError(IncompatibleRuntimeError):
 
 
 class IncompatibleBenchmaxError(IncompatibleRuntimeError):
-    """Loader's BenchMax major.minor doesn't match the bundle's benchmax_version."""
+    """Loader's benchmax major.minor doesn't match the bundle's benchmax_version."""
 
 
 # register_pickle_by_value mutates process-global state; serialize against races.
@@ -102,7 +102,7 @@ class BundleMetadata:
         if unknown:
             raise ValueError(
                 f"bundle metadata has unsupported keys {unknown}; "
-                "re-bundle with a current BenchMax release"
+                "re-bundle with a current benchmax release"
             )
         try:
             pip_dependencies = d["pip_dependencies"]
@@ -153,7 +153,7 @@ def bundle_digest(bundle: Bundle) -> str:
 
 
 def validate_bundle_compatibility(metadata: BundleMetadata) -> None:
-    """Reject metadata built for a different Python or BenchMax runtime.
+    """Reject metadata built for a different Python or benchmax runtime.
 
     This check never reads the pickle or installs environment dependencies, so
     execution runtimes can call it before performing either higher-risk step.
@@ -172,20 +172,20 @@ def validate_bundle_compatibility(metadata: BundleMetadata) -> None:
     current_benchmax = _benchmax_version()
     if metadata.benchmax_version == "unknown" or current_benchmax == "unknown":
         raise IncompatibleBenchmaxError(
-            "Cannot verify BenchMax compatibility because the bundle or "
-            "runtime version is unknown. Install BenchMax as a versioned package."
+            "Cannot verify benchmax compatibility because the bundle or "
+            "runtime version is unknown. Install benchmax as a versioned package."
         )
     bundle_series = _version_major_minor(metadata.benchmax_version)
     current_series = _version_major_minor(current_benchmax)
     if bundle_series is None or current_series is None:
         raise IncompatibleBenchmaxError(
-            f"Cannot parse BenchMax versions (bundle {metadata.benchmax_version}, "
+            f"Cannot parse benchmax versions (bundle {metadata.benchmax_version}, "
             f"runtime {current_benchmax}); expected major.minor[.patch]."
         )
     if bundle_series != current_series:
         raise IncompatibleBenchmaxError(
-            f"Bundle was packaged with BenchMax {metadata.benchmax_version} "
-            f"but this runtime uses BenchMax {current_benchmax}; "
+            f"Bundle was packaged with benchmax {metadata.benchmax_version} "
+            f"but this runtime uses benchmax {current_benchmax}; "
             "major.minor versions must match."
         )
 
@@ -236,7 +236,7 @@ def dump_bundle(
     benchmax_version = _benchmax_version()
     if benchmax_version == "unknown":
         raise BundlingError(
-            "Cannot determine the BenchMax package version; install BenchMax as "
+            "Cannot determine the benchmax package version; install benchmax as "
             "a versioned package before creating a bundle"
         )
     local_modules = local_modules or []
@@ -387,7 +387,7 @@ def load_bundle(
             If False, return ``(env_class, constructor_args)``.
 
     Raises:
-        IncompatibleRuntimeError: bundle's Python or BenchMax version differs.
+        IncompatibleRuntimeError: bundle's Python or benchmax version differs.
         BundlingError: corrupt bytes or a class that does not implement Environment.
     """
     validate_bundle_compatibility(bundle.metadata)

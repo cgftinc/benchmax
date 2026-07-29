@@ -2,7 +2,7 @@
 
 ``platform_bearer`` authenticates Castform platform operations. It is
 deliberately not a model credential resolver: judges, embeddings, and tool LLM
-calls use BenchMax ``ModelAuth`` exclusively.
+calls use benchmax ``ModelAuth`` exclusively.
 
 Precedence (per call):
 

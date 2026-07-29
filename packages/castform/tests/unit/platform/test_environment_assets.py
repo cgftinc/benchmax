@@ -1,4 +1,4 @@
-"""Unit tests for castform.platform.upload_environment_assets."""
+"""Unit tests for castform.platform.upload_assets."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 from benchmax.bundle import Bundle, BundleMetadata, bundle_digest
 from castform.platform import (
     UploadedEnvironmentAssets,
-    upload_environment_assets,
+    upload_assets,
 )
 
 
@@ -47,10 +47,10 @@ class FakeStorageClient:
         }
 
 
-def test_upload_environment_assets_returns_paths_matching_launch_kwargs():
+def test_upload_assets_returns_paths_matching_launch_kwargs():
     """Field names must spread cleanly into TrainerClient.launch_training_run."""
     storage = FakeStorageClient()
-    result = upload_environment_assets(
+    result = upload_assets(
         bundle=_bundle(),
         train_dataset=[{"prompt": "p", "ground_truth": "g"}],
         eval_dataset=[{"prompt": "p2", "ground_truth": "g2"}],
@@ -68,10 +68,10 @@ def test_upload_environment_assets_returns_paths_matching_launch_kwargs():
     }
 
 
-def test_upload_environment_assets_can_upload_bundle_without_datasets():
+def test_upload_assets_can_upload_bundle_without_datasets():
     storage = FakeStorageClient()
 
-    result = upload_environment_assets(
+    result = upload_assets(
         bundle=_bundle(),
         run_name="harbor-managed",
         storage_client=storage,  # type: ignore[arg-type]
@@ -84,10 +84,10 @@ def test_upload_environment_assets_can_upload_bundle_without_datasets():
     assert result.dataset_path is None
 
 
-def test_upload_environment_assets_uploads_only_the_supplied_dataset_split():
+def test_upload_assets_uploads_only_the_supplied_dataset_split():
     storage = FakeStorageClient()
 
-    result = upload_environment_assets(
+    result = upload_assets(
         bundle=_bundle(),
         train_dataset=[{"prompt": "p"}],
         run_name="train-only",
@@ -101,11 +101,11 @@ def test_upload_environment_assets_uploads_only_the_supplied_dataset_split():
     assert result.dataset_path == "fixed/dataset"
 
 
-def test_upload_environment_assets_rejects_dataset_prefix_without_datasets():
+def test_upload_assets_rejects_dataset_prefix_without_datasets():
     storage = FakeStorageClient()
 
     with pytest.raises(ValueError, match="dataset_prefix requires"):
-        upload_environment_assets(
+        upload_assets(
             bundle=_bundle(),
             run_name="bundle-only",
             dataset_prefix="unused/datasets",
@@ -115,9 +115,9 @@ def test_upload_environment_assets_rejects_dataset_prefix_without_datasets():
     assert storage.uploads == []
 
 
-def test_upload_environment_assets_uses_hashed_envs_and_datasets_layout():
+def test_upload_assets_uses_hashed_envs_and_datasets_layout():
     storage = FakeStorageClient()
-    result = upload_environment_assets(
+    result = upload_assets(
         bundle=_bundle(),
         train_dataset=[{"prompt": "p"}],
         eval_dataset=[{"prompt": "p"}],
@@ -161,9 +161,9 @@ def test_upload_environment_assets_uses_hashed_envs_and_datasets_layout():
     assert result.dataset_path == ds_dir
 
 
-def test_upload_environment_assets_respects_env_prefix_override():
+def test_upload_assets_respects_env_prefix_override():
     storage = FakeStorageClient()
-    upload_environment_assets(
+    upload_assets(
         bundle=_bundle(),
         train_dataset=[],
         eval_dataset=[],
@@ -184,9 +184,9 @@ def test_upload_environment_assets_respects_env_prefix_override():
     )
 
 
-def test_upload_environment_assets_respects_dataset_prefix_override():
+def test_upload_assets_respects_dataset_prefix_override():
     storage = FakeStorageClient()
-    result = upload_environment_assets(
+    result = upload_assets(
         bundle=_bundle(),
         train_dataset=[],
         eval_dataset=[],
@@ -204,7 +204,7 @@ def test_upload_environment_assets_respects_dataset_prefix_override():
     assert result.dataset_path == "custom/data/path"
 
 
-def test_upload_environment_assets_writes_jsonl_one_object_per_line():
+def test_upload_assets_writes_jsonl_one_object_per_line():
     """The train/eval files must be valid JSONL."""
     captured: dict[str, bytes] = {}
 
@@ -218,7 +218,7 @@ def test_upload_environment_assets_writes_jsonl_one_object_per_line():
                 "willOverwrite": False,
             }
 
-    upload_environment_assets(
+    upload_assets(
         bundle=_bundle(),
         train_dataset=[{"a": 1}, {"a": 2}],
         eval_dataset=[{"b": 3}],
@@ -236,7 +236,7 @@ def test_upload_environment_assets_writes_jsonl_one_object_per_line():
     assert [json.loads(line) for line in eval_lines] == [{"b": 3}]
 
 
-def test_upload_environment_assets_api_key_optional_resolves_via_seam(monkeypatch):
+def test_upload_assets_api_key_optional_resolves_via_seam(monkeypatch):
     """api_key is optional: with neither api_key nor storage_client, the built
     StorageClient gets api_key=None and resolves the bearer per request via the
     seam (ACT_AS_TOKEN_PATH / CASTFORM_API_KEY) — no upfront guard."""
@@ -251,7 +251,7 @@ def test_upload_environment_assets_api_key_optional_resolves_via_seam(monkeypatc
         "castform.platform.environment_assets.StorageClient", _fake_storage_client
     )
 
-    result = upload_environment_assets(
+    result = upload_assets(
         bundle=_bundle(),
         train_dataset=[{"a": 1}],
         eval_dataset=[{"a": 1}],
@@ -262,11 +262,11 @@ def test_upload_environment_assets_api_key_optional_resolves_via_seam(monkeypatc
     assert isinstance(result, UploadedEnvironmentAssets)
 
 
-def test_upload_environment_assets_rejects_unsafe_run_name():
+def test_upload_assets_rejects_unsafe_run_name():
     """A run_name with a URL-breaking char fails loud before any upload."""
     storage = FakeStorageClient()
     with pytest.raises(ValueError, match="Invalid storage path segment"):
-        upload_environment_assets(
+        upload_assets(
             bundle=_bundle(),
             train_dataset=[{"a": 1}],
             eval_dataset=[{"a": 1}],
@@ -276,10 +276,10 @@ def test_upload_environment_assets_rejects_unsafe_run_name():
     assert storage.uploads == []  # nothing uploaded
 
 
-def test_upload_environment_assets_rejects_unsafe_prefix_override():
+def test_upload_assets_rejects_unsafe_prefix_override():
     storage = FakeStorageClient()
     with pytest.raises(ValueError, match="Invalid storage path segment"):
-        upload_environment_assets(
+        upload_assets(
             bundle=_bundle(),
             train_dataset=[],
             eval_dataset=[],
@@ -289,12 +289,12 @@ def test_upload_environment_assets_rejects_unsafe_prefix_override():
         )
 
 
-def test_upload_environment_assets_uploads_supplied_bundle_exactly():
+def test_upload_assets_uploads_supplied_bundle_exactly():
     """Castform uploads the caller's artifact without rebuilding or altering it."""
     storage = FakeStorageClient()
     bundle = _bundle(pickled=b"not-even-a-pickle\x00\xff")
 
-    result = upload_environment_assets(
+    result = upload_assets(
         bundle=bundle,
         train_dataset=[],
         eval_dataset=[],
@@ -311,11 +311,11 @@ def test_upload_environment_assets_uploads_supplied_bundle_exactly():
     assert result.env_metadata_path == "blob://fixed/env/env-metadata.json"
 
 
-def test_upload_environment_assets_uses_benchmax_complete_artifact_digest():
+def test_upload_assets_uses_benchmax_complete_artifact_digest():
     storage = FakeStorageClient()
     bundle = _bundle(pickled=b"exact hash input")
 
-    upload_environment_assets(
+    upload_assets(
         bundle=bundle,
         train_dataset=[],
         eval_dataset=[],
@@ -337,12 +337,12 @@ def test_upload_path_changes_when_only_bundle_metadata_changes():
         metadata=dataclasses.replace(first.metadata, benchmax_version="0.2.0"),
     )
 
-    upload_environment_assets(
+    upload_assets(
         bundle=first,
         run_name="metadata-identity",
         storage_client=storage,  # type: ignore[arg-type]
     )
-    upload_environment_assets(
+    upload_assets(
         bundle=second,
         run_name="metadata-identity",
         storage_client=storage,  # type: ignore[arg-type]

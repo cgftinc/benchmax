@@ -1,21 +1,50 @@
 # math
 
-Small mixed-operator arithmetic (the public `dawidmt/arithmetic50` split:
-`×`/`÷` symbols and order-of-operations traps that reliably confuse small
-models) solved through add/sub/mul/div tools, with deliberately padded tool
-output. Recreates the trainer's historical "mathenv" fixture on the current
-BenchMax API, including sentinel failure injection for exercising every
-BaseEnv failure path.
+a small sanity-check environment built with [`BaseEnv`](../../packages/benchmax/src/benchmax/envs/base/README.md) that teaches a model to solve arithmetic expressions with four tools.
 
-Purpose: the fastest end-to-end smoke of the whole training loop — tools,
-uploaded JSONL datasets, group scoring (`math_group_env.MathGroupEnv`), and
-failure-path fixtures. The trainer's pipeline e2e tests build on this example.
-
-## Getting started
+## validate the environment
 
 ```bash
-uv sync            # from the benchmax workspace root
 cd examples/math
-uv run python main.py             # data (HF download) → validate (no launch)
-uv run python main.py launch      # train on GPUs (asks first; spends credits)
+uv run python main.py validate
 ```
+
+this downloads the public [`dawidmt/arithmetic50`](https://huggingface.co/datasets/dawidmt/arithmetic50) test split, uses the first 40 examples for training and the remaining 10 for evaluation, bundles and uploads the environment and dataset, then validates them locally and in a hosted sandbox. it does not launch training.
+
+use this command while iterating on the environment. validation runs the first evaluation example with a small model context so it stays fast.
+
+## launch training
+
+```bash
+uv run python main.py launch
+```
+
+launch follows the same data, upload, and validation path, then asks for confirmation before starting training with the assets that were just validated. pass `--yes` to skip only the launch confirmation.
+
+## environment
+
+`MathEnv` extends [`BaseEnv`](../../packages/benchmax/src/benchmax/envs/base/README.md), limits each rollout to three model turns, and exposes the four basic arithmetic operations.
+
+```python
+class MathEnv(BaseEnv):
+    reward_keys = ("correctness",)
+    max_turns = 3
+
+    async def create_dataset(...):
+        return JsonlDataset(...)
+
+    async def list_tools(...):
+        return [add, subtract, multiply, divide]
+
+    async def run_tool(...):
+        ...
+
+    async def compute_reward(...):
+        return {"correctness": ...}
+```
+
+the correctness reward requires the model to call at least one tool and return the right numeric answer. ten percent of successful tool responses also include 1,000 irrelevant characters, preserving the original math sanity check that makes the model identify the result instead of copying the entire tool response.
+
+## extensions
+
+see [`extensions/`](extensions/) for runnable `MathEnv` subclasses that demonstrate group scoring and stress trainer recovery and error handling.

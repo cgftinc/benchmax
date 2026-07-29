@@ -640,7 +640,7 @@ def _sandbox_name(trial: HarborTrialTemplate) -> str:
 
 
 def _with_environment_defaults(trial: HarborTrialTemplate) -> HarborTrialTemplate:
-    """Apply BenchMax provider defaults without replacing user settings."""
+    """Apply benchmax provider defaults without replacing user settings."""
 
     from harbor.models.environment_type import EnvironmentType
 

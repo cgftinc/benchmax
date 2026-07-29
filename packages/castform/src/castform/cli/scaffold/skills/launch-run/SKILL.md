@@ -23,7 +23,7 @@ Read the script and confirm that `launch()` does all of the following in order:
 2. stops if either sibling did not finish;
 3. asks the human to confirm a credit-spending GPU launch;
 4. builds one `Bundle` with `dump_bundle`;
-5. passes that exact object to `upload_environment_assets(bundle=bundle, ...)`;
+5. passes that exact object to `upload_assets(bundle=bundle, ...)`;
 6. passes the returned paths to `TrainerClient.launch_training_run`.
 
 The upload helper must not silently rebundle the environment.
@@ -48,7 +48,7 @@ bundle = dump_bundle(
 
 List every external package imported while the environment, tools or rewards run.
 Do not copy the whole project dependency list automatically: data-preparation and
-development packages may not belong in the rollout image. BenchMax captures local
+development packages may not belong in the rollout image. benchmax captures local
 modules under the environment project automatically. Source from another project
 must be explicit: use `local_modules=` to capture it, or list its installed
 distribution in `pip_dependencies` to keep it as a remote reference.

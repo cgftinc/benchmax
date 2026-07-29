@@ -2,7 +2,7 @@
 
 `TelestichEnv` rewards a model for writing **telestich** poems — poems where
 the last letter of each line, read top to bottom, spells out a hidden word.
-Scoring uses BenchMax's group-native contract: individual rollouts defer, and
+Scoring uses benchmax's group-native contract: individual rollouts defer, and
 `compute_group_rewards` judges the complete sibling group (Elo-style).
 
 Purpose: the group-scoring reference environment, with a committed

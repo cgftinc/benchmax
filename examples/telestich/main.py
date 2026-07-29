@@ -1519,7 +1519,7 @@ def validate() -> Any:
 def launch(*, assume_yes: bool) -> str | None:
     from castform import config
     from castform.platform.client import TrainerClient
-    from castform.platform.environment_assets import upload_environment_assets
+    from castform.platform.environment_assets import upload_assets
 
     train_rows, eval_rows = _split_rows()
     print(f"{len(train_rows)} train (curriculum order) / {len(eval_rows)} eval.")
@@ -1531,7 +1531,7 @@ def launch(*, assume_yes: bool) -> str | None:
     # The trainer mirrors the uploaded dataset prefix to the machine and hands
     # it to the env as base_dir, where the default train.jsonl/eval.jsonl live.
     constructor_args = {"judge_base_url": config.llm_url()}
-    uploaded = upload_environment_assets(
+    uploaded = upload_assets(
         bundle=build_training_bundle(constructor_args),
         train_dataset=train_rows,
         eval_dataset=eval_rows,

@@ -43,7 +43,7 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
 
         A concrete environment may satisfy this property with a class-level
         tuple. Dynamic adapters such as Harbor may expose constructor-provided
-        keys instead. BenchMax never infers reward keys from sibling rollouts.
+        keys instead. benchmax never infers reward keys from sibling rollouts.
         """
 
     @property

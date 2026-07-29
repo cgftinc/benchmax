@@ -1,6 +1,6 @@
 ---
 name: design-environment
-description: Design a BenchMax environment, its ordered dataset, tools, and explicit reward shape for a Castform project.
+description: Design a benchmax environment, its ordered dataset, tools, and explicit reward shape for a Castform project.
 ---
 
 # Design an environment
@@ -47,7 +47,7 @@ Preparation, cleaning and QA generation belong in the project data script.
 - Successful individual and group reward hooks must combine to exactly that shape.
 - Return finite numbers and make correctness the dominant signal.
 - Let judge, model, tool and sandbox operational failures propagate through the
-  typed runtime path. BenchMax logs them and returns the declared keys all zero
+  typed runtime path. benchmax logs them and returns the declared keys all zero
   with a non-`finished` termination reason.
 - Do not catch a judge failure and report it as a legitimate score.
 - Programming, malformed-result and configuration errors should remain loud.
@@ -68,7 +68,7 @@ async def run_tool(self, rollout_id: str, tool_name: str, **tool_args):
     return await self.lookup(tool_args["query"])
 ```
 
-Keep clients pickle-safe. Use `InjectedAuth` for calls through the Castform LLM endpoint so Castform supplies the current session credential. Use explicit `StaticBearerAuth` for a user-managed external endpoint; never read Castform credentials from BenchMax environment code.
+Keep clients pickle-safe. Use `InjectedAuth` for calls through the Castform LLM endpoint so Castform supplies the current session credential. Use explicit `StaticBearerAuth` for a user-managed external endpoint; never read Castform credentials from benchmax environment code.
 
 ## Review before handoff
 

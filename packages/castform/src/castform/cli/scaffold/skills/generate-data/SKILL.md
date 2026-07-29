@@ -29,7 +29,7 @@ actually use:
 - Record provenance and make regeneration idempotent; never overwrite curated data
   without an explicit force flag.
 
-`upload_environment_assets` accepts optional train and eval rows. The launch script
+`upload_assets` accepts optional train and eval rows. The launch script
 decides what it uploads: omit a split when the environment resolves it at runtime,
 and do not upload unrelated preparation artifacts. `None` means “do not upload”;
 an empty list deliberately uploads an empty JSONL.

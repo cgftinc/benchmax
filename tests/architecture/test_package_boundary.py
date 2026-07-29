@@ -36,9 +36,9 @@ def test_benchmax_has_no_castform_dependency_or_platform_knowledge() -> None:
     project = manifest["project"]
     dependencies = project.get("dependencies", [])
     if any(str(dep).lower().startswith("castform") for dep in dependencies):
-        violations.append("BenchMax distribution depends on Castform")
+        violations.append("benchmax distribution depends on Castform")
     if "castform" in project.get("scripts", {}):
-        violations.append("BenchMax distribution defines the Castform CLI")
+        violations.append("benchmax distribution defines the Castform CLI")
 
     assert not violations, "\n".join(violations)
 
