@@ -68,8 +68,7 @@ async def run_tool(self, rollout_id: str, tool_name: str, **tool_args):
     return await self.lookup(tool_args["query"])
 ```
 
-Keep clients pickle-safe. Resolve rotating model/judge credentials per call with
-`InjectedAuth`; never read Castform credentials from BenchMax environment code.
+Keep clients pickle-safe. Use `InjectedAuth` for calls through the Castform LLM endpoint so Castform supplies the current session credential. Use explicit `StaticBearerAuth` for a user-managed external endpoint; never read Castform credentials from BenchMax environment code.
 
 ## Review before handoff
 

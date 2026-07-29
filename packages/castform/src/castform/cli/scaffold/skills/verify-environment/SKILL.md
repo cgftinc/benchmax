@@ -52,8 +52,7 @@ tool exceptions and judge exceptions and assert the failure termination reason,
 zeroed declared shape and log message. For a group-relative reward, verify that one
 failed sibling does not alter successful siblings' scoring inputs.
 
-If the environment uses `InjectedAuth("judge")`, Castform validation binds that
-name to its call-time credential provider for the duration of the run. Rollout
+If the environment uses `InjectedAuth("judge")` for the Castform LLM endpoint, Castform validation binds that name to its call-time credential provider for the duration of the run. Rollout
 `model_auth` and named environment bindings are independent; overriding one must
 not silently override the other. A missing or unknown binding should fail visibly;
 the environment must not read a platform token itself.

@@ -1,45 +1,36 @@
-# BenchMax
+# benchmax
 
-BenchMax is a Python SDK for defining and training reinforcement-learning
-environments: tools, rewards and datasets as code. The `castform` package adds
-the Castform platform on top: login, validation, uploads and GPU launches.
+benchmax is a python sdk for defining and training reinforcement-learning environments: tools, rewards and datasets as code.
 
-Python 3.12 is required.
+extend [`BaseEnv`](packages/benchmax/src/benchmax/envs/base/env.py) for a simple model-and-tool loop, or use [`HarborEnv`](packages/benchmax/src/benchmax/envs/harbor/env.py) to train with arbitrary harnesses and sandboxes through harbor.
 
-## Install
+the `castform` package adds dataset generation helpers, environment validation, and launching training jobs.
+
+python 3.12 is required.
+
+## install
 
 ```bash
-uv add castform        # or: pip install castform
+uv tool install castform
+# or
+pip install castform
+```
+this will install both castform and benchmax
+
+check that the cli is available:
+
+```bash
+castform --version
 ```
 
-Installing `castform` pulls in `benchmax`. Install `benchmax` alone when you
-only need the environment runtime without any platform integration.
-
-## Get started
+## get started
 
 ```bash
 castform setup
 ```
 
-This signs you in and scaffolds a project whose `main.py` owns the whole
-workflow: bare `python main.py` prepares data and validates the environment
-locally (no launch), and `python main.py launch` bundles, uploads and starts a
-training run after an explicit confirmation.
+this signs you in and creates a starter environment.
 
-Working examples live under [`examples/`](examples/), from a single-turn math
-env to multimodal tool use and third-party Harbor harnesses. For the API,
-see the [BenchMax guide](packages/benchmax/README.md) and the
-[Castform guide](packages/castform/README.md).
+working examples live under [`examples/`](examples/)
 
-## Development
-
-Run each distribution's tests independently so their same-named test packages
-do not collide during collection:
-
-```bash
-uv run --project packages/benchmax pytest -c packages/benchmax/pytest.ini packages/benchmax/tests
-uv run --project packages/castform pytest -c packages/castform/pytest.ini packages/castform/tests
-uv run pytest tests/architecture
-```
-
-The final command runs the workspace-level package-boundary tests.
+see the [benchmax guide](packages/benchmax/README.md) and the [castform guide](packages/castform/README.md).

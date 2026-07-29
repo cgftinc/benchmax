@@ -74,10 +74,7 @@ preparation dependencies unless the environment imports them.
 
 ## Credentials
 
-Model and judge credentials must resolve per request (`InjectedAuth` for named
-runtime providers); never freeze a temporary token in the bundle. Harbor sandbox
-credentials are currently explicit constructor inputs. Review them before
-bundling and limit their scope; a reference-injection design is deferred.
+Use `InjectedAuth` for model and judge calls through the Castform LLM endpoint so the hosted runtime supplies the current Castform credential. User-managed external endpoints use explicit `StaticBearerAuth`. Harbor sandbox credentials are currently explicit constructor inputs. Review static credentials before bundling and limit their scope.
 
 ## Handoff
 

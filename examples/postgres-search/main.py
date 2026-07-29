@@ -323,8 +323,9 @@ class SearchEnv(BaseEnv):
         search: A :class:`SearchClient` instance (pickle-safe).
         judge_base_url: Base URL for the LLM judge API (required).
         judge_model: Model name for the LLM judge (required).
-        judge_auth: Explicit, serializable judge auth declaration. Defaults to
-            ``InjectedAuth("judge")`` for runtime-provided call-time credentials.
+        judge_auth: Explicit judge auth declaration. Defaults to
+            ``InjectedAuth("judge")`` for the Castform-managed LLM endpoint;
+            user-managed external endpoints should pass ``StaticBearerAuth``.
         judge_timeout: Timeout for judge API calls.
         w_correctness: Weight for the correctness component (the gate).
         w_retrieval_hit: Weight for the UNGATED retrieval_hit component (recall

@@ -33,9 +33,10 @@ class JudgeError(RolloutFailure):
 class Judge:
     """Configuration for an OpenAI-compatible reward judge.
 
-    ``auth`` is resolved immediately before every request. An
-    :class:`~benchmax.auth.InjectedAuth` therefore remains serializable in a
-    bundle while the runtime supplies the real credential at execution time.
+    ``auth`` is resolved immediately before every request. Castform environments
+    use :class:`~benchmax.auth.InjectedAuth` for its managed LLM endpoint;
+    user-managed external endpoints normally use
+    :class:`~benchmax.auth.StaticBearerAuth`.
     """
 
     model: str

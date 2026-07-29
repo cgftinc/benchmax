@@ -1,179 +1,94 @@
-# BenchMax
+# benchmax
 
-BenchMax is a platform-independent runtime for defining and running reinforcement-
-learning environments. It owns the execution contract, ordered datasets, stable
-example identities, reward helpers and bundling. It has no dependency on any
-training platform.
+benchmax envs is where you define datasets, how to execute the rollout, and scoring each rollout.
 
-Python 3.12 is required.
+for installation and project setup, start with the [main readme](../../README.md#get-started). working environments live in [`examples/`](../../examples/).
 
-## Define an environment
+## choose an environment
 
-Most environments extend `BaseEnv` and declare their complete reward shape:
+all benchmax environments implement the same dataset and rollout contracts. choose the adapter based on who owns the agent loop:
 
-```python
-from pathlib import Path
+| environment | use it when | what it provides |
+| --- | --- | --- |
+| [`BaseEnv`](src/benchmax/envs/base/README.md) | default environment to extend - runs a simple loop with the option to make tool calls | chat completions, tool dispatch, turn limits, and reward hooks |
+| [`HarborEnv`](src/benchmax/envs/harbor/README.md) | you already have a Harbor task or harness | Harbor agents, sandboxes, verifiers, and RewardKit integration |
+| [`Environment`](src/benchmax/envs/README.md) | extend `Environment` if you need custom behavior not covered by `BaseEnv` and `HarborEnv` | the fundamental dataset, group execution, and outcome contracts |
 
-from benchmax.envs import BaseEnv, BaseRollout, DatasetSplit, JsonlDataset
-from benchmax.rewards import extract_completion_text
+most custom environments should extend `BaseEnv`. most Harbor users configure `HarborEnv` directly rather than subclassing it.
 
+## architecture
 
-class AnswerEnv(BaseEnv):
-    reward_keys = ("correct",)
-    max_turns = 1
+an environment defines its dataset and how a group of rollouts runs against each example.
 
-    async def create_dataset(
-        self, split: DatasetSplit, base_dir: Path
-    ) -> JsonlDataset:
-        return JsonlDataset(base_dir / f"{split}.jsonl", row_to_example=...)
-
-    async def compute_reward(self, rollout: BaseRollout) -> dict[str, float]:
-        answer = extract_completion_text(rollout.messages)
-        return {"correct": float(answer == rollout.example_args["answer"])}
+```text
+Environment
+├── create_dataset(split, base_dir, max_examples)
+│   └── Dataset
+│       └── Example(id, payload)
+└── run_group(requests)
+    ├── run_rollout(request) × group_size → RolloutAttempt × group_size
+    ├── adapter-specific scoring
+    ├── optional group-relative scoring
+    └── RolloutOutcome(rewards, termination_reason)
 ```
 
-`Dataset` is a fixed-order base class. Concrete datasets provide stable
-`Example` objects and may keep lightweight references in each payload instead of
-materializing large data in memory.
+every environment follows this shape. the environment decides what an example contains, how each attempt runs, which tools are available, and how the result is scored.
 
-Each `RolloutRequest` carries a `split` (`"train"` by default) so custom
-`run_rollout`/`run_group` implementations can tell training traffic from
-evaluation traffic without out-of-band state.
+## datasets
 
-`reward_keys` is authoritative. A scored rollout must return exactly those
-keys. A `context_exceeded` rollout remains scoreable because its partial
-transcript may contain useful work; other operational failures keep the same
-shape with every value set to zero, record the reason in `termination_reason`,
-and are logged without cancelling successful siblings. Reward hooks run user
-code, so their defects settle the same way under `reward_error` (per rollout)
-or `group_reward_error` (whole group) instead of crashing a run;
-execution-contract violations such as malformed requests or a broken reward
-schema still fail loudly after the sibling group settles.
+`create_dataset` receives a `train` or `eval` split and returns a fixed, ordered `Dataset` of `Example` objects.
 
-See the [BaseEnv guide](src/benchmax/envs/base/README.md) and
-[Harbor adapter guide](src/benchmax/envs/harbor/README.md).
+each example contains:
 
-## Define judge-backed rewards
+- a stable id used to identify the datapoint across runs;
+- an environment-owned payload consumed by its rollout implementation.
 
-Judge configuration is one serializable value shared by rubric, adaptive-rubric,
-and semantic-diversity rewards. Authentication is resolved immediately before
-each model call; bundles carry an `InjectedAuth` reference, never its token.
+the optional `max_examples` argument limits how many examples are returned. when the data source supports it, the environment should stop loading once it reaches that limit.
 
-```python
-from benchmax.auth import InjectedAuth
-from benchmax.rewards import Judge, Rubric, score_rubrics
+`JsonlDataset`, Harbor datasets, and custom datasets all produce the same fundamental `Dataset` type. the trainer and validation flow do not depend on the source file format.
 
-judge = Judge(
-    model="judge-model",
-    base_url="https://models.example/v1",
-    auth=InjectedAuth("judge"),
-)
-rubrics = [
-    Rubric("Correctness", "The answer is factually correct."),
-    Rubric(
-        "Fabrication",
-        "The answer invents unsupported facts.",
-        polarity="negative",
-    ),
-]
+## tools
 
-rewards = await score_rubrics(
-    rollout_id,
-    completion,
-    ground_truth=reference,
-    rubrics=rubrics,
-    question=question,
-    judge=judge,
-)
+`BaseEnv` exposes OpenAI-compatible function tools through `list_tools` and executes them through `run_tool`. an environment can provide no tools, one tool, or a collection of stateful tools.
+
+with `HarborEnv`, the Harbor agent and harness define the available tools and how they interact with the sandbox. benchmax does not convert Harbor tools into `BaseEnv` tools.
+
+## execution and scoring
+
+`run_group` receives multiple rollout requests for the same example, runs them concurrently, waits for all siblings, and returns one `RolloutOutcome` for each request.
+
+every environment declares `reward_keys`, which defines the complete reward shape for every outcome. operational failures return the same keys with zero values and do not cancel successful siblings. partial attempts that reach a context, output, turn, or tool limit can still be scored.
+
+- `BaseEnv` runs the model and tool loop, then passes the transcript and example payload to `compute_reward`. `compute_group_rewards` can score the completed sibling group.
+- `HarborEnv` runs the configured Harbor agent and sandbox, then maps its verifier or RewardKit output into the declared reward shape.
+
+### helpers
+
+`benchmax.rewards` provides deterministic text helpers, model judges, rubrics, ranking, adaptive rubrics, and diversity scoring for `BaseEnv` and direct `Environment` implementations. see the [rewards guide](src/benchmax/rewards/README.md).
+
+Harbor environments normally use their harness verifier and RewardKit instead of benchmax reward helpers.
+
+## bundling
+
+a bundle contains the environment class, its constructor arguments, the project-local source it needs, and its declared remote dependencies.
+
+```text
+environment class + constructor arguments
+                 + local source
+                 + dependency metadata
+                           │
+                           ▼
+                    portable bundle
 ```
 
-`InjectedAuth("judge")` is a named reference; the runtime binds the real
-provider for that name with `bind_model_auth`. Prefer it whenever the runtime
-supplies the credential. For your own external judge endpoint, pass
-`auth=StaticBearerAuth(api_key)` directly; note the key is then pickled into
-the bundle.
+benchmax creates the portable artifact so the same environment can be loaded outside the author's checkout. `castform` handles uploading the bundle, validating it remotely, and using it for training.
 
-`evaluate_single_rubric` and `evaluate_rubric_ranking` return typed results.
-`score_rubrics`, `score_group_rubrics`, and `rank_group_rubrics` turn those
-results into reward maps. Empty completions keep the declared rubric reward
-shape and receive zeros without calling the judge. Invalid or out-of-set judge
-output raises `JudgeError` so the environment runtime can record an operational
-failure instead of trusting a fabricated score.
+## further reading
 
-Adaptive rubric state is explicit and caller-owned through `RubricCache`.
-Diversity backends are explicit as well: use `NgramDiversityConfig` for local
-single-linkage clustering or `LLMDiversityConfig(judge=judge)` for semantic
-clustering.
+- [base environment guide](src/benchmax/envs/base/README.md)
+- [harbor environment guide](src/benchmax/envs/harbor/README.md)
+- [reward helpers](src/benchmax/rewards/README.md)
+- [examples](../../examples/)
+- [development instructions](../../README.md#development)
 
-The rewards package follows a deep-module design:
-
-- Callers provide domain intent; modules own prompt structure, authentication
-  retries, parsing, score normalization, clustering, and cache keys.
-- Related values use validated types such as `Judge`, `Rubric`, and
-  `RankingAnchor` instead of parallel parameters or loose dictionaries.
-- Module names describe capabilities (`prompts`, `scoring`, `deterministic`),
-  not visibility or generic “helper” status.
-- A new public abstraction should hide substantially more complexity than it
-  adds to the interface.
-
-## Bundle an environment
-
-Declare remote runtime dependencies at the script boundary:
-
-```python
-from benchmax.bundle import bundle_digest, dump_bundle
-
-bundle = dump_bundle(
-    AnswerEnv,
-    constructor_args={},
-    pip_dependencies=["httpx>=0.28,<0.29"],
-)
-print(bundle_digest(bundle))
-```
-
-BenchMax automatically captures project-local Python modules reachable from the
-environment. Source from a different project is never captured implicitly: pass
-its module object through `local_modules=` to include it, or list its installed
-distribution in `pip_dependencies` to keep it as a remote reference. External
-packages are never inferred from project metadata. Dependency declarations must
-be valid PEP 508 strings; BenchMax canonicalizes and stores them as an immutable,
-order-independent collection in bundle metadata. Declare each distribution once,
-combining its constraints and extras in that declaration; repeated targets are
-rejected instead of relying on resolver-specific conflict behavior.
-
-Keep project-local imports at module scope so source capture can see them.
-BenchMax refuses method-local imports of local source, including literal
-`importlib.import_module(...)` calls, because reconstructed by-value modules do
-not satisfy a later Python import. Runtime-computed dynamic import names cannot
-be inferred; install those modules remotely and declare their distributions in
-`pip_dependencies`.
-
-BenchMax only prepares the bundle. Uploading it and launching a hosted run belong
-to the platform integration chosen by the caller. `bundle_digest` is the
-artifact identity for storage and caching; it covers both the exact pickle and
-canonical metadata. Execution runtimes can call `validate_bundle_compatibility`
-on metadata before installing dependencies or unpickling. The Python version
-must match exactly and the BenchMax version must share the runtime's
-major.minor series; patch releases load each other's bundles.
-
-## Breaking-version policy
-
-This reshuffle intentionally removes the old `benchmax.rubrics`,
-`benchmax.envs.reward_helpers`, `benchmax.prompts`, and `FrozenDataset` import
-surfaces. There are no compatibility aliases. Rebuild environments and bundles
-against the new `benchmax.rewards` and `Dataset` APIs; a runtime that must execute
-an older stored bundle must remain pinned to the older BenchMax version.
-
-Rubric judges now enforce their declared score set. A binary rubric accepts only
-`0` or `1`; include intermediate values explicitly in `score_map`, or use a
-ranking reward when continuous relative scores are intended. An out-of-set judge
-score is an operational `judge_error`, not a trusted reward.
-
-## Development
-
-```bash
-uv run --project packages/benchmax pytest \
-  -c packages/benchmax/pytest.ini packages/benchmax/tests
-```
-
-Apache 2.0 © 2026 CGFT Inc.
+apache 2.0 © 2026 CGFT Inc.

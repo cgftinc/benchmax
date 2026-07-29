@@ -29,14 +29,12 @@ from benchmax.envs import InjectedAuth
 from main import TelestichEnv
 
 env = TelestichEnv(
-    judge_base_url=...,
+    judge_base_url="https://llm.castform.com/v1",
     judge_auth=InjectedAuth("judge"),
 )
 ```
 
-`InjectedAuth("judge")` is resolved on every judge call by the execution runtime.
-For a standalone third-party endpoint, pass another `ModelAuth` implementation
-explicitly.
+Use `InjectedAuth("judge")` with the Castform LLM endpoint so Castform supplies the current session credential. For a third-party endpoint, pass its explicit credential with `StaticBearerAuth`.
 
 Each dataset example is
 `{"prompt": str, "ground_truth": <hidden word>, "acceptable_refs": [poem, ...],
