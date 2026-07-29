@@ -17,6 +17,7 @@ from castform.platform.credentials import (
     env_token,
     platform_bearer,
     read_castform_session,
+    resolve_judge_key_with_source,
     resolve_token_provider,
     write_castform_session,
 )
@@ -104,6 +105,59 @@ def test_rotation_is_picked_up_per_call(tmp_path, monkeypatch):
     assert platform_bearer() == "token-2"
 
 
+def test_judge_source_reports_explicit_label():
+    bearer, source = resolve_judge_key_with_source(
+        "constructor-secret",
+        "https://llm.test.example/v1",
+        explicit_source="constructor_arg",
+    )
+
+    assert bearer == "constructor-secret"
+    assert source == "constructor_arg"
+
+
+def test_judge_source_reports_act_as_winner(tmp_path, monkeypatch):
+    token_path = tmp_path / "act-as-token"
+    token_path.write_text("act-as-secret")
+    monkeypatch.setenv(_TOKEN_PATH_ENV, str(token_path))
+    monkeypatch.setenv(_API_KEY_ENV, "platform-secret")
+
+    bearer, source = resolve_judge_key_with_source(
+        "",
+        "https://llm.test.example/v1",
+    )
+
+    assert bearer == "act-as-secret"
+    assert source == _TOKEN_PATH_ENV
+
+
+def test_judge_source_reports_platform_fallback_for_missing_token_file(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv(_TOKEN_PATH_ENV, str(tmp_path / "missing-token"))
+    monkeypatch.setenv(_API_KEY_ENV, "platform-secret")
+
+    bearer, source = resolve_judge_key_with_source(
+        "",
+        "https://llm.test.example/v1",
+    )
+
+    assert bearer == "platform-secret"
+    assert source == _API_KEY_ENV
+
+
+def test_judge_source_reports_openai_sdk_fallback(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+
+    bearer, source = resolve_judge_key_with_source(
+        "",
+        "https://api.openai.com/v1",
+    )
+
+    assert bearer is None
+    assert source == "OPENAI_API_KEY"
+
+
 # ---- ~/.castform session cache (lowest precedence) ----
 
 
@@ -121,6 +175,20 @@ def test_platform_bearer_mints_jwt_from_cached_session(tmp_path, monkeypatch):
     monkeypatch.setattr(credentials, "_mint_session_jwt", lambda _t, _p=None: jwt)
     _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
     assert platform_bearer() == jwt
+
+
+def test_judge_source_reports_castform_session(tmp_path, monkeypatch):
+    jwt = _fake_jwt(time.time() + 300)
+    monkeypatch.setattr(credentials, "_mint_session_jwt", lambda _t, _p=None: jwt)
+    _write_session(tmp_path, monkeypatch, {"access_token": "session-secret"})
+
+    bearer, source = resolve_judge_key_with_source(
+        "",
+        "https://llm.test.example/v1",
+    )
+
+    assert bearer == jwt
+    assert source == "castform_session"
 
 
 def test_env_key_takes_precedence_over_session(tmp_path, monkeypatch):
@@ -292,7 +360,9 @@ def test_mint_handles_non_json_200(monkeypatch):
     assert credentials._mint_session_jwt("sess_abc") is None
 
 
-def test_session_jwt_falls_back_to_cached_on_transient_mint_failure(tmp_path, monkeypatch):
+def test_session_jwt_falls_back_to_cached_on_transient_mint_failure(
+    tmp_path, monkeypatch
+):
     """A transient mint failure reuses a still-valid cached JWT instead of failing."""
     good = _fake_jwt(time.time() + 300)
     minted = {"v": good}
@@ -320,19 +390,29 @@ def test_session_jwt_floors_ttl_when_exp_unparseable(tmp_path, monkeypatch):
     _write_session(tmp_path, monkeypatch, {"access_token": "sess_abc"})
     assert platform_bearer() == "opaque-token-without-exp"
     assert platform_bearer() == "opaque-token-without-exp"
-    assert calls["n"] == 1  # floored TTL keeps it cached instead of re-minting each call
+    assert (
+        calls["n"] == 1
+    )  # floored TTL keeps it cached instead of re-minting each call
 
 
 def test_session_jwt_remints_on_session_change(tmp_path, monkeypatch):
     """A re-login (new access_token in the same process) doesn't serve the prior
     identity's cached JWT."""
-    tokens = {"sess_a": _fake_jwt(time.time() + 300), "sess_b": _fake_jwt(time.time() + 300)}
+    tokens = {
+        "sess_a": _fake_jwt(time.time() + 300),
+        "sess_b": _fake_jwt(time.time() + 300),
+    }
     monkeypatch.setattr(credentials, "_mint_session_jwt", lambda t, _p=None: tokens[t])
     f = _write_session(tmp_path, monkeypatch, {"access_token": "sess_a"})
     assert platform_bearer() == tokens["sess_a"]
 
     f.write_text(
-        json.dumps({"version": 2, "profiles": {"prod": {"session": {"access_token": "sess_b"}}}})
+        json.dumps(
+            {
+                "version": 2,
+                "profiles": {"prod": {"session": {"access_token": "sess_b"}}},
+            }
+        )
     )
     f.chmod(0o600)
     assert platform_bearer() == tokens["sess_b"]  # not the cached sess_a JWT

@@ -50,6 +50,32 @@ _DEFAULT_CRED_PATH = Path.home() / ".castform" / "credentials.json"
 TokenProvider = Callable[[], str]
 
 
+def _platform_bearer_with_source(profile: str | None = None) -> tuple[str, str]:
+    """Resolve the platform bearer and its non-secret winning source."""
+    token_path = os.environ.get(_TOKEN_PATH_ENV)
+    if token_path:
+        try:
+            token = Path(token_path).read_text(encoding="utf-8").strip()
+        except OSError:
+            token = ""
+        if token:
+            return token, _TOKEN_PATH_ENV
+
+    for env_var in (_AUTH_TOKEN_ENV, _API_KEY_ENV):
+        if env_token := os.environ.get(env_var):
+            return env_token, env_var
+
+    session_jwt = _session_jwt(profile)
+    if session_jwt:
+        return session_jwt, "castform_session"
+
+    raise RuntimeError(
+        f"No Castform platform credential available: run `castform login`, set "
+        f"{_AUTH_TOKEN_ENV}, or (in training) ensure {_TOKEN_PATH_ENV} points at the "
+        f"token_refresher output ({_TOKEN_PATH_ENV}={token_path!r})."
+    )
+
+
 def resolve_judge_key(api_key: str, base_url: str | None = None) -> str | None:
     """Resolve the bearer for an LLM-judge / LLM-clustering call.
 
@@ -85,34 +111,43 @@ def resolve_judge_key(api_key: str, base_url: str | None = None) -> str | None:
     return token
 
 
+def resolve_judge_key_with_source(
+    api_key: str,
+    base_url: str | None = None,
+    *,
+    explicit_source: str = "constructor_arg",
+) -> tuple[str | None, str]:
+    """Resolve a judge bearer with non-secret provenance for telemetry.
+
+    Authentication precedence and failure behavior match
+    :func:`resolve_judge_key`. ``explicit_source`` names the caller-provided
+    value without exposing it. ``OPENAI_API_KEY`` is reported when the OpenAI
+    SDK will perform the final environment lookup.
+    """
+    if api_key:
+        return api_key, explicit_source
+    try:
+        token, source = _platform_bearer_with_source()
+    except RuntimeError:
+        if os.environ.get("OPENAI_API_KEY"):
+            return None, "OPENAI_API_KEY"
+        raise
+    if not base_url:
+        raise RuntimeError(
+            "Refusing to send the Castform platform credential to the OpenAI "
+            "SDK default endpoint: judge base_url is unset. Set base_url to the "
+            "llm-proxy, or pass an explicit api_key for direct OpenAI use."
+        )
+    return token, source
+
+
 def platform_bearer(profile: str | None = None) -> str:
     """Resolve the Castform platform bearer token. Call once per request.
 
     See module docstring for precedence. Raises ``RuntimeError`` if no
     credential is available.
     """
-    token_path = os.environ.get(_TOKEN_PATH_ENV)
-    if token_path:
-        try:
-            token = Path(token_path).read_text(encoding="utf-8").strip()
-        except OSError:
-            token = ""
-        if token:
-            return token
-
-    for env_var in (_AUTH_TOKEN_ENV, _API_KEY_ENV):
-        if env_token := os.environ.get(env_var):
-            return env_token
-
-    session_jwt = _session_jwt(profile)
-    if session_jwt:
-        return session_jwt
-
-    raise RuntimeError(
-        f"No Castform platform credential available: run `castform login`, set "
-        f"{_AUTH_TOKEN_ENV}, or (in training) ensure {_TOKEN_PATH_ENV} points at the "
-        f"token_refresher output ({_TOKEN_PATH_ENV}={token_path!r})."
-    )
+    return _platform_bearer_with_source(profile)[0]
 
 
 def _credentials_path() -> Path:
@@ -261,7 +296,9 @@ def session_auth_token(profile: str | None = None) -> str:
     if expires_at is not None and (
         not isinstance(expires_at, (int, float)) or expires_at <= time.time()
     ):
-        raise RuntimeError("The selected Castform session has expired; run `castform login` again.")
+        raise RuntimeError(
+            "The selected Castform session has expired; run `castform login` again."
+        )
     return access_token
 
 
@@ -370,7 +407,9 @@ def _session_jwt(profile: str | None = None) -> str | None:
     if jwt:
         exp = _jwt_exp(jwt)
         if exp <= time.time():
-            exp = time.time() + _MINT_FALLBACK_TTL  # no parseable exp → don't re-mint per call
+            exp = (
+                time.time() + _MINT_FALLBACK_TTL
+            )  # no parseable exp → don't re-mint per call
         with _SESSION_JWT_LOCK:
             _SESSION_JWT_CACHE.update(
                 {"token": jwt, "src": access_token, "exp": exp, "profile": selected}

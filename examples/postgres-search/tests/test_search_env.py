@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import pickle
 from unittest.mock import AsyncMock, patch
 
@@ -672,6 +673,42 @@ class TestListTools:
         tools = asyncio.run(env.list_tools())
         assert len(tools) == 1
         assert tools[0]["function"]["name"] == "search"
+
+    def test_tool_boundary_trace_is_first_only_and_payload_free(self, caplog):
+        env = _make_env()
+
+        async def exercise_boundary():
+            await env.list_tools()
+            await env.list_tools()
+            await env.run_tool("rollout-secret", "search", query="query-secret")
+            await env.run_tool("rollout-secret", "search", query="another-secret")
+            await env.run_tool("rollout-secret", "missing_tool", ignored="arg-secret")
+            await env.run_tool("rollout-secret", "other_missing", ignored="arg-secret")
+
+        with caplog.at_level(logging.INFO, logger="main"):
+            asyncio.run(exercise_boundary())
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if "tool_boundary" in record.getMessage()
+        ]
+        assert messages == [
+            "[SearchEnv] tool_boundary exposed_tools=['search']",
+            "[SearchEnv] tool_boundary first_tool_call=search",
+            (
+                "[SearchEnv] tool_boundary first_reject tool=missing_tool "
+                "reason=unknown_tool"
+            ),
+        ]
+        joined = "\n".join(messages)
+        for secret in (
+            "rollout-secret",
+            "query-secret",
+            "another-secret",
+            "arg-secret",
+        ):
+            assert secret not in joined
 
 
 class TestPickle:

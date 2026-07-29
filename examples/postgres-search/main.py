@@ -492,6 +492,9 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         self._tools: dict[str, tuple[Tool, Callable]] = {
             "search": (search_tool, self._search_tool),
         }
+        self._traced_exposed_tools = False
+        self._traced_first_tool_call = False
+        self._traced_first_unknown_tool = False
 
         # `system_prompt` is a static class attribute (default ""). Subclasses
         # set it at class-definition — e.g.
@@ -511,10 +514,29 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         )
 
     async def list_tools(self) -> list[Tool]:
+        if not self._traced_exposed_tools:
+            logger.info(
+                "[SearchEnv] tool_boundary exposed_tools=%s",
+                sorted(self._tools),
+            )
+            self._traced_exposed_tools = True
         return [self._tools[k][0] for k in sorted(self._tools)]
 
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> Any:
+        if not self._traced_first_tool_call:
+            logger.info(
+                "[SearchEnv] tool_boundary first_tool_call=%s",
+                tool_name,
+            )
+            self._traced_first_tool_call = True
         if tool_name not in self._tools:
+            if not self._traced_first_unknown_tool:
+                logger.info(
+                    "[SearchEnv] tool_boundary first_reject tool=%s "
+                    "reason=unknown_tool",
+                    tool_name,
+                )
+                self._traced_first_unknown_tool = True
             return f"Error: Unknown tool '{tool_name}'"
         _, tool_function = self._tools[tool_name]
         return await tool_function(**tool_args)
