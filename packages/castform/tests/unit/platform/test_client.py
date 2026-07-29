@@ -80,6 +80,29 @@ def test_launch_training_run_omits_dataset_path_when_not_uploaded():
         "env_cls_path": "x/env-cls.pkl",
         "env_metadata_path": "x/env-metadata.json",
     }
+    assert "trainer_ref" not in captured["body"]
+    assert "trainer_ref" not in captured["body"]["args"]
+
+
+def test_launch_training_run_sends_trainer_ref_at_top_level():
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"runId": "run-pinned"})
+
+    trainer = _make_trainer_with_transport(handler)
+    run_id = trainer.launch_training_run(
+        env_cls_path="x/env-cls.pkl",
+        env_metadata_path="x/env-metadata.json",
+        trainer_ref="15b22afde1983a3c2a287aed088f3ed1fcdfde0a",
+    )
+
+    assert run_id == "run-pinned"
+    assert captured["body"]["trainer_ref"] == "15b22afde1983a3c2a287aed088f3ed1fcdfde0a"
+    assert "trainer_ref" not in captured["body"]["args"]
 
 
 def test_launch_training_run_surfaces_server_warnings():
@@ -144,13 +167,17 @@ def test_launch_training_run_filters_reserved_paths_from_launcher_args():
         launcher_args={
             "env_cls_path": "sneaky",
             "dataset_path": "sneaky",
+            "trainer_ref": "sneaky",
             "max_rollout_len": 4000,
         },
+        trainer_ref="pinned",
     )
 
     # dataset_path was not supplied as a kwarg, so it must not appear at all.
     assert "dataset_path" not in captured["body"]["args"]
     assert captured["body"]["args"]["env_cls_path"] == "a"
+    assert "trainer_ref" not in captured["body"]["args"]
+    assert captured["body"]["trainer_ref"] == "pinned"
     assert captured["body"]["args"]["max_rollout_len"] == 4000
 
 
@@ -162,20 +189,6 @@ def test_launch_training_run_rejects_training_run_type_kwarg():
     with pytest.raises(TypeError, match="training_run_type"):
         trainer.launch_training_run(
             training_run_type="simple-cpu",
-            env_cls_path="a",
-            env_metadata_path="b",
-            dataset_path="c",
-        )
-
-
-def test_launch_training_run_rejects_trainer_ref_kwarg():
-    trainer = _make_trainer_with_transport(
-        lambda request: httpx.Response(200, json={"runId": "unused"})
-    )
-
-    with pytest.raises(TypeError, match="trainer_ref"):
-        trainer.launch_training_run(
-            trainer_ref="main",
             env_cls_path="a",
             env_metadata_path="b",
             dataset_path="c",
