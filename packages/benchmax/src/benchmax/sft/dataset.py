@@ -5,7 +5,7 @@ raw lines itself, retains per-row ``(source_path, physical_line)``
 provenance, and normalizes every row on load so callers never see a legacy
 shape. :func:`canonical_jsonl` is the only serializer for the upload path,
 and it enforces the boundary rather than documenting it: a dataset carrying
-load errors or schema-invalid rows is refused, so no path exists where
+any load issue or schema-invalid rows is refused, so no path exists where
 un-normalized or partially-loaded rows reach storage — including for a
 caller that builds an :class:`SftDataset` by hand and skips
 :func:`benchmax.sft.validate.validate_sft_dataset` entirely.
@@ -153,12 +153,15 @@ def load_sft_dataset(path: str | Path) -> SftDataset:
 def _blocking_issues(dataset: SftDataset) -> list[SftIssue]:
     """Every issue that makes ``dataset`` unfit to serialize, in dataset order.
 
-    Error-severity load issues come first (a partially-loaded file must never
-    upload as if it were whole), then each row's structural schema errors.
-    Notice-severity issues — size, token-length and masking advisories — are
-    informational and never block.
+    Every entry of ``load_issues`` comes first, whatever its severity: a
+    dataset that did not load cleanly must never upload as if it were whole,
+    and severity says how loudly to report a load problem, not whether the
+    result is trustworthy. Each row's structural schema errors follow. The
+    notice-severity advisories :func:`benchmax.sft.validate.validate_sft_dataset`
+    raises — size, token length, masking, empty eval — live on the validation
+    report rather than on ``load_issues``, so they remain non-blocking.
     """
-    blocking = [issue for issue in dataset.load_issues if issue.severity == "error"]
+    blocking = list(dataset.load_issues)
     for row in dataset.rows:
         blocking.extend(
             SftIssue(row.source_path, row.physical_line, "error", message)
@@ -170,8 +173,8 @@ def _blocking_issues(dataset: SftDataset) -> list[SftIssue]:
 def canonical_jsonl(dataset: SftDataset) -> bytes:
     """Render ``dataset``'s rows as canonical JSONL bytes — the only shape the upload path accepts.
 
-    Raises :class:`SftSerializationError` when ``dataset`` carries an
-    error-severity load issue or any row fails
+    Raises :class:`SftSerializationError` when ``dataset`` carries any load
+    issue at all, whatever its severity, or when any row fails
     :func:`benchmax.sft.schema.validate_row`, so partially-loaded or
     schema-invalid data cannot reach storage even when a caller skips
     :func:`benchmax.sft.validate.validate_sft_dataset`. This makes the

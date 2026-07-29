@@ -391,14 +391,33 @@ class TestCanonicalJsonlRefusesInvalidData:
             canonical_jsonl(dataset)
         assert [i.physical_line for i in excinfo.value.issues] == [7]
 
-    def test_notice_load_issue_does_not_block(self):
-        # notices are advisory (size, token length, masking) and must not turn
-        # into a refusal.
+    def test_notice_load_issue_also_refuses(self):
+        # severity says how loudly to report a load problem, not whether the
+        # loaded result can be trusted — any load issue blocks.
         dataset = _handmade_dataset(
             [_TRAINED_ROW],
             load_issues=[SftIssue("handmade.jsonl", 1, "notice", "just so you know")],
         )
-        assert json.loads(canonical_jsonl(dataset).decode("utf-8")) == _TRAINED_ROW
+        with pytest.raises(SftSerializationError) as excinfo:
+            canonical_jsonl(dataset)
+        assert [
+            (i.source_path, i.physical_line, i.severity, i.message) for i in excinfo.value.issues
+        ] == [("handmade.jsonl", 1, "notice", "just so you know")]
+
+    def test_mixed_severity_load_issues_all_surface(self):
+        dataset = _handmade_dataset(
+            [_TRAINED_ROW],
+            load_issues=[
+                SftIssue("handmade.jsonl", 3, "error", "invalid JSON: boom"),
+                SftIssue("handmade.jsonl", 5, "notice", "just so you know"),
+            ],
+        )
+        with pytest.raises(SftSerializationError) as excinfo:
+            canonical_jsonl(dataset)
+        assert [(i.physical_line, i.severity) for i in excinfo.value.issues] == [
+            (3, "error"),
+            (5, "notice"),
+        ]
 
     def test_many_issues_are_summarized_not_dumped(self):
         dataset = _handmade_dataset([{"messages": []} for _ in range(12)])
