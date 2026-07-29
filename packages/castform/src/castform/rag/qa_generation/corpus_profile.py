@@ -228,13 +228,60 @@ class CorpusProfile:
         )
 
 
-_ENTITY_STOPWORDS = frozenset({
-    "the", "a", "an", "in", "on", "at", "to", "for", "of", "is", "it", "if",
-    "you", "your", "this", "that", "with", "from", "by", "are", "was", "were",
-    "be", "been", "being", "have", "has", "had", "do", "does", "did", "will",
-    "can", "could", "would", "should", "may", "not", "no", "or", "and", "but",
-    "so", "as", "its", "our", "we", "re", "s", "t",
-})
+_ENTITY_STOPWORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "is",
+        "it",
+        "if",
+        "you",
+        "your",
+        "this",
+        "that",
+        "with",
+        "from",
+        "by",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "can",
+        "could",
+        "would",
+        "should",
+        "may",
+        "not",
+        "no",
+        "or",
+        "and",
+        "but",
+        "so",
+        "as",
+        "its",
+        "our",
+        "we",
+        "re",
+        "s",
+        "t",
+    }
+)
 
 
 def _score_entity_quality(pattern: EntityPattern) -> float:
@@ -392,11 +439,9 @@ def build_entity_chunk_graph(
 
     # Co-occurrence from the full graph
     cooccurrence: dict[tuple[str, str], int] = {}
-    entity_names = sorted(
-        name for name, hashes in entity_chunk_idx.items() if hashes
-    )
+    entity_names = sorted(name for name, hashes in entity_chunk_idx.items() if hashes)
     for i, e1 in enumerate(entity_names):
-        for e2 in entity_names[i + 1:]:
+        for e2 in entity_names[i + 1 :]:
             overlap = len(entity_chunk_idx[e1] & entity_chunk_idx[e2])
             if overlap > 0:
                 cooccurrence[(e1, e2)] = overlap
@@ -635,10 +680,19 @@ def build_entity_patterns_from_extraction(
 
 
 # Header-like metadata keys that likely contain topic names.
-_HEADER_METADATA_KEYS = frozenset({
-    "h1", "h2", "h3", "title", "section_header", "article_title",
-    "heading", "topic", "subject",
-})
+_HEADER_METADATA_KEYS = frozenset(
+    {
+        "h1",
+        "h2",
+        "h3",
+        "title",
+        "section_header",
+        "article_title",
+        "heading",
+        "topic",
+        "subject",
+    }
+)
 
 
 def extract_metadata_entities(
@@ -841,9 +895,7 @@ def _filter_notable(
 
     result: list[_KeyphraseCandidate] = []
     for candidate in count_filtered:
-        embeddings = [
-            chunk_embeddings[h] for h in candidate.chunk_hashes if h in chunk_embeddings
-        ]
+        embeddings = [chunk_embeddings[h] for h in candidate.chunk_hashes if h in chunk_embeddings]
         if len(embeddings) < min_clusters:
             continue
         emb_matrix = np.stack(embeddings)
@@ -1051,8 +1103,7 @@ def extract_entities(
     n_sample = len(sample_chunks)
 
     contents = [
-        chunk.content if hasattr(chunk, "content") else str(chunk)
-        for chunk in sample_chunks
+        chunk.content if hasattr(chunk, "content") else str(chunk) for chunk in sample_chunks
     ]
     chunk_hashes = [getattr(chunk, "hash", str(id(chunk))) for chunk in sample_chunks]
 
@@ -1075,9 +1126,7 @@ def extract_entities(
     patterns = _candidates_to_entity_patterns(notable)
 
     # Populate semantic_score from KeyBERT avg_score
-    candidate_by_name: dict[str, _KeyphraseCandidate] = {
-        c.name.lower(): c for c in notable
-    }
+    candidate_by_name: dict[str, _KeyphraseCandidate] = {c.name.lower(): c for c in notable}
     for pattern in patterns:
         candidate = candidate_by_name.get(pattern.name.lower())
         if candidate is not None:
@@ -1095,9 +1144,7 @@ def extract_entities(
     patterns = _merge_synonym_entities(patterns, model)
 
     # Cheap full-corpus scan with only the notable entities
-    entity_chunk_index, chunk_entity_index, _ = build_entity_chunk_graph(
-        patterns, chunks
-    )
+    entity_chunk_index, chunk_entity_index, _ = build_entity_chunk_graph(patterns, chunks)
 
     logger.info(
         "KeyBERT extraction: %d notable keyphrases from %d chunks",
@@ -1291,8 +1338,14 @@ _HEADER_KEYS: frozenset[str] = frozenset({"h1", "h2", "h3", "title", "section_he
 _DOC_ID_KEYS: frozenset[str] = frozenset({"file_name", "document_id", "source", "file", "doc_id"})
 _DATE_KEYS: frozenset[str] = frozenset(
     {
-        "date", "timestamp", "created_at", "updated_at", "published_at",
-        "modified_at", "date_start", "date_end",
+        "date",
+        "timestamp",
+        "created_at",
+        "updated_at",
+        "published_at",
+        "modified_at",
+        "date_start",
+        "date_end",
     }
 )
 _SEQ_KEYS: frozenset[str] = frozenset({"prev_chunk_id", "next_chunk_id"})
@@ -1307,9 +1360,7 @@ def compute_header_prevalence(pool: list[Any]) -> float:
     """
     if not pool:
         return 0.0
-    count = sum(
-        1 for chunk in pool if any(_get_metadata_dict(chunk).get(k) for k in _HEADER_KEYS)
-    )
+    count = sum(1 for chunk in pool if any(_get_metadata_dict(chunk).get(k) for k in _HEADER_KEYS))
     return count / len(pool)
 
 
@@ -1660,23 +1711,15 @@ def compute_chunk_suitability(
     # Regime-dependent weight vectors (6 signals)
     regime = census.metadata_regime
     if regime == "structured":
-        w_meta, w_ent, w_lex, w_len, w_tfidf, w_ans = (
-            0.20, 0.20, 0.10, 0.10, 0.15, 0.25
-        )
+        w_meta, w_ent, w_lex, w_len, w_tfidf, w_ans = (0.20, 0.20, 0.10, 0.10, 0.15, 0.25)
     elif regime == "mixed" and census.header_prevalence < 0.20:
         # Email-like: "mixed" via date/doc_id, not headers.
         # Answerability is likely uniform for uniform-prose corpora.
-        w_meta, w_ent, w_lex, w_len, w_tfidf, w_ans = (
-            0.10, 0.25, 0.20, 0.10, 0.20, 0.15
-        )
+        w_meta, w_ent, w_lex, w_len, w_tfidf, w_ans = (0.10, 0.25, 0.20, 0.10, 0.20, 0.15)
     elif regime == "mixed":
-        w_meta, w_ent, w_lex, w_len, w_tfidf, w_ans = (
-            0.10, 0.20, 0.15, 0.10, 0.15, 0.30
-        )
+        w_meta, w_ent, w_lex, w_len, w_tfidf, w_ans = (0.10, 0.20, 0.15, 0.10, 0.15, 0.30)
     else:  # unstructured
-        w_meta, w_ent, w_lex, w_len, w_tfidf, w_ans = (
-            0.00, 0.25, 0.20, 0.10, 0.20, 0.25
-        )
+        w_meta, w_ent, w_lex, w_len, w_tfidf, w_ans = (0.00, 0.25, 0.20, 0.10, 0.20, 0.25)
 
     return (
         w_meta * metadata_score

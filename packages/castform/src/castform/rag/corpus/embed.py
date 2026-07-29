@@ -57,9 +57,7 @@ class OpenAIEmbedder:
             raise ValueError("embedding max_retries must be non-negative")
 
     async def __call__(self, texts: list[str]) -> list[list[float]]:
-        if not isinstance(texts, list) or any(
-            not isinstance(text, str) for text in texts
-        ):
+        if not isinstance(texts, list) or any(not isinstance(text, str) for text in texts):
             raise TypeError("embedding input must be a list of strings")
         if not texts:
             return []

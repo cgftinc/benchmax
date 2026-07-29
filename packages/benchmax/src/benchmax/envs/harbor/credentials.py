@@ -47,9 +47,7 @@ class ModalCredentials:
             or not isinstance(self.max_throttle_wait_seconds, int)
             or self.max_throttle_wait_seconds < 0
         ):
-            raise ValueError(
-                "Modal max_throttle_wait_seconds must be a non-negative integer"
-            )
+            raise ValueError("Modal max_throttle_wait_seconds must be a non-negative integer")
 
     def host_environment(self) -> Mapping[str, str]:
         return {
@@ -78,8 +76,7 @@ class DaytonaCredentials:
         has_jwt = self.jwt_token is not None or self.organization_id is not None
         if has_api_key == has_jwt:
             raise ValueError(
-                "Daytona credentials require either api_key or both jwt_token "
-                "and organization_id"
+                "Daytona credentials require either api_key or both jwt_token and organization_id"
             )
         if has_api_key:
             _require_secret(self.api_key, "Daytona api_key")
@@ -167,9 +164,7 @@ async def _enter_process_environment(environment: dict[str, str]) -> None:
             lambda: _active_environment is None or _active_environment == environment
         )
         if _active_environment is None:
-            _previous_environment = {
-                key: os.environ.get(key, _MISSING) for key in environment
-            }
+            _previous_environment = {key: os.environ.get(key, _MISSING) for key in environment}
             os.environ.update(environment)
             _active_environment = environment
         _active_environment_users += 1

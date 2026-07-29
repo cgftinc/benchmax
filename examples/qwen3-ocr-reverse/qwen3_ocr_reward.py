@@ -65,9 +65,7 @@ def collapse_text(value: str) -> str:
 
 def strip_markup(value: str) -> str:
     text = str(value or "")
-    text = re.sub(
-        r"<(script|style)\b[^>]*>.*?</\1>", " ", text, flags=re.IGNORECASE | re.DOTALL
-    )
+    text = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"<\s*br\s*/?\s*>", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", " ", text)
     text = unescape(text)
@@ -76,9 +74,7 @@ def strip_markup(value: str) -> str:
 
 def html_table_rows(value: str) -> list[str]:
     rows: list[str] = []
-    for row_html in re.findall(
-        r"<tr\b[^>]*>(.*?)</tr>", value, flags=re.IGNORECASE | re.DOTALL
-    ):
+    for row_html in re.findall(r"<tr\b[^>]*>(.*?)</tr>", value, flags=re.IGNORECASE | re.DOTALL):
         cells = re.findall(
             r"<t[dh]\b[^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL
         )
@@ -135,9 +131,7 @@ def segments(value: str) -> list[str]:
     if len(blocks) > 1:
         return blocks
 
-    blank_blocks = [
-        segment.strip() for segment in re.split(r"\n\s*\n+", text) if segment.strip()
-    ]
+    blank_blocks = [segment.strip() for segment in re.split(r"\n\s*\n+", text) if segment.strip()]
     if len(blank_blocks) > 1:
         return blank_blocks
 
@@ -176,9 +170,7 @@ def similarity(reference: str, prediction: str) -> float:
     overlap = sum((ref_counts & pred_counts).values())
     precision = overlap / len(pred_tokens)
     recall = overlap / len(ref_tokens)
-    token_f1 = (
-        2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    )
+    token_f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     return max(char_score, token_f1)
 
 
@@ -197,11 +189,7 @@ def hungarian_maximize(scores: list[list[float]]) -> list[tuple[int, int]]:
             exc,
         )
         candidates = sorted(
-            (
-                (score, i, j)
-                for i, row in enumerate(scores)
-                for j, score in enumerate(row)
-            ),
+            ((score, i, j) for i, row in enumerate(scores) for j, score in enumerate(row)),
             reverse=True,
         )
         used_rows: set[int] = set()
@@ -273,13 +261,9 @@ def infinity_doc_reward(
         )
         return 0.0
 
-    sim_matrix = [
-        [similarity(ref, pred) for pred in pred_segments] for ref in ref_segments
-    ]
+    sim_matrix = [[similarity(ref, pred) for pred in pred_segments] for ref in ref_segments]
     raw_matches = hungarian_maximize(sim_matrix)
-    good_matches = [
-        (i, j, sim_matrix[i][j]) for i, j in raw_matches if sim_matrix[i][j] >= 0.12
-    ]
+    good_matches = [(i, j, sim_matrix[i][j]) for i, j in raw_matches if sim_matrix[i][j] >= 0.12]
 
     best_per_ref = [max(row) if row else 0.0 for row in sim_matrix]
     r_dist = sum(best_per_ref) / max(n_ref, n_pred)

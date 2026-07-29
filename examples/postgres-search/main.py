@@ -63,9 +63,7 @@ logger = logging.getLogger(__name__)
 
 _CITATION_RE = re.compile(r"\[Source:\s*([^\]]+)\]", re.IGNORECASE)
 
-_ANSWER_BLOCK_RE = re.compile(
-    r"<answer\s*>(.*?)</answer\s*>", re.IGNORECASE | re.DOTALL
-)
+_ANSWER_BLOCK_RE = re.compile(r"<answer\s*>(.*?)</answer\s*>", re.IGNORECASE | re.DOTALL)
 _ANSWER_OPEN_RE = re.compile(r"<answer\s*>", re.IGNORECASE)
 
 
@@ -374,9 +372,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
 """
 
     @classmethod
-    def render_system_prompt(
-        cls, *, corpus_description: str, max_search_calls: int
-    ) -> str:
+    def render_system_prompt(cls, *, corpus_description: str, max_search_calls: int) -> str:
         """Render :attr:`SYSTEM_PROMPT_TEMPLATE` into a system-prompt string.
 
         Assign the result to a subclass's ``system_prompt`` class attribute
@@ -427,9 +423,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             max_turns=max_search_calls + 1 if max_turns is None else max_turns,
             max_tool_calls=max_search_calls,
         )
-        self._system_prompt = (
-            self.system_prompt if system_prompt is None else system_prompt
-        )
+        self._system_prompt = self.system_prompt if system_prompt is None else system_prompt
 
         self._search = search
         self._judge = Judge(
@@ -470,9 +464,7 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             search_props["mode"] = {
                 "type": "string",
                 "enum": modes,
-                "description": (
-                    f"Search mode. Available: {modes}. Default: {self._default_mode}."
-                ),
+                "description": (f"Search mode. Available: {modes}. Default: {self._default_mode}."),
             }
 
         search_tool: Tool = {
@@ -694,18 +686,12 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     ) -> tuple[float, float]:
         """Citation (recall, precision) via the free :func:`score_citations`
         helper, honoring a subclass's ``_canonicalize_id`` override."""
-        return score_citations(
-            answer_text, reference_chunks, canonicalize=self._canonicalize_id
-        )
+        return score_citations(answer_text, reference_chunks, canonicalize=self._canonicalize_id)
 
-    def _extract_reference_ids(
-        self, reference_chunks: list[dict[str, Any]]
-    ) -> set[str]:
+    def _extract_reference_ids(self, reference_chunks: list[dict[str, Any]]) -> set[str]:
         """Document-level source IDs from reference chunks (uses ``_canonicalize_id``,
         which subclasses may override for corpus-specific extraction)."""
-        return extract_reference_ids(
-            reference_chunks, canonicalize=self._canonicalize_id
-        )
+        return extract_reference_ids(reference_chunks, canonicalize=self._canonicalize_id)
 
     def _parse_citations(self, text: str) -> set[str]:
         """Parse ``[Source: <id>]`` citations, honoring ``_canonicalize_id``."""

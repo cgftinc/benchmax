@@ -10,11 +10,7 @@ def validate_max_examples(max_examples: int | None) -> int | None:
 
     if max_examples is None:
         return None
-    if (
-        isinstance(max_examples, bool)
-        or not isinstance(max_examples, int)
-        or max_examples <= 0
-    ):
+    if isinstance(max_examples, bool) or not isinstance(max_examples, int) or max_examples <= 0:
         raise ValueError("max_examples must be a positive integer or None")
     return max_examples
 

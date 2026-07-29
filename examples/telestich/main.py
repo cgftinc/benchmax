@@ -402,13 +402,10 @@ def check_hard_rules(poem: str | None, target: str) -> dict:
         return result(True, False, "", 0)
     good = n - misses
     detail = "; ".join(
-        f"line {i + 1} ('{last_word(lines[i]) or '∅'}'→needs '{chars[i]}')"
-        for i in miss_idx
+        f"line {i + 1} ('{last_word(lines[i]) or '∅'}'→needs '{chars[i]}')" for i in miss_idx
     )
     if good / n > MIN_CORRECT_FRAC:  # more than 25% of lines correct → partial credit
-        max_partial = (
-            math.ceil((1 - MIN_CORRECT_FRAC) * n) - 1
-        )  # most misses still above the bar
+        max_partial = math.ceil((1 - MIN_CORRECT_FRAC) * n) - 1  # most misses still above the bar
         return result(
             False,
             True,
@@ -463,9 +460,7 @@ def _rhyme_analysis(
     for a in range(len(idx)):
         for b in range(a + 1, len(idx)):
             i, j = idx[a], idx[b]
-            if endings[i] != endings[j] and any(
-                x == y for x in parts[i] for y in parts[j]
-            ):
+            if endings[i] != endings[j] and any(x == y for x in parts[i] for y in parts[j]):
                 adj[i].add(j)
                 adj[j].add(i)
     visited, clusters = set(), []
@@ -497,9 +492,7 @@ def rhyme_detail(lines: list[str]) -> str:
         "; ".join("+".join(f"L{i + 1}:{endings[i]}" for i in c) for c in rhyming)
         or "no rhyming pairs"
     )
-    unmatched = [
-        f"L{i + 1}:{endings[i]}" for i in idx if not any(i in c for c in rhyming)
-    ]
+    unmatched = [f"L{i + 1}:{endings[i]}" for i in idx if not any(i in c for c in rhyming)]
     largest = max((len(c) for c in rhyming), default=0)
     tail = f"; unmatched {unmatched}" if unmatched else ""
     return f"largest rhyme {largest}/{len(idx)} → {density:.2f} | {groups}{tail}"
@@ -628,9 +621,7 @@ class _Rollout:
     reuse: float = 0.0  # ending-word reuse vs siblings (0=unique, 1=all shared)
     ending_detail: str = ""  # per-ending share counts, for the breakdown log
     len_eff: float = 0.0  # length efficiency in [0,1] (1 = within budget; logged)
-    in_top_band: bool = (
-        False  # in the group's top occupied bucket → earns secondary bonuses
-    )
+    in_top_band: bool = False  # in the group's top occupied bucket → earns secondary bonuses
     components: dict = field(default_factory=dict)
 
 
@@ -670,9 +661,7 @@ def _rating_to_band(r: float) -> float:
     return 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, _ELO_K * (r - _ELO_R0)))))
 
 
-def _make_slices(
-    n: int, size: int = ELO_SLICE, stride: int = ELO_STRIDE
-) -> list[list[int]]:
+def _make_slices(n: int, size: int = ELO_SLICE, stride: int = ELO_STRIDE) -> list[list[int]]:
     """Overlapping poem-index slices over 0..n-1: wrap-around windows of `size` at `stride`,
     plus an extra slice for any index the stride left covered <2× — so every poem appears in
     ≥2 slices for cross-comparison. n ≤ size → one slice of all poems."""
@@ -738,9 +727,7 @@ def _count_tool_calls(messages: Messages) -> int:
         if not isinstance(message, Mapping) or message.get("role") != "assistant":
             continue
         tool_calls = message.get("tool_calls")
-        if isinstance(tool_calls, Sequence) and not isinstance(
-            tool_calls, (str, bytes)
-        ):
+        if isinstance(tool_calls, Sequence) and not isinstance(tool_calls, (str, bytes)):
             count += len(tool_calls)
         content = message.get("content")
         if isinstance(content, str):
@@ -797,8 +784,7 @@ def _programmatic_feedback(poem: str, target: str) -> str | None:
     if a != n:
         verb = f"add {n - a} line(s)" if a < n else f"remove {a - n} line(s)"
         notes.append(
-            f"Line count: you have {a} line(s) but '{target}' needs {n} "
-            f"(one per letter) — {verb}."
+            f"Line count: you have {a} line(s) but '{target}' needs {n} (one per letter) — {verb}."
         )
 
     # per line: stack ALL of that line's issues into one entry, in line order. The
@@ -811,9 +797,7 @@ def _programmatic_feedback(poem: str, target: str) -> str | None:
         lw = last_word(lines[i])
         issues: list[str] = []
         if req is not None and got != req:
-            issues.append(
-                f"must end in '{req}', but \"{lw or lines[i]}\" ends in '{got or '∅'}'"
-            )
+            issues.append(f"must end in '{req}', but \"{lw or lines[i]}\" ends in '{got or '∅'}'")
         elif en:
             need = f" ending in '{req}'" if req is not None else ""
             if lw in _FORCED_ENDINGS:
@@ -834,8 +818,7 @@ def _programmatic_feedback(poem: str, target: str) -> str | None:
             )
         if contains_hidden_word(lines[i], target, language):
             issues.append(
-                f'contains the hidden word "{target}" — keep it hidden in the last '
-                f"letters only"
+                f'contains the hidden word "{target}" — keep it hidden in the last letters only'
             )
         if issues:
             line_msgs.append(f"   - line {i + 1}: " + "; ".join(issues))
@@ -935,9 +918,7 @@ then stop."""
             max_turns=max_tool_calls + 1 if max_turns is None else max_turns,
             max_tool_calls=max_tool_calls,
         )
-        self._system_prompt = (
-            self.system_prompt if system_prompt is None else system_prompt
-        )
+        self._system_prompt = self.system_prompt if system_prompt is None else system_prompt
         self._judge = Judge(
             model=JUDGE_MODEL,
             base_url=judge_base_url,
@@ -1117,9 +1098,7 @@ then stop."""
             )
             return list(res.scores)
 
-        batches = [
-            poems[i : i + JUDGE_BATCH] for i in range(0, len(poems), JUDGE_BATCH)
-        ]
+        batches = [poems[i : i + JUDGE_BATCH] for i in range(0, len(poems), JUDGE_BATCH)]
         results = await asyncio.gather(*(_score_batch(b) for b in batches))
         return [s for batch_scores in results for s in batch_scores]
 
@@ -1149,8 +1128,7 @@ then stop."""
             res = await evaluate_rubric_ranking(
                 rubric=QUALITY_RUBRIC,
                 question=prompt,
-                responses=[poems[i] for i in sl]
-                + [anchor.response for anchor in anchors],
+                responses=[poems[i] for i in sl] + [anchor.response for anchor in anchors],
                 judge=self._judge,
             )
             sc = res.scores
@@ -1202,9 +1180,7 @@ then stop."""
         factor = max(0.0, 1.0 - r.n_tool_calls / self._max_tool_calls)
         return W_TOOL_EFF * r.q * factor
 
-    def _apply_secondary(
-        self, rolls: list[_Rollout], correct: list[_Rollout], budget: int
-    ) -> None:
+    def _apply_secondary(self, rolls: list[_Rollout], correct: list[_Rollout], budget: int) -> None:
         """Compute every rollout's reward components onto its record. Gated poems →
         all-zero. Partial poems → graded partial_score quality, no bonuses. Correct poems:
         rhyme (any), plus diversity and conciseness (folds in the tool-efficiency
@@ -1214,18 +1190,13 @@ then stop."""
             for local, r in enumerate(correct):
                 r.reuse = reuse[local]
                 r.ending_detail = ", ".join(
-                    f"{w}(shared×{c})" if c else f"{w}(unique)"
-                    for w, c in reuse_detail[local]
+                    f"{w}(shared×{c})" if c else f"{w}(unique)" for w, c in reuse_detail[local]
                 )
 
         # the group's top occupied bucket among correct poems — secondary bonuses
         # apply only here, so even an all-"below" group still gets a gradient.
         top_band = next(
-            (
-                b
-                for b in ("above", "mid", "below")
-                if any(r.bucket == b for r in correct)
-            ),
+            (b for b in ("above", "mid", "below") if any(r.bucket == b for r in correct)),
             None,
         )
 
@@ -1241,9 +1212,7 @@ then stop."""
                     "conciseness": 0.0,
                 }
                 continue
-            if (
-                r.partial
-            ):  # small graded reward (r.q == partial_score); no judging/bonuses
+            if r.partial:  # small graded reward (r.q == partial_score); no judging/bonuses
                 r.components = {
                     "quality": round(r.q, 4),
                     "rhyme": 0.0,
@@ -1315,8 +1284,7 @@ then stop."""
             )
         else:
             conc_line = (
-                f"  conciseness = +0.0000 (none — bucket '{r.bucket}' is "
-                f"not the group's top band)"
+                f"  conciseness = +0.0000 (none — bucket '{r.bucket}' is not the group's top band)"
             )
         return (
             f"[TelestichEnv][why] poem {r.rollout_id} — {r.bucket.upper()} bucket, "
@@ -1347,8 +1315,7 @@ then stop."""
 
         # ── Stage 0: parse each rollout once into a record ──
         rolls = [
-            self._build_rollout(index, rollout, target)
-            for index, rollout in enumerate(rollouts)
+            self._build_rollout(index, rollout, target) for index, rollout in enumerate(rollouts)
         ]
         correct = [r for r in rolls if r.correct]
         partial = [r for r in rolls if r.partial]
@@ -1361,9 +1328,7 @@ then stop."""
         if n_gated:
             # counts-by-kind, worst-offender first, so failures read at a glance
             cats = Counter(
-                _gate_category(r.reason)
-                for r in rolls
-                if not r.correct and not r.partial
+                _gate_category(r.reason) for r in rolls if not r.correct and not r.partial
             )
             breakdown = ", ".join(f"{cat} {ct}" for cat, ct in cats.most_common())
             logger.info(f"[TelestichEnv]   stage1 gated {n_gated}: {breakdown}")
@@ -1436,11 +1401,7 @@ DATASET_PATH = Path(__file__).parent / "telestich_dataset.jsonl"
 def _rows() -> list[dict]:
     if not DATASET_PATH.exists():
         return []
-    return [
-        json.loads(line)
-        for line in DATASET_PATH.read_text().splitlines()
-        if line.strip()
-    ]
+    return [json.loads(line) for line in DATASET_PATH.read_text().splitlines() if line.strip()]
 
 
 def generate_data(*, force: bool) -> None:
@@ -1497,9 +1458,7 @@ def validate() -> Any:
     env = TelestichEnv(judge_base_url=config.llm_url())
     with tempfile.TemporaryDirectory() as tmp:
         base_dir = Path(tmp)
-        (base_dir / "train.jsonl").write_text(
-            "".join(json.dumps(row) + "\n" for row in train_rows)
-        )
+        (base_dir / "train.jsonl").write_text("".join(json.dumps(row) + "\n" for row in train_rows))
         report = asyncio.run(
             validate_environment(
                 env,
@@ -1509,10 +1468,7 @@ def validate() -> Any:
             )
         )
     for rollout_id, outcome in report.local.items():
-        print(
-            f"  {rollout_id}: total={sum(outcome.rewards.values()):.3f} "
-            f"{dict(outcome.rewards)}"
-        )
+        print(f"  {rollout_id}: total={sum(outcome.rewards.values()):.3f} {dict(outcome.rewards)}")
     return report
 
 
@@ -1562,9 +1518,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=["data", "validate", "launch", "all"],
         help="Stage to run (default: all = data → validate, then STOP).",
     )
-    parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
+    parser.add_argument("--force", action="store_true", help="Regenerate datasets even if present.")
     parser.add_argument(
         "-y",
         "--yes",

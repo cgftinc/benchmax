@@ -23,13 +23,7 @@ class TestPreprocessMdx:
 
     def test_import_inside_code_fence_is_preserved(self):
         """import lines inside a code fence must NOT be removed."""
-        src = (
-            "Normal prose.\n\n"
-            "```js\n"
-            'import React from "react";\n'
-            "```\n\n"
-            "More prose."
-        )
+        src = 'Normal prose.\n\n```js\nimport React from "react";\n```\n\nMore prose.'
         result = _preprocess_mdx(src)
         assert 'import React from "react";' in result
 

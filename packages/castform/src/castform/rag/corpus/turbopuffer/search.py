@@ -65,9 +65,7 @@ class TpufSearch:
         self._embed_fn = embed_fn
         self._vector_attr = vector_attr
         self._distance_metric = distance_metric
-        self._token_provider = as_token_provider(
-            token_provider, env_token("TPUF_API_KEY")
-        )
+        self._token_provider = as_token_provider(token_provider, env_token("TPUF_API_KEY"))
         self._client: Any = None
 
     def _get_client(self) -> Any:
@@ -80,9 +78,7 @@ class TpufSearch:
         if self._client is None:
             import turbopuffer
 
-            tpuf = turbopuffer.Turbopuffer(
-                api_key=self._token_provider(), region=self._region
-            )
+            tpuf = turbopuffer.Turbopuffer(api_key=self._token_provider(), region=self._region)
             self._client = tpuf.namespace(self._namespace)
         return self._client
 
@@ -194,9 +190,7 @@ class TpufSearch:
             "content": str(content),
             "source": str(source),
             "metadata": metadata,
-            "score": float(
-                score if score is not None else getattr(row, "$dist", 0.0) or 0.0
-            ),
+            "score": float(score if score is not None else getattr(row, "$dist", 0.0) or 0.0),
         }
 
     async def embed(self, text: str) -> list[float] | None:

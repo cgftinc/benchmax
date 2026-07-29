@@ -64,8 +64,7 @@ class BundledAgentSource:
                 source /= part
                 if source.is_symlink():
                     raise ValueError(
-                        "bundled agent source paths cannot traverse symlinks: "
-                        f"{relative!r}"
+                        f"bundled agent source paths cannot traverse symlinks: {relative!r}"
                     )
             if not source.is_file():
                 raise ValueError(f"bundled agent source file is missing: {relative!r}")
@@ -79,10 +78,7 @@ class BundledAgentSource:
         return cls(tuple(files.items()))
 
     def __repr__(self) -> str:
-        return (
-            "BundledAgentSource("
-            f"content_id={self.content_id!r}, files={len(self.files)})"
-        )
+        return f"BundledAgentSource(content_id={self.content_id!r}, files={len(self.files)})"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -101,9 +97,7 @@ class BundledHarborAgent:
                 f"{type(self.config).__name__}"
             )
         if self.config.name is not None or self.config.import_path is None:
-            raise ValueError(
-                "bundled Harbor agents require an explicit import_path and no name"
-            )
+            raise ValueError("bundled Harbor agents require an explicit import_path and no name")
         _split_import_path(self.config.import_path)
         _require_entry_module(self.config.import_path, self.source)
         object.__setattr__(self, "config", self.config.model_copy(deep=True))
@@ -142,9 +136,7 @@ def _normalize_files(
         if safe_path in seen:
             raise ValueError(f"duplicate bundled agent source path: {safe_path!r}")
         if not isinstance(content, bytes):
-            raise TypeError(
-                f"bundled agent source content for {safe_path!r} must be bytes"
-            )
+            raise TypeError(f"bundled agent source content for {safe_path!r} must be bytes")
         seen.add(safe_path)
         normalized.append((safe_path, content))
     return tuple(sorted(normalized, key=lambda item: item[0]))
@@ -155,15 +147,11 @@ def _safe_relative_path(path: str | Path) -> str:
     if not raw or "\\" in raw or "\0" in raw:
         raise ValueError(f"invalid bundled agent source path: {raw!r}")
     candidate = PurePosixPath(raw)
-    if candidate.is_absolute() or any(
-        part in {"", ".", ".."} for part in candidate.parts
-    ):
+    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
         raise ValueError(f"unsafe bundled agent source path: {raw!r}")
     canonical = candidate.as_posix()
     if canonical != raw:
-        raise ValueError(
-            f"bundled agent source paths must be canonical POSIX paths: {raw!r}"
-        )
+        raise ValueError(f"bundled agent source paths must be canonical POSIX paths: {raw!r}")
     return canonical
 
 
@@ -182,9 +170,7 @@ def _split_import_path(import_path: str) -> tuple[str, str]:
     if import_path.count(":") != 1:
         raise ValueError("agent import_path must have the form 'module.path:ClassName'")
     module_name, class_name = import_path.split(":", 1)
-    if not module_name or any(
-        not part.isidentifier() for part in module_name.split(".")
-    ):
+    if not module_name or any(not part.isidentifier() for part in module_name.split(".")):
         raise ValueError("agent import_path contains an invalid module name")
     if not class_name.isidentifier():
         raise ValueError("agent import_path contains an invalid class name")
@@ -200,9 +186,7 @@ def _require_entry_module(
     possible_paths = {f"{module_path}.py", f"{module_path}/__init__.py"}
     available = {path for path, _ in source.files}
     if possible_paths.isdisjoint(available):
-        raise ValueError(
-            f"bundled agent entry module {module_name!r} is absent from its source"
-        )
+        raise ValueError(f"bundled agent entry module {module_name!r} is absent from its source")
 
 
 def _load_agent_import_path(source: BundledAgentSource, import_path: str) -> str:
@@ -244,9 +228,7 @@ def _materialize_source(source: BundledAgentSource) -> Path:
             return existing
 
         if _materialization_root is None:
-            _materialization_root = Path(
-                tempfile.mkdtemp(prefix="benchmax-harbor-agents-")
-            )
+            _materialization_root = Path(tempfile.mkdtemp(prefix="benchmax-harbor-agents-"))
             atexit.register(_remove_materialization_root, _materialization_root)
 
         directory_name = source.content_id.removeprefix("sha256:")

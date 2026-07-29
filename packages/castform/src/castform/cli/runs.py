@@ -214,9 +214,7 @@ def _cmd_runs_scalars(args: argparse.Namespace) -> int:
     rows = []
     for name, series in scalars.items():  # server returns keys sorted
         last = series[-1] if series else {}
-        rows.append(
-            [name, len(series), last.get("step", ""), fmt_value(last.get("value"))]
-        )
+        rows.append([name, len(series), last.get("step", ""), fmt_value(last.get("value"))])
     render_table(["SCALAR", "POINTS", "LAST STEP", "LAST VALUE"], rows)
     return 0
 
@@ -232,9 +230,7 @@ def _cmd_runs_logs(args: argparse.Namespace) -> int:
         print("No logs.")
         return 0
     for entry in logs:
-        print(
-            f"{entry.get('createdAt', '')} [{entry.get('level', '')}] {entry.get('content', '')}"
-        )
+        print(f"{entry.get('createdAt', '')} [{entry.get('level', '')}] {entry.get('content', '')}")
         if entry.get("traceback"):
             print(textwrap.indent(entry["traceback"], "    "))
     return 0
@@ -245,9 +241,7 @@ def _cmd_runs_rollouts(args: argparse.Namespace) -> int:
     with trainer_client() as client:
         if args.example:
             # One example's rollouts across steps (heatmap). Ids feed `runs rollout`.
-            rollouts = client.get_rollout_heatmap(
-                args.run_id, args.example, mode=args.mode
-            )
+            rollouts = client.get_rollout_heatmap(args.run_id, args.example, mode=args.mode)
             if args.json:
                 print_json(rollouts)
                 return 0
@@ -262,9 +256,7 @@ def _cmd_runs_rollouts(args: argparse.Namespace) -> int:
             print(f"\nInspect one:  castform runs rollout {args.run_id} <ROLLOUT ID>")
             return 0
 
-        summary = client.get_rollout_summary(
-            args.run_id, mode=args.mode, limit=args.limit
-        )
+        summary = client.get_rollout_summary(args.run_id, mode=args.mode, limit=args.limit)
         avg = client.get_rollout_mode_average(args.run_id, mode=args.mode)
     if args.json:
         print_json({"mode": args.mode, "mode_average": avg, "examples": summary})
@@ -333,9 +325,7 @@ def _cmd_runs_rollout(args: argparse.Namespace) -> int:
 def register(sub: argparse._SubParsersAction) -> None:
     """Attach the `runs` group to the top-level subparsers."""
     runs = sub.add_parser("runs", help="Inspect training runs")
-    runs_sub = runs.add_subparsers(
-        dest="runs_command", required=True, metavar="<subcommand>"
-    )
+    runs_sub = runs.add_subparsers(dest="runs_command", required=True, metavar="<subcommand>")
 
     p_list = runs_sub.add_parser("list", help="List your training runs")
     p_list.add_argument("--json", action="store_true", help="Emit raw JSON")
@@ -354,9 +344,7 @@ def register(sub: argparse._SubParsersAction) -> None:
 
     p_scalars = runs_sub.add_parser("scalars", help="Show a run's scalar metrics")
     p_scalars.add_argument("run_id")
-    p_scalars.add_argument(
-        "--mode", help="Scalar mode (default: train, else first available)"
-    )
+    p_scalars.add_argument("--mode", help="Scalar mode (default: train, else first available)")
     p_scalars.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_scalars.set_defaults(func=_cmd_runs_scalars)
 

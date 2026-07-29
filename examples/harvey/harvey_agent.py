@@ -74,9 +74,7 @@ class HarveyHarnessAgent(BaseAgent):
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, extra_env=extra_env, **kwargs)
-        self.host_harvey_root = self._optional_path(
-            harvey_root or self._env("HARBOR_HARVEY_ROOT")
-        )
+        self.host_harvey_root = self._optional_path(harvey_root or self._env("HARBOR_HARVEY_ROOT"))
         self.host_runtime_path = self._optional_path(
             runtime_path or self._env("HARBOR_HARVEY_RUNTIME_PATH")
         )
@@ -93,9 +91,7 @@ class HarveyHarnessAgent(BaseAgent):
         self.harbor_documents_dir = (
             self._env("HARBOR_HARVEY_DOCUMENTS_DIR") or DEFAULT_HARBOR_DOCUMENTS_DIR
         )
-        self.harbor_output_dir = (
-            self._env("HARBOR_HARVEY_OUTPUT_DIR") or DEFAULT_HARBOR_OUTPUT_DIR
-        )
+        self.harbor_output_dir = self._env("HARBOR_HARVEY_OUTPUT_DIR") or DEFAULT_HARBOR_OUTPUT_DIR
         self.max_turns = max_turns or self._env_int("HARBOR_HARVEY_MAX_TURNS", 30)
         self.max_tool_result_chars = (
             self._env_int(
@@ -105,15 +101,11 @@ class HarveyHarnessAgent(BaseAgent):
             if max_tool_result_chars is None
             else max_tool_result_chars
         )
-        self.shell_timeout = shell_timeout or self._env_int(
-            "HARBOR_HARVEY_SHELL_TIMEOUT", 60
-        )
+        self.shell_timeout = shell_timeout or self._env_int("HARBOR_HARVEY_SHELL_TIMEOUT", 60)
         self.run_timeout_sec = run_timeout_sec or self._env_int(
             "HARBOR_HARVEY_RUN_TIMEOUT_SEC", 3600
         )
-        self.upload = (
-            self._env_bool("HARBOR_HARVEY_UPLOAD", True) if upload is None else upload
-        )
+        self.upload = self._env_bool("HARBOR_HARVEY_UPLOAD", True) if upload is None else upload
 
     @staticmethod
     def name() -> str:
@@ -146,9 +138,7 @@ class HarveyHarnessAgent(BaseAgent):
                 await environment.upload_dir(bundle_root, self.container_harvey_root)
 
         if self.host_runtime_path and self.host_runtime_path.exists():
-            await environment.upload_file(
-                self.host_runtime_path, self.container_runtime_path
-            )
+            await environment.upload_file(self.host_runtime_path, self.container_runtime_path)
 
     async def run(
         self,
@@ -175,9 +165,7 @@ class HarveyHarnessAgent(BaseAgent):
         if self.host_harvey_root is None:
             self.host_harvey_root = self._prepare_harvey_source()
         if not (self.host_harvey_root / "harness" / "run.py").is_file():
-            raise RuntimeError(
-                f"Harvey LAB source is incomplete at {self.host_harvey_root}"
-            )
+            raise RuntimeError(f"Harvey LAB source is incomplete at {self.host_harvey_root}")
         if self.host_runtime_path is None:
             candidate = Path(__file__).with_name("harvey_runtime.py")
             if candidate.is_file():
@@ -191,8 +179,7 @@ class HarveyHarnessAgent(BaseAgent):
         repository = self._env("HARBOR_HARVEY_GIT_URL") or DEFAULT_HARVEY_REPOSITORY
         git_ref = self._env("HARBOR_HARVEY_GIT_REF") or DEFAULT_HARVEY_GIT_REF
         cache = (
-            Path(tempfile.gettempdir())
-            / f"castform-harvey-labs-{self._slug(git_ref) or 'main'}"
+            Path(tempfile.gettempdir()) / f"castform-harvey-labs-{self._slug(git_ref) or 'main'}"
         )
         with _source_lock:
             if (cache / "harness" / "run.py").is_file():
@@ -237,8 +224,7 @@ class HarveyHarnessAgent(BaseAgent):
                 )
                 if fetch.returncode != 0:
                     raise RuntimeError(
-                        "failed to fetch Harvey LAB ref "
-                        f"{git_ref}: {fetch.stderr.strip()}"
+                        f"failed to fetch Harvey LAB ref {git_ref}: {fetch.stderr.strip()}"
                     )
                 sparse = subprocess.run(
                     [
@@ -272,8 +258,7 @@ class HarveyHarnessAgent(BaseAgent):
                 )
                 if checkout.returncode != 0:
                     raise RuntimeError(
-                        "failed to check out Harvey LAB ref "
-                        f"{git_ref}: {checkout.stderr.strip()}"
+                        f"failed to check out Harvey LAB ref {git_ref}: {checkout.stderr.strip()}"
                     )
                 staging.rename(cache)
             finally:
@@ -408,9 +393,7 @@ class HarveyHarnessAgent(BaseAgent):
         task_name = self._env("HARBOR_HARVEY_TASK_NAME")
         if task_name:
             return task_name
-        trial_name = (
-            self.logs_dir.parent.name if self.logs_dir.parent.name else "harbor-task"
-        )
+        trial_name = self.logs_dir.parent.name if self.logs_dir.parent.name else "harbor-task"
         return self._slug(trial_name) or "harbor-task"
 
     @staticmethod
@@ -429,9 +412,9 @@ class HarveyHarnessAgent(BaseAgent):
         model = self._env("HARBOR_HARVEY_MODEL") or self.model_name or ""
         if not model:
             raise RuntimeError("HarveyHarnessAgent requires a model name")
-        if self._env_bool(
-            "HARBOR_HARVEY_STRIP_OPENAI_PREFIX", True
-        ) and model.startswith("openai/"):
+        if self._env_bool("HARBOR_HARVEY_STRIP_OPENAI_PREFIX", True) and model.startswith(
+            "openai/"
+        ):
             return model.split("/", 1)[1]
         return model
 
@@ -442,17 +425,13 @@ class HarveyHarnessAgent(BaseAgent):
         return value
 
     def _base_url(self) -> str:
-        value = self.extra_env.get("OPENAI_BASE_URL") or os.environ.get(
-            "OPENAI_BASE_URL"
-        )
+        value = self.extra_env.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
         if not value:
             raise RuntimeError("HarveyHarnessAgent requires OPENAI_BASE_URL")
         return value.rstrip("/")
 
     def _prebaked_python(self) -> str:
-        return (
-            self._env("HARBOR_HARVEY_PREBAKED_PYTHON") or DEFAULT_PREBAKED_VENV_PYTHON
-        )
+        return self._env("HARBOR_HARVEY_PREBAKED_PYTHON") or DEFAULT_PREBAKED_VENV_PYTHON
 
     def _env(self, name: str) -> str | None:
         return self.extra_env.get(name) or os.environ.get(name)

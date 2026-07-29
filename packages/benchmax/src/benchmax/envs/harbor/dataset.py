@@ -66,9 +66,7 @@ class HarborDataset(Dataset[Any]):
             raise ValueError("eval_ratio requires a Harbor split")
 
         if not isinstance(config, DatasetConfig):
-            raise TypeError(
-                f"Harbor dataset must be DatasetConfig, got {type(config).__name__}"
-            )
+            raise TypeError(f"Harbor dataset must be DatasetConfig, got {type(config).__name__}")
 
         snapshot_root = Path(base_dir).expanduser().resolve()
         downloads_dir = snapshot_root / "downloads"
@@ -131,9 +129,7 @@ class HarborDataset(Dataset[Any]):
             )
             example_id = content_hash
             if example_id in seen_ids:
-                raise ValueError(
-                    f"Harbor dataset contains duplicate task content: {example_id}"
-                )
+                raise ValueError(f"Harbor dataset contains duplicate task content: {example_id}")
             seen_ids.add(example_id)
 
             snapshot_path = tasks_dir / content_hash
@@ -188,12 +184,8 @@ class HarborDataset(Dataset[Any]):
         if eval_ratio == 0 or len(examples) < 2:
             return HarborDataset(examples), HarborDataset(())
 
-        eval_count = min(
-            len(examples) - 1, max(1, math.ceil(len(examples) * eval_ratio))
-        )
-        return HarborDataset(examples[eval_count:]), HarborDataset(
-            examples[:eval_count]
-        )
+        eval_count = min(len(examples) - 1, max(1, math.ceil(len(examples) * eval_ratio)))
+        return HarborDataset(examples[eval_count:]), HarborDataset(examples[:eval_count])
 
 
 def _package_content_hash(task_id: Any, package_task_type: type[Any]) -> str | None:
@@ -230,9 +222,7 @@ def _select_split_pairs(
         if count == 0:
             if eval_ratio == 0:
                 raise ValueError("HarborEnv automatic eval is disabled by eval_ratio=0")
-            raise ValueError(
-                "HarborEnv automatic eval requires at least two dataset examples"
-            )
+            raise ValueError("HarborEnv automatic eval requires at least two dataset examples")
         return ordered[:count]
     return ordered[count:]
 
@@ -248,9 +238,7 @@ def _select_split_examples(
         if count == 0:
             if eval_ratio == 0:
                 raise ValueError("HarborEnv automatic eval is disabled by eval_ratio=0")
-            raise ValueError(
-                "HarborEnv automatic eval requires at least two dataset examples"
-            )
+            raise ValueError("HarborEnv automatic eval requires at least two dataset examples")
         return examples[:count]
     return examples[count:]
 
@@ -276,8 +264,7 @@ async def _download_tasks_with_retries(
                 raise
             delay = _TASK_DOWNLOAD_RETRY_BASE_DELAY_SECS * 2 ** (attempt - 1)
             logger.warning(
-                "Harbor task download batch failed; retrying cached batch "
-                "in %.1fs (attempt %d/%d)",
+                "Harbor task download batch failed; retrying cached batch in %.1fs (attempt %d/%d)",
                 delay,
                 attempt + 1,
                 _TASK_DOWNLOAD_MAX_ATTEMPTS,

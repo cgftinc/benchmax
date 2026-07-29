@@ -272,9 +272,7 @@ class GenerationConfig:
     """Generator mode selection."""
 
     mode: str = "llm_direct"
-    llm_direct: LLMDirectGenerationConfig = field(
-        default_factory=LLMDirectGenerationConfig
-    )
+    llm_direct: LLMDirectGenerationConfig = field(default_factory=LLMDirectGenerationConfig)
 
 
 @dataclass
@@ -380,12 +378,8 @@ class FilteringConfig:
     )
     query_rewrite: QueryRewriteConfig = field(default_factory=QueryRewriteConfig)
     quality_gate: QualityGateConfig = field(default_factory=QualityGateConfig)
-    retrieval_llm: RetrievalLLMFilterConfig = field(
-        default_factory=RetrievalLLMFilterConfig
-    )
-    grounding_llm: GroundingLLMFilterConfig = field(
-        default_factory=GroundingLLMFilterConfig
-    )
+    retrieval_llm: RetrievalLLMFilterConfig = field(default_factory=RetrievalLLMFilterConfig)
+    grounding_llm: GroundingLLMFilterConfig = field(default_factory=GroundingLLMFilterConfig)
     hop_count_validity: HopCountValidityCfg = field(default_factory=HopCountValidityCfg)
 
 
@@ -480,9 +474,7 @@ class PipelineConfig:
     split: SplitConfig = field(default_factory=SplitConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
-    wiki_preprocessing: WikiPreprocessingConfig = field(
-        default_factory=WikiPreprocessingConfig
-    )
+    wiki_preprocessing: WikiPreprocessingConfig = field(default_factory=WikiPreprocessingConfig)
     micro_batch: MicroBatchConfig = field(default_factory=MicroBatchConfig)
     random_seed: int = 42
     verbose: bool = True
@@ -508,13 +500,9 @@ class PipelineConfig:
             self.corpus_context.model = self.generation.llm_direct.model
 
         if not self.corpus_context.entity_extraction_llm.api_key:
-            self.corpus_context.entity_extraction_llm.api_key = (
-                self.corpus_context.api_key
-            )
+            self.corpus_context.entity_extraction_llm.api_key = self.corpus_context.api_key
         if not self.corpus_context.entity_extraction_llm.base_url:
-            self.corpus_context.entity_extraction_llm.base_url = (
-                self.corpus_context.base_url
-            )
+            self.corpus_context.entity_extraction_llm.base_url = self.corpus_context.base_url
         if not self.corpus_context.entity_extraction_llm.model:
             self.corpus_context.entity_extraction_llm.model = self.corpus_context.model
 
@@ -647,9 +635,7 @@ class PipelineContext:
     # queue runs, so the context stays picklable across the prepare/run boundary.
     _async_sems: dict = field(default_factory=dict, repr=False, compare=False)
 
-    def model_semaphore(
-        self, model: str, base_url: str | None = None
-    ) -> asyncio.Semaphore:
+    def model_semaphore(self, model: str, base_url: str | None = None) -> asyncio.Semaphore:
         """Lazily-built ``asyncio.Semaphore`` bounding in-flight LLM calls to one
         serving deployment, keyed per running loop + (base_url, model).
 
@@ -671,9 +657,7 @@ class PipelineContext:
         key = (id(loop), "search")
         sem = self._async_sems.get(key)
         if sem is None:
-            sem = asyncio.Semaphore(
-                _resolve_int_env(_SEARCH_CONCURRENCY_ENV, _DEFAULT_CONCURRENCY)
-            )
+            sem = asyncio.Semaphore(_resolve_int_env(_SEARCH_CONCURRENCY_ENV, _DEFAULT_CONCURRENCY))
             self._async_sems[key] = sem
         return sem
 
@@ -744,9 +728,7 @@ def allocate_largest_remainder_generic(
     if total <= 0:
         return {str(key): 0 for key in sorted(distribution)}
 
-    sanitized = {
-        str(key): max(0.0, float(value)) for key, value in distribution.items()
-    }
+    sanitized = {str(key): max(0.0, float(value)) for key, value in distribution.items()}
     if not sanitized:
         return {}
 
@@ -774,9 +756,7 @@ def allocate_largest_remainder_generic(
 
 def _parse_model_cfg(raw: Any, *, fallback: ModelConfig) -> ModelConfig:
     if isinstance(raw, str):
-        return ModelConfig(
-            model=raw, api_key=fallback.api_key, base_url=fallback.base_url
-        )
+        return ModelConfig(model=raw, api_key=fallback.api_key, base_url=fallback.base_url)
     if not isinstance(raw, dict):
         return fallback
     return ModelConfig(
@@ -800,9 +780,7 @@ def _collect_removed_config_keys(raw: dict[str, Any]) -> list[str]:
     if "style_distribution_by_qa_type" in targets_raw:
         removed_keys.append("targets.style_distribution_by_qa_type")
     if "enforce_style_mismatch_guard" in guards_raw:
-        removed_keys.append(
-            "filtering.deterministic_guards.enforce_style_mismatch_guard"
-        )
+        removed_keys.append("filtering.deterministic_guards.enforce_style_mismatch_guard")
 
     if "llm_env" in generation_raw:
         removed_keys.append("generation.llm_env")
@@ -867,41 +845,27 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
     corpus_context = CorpusContextConfig(
         enabled=bool(corpus_context_raw.get("enabled", True)),
         description=str(corpus_context_raw.get("description", "")).strip(),
-        example_queries=_load_string_list(
-            corpus_context_raw.get("example_queries", [])
-        ),
+        example_queries=_load_string_list(corpus_context_raw.get("example_queries", [])),
         model=str(corpus_context_raw.get("model", "")).strip(),
         api_key=str(corpus_context_raw.get("api_key", "")).strip(),
         base_url=str(corpus_context_raw.get("base_url", "")).strip(),
-        num_top_level_samples=max(
-            0, int(corpus_context_raw.get("num_top_level_samples", 4))
-        ),
+        num_top_level_samples=max(0, int(corpus_context_raw.get("num_top_level_samples", 4))),
         num_random_samples=max(0, int(corpus_context_raw.get("num_random_samples", 4))),
         min_chunk_chars=max(0, int(corpus_context_raw.get("min_chunk_chars", 400))),
-        system_prompt=str(
-            corpus_context_raw.get("system_prompt", CORPUS_SYSTEM_PROMPT)
-        ).strip()
+        system_prompt=str(corpus_context_raw.get("system_prompt", CORPUS_SYSTEM_PROMPT)).strip()
         or CORPUS_SYSTEM_PROMPT,
-        user_template=str(
-            corpus_context_raw.get("user_template", CORPUS_USER_TEMPLATE)
-        ).strip()
+        user_template=str(corpus_context_raw.get("user_template", CORPUS_USER_TEMPLATE)).strip()
         or CORPUS_USER_TEMPLATE,
-        generate_entity_patterns=bool(
-            corpus_context_raw.get("generate_entity_patterns", True)
-        ),
+        generate_entity_patterns=bool(corpus_context_raw.get("generate_entity_patterns", True)),
         entity_extraction_llm=EntityExtractionLLMConfig(
             model=str(
                 (corpus_context_raw.get("entity_extraction_llm") or {}).get("model", "")
             ).strip(),
             api_key=str(
-                (corpus_context_raw.get("entity_extraction_llm") or {}).get(
-                    "api_key", ""
-                )
+                (corpus_context_raw.get("entity_extraction_llm") or {}).get("api_key", "")
             ).strip(),
             base_url=str(
-                (corpus_context_raw.get("entity_extraction_llm") or {}).get(
-                    "base_url", ""
-                )
+                (corpus_context_raw.get("entity_extraction_llm") or {}).get("base_url", "")
             ).strip(),
         ),
     )
@@ -933,8 +897,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
     generation_raw = raw.get("generation", {}) or {}
     direct_raw = generation_raw.get("llm_direct", {}) or {}
     generation = GenerationConfig(
-        mode=str(generation_raw.get("mode", "llm_direct")).strip().lower()
-        or "llm_direct",
+        mode=str(generation_raw.get("mode", "llm_direct")).strip().lower() or "llm_direct",
         llm_direct=LLMDirectGenerationConfig(
             model=str(direct_raw.get("model", LLMDirectGenerationConfig().model)),
             api_key=str(direct_raw.get("api_key", "")),
@@ -950,9 +913,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
             ),
             timeout=max(10.0, float(direct_raw.get("timeout", 120.0))),
             system_prompt=str(
-                direct_raw.get(
-                    "system_prompt", LLMDirectGenerationConfig().system_prompt
-                )
+                direct_raw.get("system_prompt", LLMDirectGenerationConfig().system_prompt)
             ),
             prompt_templates_by_qa_type=dict(
                 direct_raw.get("prompt_templates_by_qa_type", {}) or {}
@@ -975,15 +936,11 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
     grounding_raw = filtering_raw.get("grounding_llm", {}) or {}
     if isinstance(filters_raw, str):
         chain_filters = [
-            token.strip().lower()
-            for token in filters_raw.split(",")
-            if token and token.strip()
+            token.strip().lower() for token in filters_raw.split(",") if token and token.strip()
         ]
     else:
         chain_filters = [
-            str(token).strip().lower()
-            for token in list(filters_raw)
-            if str(token).strip()
+            str(token).strip().lower() for token in list(filters_raw) if str(token).strip()
         ]
     filtering = FilteringConfig(
         deterministic_guards=DeterministicGuardsConfig(
@@ -1035,18 +992,14 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
             ),
             too_easy_confidence_threshold=max(
                 0.0,
-                min(
-                    1.0, float(retrieval_raw.get("too_easy_confidence_threshold", 0.75))
-                ),
+                min(1.0, float(retrieval_raw.get("too_easy_confidence_threshold", 0.75))),
             ),
             too_easy_overlap_threshold=max(
                 0.0,
                 min(1.0, float(retrieval_raw.get("too_easy_overlap_threshold", 0.65))),
             ),
             stats_key=(
-                str(
-                    retrieval_raw.get("stats_key", "retrieval_too_easy_filter_stats")
-                ).strip()
+                str(retrieval_raw.get("stats_key", "retrieval_too_easy_filter_stats")).strip()
                 or "retrieval_too_easy_filter_stats"
             ),
             max_concurrent=max(1, int(retrieval_raw.get("max_concurrent", 8))),
@@ -1093,9 +1046,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         model=str(refinement_raw.get("model", "gpt-5.4")),
         api_key=str(refinement_raw.get("api_key", "")),
         base_url=str(refinement_raw.get("base_url", "")).strip(),
-        max_refinements_per_item=max(
-            0, int(refinement_raw.get("max_refinements_per_item", 3))
-        ),
+        max_refinements_per_item=max(0, int(refinement_raw.get("max_refinements_per_item", 3))),
         max_same_seed_attempts_before_reanchor=max(
             0,
             int(
@@ -1133,9 +1084,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         checkpoint_dir=str(micro_batch_raw.get("checkpoint_dir", "")).strip(),
         resume=bool(micro_batch_raw.get("resume", True)),
         max_iterations=max(1, int(micro_batch_raw.get("max_iterations", 50))),
-        max_parallel_batches=max(
-            1, int(micro_batch_raw.get("max_parallel_batches", 1))
-        ),
+        max_parallel_batches=max(1, int(micro_batch_raw.get("max_parallel_batches", 1))),
     )
 
     scoring_raw = raw.get("scoring", {}) or {}
@@ -1145,9 +1094,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         retrieval_difficulty_weight=max(
             0.0, float(scoring_raw.get("retrieval_difficulty_weight", 0.3))
         ),
-        hop_validity_weight=max(
-            0.0, float(scoring_raw.get("hop_validity_weight", 0.3))
-        ),
+        hop_validity_weight=max(0.0, float(scoring_raw.get("hop_validity_weight", 0.3))),
     )
 
     cfg = PipelineConfig(

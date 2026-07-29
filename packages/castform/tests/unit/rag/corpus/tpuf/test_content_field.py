@@ -24,9 +24,7 @@ class TestResolveContentAttr:
         assert resolve_content_attr(None, "") is None
 
     def test_agreeing_values_pass(self):
-        assert resolve_content_attr(["description"], "description") == [
-            "description"
-        ]
+        assert resolve_content_attr(["description"], "description") == ["description"]
 
     def test_conflicting_values_raise(self):
         with pytest.raises(ValueError, match="conflicts"):
@@ -35,9 +33,7 @@ class TestResolveContentAttr:
 
 class TestTpufSearchContentField:
     def test_content_field_sets_content_attr(self):
-        search = TpufSearch(
-            "ns", content_field="body", token_provider=lambda: "k"
-        )
+        search = TpufSearch("ns", content_field="body", token_provider=lambda: "k")
         assert search._content_attr == ["body"]
 
     def test_default_unchanged(self):

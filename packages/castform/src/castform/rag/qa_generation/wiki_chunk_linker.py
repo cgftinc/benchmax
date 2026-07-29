@@ -102,9 +102,7 @@ class WikiChunkLinker:
         pool_lookup: dict[str, Any] = {}
         if corpus_pool:
             pool_lookup = {
-                getattr(c, "hash", None): c
-                for c in corpus_pool
-                if getattr(c, "hash", None)
+                getattr(c, "hash", None): c for c in corpus_pool if getattr(c, "hash", None)
             }
 
         # Step 3: Score candidates
@@ -116,9 +114,7 @@ class WikiChunkLinker:
         scored: list[tuple[str, float, Any, set[str]]] = []
 
         for ch in candidate_hashes:
-            candidate_entities = set(
-                e.lower() for e in self.profile.chunk_entity_index.get(ch, [])
-            )
+            candidate_entities = set(e.lower() for e in self.profile.chunk_entity_index.get(ch, []))
             shared = primary_entity_set & candidate_entities
             new = candidate_entities - primary_entity_set
 
@@ -126,9 +122,7 @@ class WikiChunkLinker:
                 continue  # no coherence signal
 
             # Shared entity score (coherence): quality-weighted
-            shared_score = sum(eq_map.get(e, 0.5) for e in shared) / max(
-                len(primary_entity_set), 1
-            )
+            shared_score = sum(eq_map.get(e, 0.5) for e in shared) / max(len(primary_entity_set), 1)
 
             # New entity score (complementary): quality-weighted
             new_score = (
@@ -156,9 +150,7 @@ class WikiChunkLinker:
             if self.config.max_primary_similarity > 0 and primary_tokens:
                 cand_tokens = set(c_text.lower().split())
                 if cand_tokens:
-                    jaccard = len(primary_tokens & cand_tokens) / len(
-                        primary_tokens | cand_tokens
-                    )
+                    jaccard = len(primary_tokens & cand_tokens) / len(primary_tokens | cand_tokens)
                     if jaccard > self.config.max_primary_similarity:
                         continue
 

@@ -67,9 +67,7 @@ _TEMPLATE_SEEDS = {
 def _project_toml(template: str) -> str:
     benchmax_requirement = _installed_requirement("benchmax")
     castform_name = "castform[rag]" if template == "rag" else "castform"
-    castform_requirement = _installed_requirement(
-        castform_name, distribution="castform"
-    )
+    castform_requirement = _installed_requirement(castform_name, distribution="castform")
     return f'''[project]
 name = "castform-environment"
 version = "0.1.0"
@@ -201,9 +199,7 @@ def _login_first(skip: bool) -> None:
     try:
         credentials.platform_bearer()
         jwt = credentials._session_jwt()
-        who = (
-            credentials._jwt_claims(jwt).get("email") if jwt else None
-        ) or "your account"
+        who = (credentials._jwt_claims(jwt).get("email") if jwt else None) or "your account"
         print(f"Signed in as {who} ({config.profile_target()}).")
     except RuntimeError:
         print("Signing in…")
@@ -258,11 +254,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         # the skills-dir references to the agent.
         return _retarget(_apply_template_conditionals(text, args.template), agent)
 
-    bodies = [
-        (a, f)
-        for a, f in (("claude", "CLAUDE.md"), ("codex", "AGENTS.md"))
-        if a in agents
-    ]
+    bodies = [(a, f) for a, f in (("claude", "CLAUDE.md"), ("codex", "AGENTS.md")) if a in agents]
 
     # 1) agent guides — instruction file(s) + GETTING_STARTED. GETTING_STARTED
     #    references the skills dir, so point it at the primary agent.
@@ -297,9 +289,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 log=log,
             )
         )
-        env_writes.append(
-            w(target / "main.py", (root / seed["main"]).read_text("utf-8"))
-        )
+        env_writes.append(w(target / "main.py", (root / seed["main"]).read_text("utf-8")))
         env_writes.append(
             _write(
                 target / "train.jsonl",
@@ -361,11 +351,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             print(_group_status(label, writes, detail, label_w))
 
     print()
-    print(
-        paint(
-            f"{target} has been set up for castform and your coding agent.", bold=True
-        )
-    )
+    print(paint(f"{target} has been set up for castform and your coding agent.", bold=True))
 
     _print_get_started()
     return 0
@@ -373,20 +359,14 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
 def register(sub: argparse._SubParsersAction) -> None:
     """Attach the top-level `setup` verb."""
-    p = sub.add_parser(
-        "setup", help="Sign in + scaffold this project for a coding agent"
-    )
-    p.add_argument(
-        "--dir", default=".", help="Project directory to scaffold (default: .)"
-    )
+    p = sub.add_parser("setup", help="Sign in + scaffold this project for a coding agent")
+    p.add_argument("--dir", default=".", help="Project directory to scaffold (default: .)")
     p.add_argument(
         "--agent",
         choices=["claude", "codex", "both"],
         help="Coding agent to scaffold for (default: both)",
     )
-    p.add_argument(
-        "--force", action="store_true", help="Overwrite existing scaffold files"
-    )
+    p.add_argument("--force", action="store_true", help="Overwrite existing scaffold files")
     p.add_argument(
         "--template",
         choices=["generic", "rag"],
@@ -400,9 +380,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Skip the seed main.py + datasets (scaffold docs + skills only)",
     )
-    p.add_argument(
-        "--skip-login", action="store_true", help="Don't sign in (scaffold only)"
-    )
+    p.add_argument("--skip-login", action="store_true", help="Don't sign in (scaffold only)")
     p.add_argument(
         "-v",
         "--verbose",

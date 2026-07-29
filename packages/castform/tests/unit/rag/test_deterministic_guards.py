@@ -67,9 +67,7 @@ class TestWordSetAndJaccard:
 
 class TestMaxChunkPairOverlap:
     def test_single_chunk(self):
-        exceeded, sim = _max_chunk_pair_overlap(
-            [{"content": "hello world"}], threshold=0.5
-        )
+        exceeded, sim = _max_chunk_pair_overlap([{"content": "hello world"}], threshold=0.5)
         assert not exceeded
         assert sim == 0.0
 

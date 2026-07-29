@@ -107,9 +107,7 @@ def _is_retryable_dataset_load_error(exc: Exception) -> bool:
 
 def _load_dataset_with_retries(load_dataset: Any, *args: Any, **kwargs: Any) -> Any:
     max_attempts = max(1, int(os.environ.get("QWEN3_OCR_LOAD_RETRIES", "5")))
-    delay_seconds = max(
-        0.0, float(os.environ.get("QWEN3_OCR_LOAD_RETRY_DELAY_SECONDS", "10"))
-    )
+    delay_seconds = max(0.0, float(os.environ.get("QWEN3_OCR_LOAD_RETRY_DELAY_SECONDS", "10")))
 
     for attempt in range(1, max_attempts + 1):
         try:
@@ -148,15 +146,11 @@ class Qwen3OCREnv(BaseEnv):
         }
 
     @classmethod
-    def load_dataset(
-        cls, dataset_name: str | None = None, **kwargs: Any
-    ) -> tuple[Any, None]:
+    def load_dataset(cls, dataset_name: str | None = None, **kwargs: Any) -> tuple[Any, None]:
         from datasets import load_dataset
 
         if dataset_name is None:
-            dataset_name = os.environ.get(
-                "INFINITY_DOC_DATASET", "infly/Infinity-Doc-55K"
-            )
+            dataset_name = os.environ.get("INFINITY_DOC_DATASET", "infly/Infinity-Doc-55K")
             kwargs.setdefault("name", "default")
             kwargs.setdefault("split", os.environ.get("INFINITY_DOC_SPLIT", "train"))
         return _load_dataset_with_retries(load_dataset, dataset_name, **kwargs), None
@@ -186,9 +180,7 @@ class Qwen3OCREnv(BaseEnv):
 
     @classmethod
     def dataset_preprocess(cls, example: Any, **kwargs: Any) -> Example[JsonRow]:
-        prompt = str(
-            example.get("prompt") or example.get("problem") or OCR_PROMPT_TEMPLATE
-        ).strip()
+        prompt = str(example.get("prompt") or example.get("problem") or OCR_PROMPT_TEMPLATE).strip()
         images = [
             str(image)
             for image in _as_list(example.get("images") or example.get("image_urls"))
@@ -201,9 +193,7 @@ class Qwen3OCREnv(BaseEnv):
             content.append({"type": "text", "text": prompt})
         payload: JsonRow = {
             "prompt_messages": [{"role": "user", "content": content}],
-            "answer": (
-                example.get("answer") or example.get("label") or example.get("gt") or ""
-            ),
+            "answer": (example.get("answer") or example.get("label") or example.get("gt") or ""),
             "metadata": example.get("metadata") or {},
         }
         return Example(
@@ -237,9 +227,7 @@ class Qwen3OCREnv(BaseEnv):
             row = dict(row)
             row_id = row.get("id")
             metadata = {
-                "source": os.environ.get(
-                    "INFINITY_DOC_DATASET", "infly/Infinity-Doc-55K"
-                ),
+                "source": os.environ.get("INFINITY_DOC_DATASET", "infly/Infinity-Doc-55K"),
                 "config": "default",
                 "split": os.environ.get("INFINITY_DOC_SPLIT", "train"),
                 "source_index_after_shuffle": source_indices[row_idx],
@@ -250,9 +238,7 @@ class Qwen3OCREnv(BaseEnv):
                 {
                     "prompt": OCR_PROMPT_TEMPLATE,
                     "images": [
-                        cls._image_to_reference(
-                            row.get("image"), image_dir, row_id, row_idx
-                        )
+                        cls._image_to_reference(row.get("image"), image_dir, row_id, row_idx)
                     ],
                     "answer": str(row.get("gt") or ""),
                     "metadata": metadata,
@@ -262,21 +248,13 @@ class Qwen3OCREnv(BaseEnv):
 
     @staticmethod
     def _dataset_root() -> Path:
-        return Path(
-            os.environ.get(
-                "INFINITY_DOC_DATASET_DIR", "/root/datasets/infinity_doc_55k"
-            )
-        )
+        return Path(os.environ.get("INFINITY_DOC_DATASET_DIR", "/root/datasets/infinity_doc_55k"))
 
     @staticmethod
-    def _image_to_reference(
-        image: Any, image_dir: Path, row_id: Any, row_idx: int
-    ) -> str:
+    def _image_to_reference(image: Any, image_dir: Path, row_id: Any, row_idx: int) -> str:
         image_dir.mkdir(parents=True, exist_ok=True)
         safe_id = str(row_id if row_id is not None else row_idx)
-        safe_id = "".join(
-            ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in safe_id
-        )
+        safe_id = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in safe_id)
         output_path = image_dir / f"{safe_id}.png"
 
         if hasattr(image, "convert") and hasattr(image, "save"):
@@ -396,9 +374,7 @@ def generate_data(*, force: bool) -> None:
     EVAL_FILE.write_text(
         "".join(json.dumps(row) + "\n" for row in _synthetic_rows(EVAL_COUNT, rng))
     )
-    print(
-        f"data: wrote {TRAIN_COUNT} train / {EVAL_COUNT} eval synthetic pages to {DATA_DIR}"
-    )
+    print(f"data: wrote {TRAIN_COUNT} train / {EVAL_COUNT} eval synthetic pages to {DATA_DIR}")
 
 
 def _local_rows(path: Path) -> list[dict]:
@@ -437,9 +413,7 @@ def launch(*, assume_yes: bool) -> str | None:
         raise SystemExit("data stage has not run; `python main.py data` first")
     run_name = f"qwen3-ocr-{uuid.uuid4().hex[:8]}"
     if not assume_yes:
-        reply = input(
-            f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] "
-        )
+        reply = input(f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] ")
         if reply.strip().lower() not in ("y", "yes"):
             print("Launch aborted.")
             return None
@@ -481,9 +455,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=["data", "validate", "launch", "all"],
         help="Stage to run (default: all = data → validate, then STOP).",
     )
-    parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
+    parser.add_argument("--force", action="store_true", help="Regenerate datasets even if present.")
     parser.add_argument(
         "-y",
         "--yes",

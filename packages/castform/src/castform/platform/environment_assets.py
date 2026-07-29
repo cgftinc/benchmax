@@ -161,9 +161,9 @@ def upload_assets(
         meta_local = tmpdir / "env-metadata.json"
         cls_local.write_bytes(bundle.pickled)
         meta_local.write_bytes(bundle.metadata.to_json_bytes())
-        env_cls_path = storage_client.upload_local_file(
-            f"{env_prefix}/env-cls.pkl", cls_local
-        )["blobPath"]
+        env_cls_path = storage_client.upload_local_file(f"{env_prefix}/env-cls.pkl", cls_local)[
+            "blobPath"
+        ]
         env_metadata_path = storage_client.upload_local_file(
             f"{env_prefix}/env-metadata.json", meta_local
         )["blobPath"]
@@ -200,9 +200,7 @@ def _collect_dataset_files(
             raise ValueError("dataset_files names must be non-empty strings")
         _validate_blob_path(name, source="dataset_files")
         if name in files:
-            raise ValueError(
-                f"dataset_files name {name!r} collides with a generated JSONL split"
-            )
+            raise ValueError(f"dataset_files name {name!r} collides with a generated JSONL split")
         if isinstance(content, Path):
             files[name] = content.read_bytes()
         elif isinstance(content, str):
@@ -211,8 +209,7 @@ def _collect_dataset_files(
             files[name] = content
         else:
             raise TypeError(
-                f"dataset_files[{name!r}] must be bytes, str, or Path, got "
-                f"{type(content).__name__}"
+                f"dataset_files[{name!r}] must be bytes, str, or Path, got {type(content).__name__}"
             )
     return files
 

@@ -104,9 +104,7 @@ class Geo3KEnv(BaseEnv):
         rows = rows.shuffle(seed=self._sample_seed)
         configured_limit = self._limits[split]
         requested_limit = validate_max_examples(max_examples)
-        limits = [
-            limit for limit in (configured_limit, requested_limit) if limit is not None
-        ]
+        limits = [limit for limit in (configured_limit, requested_limit) if limit is not None]
         limit = min(limits) if limits else None
         if limit is not None:
             if limit <= 0:
@@ -193,9 +191,7 @@ class _DiagramContext:
         payload = getattr(self._example, "payload", None) or {}
         source = _first_image_source(payload)
         if source is None:
-            raise RolloutFailure(
-                "harness_error", "geo3k example carries no diagram image"
-            )
+            raise RolloutFailure("harness_error", "geo3k example carries no diagram image")
         try:
             self._env._images[self._rollout_id] = _load_image(source)
         except Exception as exc:
@@ -227,9 +223,7 @@ def _load_image(source: str) -> Any:
         _, _, encoded = source.partition("base64,")
         raw = base64.b64decode(encoded)
     else:
-        with urllib.request.urlopen(
-            source, timeout=_URL_FETCH_TIMEOUT_SECONDS
-        ) as response:
+        with urllib.request.urlopen(source, timeout=_URL_FETCH_TIMEOUT_SECONDS) as response:
             raw = response.read()
     image = Image.open(io.BytesIO(raw))
     image.load()
@@ -292,9 +286,7 @@ def _load_rows(dataset_name: str, *, split: str, cache_dir: Path) -> Any:
 
 def _final_boxed_answer(rollout: BaseRollout) -> str | None:
     for message in reversed(rollout.messages):
-        if message.get("role") != "assistant" or not isinstance(
-            message.get("content"), str
-        ):
+        if message.get("role") != "assistant" or not isinstance(message.get("content"), str):
             continue
         text = message["content"]
         start = text.rfind("\\boxed{")
@@ -325,9 +317,7 @@ class Geo3KDataset(Dataset[JsonRow]):
         *,
         system_prompt: str | None = None,
     ) -> None:
-        super().__init__(
-            [_example(dict(row), system_prompt=system_prompt) for row in rows]
-        )
+        super().__init__([_example(dict(row), system_prompt=system_prompt) for row in rows])
 
 
 def _example(row: JsonRow, *, system_prompt: str | None = None) -> Example[JsonRow]:
@@ -394,9 +384,7 @@ def generate_data(*, force: bool) -> None:
     env = Geo3KEnv(**ENV_ARGS)
     train = asyncio.run(env.create_dataset("train", DATA_DIR))
     evaluation = asyncio.run(env.create_dataset("eval", DATA_DIR))
-    print(
-        f"data: fetched {len(train)} train / {len(evaluation)} eval examples into {marker}"
-    )
+    print(f"data: fetched {len(train)} train / {len(evaluation)} eval examples into {marker}")
 
 
 def validate() -> Any:
@@ -427,9 +415,7 @@ def launch(*, assume_yes: bool) -> str | None:
 
     run_name = f"geo3k-{uuid.uuid4().hex[:8]}"
     if not assume_yes:
-        reply = input(
-            f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] "
-        )
+        reply = input(f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] ")
         if reply.strip().lower() not in ("y", "yes"):
             print("Launch aborted.")
             return None
@@ -466,9 +452,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=["data", "validate", "launch", "all"],
         help="Stage to run (default: all = data → validate, then STOP).",
     )
-    parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
+    parser.add_argument("--force", action="store_true", help="Regenerate datasets even if present.")
     parser.add_argument(
         "-y",
         "--yes",

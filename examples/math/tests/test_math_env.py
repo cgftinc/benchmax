@@ -31,10 +31,7 @@ async def test_dataset_builds_stable_base_env_examples(tmp_path: Path) -> None:
     assert len(dataset) == 1
     assert dataset[0].payload["prompt_messages"][-1]["content"] == "6 × 7"
     assert dataset[0].payload["answer"] == "42"
-    assert (
-        dataset[0].id
-        == (await env.create_dataset("train", tmp_path, max_examples=1))[0].id
-    )
+    assert dataset[0].id == (await env.create_dataset("train", tmp_path, max_examples=1))[0].id
 
 
 @pytest.mark.asyncio
@@ -46,9 +43,7 @@ async def test_tools_cover_arithmetic_and_pad_successful_results(monkeypatch) ->
     assert names == ["add", "subtract", "multiply", "divide"]
     result = await env.run_tool("rollout", "multiply", a=6, b=7)
     assert result == f"42\n{'x' * 1_000}"
-    assert await env.run_tool("rollout", "divide", a=1, b=0) == (
-        "error: division by zero"
-    )
+    assert await env.run_tool("rollout", "divide", a=1, b=0) == ("error: division by zero")
 
 
 class _AlwaysPad:

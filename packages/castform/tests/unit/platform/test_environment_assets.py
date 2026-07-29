@@ -179,9 +179,7 @@ def test_upload_assets_respects_env_prefix_override():
         "custom/env/path/env-metadata.json",
     }
     # Datasets still use the default layout.
-    assert all(
-        p.startswith("datasets/run-x/") for p in paths if p.startswith("datasets/")
-    )
+    assert all(p.startswith("datasets/run-x/") for p in paths if p.startswith("datasets/"))
 
 
 def test_upload_assets_respects_dataset_prefix_override():
@@ -247,9 +245,7 @@ def test_upload_assets_api_key_optional_resolves_via_seam(monkeypatch):
         captured["base_url"] = base_url
         return FakeStorageClient()
 
-    monkeypatch.setattr(
-        "castform.platform.environment_assets.StorageClient", _fake_storage_client
-    )
+    monkeypatch.setattr("castform.platform.environment_assets.StorageClient", _fake_storage_client)
 
     result = upload_assets(
         bundle=_bundle(),
@@ -349,9 +345,7 @@ def test_upload_path_changes_when_only_bundle_metadata_changes():
     )
 
     env_directories = {
-        path.rsplit("/", 1)[0]
-        for path, _ in storage.uploads
-        if path.startswith("envs/")
+        path.rsplit("/", 1)[0] for path, _ in storage.uploads if path.startswith("envs/")
     }
     assert env_directories == {
         f"envs/metadata-identity/{bundle_digest(first)[:16]}",

@@ -92,22 +92,24 @@ class TestDetectSystemPrompt:
 class TestDetectTools:
     def test_detects_valid_tools(self):
         traces = [
-            _trace([
-                _msg("user", "Q"),
-                _msg(
-                    "assistant",
-                    "",
-                    tool_calls=[
-                        ToolCall(name="search", arguments='{"q": "test"}'),
-                        ToolCall(name="search", arguments='{"q": "other"}'),
-                    ],
-                ),
-                _msg(
-                    "assistant",
-                    "",
-                    tool_calls=[ToolCall(name="lookup", arguments='{"id": "1"}')],
-                ),
-            ])
+            _trace(
+                [
+                    _msg("user", "Q"),
+                    _msg(
+                        "assistant",
+                        "",
+                        tool_calls=[
+                            ToolCall(name="search", arguments='{"q": "test"}'),
+                            ToolCall(name="search", arguments='{"q": "other"}'),
+                        ],
+                    ),
+                    _msg(
+                        "assistant",
+                        "",
+                        tool_calls=[ToolCall(name="lookup", arguments='{"id": "1"}')],
+                    ),
+                ]
+            )
         ]
         result = detect_tools(traces)
         assert len(result.tools) == 2
@@ -120,18 +122,20 @@ class TestDetectTools:
 
     def test_drops_invalid_tool_names(self):
         traces = [
-            _trace([
-                _msg("user", "Q"),
-                _msg(
-                    "assistant",
-                    "",
-                    tool_calls=[
-                        ToolCall(name="valid_tool", arguments="{}"),
-                        ToolCall(name="invalid name!", arguments="{}"),
-                        ToolCall(name="import os\nos.system('bad')", arguments="{}"),
-                    ],
-                ),
-            ])
+            _trace(
+                [
+                    _msg("user", "Q"),
+                    _msg(
+                        "assistant",
+                        "",
+                        tool_calls=[
+                            ToolCall(name="valid_tool", arguments="{}"),
+                            ToolCall(name="invalid name!", arguments="{}"),
+                            ToolCall(name="import os\nos.system('bad')", arguments="{}"),
+                        ],
+                    ),
+                ]
+            )
         ]
         result = detect_tools(traces)
         assert len(result.tools) == 1
@@ -139,19 +143,21 @@ class TestDetectTools:
 
     def test_filters_invalid_argument_keys(self):
         traces = [
-            _trace([
-                _msg("user", "Q"),
-                _msg(
-                    "assistant",
-                    "",
-                    tool_calls=[
-                        ToolCall(
-                            name="search",
-                            arguments='{"valid_key": 1, "bad key!": 2, "also-bad": 3}',
-                        ),
-                    ],
-                ),
-            ])
+            _trace(
+                [
+                    _msg("user", "Q"),
+                    _msg(
+                        "assistant",
+                        "",
+                        tool_calls=[
+                            ToolCall(
+                                name="search",
+                                arguments='{"valid_key": 1, "bad key!": 2, "also-bad": 3}',
+                            ),
+                        ],
+                    ),
+                ]
+            )
         ]
         result = detect_tools(traces)
         tool = result.tools[0]
@@ -164,13 +170,17 @@ class TestDetectTools:
 
     def test_limits_sample_args_to_3(self):
         traces = [
-            _trace([
-                _msg("user", "Q"),
-                _msg(
-                    "assistant", "",
-                    tool_calls=[ToolCall(name="search", arguments=f'{{"q": "test{i}"}}')]
-                ),
-            ], trace_id=f"t{i}")
+            _trace(
+                [
+                    _msg("user", "Q"),
+                    _msg(
+                        "assistant",
+                        "",
+                        tool_calls=[ToolCall(name="search", arguments=f'{{"q": "test{i}"}}')],
+                    ),
+                ],
+                trace_id=f"t{i}",
+            )
             for i in range(10)
         ]
         result = detect_tools(traces)
@@ -186,11 +196,13 @@ class TestDetectTools:
 class TestBuildTrainingExamples:
     def test_simple_conversation(self):
         traces = [
-            _trace([
-                _msg("system", "Be helpful"),
-                _msg("user", "What is 2+2?"),
-                _msg("assistant", "4"),
-            ])
+            _trace(
+                [
+                    _msg("system", "Be helpful"),
+                    _msg("user", "What is 2+2?"),
+                    _msg("assistant", "4"),
+                ]
+            )
         ]
         # Default: include_system_prompt=False (system prompt comes from BaseEnv)
         examples = build_training_examples(traces)
@@ -204,11 +216,13 @@ class TestBuildTrainingExamples:
 
     def test_includes_system_prompt_when_requested(self):
         traces = [
-            _trace([
-                _msg("system", "Be helpful"),
-                _msg("user", "Q"),
-                _msg("assistant", "A"),
-            ])
+            _trace(
+                [
+                    _msg("system", "Be helpful"),
+                    _msg("user", "Q"),
+                    _msg("assistant", "A"),
+                ]
+            )
         ]
         examples = build_training_examples(traces, include_system_prompt=True)
         assert len(examples) == 1
@@ -217,12 +231,14 @@ class TestBuildTrainingExamples:
 
     def test_multi_turn_cumulative_context(self):
         traces = [
-            _trace([
-                _msg("user", "Q1"),
-                _msg("assistant", "A1"),
-                _msg("user", "Q2"),
-                _msg("assistant", "A2"),
-            ])
+            _trace(
+                [
+                    _msg("user", "Q1"),
+                    _msg("assistant", "A1"),
+                    _msg("user", "Q2"),
+                    _msg("assistant", "A2"),
+                ]
+            )
         ]
         examples = build_training_examples(traces)
         assert len(examples) == 2
@@ -233,16 +249,18 @@ class TestBuildTrainingExamples:
 
     def test_tool_calls_bundled_with_assistant(self):
         traces = [
-            _trace([
-                _msg("user", "Search for X"),
-                _msg(
-                    "assistant",
-                    "",
-                    tool_calls=[ToolCall(name="search", arguments='{"q": "X"}')],
-                ),
-                _msg("tool", "Found X", name="search", tool_call_id="tc1"),
-                _msg("assistant", "Here is what I found about X."),
-            ])
+            _trace(
+                [
+                    _msg("user", "Search for X"),
+                    _msg(
+                        "assistant",
+                        "",
+                        tool_calls=[ToolCall(name="search", arguments='{"q": "X"}')],
+                    ),
+                    _msg("tool", "Found X", name="search", tool_call_id="tc1"),
+                    _msg("assistant", "Here is what I found about X."),
+                ]
+            )
         ]
         examples = build_training_examples(traces)
         assert len(examples) == 2
@@ -403,9 +421,7 @@ class TestHeuristicFilters:
 
 
 class TestFilterByToolCalls:
-    def _make_tool_example(
-        self, tool_name: str, content: str = ""
-    ) -> TrainingExample:
+    def _make_tool_example(self, tool_name: str, content: str = "") -> TrainingExample:
         return TrainingExample(
             prompt_messages=[_msg("user", "Q")],
             completion_messages=[
@@ -741,8 +757,7 @@ class TestDeduplicateCompletions:
 
     def test_exact_duplicates_clustered(self):
         examples = [
-            self._make_example("Your order has been shipped", f"t{i}", 0)
-            for i in range(10)
+            self._make_example("Your order has been shipped", f"t{i}", 0) for i in range(10)
         ]
         result = deduplicate_completions(examples, max_per_cluster=3)
         assert len(result.kept) == 3
@@ -777,11 +792,9 @@ class TestDeduplicateCompletions:
         assert len(result.kept) == 3
 
     def test_deterministic_regardless_of_input_order(self):
-        examples = [
-            self._make_example("Same response here", f"t{i}", 0)
-            for i in range(5)
-        ]
+        examples = [self._make_example("Same response here", f"t{i}", 0) for i in range(5)]
         import random
+
         shuffled = list(examples)
         random.Random(99).shuffle(shuffled)
         r1 = deduplicate_completions(examples, max_per_cluster=2)
@@ -791,10 +804,7 @@ class TestDeduplicateCompletions:
         assert kept_ids_1 == kept_ids_2
 
     def test_drop_reason_has_cluster_id(self):
-        examples = [
-            self._make_example("Same thing", f"t{i}", 0)
-            for i in range(5)
-        ]
+        examples = [self._make_example("Same thing", f"t{i}", 0) for i in range(5)]
         result = deduplicate_completions(examples, max_per_cluster=1)
         for _, reason in result.dropped:
             assert reason.filter == "dedup"
@@ -895,7 +905,10 @@ class TestApplyFilters:
             TrainingExample(
                 prompt_messages=[_msg("user", "Q")],
                 completion_messages=[_msg("assistant", "OK")],  # too short
-                prompt="Q", ground_truth="OK", trace_id="t0", turn_index=0,
+                prompt="Q",
+                ground_truth="OK",
+                trace_id="t0",
+                turn_index=0,
             ),
         ] + self._make_examples(5)
 
@@ -908,23 +921,35 @@ class TestApplyFilters:
             TrainingExample(
                 prompt_messages=[_msg("user", "Q")],
                 completion_messages=[_msg("assistant", "OK")],  # 2 chars, dropped by heuristic
-                prompt="Q", ground_truth="OK", trace_id="t0", turn_index=0,
+                prompt="Q",
+                ground_truth="OK",
+                trace_id="t0",
+                turn_index=0,
             ),
             TrainingExample(
                 prompt_messages=[_msg("user", "Q")],
                 completion_messages=[
                     # 15 chars, survives heuristic(10)
-                    TraceMessage(role="assistant", content="Looking up user",
-                                 tool_calls=[ToolCall(name="get_user", arguments="{}")])
+                    TraceMessage(
+                        role="assistant",
+                        content="Looking up user",
+                        tool_calls=[ToolCall(name="get_user", arguments="{}")],
+                    )
                 ],
-                prompt="Q", ground_truth="tool", trace_id="t1", turn_index=0,
+                prompt="Q",
+                ground_truth="tool",
+                trace_id="t1",
+                turn_index=0,
             ),
         ] + self._make_examples(3, content_len=100)
 
-        result = apply_filters(examples, [
-            ("heuristic", {"min_completion_chars": 10}),
-            ("tool_calls", {"exclude_tools": ["get_user"]}),
-        ])
+        result = apply_filters(
+            examples,
+            [
+                ("heuristic", {"min_completion_chars": 10}),
+                ("tool_calls", {"exclude_tools": ["get_user"]}),
+            ],
+        )
         assert result.summary == {"heuristic": 1, "tool_calls": 1}
         assert len(result.kept) == 3
 
@@ -934,10 +959,13 @@ class TestApplyFilters:
 
     def test_rejects_bad_ordering(self):
         with pytest.raises(ValueError, match="Per-example filter.*after dataset-level"):
-            apply_filters([], [
-                ("dedup", {}),
-                ("heuristic", {"min_completion_chars": 50}),
-            ])
+            apply_filters(
+                [],
+                [
+                    ("dedup", {}),
+                    ("heuristic", {"min_completion_chars": 50}),
+                ],
+            )
 
 
 class TestValidIdentifierRegex:

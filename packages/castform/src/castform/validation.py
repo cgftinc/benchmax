@@ -42,8 +42,7 @@ class ValidationReport:
             not self.local_errors
             and _outcomes_executed(self.local)
             and (
-                self.remote is None
-                or (not self.remote_errors and _outcomes_executed(self.remote))
+                self.remote is None or (not self.remote_errors and _outcomes_executed(self.remote))
             )
         )
 
@@ -102,9 +101,7 @@ async def validate_environment(
     )
 
     if set(local) != set(rollout_ids):
-        raise ValueError(
-            f"local validation returned unexpected rollout IDs: {sorted(local)}"
-        )
+        raise ValueError(f"local validation returned unexpected rollout IDs: {sorted(local)}")
 
     remote: dict[str, RolloutOutcome] | None = None
     if remote_assets is not None:
@@ -121,9 +118,7 @@ async def validate_environment(
             verbose=False,
         )
         if len(events) != 2:
-            raise ValueError(
-                f"hosted validation returned {len(events)} rollouts; expected 2"
-            )
+            raise ValueError(f"hosted validation returned {len(events)} rollouts; expected 2")
         zero_rewards = {str(key): 0.0 for key in env.reward_keys}
         remote = {}
         remote_errors: dict[str, str] = {}
@@ -217,9 +212,7 @@ async def _run_local_validation(
                     try:
                         capture = await session_client.collect(session)
                     except Exception as error:
-                        local_errors[session.session_id] = (
-                            f"model trace collection failed: {error}"
-                        )
+                        local_errors[session.session_id] = f"model trace collection failed: {error}"
                     else:
                         collected_ids.add(session.session_id)
                         if not capture.get("num_calls"):
@@ -235,9 +228,7 @@ async def _run_local_validation(
             f"local validation timed out after {timeout_seconds:g}s during {stage}"
         ) from error
     finally:
-        outstanding = [
-            session for session in sessions if session.session_id not in collected_ids
-        ]
+        outstanding = [session for session in sessions if session.session_id not in collected_ids]
         if outstanding:
             results = await asyncio.gather(
                 *(session_client.discard(session) for session in outstanding),
@@ -276,8 +267,7 @@ def _outcomes_executed(outcomes: dict[str, RolloutOutcome]) -> bool:
     """Accept completed work and intentional budgets; reject execution defects."""
 
     return bool(outcomes) and all(
-        _termination_is_non_error(outcome.termination_reason)
-        for outcome in outcomes.values()
+        _termination_is_non_error(outcome.termination_reason) for outcome in outcomes.values()
     )
 
 

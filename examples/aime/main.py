@@ -100,9 +100,7 @@ def _constructor_args() -> dict[str, Any]:
 
 def generate_data(*, force: bool) -> None:
     del force
-    print(
-        "data: aime/aime@latest resolves through Harbor at runtime — nothing to download"
-    )
+    print("data: aime/aime@latest resolves through Harbor at runtime — nothing to download")
 
 
 def validate() -> Any:
@@ -135,9 +133,7 @@ def launch(*, assume_yes: bool) -> str | None:
 
     run_name = f"aime-{uuid.uuid4().hex[:8]}"
     if not assume_yes:
-        reply = input(
-            f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] "
-        )
+        reply = input(f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] ")
         if reply.strip().lower() not in ("y", "yes"):
             print("Launch aborted.")
             return None
@@ -173,9 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=["data", "validate", "launch", "all"],
         help="Stage to run (default: all = data → validate, then STOP).",
     )
-    parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
+    parser.add_argument("--force", action="store_true", help="Regenerate datasets even if present.")
     parser.add_argument(
         "-y",
         "--yes",

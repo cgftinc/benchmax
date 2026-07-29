@@ -417,10 +417,7 @@ class TestSelectDiverse:
             "artemis ares hephaestus hermes hestia",
             "demeter dionysus persephone hades iris",
         ]
-        return [
-            FakeChunk(content=vocabs[i % len(vocabs)] + f" unique{i}" * 5)
-            for i in range(n)
-        ]
+        return [FakeChunk(content=vocabs[i % len(vocabs)] + f" unique{i}" * 5) for i in range(n)]
 
     def test_returns_n_when_pool_larger(self):
         pool = self._make_distinct_chunks(20)
@@ -475,16 +472,13 @@ class TestSelectDiverse:
 
     def test_stratification_uneven_groups(self):
         """Stratification with uneven group sizes should not crash."""
-        pool = (
-            [
-                FakeChunk(content=f"big group token{i} word{i}", metadata=(("file", "big.md"),))
-                for i in range(20)
-            ]
-            + [
-                FakeChunk(content=f"small group item{i}", metadata=(("file", "small.md"),))
-                for i in range(2)
-            ]
-        )
+        pool = [
+            FakeChunk(content=f"big group token{i} word{i}", metadata=(("file", "big.md"),))
+            for i in range(20)
+        ] + [
+            FakeChunk(content=f"small group item{i}", metadata=(("file", "small.md"),))
+            for i in range(2)
+        ]
         result = select_diverse(
             pool,
             5,

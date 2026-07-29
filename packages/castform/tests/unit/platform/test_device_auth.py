@@ -62,9 +62,7 @@ def test_poll_pending_then_success(monkeypatch):
         ),
     )
     slept: list[float] = []
-    tok = poll_for_token(
-        "https://auth.x", "dc", interval=5, sleep=slept.append, now=lambda: 0.0
-    )
+    tok = poll_for_token("https://auth.x", "dc", interval=5, sleep=slept.append, now=lambda: 0.0)
     assert tok["access_token"] == "sess_abc"
     assert slept == [5, 5]  # slept once between each pending poll
 
@@ -79,16 +77,12 @@ def test_poll_slow_down_backs_off(monkeypatch):
         ),
     )
     slept: list[float] = []
-    poll_for_token(
-        "https://auth.x", "dc", interval=5, sleep=slept.append, now=lambda: 0.0
-    )
+    poll_for_token("https://auth.x", "dc", interval=5, sleep=slept.append, now=lambda: 0.0)
     assert slept == [10]  # interval bumped 5 -> 10 on slow_down
 
 
 def test_poll_denied_raises(monkeypatch):
-    monkeypatch.setattr(
-        httpx, "post", _post_returning(_Resp(400, {"error": "access_denied"}))
-    )
+    monkeypatch.setattr(httpx, "post", _post_returning(_Resp(400, {"error": "access_denied"})))
     with pytest.raises(DeviceAuthError, match="access_denied"):
         poll_for_token("https://auth.x", "dc", sleep=lambda _s: None, now=lambda: 0.0)
 

@@ -73,9 +73,7 @@ Blue windows wake into morning
     outcomes = await env.run_group(requests)
 
     assert set(outcomes) == set(poems)
-    assert all(
-        outcome.termination_reason == "finished" for outcome in outcomes.values()
-    )
+    assert all(outcome.termination_reason == "finished" for outcome in outcomes.values())
     assert outcomes["poem-1"].rewards["quality"] == pytest.approx(0.6)
     assert outcomes["poem-2"].rewards["quality"] == pytest.approx(0.5)
     assert all(
@@ -144,9 +142,7 @@ Blue windows wake into morning
 
     outcomes = await env.run_group(requests)
 
-    assert all(
-        outcome.termination_reason == "judge_error" for outcome in outcomes.values()
-    )
+    assert all(outcome.termination_reason == "judge_error" for outcome in outcomes.values())
     assert all(
         outcome.rewards
         == {

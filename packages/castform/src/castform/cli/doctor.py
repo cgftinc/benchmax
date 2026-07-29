@@ -93,9 +93,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print()
     print("  env-dependency extras (optional — install only what your main.py uses)")
     for name, present in info["extras"].items():
-        detail = (
-            "installed" if present else f"absent — uv pip install 'castform[{name}]'"
-        )
+        detail = "installed" if present else f"absent — uv pip install 'castform[{name}]'"
         print(_row(None if not present else True, f"[{name}]", detail))
     print()
 
@@ -109,8 +107,6 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 def register(sub: argparse._SubParsersAction) -> None:
     """Attach the top-level `doctor` verb."""
-    p = sub.add_parser(
-        "doctor", help="Check interpreter, sign-in, and env deps are ready"
-    )
+    p = sub.add_parser("doctor", help="Check interpreter, sign-in, and env deps are ready")
     p.add_argument("--json", action="store_true", help="Emit raw JSON")
     p.set_defaults(func=_cmd_doctor)

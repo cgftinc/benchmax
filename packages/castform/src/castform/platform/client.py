@@ -387,9 +387,7 @@ class TrainerClient:
             "dataset_path",
         }
         args: dict[str, Any] = {
-            key: value
-            for key, value in (launcher_args or {}).items()
-            if key not in reserved_paths
+            key: value for key, value in (launcher_args or {}).items() if key not in reserved_paths
         }
         args.update(
             {
@@ -460,11 +458,7 @@ class TrainerClient:
         specs = self.list_launch_args()
         print(_hdr("Launch args accepted by POST /train/runs/launch"))
         for spec in specs:
-            req = (
-                _RED + "required" + _RESET
-                if spec.required
-                else _CYAN + "optional" + _RESET
-            )
+            req = _RED + "required" + _RESET if spec.required else _CYAN + "optional" + _RESET
             header = f"  {_BOLD}{spec.name}{_RESET} ({spec.type}, {req})"
             bits: list[str] = []
             if spec.default is not None:
@@ -510,18 +504,14 @@ class TrainerClient:
         self._handle_response_errors(response)
         return response.json().get("events", [])
 
-    def get_run_scalars(
-        self, run_id: str, mode: str
-    ) -> dict[str, list[dict[str, Any]]]:
+    def get_run_scalars(self, run_id: str, mode: str) -> dict[str, list[dict[str, Any]]]:
         """GET /v1/train/runs/{id}/scalars?mode= — {scalarName: [{step, value}]}.
 
         ``mode`` is required by the server (400 if omitted). Discover the valid
         set from :meth:`get_run_details` — ``modes`` is dynamic per run, not a
         fixed enum. An unknown mode returns ``{}`` (not an error).
         """
-        response = self._http_client.get(
-            f"/v1/train/runs/{run_id}/scalars", params={"mode": mode}
-        )
+        response = self._http_client.get(f"/v1/train/runs/{run_id}/scalars", params={"mode": mode})
         self._handle_response_errors(response)
         return response.json()
 
@@ -531,9 +521,7 @@ class TrainerClient:
         """GET /v1/train/runs/{id}/environment-logs — run-level logs, or one
         rollout's when ``rollout_id`` is given."""
         params = {"rolloutId": rollout_id} if rollout_id else None
-        response = self._http_client.get(
-            f"/v1/train/runs/{run_id}/environment-logs", params=params
-        )
+        response = self._http_client.get(f"/v1/train/runs/{run_id}/environment-logs", params=params)
         self._handle_response_errors(response)
         return response.json().get("logs", [])
 
@@ -557,9 +545,7 @@ class TrainerClient:
         params: dict[str, Any] = {"mode": mode, "page": page, "limit": limit}
         if external_eval_id:
             params["externalEvalId"] = external_eval_id
-        response = self._http_client.get(
-            f"/v1/train/runs/{run_id}/rollouts/summary", params=params
-        )
+        response = self._http_client.get(f"/v1/train/runs/{run_id}/rollouts/summary", params=params)
         self._handle_response_errors(response)
         return _rollout_list(response.json())
 
@@ -576,9 +562,7 @@ class TrainerClient:
         params: dict[str, Any] = {"mode": mode, "promptMessageId": prompt_message_id}
         if external_eval_id:
             params["externalEvalId"] = external_eval_id
-        response = self._http_client.get(
-            f"/v1/train/runs/{run_id}/rollouts/heatmap", params=params
-        )
+        response = self._http_client.get(f"/v1/train/runs/{run_id}/rollouts/heatmap", params=params)
         self._handle_response_errors(response)
         return _rollout_list(response.json())
 
@@ -586,9 +570,7 @@ class TrainerClient:
         """GET .../rollouts/{rolloutId}/details — ``{promptMessages, messages,
         rewards[{name,value}], totalReward, step}``. Gold/ground_truth is NOT in the
         payload — join the local dataset by prompt text."""
-        response = self._http_client.get(
-            f"/v1/train/runs/{run_id}/rollouts/{rollout_id}/details"
-        )
+        response = self._http_client.get(f"/v1/train/runs/{run_id}/rollouts/{rollout_id}/details")
         self._handle_response_errors(response)
         return response.json()
 
@@ -605,9 +587,7 @@ class TrainerClient:
         self._handle_response_errors(response)
         return response.json()
 
-    def get_rollout_component_averages(
-        self, run_id: str, *, mode: str = "eval"
-    ) -> dict[str, Any]:
+    def get_rollout_component_averages(self, run_id: str, *, mode: str = "eval") -> dict[str, Any]:
         """GET .../rollouts/component-averages — latest-step per-component means
         (can be all-null; for a trajectory use ``get_run_scalars`` instead)."""
         response = self._http_client.get(
@@ -770,11 +750,7 @@ class RolloutClient:
                 etype = event.get("event")
                 if etype == "batch_started":
                     if verbose:
-                        print(
-                            _info(
-                                f"  group batch started ({event.get('total')} rollouts)"
-                            )
-                        )
+                        print(_info(f"  group batch started ({event.get('total')} rollouts)"))
                 elif etype == "rollout_completed":
                     completed.append(event)
                 elif etype == "worker_error":

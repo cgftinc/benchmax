@@ -1,12 +1,10 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from aime_agent import MINI_SWE_AGENT_VERSION
+from aime_agent import MINI_SWE_AGENT_VERSION, prefetch_wheels
 from benchmax.bundle import dump_bundle, load_bundle
 from benchmax.envs.harbor import BundledHarborAgent, ModalCredentials
 from harbor import EnvironmentType
-
-from aime_agent import MINI_SWE_AGENT_VERSION, prefetch_wheels
 from main import AimeMiniSweHarborEnv
 
 

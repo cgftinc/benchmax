@@ -232,9 +232,7 @@ class VendoredMiniSweAgent(MiniSweAgent):
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
-        await self._upload_source(
-            environment, "mini_swe_probe.py", _CONTAINER_PROBE_PATH
-        )
+        await self._upload_source(environment, "mini_swe_probe.py", _CONTAINER_PROBE_PATH)
 
     @override
     async def run(
@@ -292,10 +290,7 @@ class UpstreamMiniSweAgent(VendoredMiniSweAgent):
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
-        cache = (
-            Path(tempfile.gettempdir())
-            / f"miniswe-upstream-wheels-{MINI_SWE_AGENT_VERSION}"
-        )
+        cache = Path(tempfile.gettempdir()) / f"miniswe-upstream-wheels-{MINI_SWE_AGENT_VERSION}"
         wheels = prefetch_wheels(
             _UPSTREAM_LIBS,
             cache=cache,
@@ -303,9 +298,7 @@ class UpstreamMiniSweAgent(VendoredMiniSweAgent):
         )
         await environment.upload_dir(wheels, _CONTAINER_WHEELS_DIR)
         for name in _UPSTREAM_FILES:
-            await self._upload_source(
-                environment, name, f"{_CONTAINER_UPSTREAM_DIR}/{name}"
-            )
+            await self._upload_source(environment, name, f"{_CONTAINER_UPSTREAM_DIR}/{name}")
         await self.exec_as_root(
             environment,
             command=(

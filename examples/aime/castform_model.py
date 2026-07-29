@@ -78,15 +78,11 @@ class CastformToolcallModel:
             },
         )
         try:
-            with urllib.request.urlopen(
-                request, timeout=self.config.request_timeout
-            ) as response:
+            with urllib.request.urlopen(request, timeout=self.config.request_timeout) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             body = error.read().decode(errors="replace")[:2000]
-            raise RuntimeError(
-                f"model call failed: HTTP {error.code}: {body}"
-            ) from error
+            raise RuntimeError(f"model call failed: HTTP {error.code}: {body}") from error
 
     def query(self, messages: list[dict], **kwargs: Any) -> dict:
         response = self._request(messages)

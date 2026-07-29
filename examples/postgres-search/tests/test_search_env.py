@@ -102,9 +102,7 @@ class TestInit:
         assert "Korean legal statutes" in prompt
 
     def test_render_system_prompt_includes_max_search_calls(self):
-        prompt = SearchEnv.render_system_prompt(
-            corpus_description="docs", max_search_calls=4
-        )
+        prompt = SearchEnv.render_system_prompt(corpus_description="docs", max_search_calls=4)
         assert "4 times" in prompt
 
     def test_default_max_search_calls_is_ten(self):
@@ -151,9 +149,7 @@ class TestInit:
             )
 
         assert (
-            CustomEnv.render_system_prompt(
-                corpus_description="Korean law", max_search_calls=7
-            )
+            CustomEnv.render_system_prompt(corpus_description="Korean law", max_search_calls=7)
             == "Search over Korean law with 7 budget."
         )
 
@@ -161,14 +157,10 @@ class TestInit:
         # RAG prompts frequently include JSON few-shot examples. The regex
         # substitution should leave them untouched instead of crashing.
         class CustomEnv(SearchEnv):
-            SYSTEM_PROMPT_TEMPLATE = (
-                'Example: {"answer": "X"} for {corpus_description}.'
-            )
+            SYSTEM_PROMPT_TEMPLATE = 'Example: {"answer": "X"} for {corpus_description}.'
 
         assert (
-            CustomEnv.render_system_prompt(
-                corpus_description="legal docs", max_search_calls=5
-            )
+            CustomEnv.render_system_prompt(corpus_description="legal docs", max_search_calls=5)
             == 'Example: {"answer": "X"} for legal docs.'
         )
 
@@ -176,14 +168,10 @@ class TestInit:
         # An unknown {name} placeholder passes through verbatim rather than
         # raising KeyError, so users can author templates forward-compatibly.
         class CustomEnv(SearchEnv):
-            SYSTEM_PROMPT_TEMPLATE = (
-                "Use {corpus_description}. Future hook: {custom_var}."
-            )
+            SYSTEM_PROMPT_TEMPLATE = "Use {corpus_description}. Future hook: {custom_var}."
 
         assert (
-            CustomEnv.render_system_prompt(
-                corpus_description="legal docs", max_search_calls=5
-            )
+            CustomEnv.render_system_prompt(corpus_description="legal docs", max_search_calls=5)
             == "Use legal docs. Future hook: {custom_var}."
         )
 
@@ -217,9 +205,7 @@ class TestSearchTool:
         class TrackingSearch(StubSearch):
             async def search(self, query, mode="auto", top_k=10):
                 calls.append({"query": query, "mode": mode, "top_k": top_k})
-                return [
-                    {"content": "result", "source": "", "metadata": {}, "score": 1.0}
-                ]
+                return [{"content": "result", "source": "", "metadata": {}, "score": 1.0}]
 
         env = _make_env(search=TrackingSearch())
         asyncio.run(env._search_tool(query="test query", limit=5))
@@ -263,9 +249,7 @@ class TestComputeReward:
                 {
                     "question": "What?",
                     "ground_truth": "42",
-                    "reference_chunks": [
-                        {"content": "...", "metadata": {"file": "doc_a"}}
-                    ],
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
                 },
             )
         )
@@ -374,9 +358,7 @@ class TestComputeReward:
             _compute_reward(
                 env,
                 "r1",
-                _msgs(
-                    "<answer>Found it [Source: statute_a] [Source: statute_b]</answer>"
-                ),
+                _msgs("<answer>Found it [Source: statute_a] [Source: statute_b]</answer>"),
                 {
                     "question": "Q?",
                     "ground_truth": "answer",
@@ -464,9 +446,7 @@ class TestComputeReward:
                 {
                     "question": "Q?",
                     "ground_truth": "full",
-                    "reference_chunks": [
-                        {"content": "...", "metadata": {"file": "doc_a"}}
-                    ],
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
                 },
             )
         )
@@ -492,9 +472,7 @@ class TestComputeReward:
                 {
                     "question": "Q?",
                     "ground_truth": "right",
-                    "reference_chunks": [
-                        {"content": "...", "metadata": {"file": "doc_a"}}
-                    ],
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
                 },
             )
         )
@@ -518,9 +496,7 @@ class TestComputeReward:
                     {
                         "question": "Q?",
                         "ground_truth": "42",
-                        "reference_chunks": [
-                            {"content": "...", "metadata": {"file": "doc_a"}}
-                        ],
+                        "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
                     },
                 )
             )
@@ -626,8 +602,7 @@ class TestExtractAnswerBlock:
     def test_closed_block_preferred_over_trailing_unclosed_opener(self):
         # A committed (closed) answer wins over a later unclosed opener.
         assert (
-            _extract_answer_block("<answer>committed</answer> aside: <answer> draft")
-            == "committed"
+            _extract_answer_block("<answer>committed</answer> aside: <answer> draft") == "committed"
         )
 
 
@@ -635,9 +610,7 @@ class TestDatasetParsing:
     def test_extracts_question_answer(self):
         env = _make_env()
         result = env._example_from_row({"question": "What is X?", "answer": "Y"})
-        user_msgs = [
-            m for m in result.payload["prompt_messages"] if m["role"] == "user"
-        ]
+        user_msgs = [m for m in result.payload["prompt_messages"] if m["role"] == "user"]
         assert user_msgs and user_msgs[0]["content"] == "What is X?"
         assert result.payload["question"] == "What is X?"
         assert result.payload["ground_truth"] == "Y"
@@ -658,9 +631,7 @@ class TestDatasetParsing:
         result = CustomEnv(search=StubSearch(), **JUDGE_ARGS)._example_from_row(
             {"question": "Q", "answer": "A"}
         )
-        system_msgs = [
-            m for m in result.payload["prompt_messages"] if m["role"] == "system"
-        ]
+        system_msgs = [m for m in result.payload["prompt_messages"] if m["role"] == "system"]
         assert len(system_msgs) == 1
         assert "Korean legal statutes" in system_msgs[0]["content"]
 

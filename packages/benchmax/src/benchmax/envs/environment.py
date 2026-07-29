@@ -202,8 +202,7 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
             rollout = await self.run_rollout(request)
         if not isinstance(rollout, RolloutAttempt):
             raise TypeError(
-                f"run_rollout returned {type(rollout).__name__}, "
-                "expected RolloutAttempt"
+                f"run_rollout returned {type(rollout).__name__}, expected RolloutAttempt"
             )
         if rollout.rollout_id != request.rollout_id:
             raise ValueError(
@@ -277,9 +276,7 @@ def _validate_failure_rewards(
     _validate_complete_reward_shape(rollout.rollout_id, rewards, reward_keys)
     nonzero = sorted(key for key, value in rewards.items() if value != 0)
     if nonzero:
-        raise ValueError(
-            f"failed rollout {rollout.rollout_id!r} has non-zero rewards: {nonzero}"
-        )
+        raise ValueError(f"failed rollout {rollout.rollout_id!r} has non-zero rewards: {nonzero}")
 
 
 def _validate_complete_reward_shape(
@@ -316,8 +313,7 @@ def _log_group_reward_defect(error: BaseException) -> None:
     """Log a group reward defect that settles the group instead of crashing."""
 
     logger.error(
-        "benchmax.rollout.failed rollout_id=group "
-        "termination_reason=group_reward_error: %s",
+        "benchmax.rollout.failed rollout_id=group termination_reason=group_reward_error: %s",
         error,
         exc_info=(type(error), error, error.__traceback__),
     )
@@ -377,9 +373,7 @@ def _merge_individual_and_group_rewards(
 
     individual_rewards = dict(rollout.rewards or {})
     group_rewards = (
-        group_rewards_by_id[rollout.rollout_id]
-        if group_rewards_by_id is not None
-        else {}
+        group_rewards_by_id[rollout.rollout_id] if group_rewards_by_id is not None else {}
     )
     if not isinstance(group_rewards, Mapping):
         raise TypeError("compute_group_rewards values must be reward mappings")

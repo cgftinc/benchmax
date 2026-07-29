@@ -50,8 +50,7 @@ def _cmd_whoami(args: argparse.Namespace) -> int:
     session = credentials.read_castform_session(selected)
     if not session:
         print(
-            f"Profile {selected!r} is not logged in. Run "
-            f"`castform login --profile {selected}`.",
+            f"Profile {selected!r} is not logged in. Run `castform login --profile {selected}`.",
             file=sys.stderr,
         )
         return 1
@@ -171,9 +170,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     activate.add_argument("name")
     activate.set_defaults(func=_cmd_profile_activate)
 
-    with_auth = sub.add_parser(
-        "with-auth", help="Run a command with the selected login credential"
-    )
+    with_auth = sub.add_parser("with-auth", help="Run a command with the selected login credential")
     _add_profile_argument(with_auth)
     with_auth.add_argument(
         "child_command",

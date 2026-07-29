@@ -1,5 +1,5 @@
 (
-"""Integration tests for BraintrustTraceAdapter against live API.
+    """Integration tests for BraintrustTraceAdapter against live API.
 
 Requires environment variables:
     BT_API_KEY — Braintrust API key
@@ -7,7 +7,7 @@ Requires environment variables:
 
 Run manually:
     BT_API_KEY=sk-... BT_PROJECT_ID=... uv run pytest -m integration """
-"""tests/integration/traces/test_braintrust_e2e.py -v
+    """tests/integration/traces/test_braintrust_e2e.py -v
 """
 )
 
@@ -107,9 +107,7 @@ class TestBraintrustE2E:
             json={"query": query, "fmt": "json"},
             timeout=30,
         )
-        assert resp.status_code == 200, (
-            f"BTQL returned {resp.status_code}: {resp.text[:200]}"
-        )
+        assert resp.status_code == 200, f"BTQL returned {resp.status_code}: {resp.text[:200]}"
 
         data = resp.json()
         rows = data.get("data", data) if isinstance(data, dict) else data

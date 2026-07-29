@@ -87,9 +87,7 @@ class TestAsyncCorpusClient:
             if not corpus_id:
                 pytest.skip("no corpus available to search")
             queries = [f"{_query} {i}" for i in range(10)]
-            results = await asyncio.gather(
-                *(client.search(corpus_id, q, limit=3) for q in queries)
-            )
+            results = await asyncio.gather(*(client.search(corpus_id, q, limit=3) for q in queries))
         finally:
             await client.close()
 

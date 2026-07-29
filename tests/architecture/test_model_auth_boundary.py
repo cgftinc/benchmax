@@ -56,9 +56,7 @@ def test_qa_generation_constructs_openai_clients_through_model_auth() -> None:
                 "OpenAI",
                 "AsyncOpenAI",
             }:
-                violations.append(
-                    f"{source_file}:{node.lineno}: constructs {function.id} directly"
-                )
+                violations.append(f"{source_file}:{node.lineno}: constructs {function.id} directly")
 
     assert not violations, "\n".join(violations)
 
@@ -83,8 +81,6 @@ def test_model_code_cannot_use_platform_bearer_resolvers() -> None:
             elif isinstance(node, (ast.Import, ast.ImportFrom)):
                 for alias in node.names:
                     if alias.name in forbidden:
-                        violations.append(
-                            f"{source_file}:{node.lineno}: imports {alias.name}"
-                        )
+                        violations.append(f"{source_file}:{node.lineno}: imports {alias.name}")
 
     assert not violations, "\n".join(violations)

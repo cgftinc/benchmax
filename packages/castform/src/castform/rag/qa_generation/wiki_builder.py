@@ -128,8 +128,7 @@ class WikiBuilder:
         """
         # Filter to high-quality entities for clustering
         discriminative = [
-            e for e in entity_patterns
-            if e.quality_score > 0.75 and e.document_frequency < 0.40
+            e for e in entity_patterns if e.quality_score > 0.75 and e.document_frequency < 0.40
         ]
         # Process best entities first so their names survive merges
         discriminative.sort(key=lambda e: e.quality_score, reverse=True)
@@ -139,9 +138,7 @@ class WikiBuilder:
 
         if profile and getattr(profile, "entity_chunk_index", None):
             # Fast path: read from pre-computed entity-chunk graph
-            hash_to_idx = {
-                getattr(c, "hash", str(id(c))): i for i, c in enumerate(chunks)
-            }
+            hash_to_idx = {getattr(c, "hash", str(id(c))): i for i, c in enumerate(chunks)}
             for entity in discriminative:
                 name_lower = entity.name.lower()
                 chunk_hashes = profile.entity_chunk_index.get(name_lower, set())
@@ -183,7 +180,9 @@ class WikiBuilder:
             if n > max_per_page:
                 # Sample diversely by file to get representative chunks
                 sorted_indices = _diverse_sample(
-                    chunks, sorted_indices, max_per_page,
+                    chunks,
+                    sorted_indices,
+                    max_per_page,
                 )
 
             result[name] = [chunks[i] for i in sorted_indices]
@@ -316,15 +315,10 @@ class WikiBuilder:
 
         # Gather chunk content for content-based matching
         primary_content = (
-            primary_chunk.content
-            if hasattr(primary_chunk, "content")
-            else str(primary_chunk)
+            primary_chunk.content if hasattr(primary_chunk, "content") else str(primary_chunk)
         ).lower()
         secondary_contents = [
-            (
-                c.content if hasattr(c, "content") else str(c)
-            ).lower()
-            for c in secondary_chunks
+            (c.content if hasattr(c, "content") else str(c)).lower() for c in secondary_chunks
         ]
 
         # Score each page by content relevance (entity name mentions)
@@ -453,7 +447,7 @@ def _diverse_sample(
         chunk = chunks[idx]
         meta = getattr(chunk, "metadata", ())
         file_key = ""
-        for k, v in (meta if isinstance(meta, tuple) else ()):
+        for k, v in meta if isinstance(meta, tuple) else ():
             if k == "file":
                 file_key = str(v)
                 break

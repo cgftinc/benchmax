@@ -63,9 +63,7 @@ PALETTE: dict[str, tuple[int, int, int]] = {
 }
 
 # "grey" is accepted as a spelling of gray; word boundaries stop partial hits.
-_COLOR_PATTERN = re.compile(
-    r"\b(" + "|".join([*PALETTE, "grey"]) + r")\b", re.IGNORECASE
-)
+_COLOR_PATTERN = re.compile(r"\b(" + "|".join([*PALETTE, "grey"]) + r")\b", re.IGNORECASE)
 
 
 class DominantColorEnv(BaseEnv):
@@ -201,9 +199,7 @@ class DominantColorEnv(BaseEnv):
         is_last = state["shown"] == len(colors)
         text = f"This is image {index + 1} of {len(colors)}."
         if is_last:
-            text += (
-                " That was the last image. Report the colors in the order you saw them."
-            )
+            text += " That was the last image. Report the colors in the order you saw them."
         logger.info(
             "[see_next_image] rollout=%s image=%d/%d",
             rollout_id,
@@ -216,9 +212,7 @@ class DominantColorEnv(BaseEnv):
         ]
 
     async def compute_reward(self, rollout: BaseRollout) -> RewardMap:
-        expected = [
-            str(color).casefold() for color in rollout.example_args.get("colors", [])
-        ]
+        expected = [str(color).casefold() for color in rollout.example_args.get("colors", [])]
         predicted = _boxed_colors(rollout)
         return {"correctness": float(bool(expected) and predicted == expected)}
 
@@ -314,10 +308,7 @@ def render_tile_image_uri(
         for x in range(size):
             base = tile_colors[row_base + (x // tile_px)]
             pixels.append(
-                tuple(
-                    min(255, max(0, round(channel + rng.gauss(0.0, sigma))))
-                    for channel in base
-                )
+                tuple(min(255, max(0, round(channel + rng.gauss(0.0, sigma)))) for channel in base)
             )
     image = Image.new("RGB", (size, size))
     image.putdata(pixels)
@@ -337,11 +328,7 @@ def _example(
 ) -> Example[JsonRow]:
     colors = spec.get("colors")
     noise_seed = spec.get("noise_seed")
-    if (
-        not isinstance(colors, list)
-        or not colors
-        or any(color not in PALETTE for color in colors)
-    ):
+    if not isinstance(colors, list) or not colors or any(color not in PALETTE for color in colors):
         raise ValueError("dominant-color specs require a list of palette colors")
     if not isinstance(noise_seed, int):
         raise ValueError("dominant-color specs require an integer noise_seed")
@@ -376,9 +363,7 @@ def _boxed_colors(rollout: BaseRollout) -> list[str]:
     """Palette names, in order, inside the final assistant's \\boxed{...}."""
 
     for message in reversed(rollout.messages):
-        if message.get("role") != "assistant" or not isinstance(
-            message.get("content"), str
-        ):
+        if message.get("role") != "assistant" or not isinstance(message.get("content"), str):
             continue
         text = message["content"]
         start = text.rfind("\\boxed{")
@@ -393,10 +378,7 @@ def _boxed_colors(rollout: BaseRollout) -> list[str]:
                 depth -= 1
                 if depth == 0:
                     boxed = text[content_start:index]
-                    names = [
-                        match.group(0).casefold()
-                        for match in _COLOR_PATTERN.finditer(boxed)
-                    ]
+                    names = [match.group(0).casefold() for match in _COLOR_PATTERN.finditer(boxed)]
                     return ["gray" if name == "grey" else name for name in names]
         return []
     return []
@@ -442,9 +424,7 @@ def launch(*, assume_yes: bool) -> str | None:
 
     run_name = f"dominant-color-{uuid.uuid4().hex[:8]}"
     if not assume_yes:
-        reply = input(
-            f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] "
-        )
+        reply = input(f"Launch {run_name!r} on GPUs — this spends credits. Continue? [y/N] ")
         if reply.strip().lower() not in ("y", "yes"):
             print("Launch aborted.")
             return None
@@ -479,9 +459,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=["data", "validate", "launch", "all"],
         help="Stage to run (default: all = data → validate, then STOP).",
     )
-    parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
+    parser.add_argument("--force", action="store_true", help="Regenerate datasets even if present.")
     parser.add_argument(
         "-y",
         "--yes",

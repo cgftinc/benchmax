@@ -272,9 +272,7 @@ class PineconeChunkSource:
         raws: list[dict[str, Any]] = []
         for batch_start in range(0, len(ids), _FETCH_BATCH_SIZE):
             raws.extend(
-                self._client.fetch_by_ids_raw(
-                    ids[batch_start : batch_start + _FETCH_BATCH_SIZE]
-                )
+                self._client.fetch_by_ids_raw(ids[batch_start : batch_start + _FETCH_BATCH_SIZE])
             )
         chunks = [_raw_to_chunk(r) for r in raws]
 

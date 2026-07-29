@@ -71,9 +71,7 @@ class PostgresChunkSource:
         )
         self._corpus_name = corpus_name
         self._corpus: Corpus | None = None
-        self.collection: ChunkCollection | None = (
-            None  # exposed publicly for advanced users
-        )
+        self.collection: ChunkCollection | None = None  # exposed publicly for advanced users
         self._search_capabilities: SearchCapabilities = {
             "backend": "corpora",
             "modes": {"lexical"},
@@ -158,9 +156,7 @@ class PostgresChunkSource:
         """
         self.collection = collection
 
-        self._corpus = await self._client.get_or_create_corpus(
-            self._corpus_name, on_limit=on_limit
-        )
+        self._corpus = await self._client.get_or_create_corpus(self._corpus_name, on_limit=on_limit)
 
         if show_summary:
             print(f"Using corpus: {self._corpus.name} (ID: {self._corpus.id})")
@@ -197,9 +193,7 @@ class PostgresChunkSource:
         self._corpus_name = self._corpus.name
 
         if show_summary:
-            print(
-                f"Loading chunks from corpus: {self._corpus.name} (ID: {self._corpus.id})"
-            )
+            print(f"Loading chunks from corpus: {self._corpus.name} (ID: {self._corpus.id})")
 
         chunks: list[Chunk] = []
         cursor: str | None = None
@@ -248,9 +242,7 @@ class PostgresChunkSource:
             show_summary: Print load summary (default True)
         """
         target_name = corpus_name or self._corpus_name
-        matched = [
-            c for c in await self._client.list_corpora() if c.name == target_name
-        ]
+        matched = [c for c in await self._client.list_corpora() if c.name == target_name]
         if not matched:
             raise ValueError(f"Could not find existing corpus named '{target_name}'.")
 
@@ -291,9 +283,7 @@ class PostgresChunkSource:
             Dict with keys: chunk_content, prev_chunk_preview, next_chunk_preview
         """
         self._assert_ready()
-        return self.collection.get_chunk_with_context(
-            chunk, context_max_chars=max_chars
-        )
+        return self.collection.get_chunk_with_context(chunk, context_max_chars=max_chars)
 
     def get_top_level_chunks(self) -> list[Chunk]:
         """Return chunks from files at the shallowest directory depth in the corpus."""
@@ -353,13 +343,10 @@ class PostgresChunkSource:
             if result_chunk.hash == source.hash:
                 continue
 
-            is_same_file = result_chunk.get_metadata("file") == source.get_metadata(
-                "file"
-            )
+            is_same_file = result_chunk.get_metadata("file") == source.get_metadata("file")
             if is_same_file:
                 index_diff = abs(
-                    result_chunk.get_metadata("index", 0)
-                    - source.get_metadata("index", 0)
+                    result_chunk.get_metadata("index", 0) - source.get_metadata("index", 0)
                 )
                 if index_diff <= 1:
                     continue
@@ -426,9 +413,7 @@ class PostgresChunkSource:
     ) -> list[Chunk]:
         """Search chunks with a text query and optional filter."""
         return await self.search(
-            SearchSpec(
-                mode="lexical", text_query=text_query, top_k=top_k, filter=filter
-            )
+            SearchSpec(mode="lexical", text_query=text_query, top_k=top_k, filter=filter)
         )
 
     async def search_content(self, spec: SearchSpec) -> list[str]:

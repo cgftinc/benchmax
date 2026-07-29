@@ -14,6 +14,7 @@ from .prompts import DEFAULT_DIVERSITY_INSTRUCTIONS, build_diversity_prompt
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass(frozen=True, slots=True)
 class NgramDiversityConfig:
     """Offline character n-gram clustering configuration."""
@@ -100,9 +101,7 @@ async def scale_by_diversity(
     return scaled, result
 
 
-def _cluster_by_ngram(
-    texts: tuple[str, ...], config: NgramDiversityConfig
-) -> ClusterResult:
+def _cluster_by_ngram(texts: tuple[str, ...], config: NgramDiversityConfig) -> ClusterResult:
     ngrams = tuple(_ngram_set(text, config.n) for text in texts)
     parents = list(range(len(texts)))
 

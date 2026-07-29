@@ -47,8 +47,8 @@ from benchmax.rewards import (
 
 from castform import config, validate_environment
 from castform.platform.client import TrainerClient
-from castform.platform.login import ensure_session
 from castform.platform.environment_assets import upload_assets
+from castform.platform.login import ensure_session
 from castform.rag.corpus.postgres.search import PostgresSearch
 
 CORPUS_NAME = "my-corpus"
@@ -175,11 +175,7 @@ and cite supporting documents as [Source: <source_id>].
         if not isinstance(query, str) or not query.strip():
             raise ValueError("search requires a non-empty string 'query'")
         limit = tool_args.get("limit", 10)
-        if (
-            isinstance(limit, bool)
-            or not isinstance(limit, int)
-            or not 1 <= limit <= 20
-        ):
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
             raise ValueError("search 'limit' must be an integer from 1 to 20")
         results = await self._search.search(
             query=query,
@@ -215,18 +211,12 @@ and cite supporting documents as [Source: <source_id>].
                 metadata = chunk.get("metadata")
                 if not isinstance(metadata, dict):
                     continue
-                source = self._canonicalize_id(
-                    metadata.get("file") or metadata.get("file_path")
-                )
+                source = self._canonicalize_id(metadata.get("file") or metadata.get("file_path"))
                 if source:
                     gold_sources.add(source)
-        cited_sources = {
-            self._canonicalize_id(match) for match in _CITATION_RE.findall(answer)
-        }
+        cited_sources = {self._canonicalize_id(match) for match in _CITATION_RE.findall(answer)}
         citation_recall = (
-            len(gold_sources & cited_sources) / len(gold_sources)
-            if gold_sources
-            else 0.0
+            len(gold_sources & cited_sources) / len(gold_sources) if gold_sources else 0.0
         )
         return {
             "answer_correctness": clip01(judged.score),
@@ -346,9 +336,7 @@ def launch(assume_yes: bool = False) -> str | None:
         return None
     if not assume_yes:
         reply = (
-            input(
-                f"Launch '{_run_name()}' on GPUs — this spends credits. Continue? [y/N] "
-            )
+            input(f"Launch '{_run_name()}' on GPUs — this spends credits. Continue? [y/N] ")
             .strip()
             .lower()
         )
@@ -368,9 +356,7 @@ def launch(assume_yes: bool = False) -> str | None:
         run_name=_run_name(),
     )
     launcher_args = {
-        key: value
-        for key, value in LAUNCH_CONFIG.items()
-        if key not in ("name", "type")
+        key: value for key, value in LAUNCH_CONFIG.items() if key not in ("name", "type")
     }
     with TrainerClient() as client:
         run_id = client.launch_training_run(

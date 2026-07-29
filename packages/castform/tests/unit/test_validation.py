@@ -110,9 +110,7 @@ async def test_validation_uses_first_dataset_item_for_two_local_siblings(
     assert len(env.groups) == 1 and len(env.groups[0]) == 2
     assert {request.example.id for request in env.groups[0]} == {"example-1"}
     assert {request.split for request in env.groups[0]} == {"train"}
-    assert all(
-        "/v1/sessions/validate-" in request.base_url for request in env.groups[0]
-    )
+    assert all("/v1/sessions/validate-" in request.base_url for request in env.groups[0])
     assert len({request.rollout_id for request in env.groups[0]}) == 2
     sessions = fake_model_sessions.instances[-1]
     assert [call["model"] for call in sessions.create_calls] == [
@@ -258,12 +256,8 @@ async def test_rollout_and_named_auth_remain_independent() -> None:
                 model=group[0].model,
                 rollout_id=group[0].rollout_id,
             )
-            self.rollout_headers = await group[0].model_auth.headers_for_request(
-                context
-            )
-            self.judge_headers = await InjectedAuth("judge").headers_for_request(
-                context
-            )
+            self.rollout_headers = await group[0].model_auth.headers_for_request(context)
+            self.judge_headers = await InjectedAuth("judge").headers_for_request(context)
             return await super().run_group(group)
 
     env = JudgeEnvironment()
@@ -294,9 +288,7 @@ async def test_local_validation_rejects_an_empty_model_capture(
 
     assert not report.ok
     assert len(report.local_errors) == 2
-    assert set(report.local_errors.values()) == {
-        "rollout produced no usable model trace"
-    }
+    assert set(report.local_errors.values()) == {"rollout produced no usable model trace"}
 
 
 async def test_local_timeout_discards_created_sessions(
@@ -372,12 +364,8 @@ async def test_castform_auth_resolves_the_session_for_each_model_call(
     monkeypatch,
 ) -> None:
     tokens = iter(("token-1", "token-2"))
-    monkeypatch.setattr(
-        "castform.model_auth.config.llm_url", lambda: "https://llm.test/v1"
-    )
-    monkeypatch.setattr(
-        "castform.model_auth.castform_model_bearer", lambda: next(tokens)
-    )
+    monkeypatch.setattr("castform.model_auth.config.llm_url", lambda: "https://llm.test/v1")
+    monkeypatch.setattr("castform.model_auth.castform_model_bearer", lambda: next(tokens))
     context = ModelRequestContext(
         base_url="https://llm.test/v1",
         model="test-model",
@@ -385,18 +373,12 @@ async def test_castform_auth_resolves_the_session_for_each_model_call(
     )
 
     auth = CastformModelAuth()
-    assert await auth.headers_for_request(context) == {
-        "Authorization": "Bearer token-1"
-    }
-    assert await auth.headers_for_request(context) == {
-        "Authorization": "Bearer token-2"
-    }
+    assert await auth.headers_for_request(context) == {"Authorization": "Bearer token-1"}
+    assert await auth.headers_for_request(context) == {"Authorization": "Bearer token-2"}
 
 
 async def test_castform_auth_refuses_a_third_party_endpoint(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "castform.model_auth.config.llm_url", lambda: "https://llm.test/v1"
-    )
+    monkeypatch.setattr("castform.model_auth.config.llm_url", lambda: "https://llm.test/v1")
     context = ModelRequestContext(
         base_url="https://api.openai.com/v1",
         model="test-model",

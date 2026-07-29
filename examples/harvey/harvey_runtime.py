@@ -51,9 +51,7 @@ from sandbox.sandbox import (  # noqa: E402
     Sandbox,
 )
 
-SYSTEM_PROMPT_PREAMBLE = (HARVEY_ROOT / "harness" / "system_prompt.md").read_text(
-    encoding="utf-8"
-)
+SYSTEM_PROMPT_PREAMBLE = (HARVEY_ROOT / "harness" / "system_prompt.md").read_text(encoding="utf-8")
 SKILLS_DIR = HARVEY_ROOT / "harness" / "skills"
 DEFAULT_SKILLS = sorted(path.parent.name for path in SKILLS_DIR.glob("*/SKILL.md"))
 DEFAULT_MAX_TOOL_RESULT_CHARS = 12000
@@ -69,9 +67,7 @@ def _load_skills(skill_names: list[str]) -> str:
         skill_path = SKILLS_DIR / name / "SKILL.md"
         if not skill_path.is_file():
             raise RuntimeError(f"Harvey skill is missing: {skill_path}")
-        sections.append(
-            f"\n\n## Skill: {name}\n\n{skill_path.read_text(encoding='utf-8')}"
-        )
+        sections.append(f"\n\n## Skill: {name}\n\n{skill_path.read_text(encoding='utf-8')}")
     return "\n".join(sections)
 
 
@@ -106,9 +102,7 @@ class OpenAIChatCompletionsAdapter(ModelAdapter):
         temperature: float,
         reasoning_effort: str | None,
     ) -> None:
-        super().__init__(
-            model=model, temperature=temperature, reasoning_effort=reasoning_effort
-        )
+        super().__init__(model=model, temperature=temperature, reasoning_effort=reasoning_effort)
         self.termination_reason: str | None = None
         self.gateway_controls_sampling = _gateway_controls_sampling(base_url)
         client_options: dict[str, Any] = {
@@ -204,8 +198,7 @@ class OpenAIChatCompletionsAdapter(ModelAdapter):
 def _gateway_controls_sampling(base_url: str) -> bool:
     path = urlparse(base_url).path
     return any(
-        segment in path
-        for segment in ("/v1/sessions/", "/tito/sessions/", "/forward/sessions/")
+        segment in path for segment in ("/v1/sessions/", "/tito/sessions/", "/forward/sessions/")
     )
 
 
@@ -243,17 +236,13 @@ class TruncatingToolExecutor(ToolExecutor):
             return result
         omitted = len(result) - self.max_result_chars
         return (
-            result[: self.max_result_chars]
-            + f"\n\n[truncated {omitted} characters; "
+            result[: self.max_result_chars] + f"\n\n[truncated {omitted} characters; "
             "rerun read with offset/limit for more]"
         )
 
     @staticmethod
     def _sanitize(value: str) -> str:
-        return "".join(
-            char if char in "\n\r\t" or ord(char) >= 32 else "\ufffd"
-            for char in value
-        )
+        return "".join(char if char in "\n\r\t" or ord(char) >= 32 else "\ufffd" for char in value)
 
 
 class HarborOwnedSandbox(Sandbox):
@@ -294,9 +283,7 @@ class HarborOwnedSandbox(Sandbox):
             try:
                 link.symlink_to(target, target_is_directory=True)
             except OSError as error:
-                raise RuntimeError(
-                    f"Cannot expose Harbor directory {target} at {link}"
-                ) from error
+                raise RuntimeError(f"Cannot expose Harbor directory {target} at {link}") from error
 
     def exec(
         self,
@@ -399,9 +386,7 @@ def _redact_artifacts(path: Path, secret: str) -> None:
 def run(args: argparse.Namespace) -> None:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY must be injected into the Harbor agent environment"
-        )
+        raise RuntimeError("OPENAI_API_KEY must be injected into the Harbor agent environment")
     base_url = _openai_v1_base_url(args.base_url)
     instruction = Path(args.instruction_file).read_text(encoding="utf-8")
 
@@ -428,9 +413,7 @@ def run(args: argparse.Namespace) -> None:
         "base_url": base_url,
         "started_at": datetime.now(UTC).isoformat(),
     }
-    (results_dir / "config.json").write_text(
-        json.dumps(config, indent=2), encoding="utf-8"
-    )
+    (results_dir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     print(json.dumps({"event": "run_start", **config}, indent=2))
 
     sandbox = HarborOwnedSandbox(
@@ -484,9 +467,7 @@ def run(args: argparse.Namespace) -> None:
         "completed_at": datetime.now(UTC).isoformat(),
         **result["tool_metrics"],
     }
-    (results_dir / "metrics.json").write_text(
-        json.dumps(metrics, indent=2), encoding="utf-8"
-    )
+    (results_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     _redact_artifacts(results_dir, api_key)
     print(
         json.dumps(

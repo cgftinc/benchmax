@@ -17,7 +17,6 @@ from benchmax.envs import (
 )
 from main import MathEnv, run_cli
 
-
 FAILURE_KEY = "_stress_failure"
 FAILURE_MODES = (
     "crash_once",
@@ -99,8 +98,7 @@ class StressTestMathEnv(MathEnv):
         rollouts: Sequence[BaseRollout],
     ) -> None:
         if any(
-            rollout.example_args.get(FAILURE_KEY) == "compute_group_reward"
-            for rollout in rollouts
+            rollout.example_args.get(FAILURE_KEY) == "compute_group_reward" for rollout in rollouts
         ):
             raise RolloutFailure(
                 "judge_error",

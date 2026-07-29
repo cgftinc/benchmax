@@ -19,9 +19,7 @@ from castform import config
 from openai import AsyncOpenAI
 
 LLM_BASE_URL = config.llm_url()
-LLM_API_KEY = os.environ.get("CASTFORM_LLM_API_KEY") or os.environ.get(
-    "CASTFORM_API_KEY", ""
-)
+LLM_API_KEY = os.environ.get("CASTFORM_LLM_API_KEY") or os.environ.get("CASTFORM_API_KEY", "")
 DATASET_PATH = str(Path(__file__).parent / "telestich_dataset.jsonl")
 NUM_EXAMPLES = 400
 CONCURRENCY = 15
@@ -199,9 +197,7 @@ def sample_axes():
             "tone": random.choice(TONES),
             "topic": random.choice(TOPICS),
             "word_length": random.choice(
-                ["2-3", "3-4", "4-5", "5-6", "6-7"]
-                if "Mandarin" in language
-                else WORD_LENGTHS
+                ["2-3", "3-4", "4-5", "5-6", "6-7"] if "Mandarin" in language else WORD_LENGTHS
             ),
         }
         n_optional = random.choice([2, 2, 3, 3, 4])
@@ -397,12 +393,8 @@ def _prompt_mentions_hidden_word(prompt: str, hidden: str) -> bool:
         return True
     # Cue word adjacent to hidden word
     esc = re.escape(h)
-    near_before = re.compile(
-        rf"{_HIDDEN_CUE_PATTERN.pattern}[^.!?\n]{{0,40}}{esc}", re.IGNORECASE
-    )
-    near_after = re.compile(
-        rf"{esc}[^.!?\n]{{0,40}}{_HIDDEN_CUE_PATTERN.pattern}", re.IGNORECASE
-    )
+    near_before = re.compile(rf"{_HIDDEN_CUE_PATTERN.pattern}[^.!?\n]{{0,40}}{esc}", re.IGNORECASE)
+    near_after = re.compile(rf"{esc}[^.!?\n]{{0,40}}{_HIDDEN_CUE_PATTERN.pattern}", re.IGNORECASE)
     return bool(near_before.search(p) or near_after.search(p))
 
 
@@ -437,10 +429,7 @@ async def generate_dataset(n, path, concurrency=CONCURRENCY):
         if not prompt or not target:
             return None
         if not _prompt_mentions_hidden_word(prompt, target):
-            print(
-                f"  [REJECT {model}] hidden word {target!r} not clearly stated: "
-                f"{prompt[:120]!r}"
-            )
+            print(f"  [REJECT {model}] hidden word {target!r} not clearly stated: {prompt[:120]!r}")
             return None
         example = {
             "prompt": prompt,
@@ -474,9 +463,7 @@ async def generate_dataset(n, path, concurrency=CONCURRENCY):
     print(f"Generating {n} examples across models (concurrency={concurrency})...")
     outputs = await asyncio.gather(*coros, return_exceptions=True)
 
-    failures = sum(
-        1 for o in outputs if isinstance(o, (Exception, type(None))) or o is None
-    )
+    failures = sum(1 for o in outputs if isinstance(o, (Exception, type(None))) or o is None)
     await client.close()
     print(f"Generated {saved}/{n} examples ({failures} failures)")
     return saved

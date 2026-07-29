@@ -234,9 +234,7 @@ def build_rubric_evaluation_prompt(
 
     ground_truth_text = str(ground_truth or "").strip()
     ground_truth_block = (
-        f"**Ground Truth (Optional)**: {ground_truth_text}\n"
-        if ground_truth_text
-        else ""
+        f"**Ground Truth (Optional)**: {ground_truth_text}\n" if ground_truth_text else ""
     )
     values = {
         "rubric_type": rubric.polarity,
@@ -266,8 +264,7 @@ def build_rubric_ranking_prompt(
     """Build a complete prompt for ranking a group of responses."""
 
     responses_block = "\n\n".join(
-        f"--- Response {index} ---\n{text}"
-        for index, text in enumerate(responses)
+        f"--- Response {index} ---\n{text}" for index, text in enumerate(responses)
     )
     return RUBRIC_RANKING_PROMPT.format(
         rubric_type=rubric.polarity,
@@ -289,8 +286,7 @@ def build_adaptive_rubric_prompt(
     """Build a complete prompt for generating discriminative rubrics."""
 
     response_block = "\n\n".join(
-        f"Response {index}:\n{response}"
-        for index, response in enumerate(responses, start=1)
+        f"Response {index}:\n{response}" for index, response in enumerate(responses, start=1)
     )
     prompt = (
         INSTANCE_WISE_RUBRIC_GENERATION_PROMPT
@@ -333,12 +329,8 @@ def format_rubrics(rubrics: Sequence[Rubric]) -> str | None:
         ("Positive rubrics", "positive"),
         ("Negative rubrics", "negative"),
     ):
-        selected = tuple(
-            rubric for rubric in rubrics if rubric.polarity == polarity
-        )
+        selected = tuple(rubric for rubric in rubrics if rubric.polarity == polarity)
         if selected:
             sections.append(heading + ":")
-            sections.extend(
-                f"- {rubric.title}: {rubric.description}" for rubric in selected
-            )
+            sections.extend(f"- {rubric.title}: {rubric.description}" for rubric in selected)
     return "\n".join(sections) if sections else None

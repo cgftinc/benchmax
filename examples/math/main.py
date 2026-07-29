@@ -20,8 +20,8 @@ from benchmax.envs import (
     Dataset,
     DatasetSplit,
     Example,
-    JsonRow,
     JsonlDataset,
+    JsonRow,
     Tool,
     canonical_example_id,
 )
@@ -92,8 +92,7 @@ class MathEnv(BaseEnv):
         )
         return {
             "correctness": float(
-                bool(used_tool)
-                and _same_number(prediction, rollout.example_args["answer"])
+                bool(used_tool) and _same_number(prediction, rollout.example_args["answer"])
             )
         }
 
@@ -209,8 +208,7 @@ def generate_data(*, force: bool = False) -> dict[str, Path]:
     total_examples = TRAIN_EXAMPLES + EVAL_EXAMPLES
     if len(source) < total_examples:
         raise RuntimeError(
-            f"{DATASET_REPO} returned {len(source)} examples; "
-            f"expected at least {total_examples}"
+            f"{DATASET_REPO} returned {len(source)} examples; expected at least {total_examples}"
         )
     rows = [
         {"question": str(row["task"]), "answer": str(row["answer"])}

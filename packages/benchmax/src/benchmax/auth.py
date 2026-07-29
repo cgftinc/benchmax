@@ -162,13 +162,10 @@ class InjectedAuth:
         providers = _BOUND_MODEL_AUTH.get()
         provider = providers.get(self.name) if providers is not None else None
         if provider is None:
-            raise RuntimeError(
-                f"No runtime model-auth provider was injected for {self.name!r}."
-            )
+            raise RuntimeError(f"No runtime model-auth provider was injected for {self.name!r}.")
         if isinstance(provider, InjectedAuth):
             raise RuntimeError(
-                f"Injected model-auth provider {self.name!r} cannot reference "
-                "another InjectedAuth."
+                f"Injected model-auth provider {self.name!r} cannot reference another InjectedAuth."
             )
         return await provider.headers_for_request(context)
 
@@ -182,9 +179,7 @@ def bind_model_auth(providers: Mapping[str, ModelAuth]) -> Iterator[None]:
         if not isinstance(name, str) or not name.strip():
             raise ValueError("model-auth provider names must be non-empty strings")
         if not isinstance(provider, ModelAuth):
-            raise TypeError(
-                f"model-auth provider {name!r} does not implement ModelAuth"
-            )
+            raise TypeError(f"model-auth provider {name!r} does not implement ModelAuth")
     token = _BOUND_MODEL_AUTH.set(normalized)
     try:
         yield

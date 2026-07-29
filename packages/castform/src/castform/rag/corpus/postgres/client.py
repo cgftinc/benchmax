@@ -53,9 +53,7 @@ class CorpusClient:
     async_http2: bool = True
     # Single async client, lazily bound to the running event loop (rebuilt if the
     # loop changes — asyncio.run() mints a fresh loop per Pipeline.run()).
-    _async_client: httpx.AsyncClient | None = field(
-        init=False, repr=False, default=None
-    )
+    _async_client: httpx.AsyncClient | None = field(init=False, repr=False, default=None)
     _async_client_loop: Any = field(init=False, repr=False, default=None)
 
     def _retry_after_delay(self, response: httpx.Response, attempt: int) -> float:
@@ -302,9 +300,7 @@ class CorpusClient:
 
             if on_limit == "oldest":
                 oldest = min(existing, key=lambda c: c.created_at)
-                print(
-                    f"Deleting oldest corpus: {oldest.name} (created {oldest.created_at})"
-                )
+                print(f"Deleting oldest corpus: {oldest.name} (created {oldest.created_at})")
                 await self.delete_corpus(oldest.id)
                 return await self.create_corpus(name)
 
@@ -313,9 +309,7 @@ class CorpusClient:
 
             raise ValueError(f"Unknown on_limit strategy: {on_limit}")
 
-    async def _interactive_corpus_selection(
-        self, new_name: str, existing: list[Corpus]
-    ) -> Corpus:
+    async def _interactive_corpus_selection(self, new_name: str, existing: list[Corpus]) -> Corpus:
         """Interactive corpus selection for Jupyter notebooks."""
         print("\n" + "=" * 60)
         print("CORPUS LIMIT REACHED (max 5)")
@@ -442,8 +436,7 @@ class CorpusClient:
         )
 
         tasks = [
-            asyncio.create_task(_upload_batch(batch_index))
-            for batch_index in range(total_batches)
+            asyncio.create_task(_upload_batch(batch_index)) for batch_index in range(total_batches)
         ]
         try:
             for task in asyncio.as_completed(tasks):
@@ -545,9 +538,7 @@ class CorpusClient:
         if filters:
             payload["filters"] = filters
 
-        response = await self._request(
-            "POST", f"/v1/corpora/{corpus_id}/search", json=payload
-        )
+        response = await self._request("POST", f"/v1/corpora/{corpus_id}/search", json=payload)
         self._handle_response_errors(response)
 
         data = response.json()

@@ -1,4 +1,5 @@
 """Tests for entity quality scoring."""
+
 from __future__ import annotations
 
 import pytest
@@ -53,7 +54,9 @@ class TestScoreEntityQuality:
     def test_code_pattern_reasonable(self):
         """Code patterns bypass name heuristics, get decent score."""
         p = EntityPattern(
-            name=r"posthog\.\w+\(", type="code_pattern", document_frequency=0.05,
+            name=r"posthog\.\w+\(",
+            type="code_pattern",
+            document_frequency=0.05,
         )
         score = _score_entity_quality(p)
         assert score > 0.6

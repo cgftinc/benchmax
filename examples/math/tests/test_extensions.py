@@ -79,10 +79,7 @@ async def test_stress_dataset_keeps_first_example_healthy_then_cycles_failures(
     dataset = await env.create_dataset("train", tmp_path)
 
     assert FAILURE_KEY not in dataset[0].payload
-    assert (
-        tuple(example.payload[FAILURE_KEY] for example in tuple(dataset)[1:])
-        == FAILURE_MODES
-    )
+    assert tuple(example.payload[FAILURE_KEY] for example in tuple(dataset)[1:]) == FAILURE_MODES
 
 
 @pytest.mark.asyncio
@@ -108,9 +105,7 @@ async def test_stress_context_and_reward_failures_are_labeled() -> None:
     assert reward.value.termination_reason == "judge_error"
 
     with pytest.raises(RolloutFailure, match="group reward service failed") as group:
-        await env.compute_group_rewards(
-            [_rollout("group", failure="compute_group_reward")]
-        )
+        await env.compute_group_rewards([_rollout("group", failure="compute_group_reward")])
     assert group.value.termination_reason == "judge_error"
 
 

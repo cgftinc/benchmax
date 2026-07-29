@@ -37,8 +37,8 @@ from benchmax.rewards import extract_completion_text
 
 from castform import validate_environment
 from castform.platform.client import TrainerClient
-from castform.platform.login import ensure_session
 from castform.platform.environment_assets import upload_assets
+from castform.platform.login import ensure_session
 
 
 class CustomEnv(BaseEnv):
@@ -94,9 +94,7 @@ class CustomEnv(BaseEnv):
         if not answer:
             return {"overlap": 0.0, "contains_gold": 0.0, "answered": 0.0}
         overlap = (
-            difflib.SequenceMatcher(None, answer.lower(), gold.lower()).ratio()
-            if gold
-            else 0.0
+            difflib.SequenceMatcher(None, answer.lower(), gold.lower()).ratio() if gold else 0.0
         )
         contains = 1.0 if gold and gold.lower() in answer.lower() else 0.0
         return {
@@ -263,9 +261,7 @@ def launch(assume_yes: bool = False) -> str | None:
         return None
     if not assume_yes:
         reply = (
-            input(
-                f"Launch '{_run_name()}' on GPUs — this spends credits. Continue? [y/N] "
-            )
+            input(f"Launch '{_run_name()}' on GPUs — this spends credits. Continue? [y/N] ")
             .strip()
             .lower()
         )
@@ -287,9 +283,7 @@ def launch(assume_yes: bool = False) -> str | None:
     )
     # LAUNCH_CONFIG feeds the launcher, minus the reserved keys: `name` is the run
     # name above; `type` is not a wire arg. The server rejects any unknown key.
-    launcher_args = {
-        k: v for k, v in LAUNCH_CONFIG.items() if k not in ("type", "name")
-    }
+    launcher_args = {k: v for k, v in LAUNCH_CONFIG.items() if k not in ("type", "name")}
     with TrainerClient() as client:
         run_id = client.launch_training_run(
             name=_run_name(),
@@ -312,9 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=["data", "validate", "launch", "all"],
         help="Stage to run (default: all = data → validate, then STOP).",
     )
-    parser.add_argument(
-        "--force", action="store_true", help="Regenerate datasets even if present."
-    )
+    parser.add_argument("--force", action="store_true", help="Regenerate datasets even if present.")
     parser.add_argument(
         "-y",
         "--yes",

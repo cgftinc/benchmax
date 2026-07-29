@@ -156,9 +156,7 @@ class TraceMessage:
         return {
             "role": self.role,
             "content": self.content,
-            "tool_calls": [tc.to_dict() for tc in self.tool_calls]
-            if self.tool_calls
-            else [],
+            "tool_calls": [tc.to_dict() for tc in self.tool_calls] if self.tool_calls else [],
             "tool_call_id": self.tool_call_id or "",
             "name": self.name or "",
         }  # type: ignore[return-value]

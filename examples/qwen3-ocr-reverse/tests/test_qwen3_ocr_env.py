@@ -54,9 +54,7 @@ def test_preprocess_uses_arrow_safe_content_shape() -> None:
             "answer": "12",
         }
     )
-    assert {
-        type(message["content"]) for message in example.payload["prompt_messages"]
-    } == {list}
+    assert {type(message["content"]) for message in example.payload["prompt_messages"]} == {list}
 
 
 def test_reward_empty_ref_and_pred_is_three() -> None:

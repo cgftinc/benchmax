@@ -117,9 +117,7 @@ class MetadataChunkLinker:
             retry_queries = self._generate_content_queries(primary_chunk)
             retry_queries = [q for q in retry_queries if q not in queries]
             if retry_queries:
-                retry_candidates = self._search_and_filter(
-                    primary_chunk, retry_queries, overrides
-                )
+                retry_candidates = self._search_and_filter(primary_chunk, retry_queries, overrides)
                 # Merge: existing candidates first, then new ones.
                 seen = {getattr(c, "hash", id(c)) for c in candidates}
                 for rc in retry_candidates:
@@ -188,9 +186,7 @@ class MetadataChunkLinker:
         if not queries:
             return self._empty_bundle(primary_chunk, hop_count)
 
-        candidates = await self._asearch_and_filter(
-            primary_chunk, queries, overrides, context
-        )
+        candidates = await self._asearch_and_filter(primary_chunk, queries, overrides, context)
         secondary_chunks = self._select_diverse(candidates, n_secondaries)
 
         # Retry with content-derived queries if confidence is low.
@@ -301,8 +297,7 @@ class MetadataChunkLinker:
             primary_hash = getattr(primary_chunk, "hash", None)
             if primary_hash and primary_hash in self.wiki_index.chunk_to_pages:
                 existing_hashes = {
-                    r.get("hash") or getattr(r.get("chunk"), "hash", None)
-                    for r in search_results
+                    r.get("hash") or getattr(r.get("chunk"), "hash", None) for r in search_results
                 }
                 wiki_hashes: set[str] = set()
                 for page_title in self.wiki_index.chunk_to_pages[primary_hash]:
@@ -320,9 +315,7 @@ class MetadataChunkLinker:
                     for wh in wiki_hashes:
                         chunk_obj = self.source.collection.get_chunk_by_hash(wh)
                         if chunk_obj is not None:
-                            search_results.append(
-                                {"chunk": chunk_obj, "max_score": 0.0}
-                            )
+                            search_results.append({"chunk": chunk_obj, "max_score": 0.0})
 
         # Filter: same-file, min chars, dedup, used hashes.
         # Returns (chunk, search_score) pairs to preserve relevance signal.
@@ -394,11 +387,7 @@ class MetadataChunkLinker:
             base_weight = 1.0 - wiki_bonus
             composite = (
                 base_weight
-                * (
-                    0.4 * (search_score / max_search)
-                    + 0.3 * jaccard
-                    + 0.3 * entity_ratio
-                )
+                * (0.4 * (search_score / max_search) + 0.3 * jaccard + 0.3 * entity_ratio)
                 + wiki_bonus
             )
             ranked.append((composite, idx, chunk))
@@ -440,16 +429,11 @@ class MetadataChunkLinker:
         primary_hash = getattr(primary_chunk, "hash", None)
         if primary_hash and primary_hash in self.profile.chunk_entity_index:
             graph_entities = self.profile.chunk_entity_index[primary_hash]
-            disc_lower = {
-                e.name.lower() for e in discriminative if e.type != "code_pattern"
-            }
+            disc_lower = {e.name.lower() for e in discriminative if e.type != "code_pattern"}
             found_entities = [e for e in graph_entities if e.lower() in disc_lower]
         else:
             for entity in discriminative:
-                if (
-                    entity.type != "code_pattern"
-                    and entity.name.lower() in content_lower
-                ):
+                if entity.type != "code_pattern" and entity.name.lower() in content_lower:
                     found_entities.append(entity.name)
 
         # Code patterns: still need regex to extract matched tokens
@@ -641,9 +625,7 @@ class MetadataChunkLinker:
         min_chars = self.config.min_chunk_chars
 
         filter_same = (
-            filter_same_file
-            if filter_same_file is not None
-            else self.config.filter_same_file
+            filter_same_file if filter_same_file is not None else self.config.filter_same_file
         )
 
         candidates: list[tuple[Any, float]] = []
@@ -718,9 +700,7 @@ class MetadataChunkLinker:
     # Reasoning-mode resolution & reranking
     # ------------------------------------------------------------------
 
-    def _resolve_mode_overrides(
-        self, reasoning_mode: str, primary_chunk: Any
-    ) -> _ModeOverrides:
+    def _resolve_mode_overrides(self, reasoning_mode: str, primary_chunk: Any) -> _ModeOverrides:
         """Map reasoning_mode to concrete pipeline overrides."""
         mode = reasoning_mode.strip().lower() if reasoning_mode else ""
         defaults = _ModeOverrides(
@@ -731,9 +711,7 @@ class MetadataChunkLinker:
         if mode == "temporal":
             if _has_date_metadata(primary_chunk):
                 return replace(defaults, prefer_date_diversity=True)
-            logger.debug(
-                "temporal mode: primary chunk lacks date metadata; using factual"
-            )
+            logger.debug("temporal mode: primary chunk lacks date metadata; using factual")
             return defaults
 
         if mode == "inference":
@@ -756,16 +734,12 @@ class MetadataChunkLinker:
                     filter_same_file=False,
                     prefer_index_proximity=True,
                 )
-            logger.debug(
-                "sequential mode: primary chunk lacks file+index; using factual"
-            )
+            logger.debug("sequential mode: primary chunk lacks file+index; using factual")
             return defaults
 
         return defaults  # factual or unrecognized
 
-    def _rerank_by_date_diversity(
-        self, primary_chunk: Any, candidates: list[Any]
-    ) -> list[Any]:
+    def _rerank_by_date_diversity(self, primary_chunk: Any, candidates: list[Any]) -> list[Any]:
         """Boost candidates whose date differs from the primary chunk.
 
         Uses a weighted combination: original rank (from coherence) is

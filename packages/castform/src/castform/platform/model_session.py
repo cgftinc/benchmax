@@ -113,11 +113,7 @@ def _json_object(response: httpx.Response, *, operation: str) -> dict[str, Any]:
     try:
         payload = response.json()
     except ValueError as error:
-        raise RuntimeError(
-            f"llm-proxy session {operation} returned invalid JSON"
-        ) from error
+        raise RuntimeError(f"llm-proxy session {operation} returned invalid JSON") from error
     if not isinstance(payload, dict):
-        raise RuntimeError(
-            f"llm-proxy session {operation} returned a non-object response"
-        )
+        raise RuntimeError(f"llm-proxy session {operation} returned a non-object response")
     return payload

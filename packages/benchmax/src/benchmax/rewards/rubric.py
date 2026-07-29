@@ -87,9 +87,7 @@ class RankingAnchor:
             or not 0 <= self.score <= 1
         ):
             raise ValueError("ranking anchor score must be within [0, 1]")
-        if self.label is not None and (
-            not isinstance(self.label, str) or not self.label.strip()
-        ):
+        if self.label is not None and (not isinstance(self.label, str) or not self.label.strip()):
             raise ValueError("ranking anchor label must be non-empty or None")
 
 
@@ -166,10 +164,7 @@ async def evaluate_rubric_ranking(
     ranking_anchors = tuple(anchors)
     if any(not isinstance(anchor, RankingAnchor) for anchor in ranking_anchors):
         raise TypeError("anchors must contain RankingAnchor values")
-    if any(
-        left.score > right.score
-        for left, right in zip(ranking_anchors, ranking_anchors[1:])
-    ):
+    if any(left.score > right.score for left, right in zip(ranking_anchors, ranking_anchors[1:])):
         raise ValueError("ranking anchors must be ordered from worst to best score")
     if ranking_anchors and ground_truth and ground_truth.strip():
         raise ValueError("pass ground_truth or anchors, not both")
@@ -234,8 +229,7 @@ async def evaluate_rubric_ranking(
                 )
             )
             local_scores = [
-                _band_score(positions[index], seams, max_position)
-                for index in range(len(nonempty))
+                _band_score(positions[index], seams, max_position) for index in range(len(nonempty))
             ]
         elif ground_truth_index is not None:
             ground_truth_position = positions[ground_truth_index]
@@ -250,9 +244,7 @@ async def evaluate_rubric_ranking(
             ]
         else:
             local_scores = [
-                1.0 - positions[index] / max_position
-                if max_position > 0
-                else 1.0
+                1.0 - positions[index] / max_position if max_position > 0 else 1.0
                 for index in range(len(nonempty))
             ]
         reasoning = _optional_reasoning(payload)
@@ -271,8 +263,7 @@ async def evaluate_rubric_ranking(
     )
     if log_result:
         logger.info(
-            "rubric.ranked title=%r polarity=%s ranking=%s scores=%s "
-            "anchors=%s reasoning=%s",
+            "rubric.ranked title=%r polarity=%s ranking=%s scores=%s anchors=%s reasoning=%s",
             rubric.title,
             rubric.polarity,
             result.ranking,
@@ -294,9 +285,7 @@ def _required_allowed_score(payload: Mapping[str, object], rubric: Rubric) -> fl
     if not math.isfinite(numeric):
         raise ValueError("judge score must be finite")
     if numeric not in rubric.allowed_scores:
-        raise ValueError(
-            f"judge score {score!r} is not one of {list(rubric.allowed_scores)}"
-        )
+        raise ValueError(f"judge score {score!r} is not one of {list(rubric.allowed_scores)}")
     return numeric
 
 
@@ -307,9 +296,7 @@ def _optional_reasoning(payload: Mapping[str, object]) -> str:
     return reasoning
 
 
-def _parse_ranking(
-    payload: Mapping[str, object], item_count: int
-) -> tuple[tuple[int, ...], ...]:
+def _parse_ranking(payload: Mapping[str, object], item_count: int) -> tuple[tuple[int, ...], ...]:
     raw_ranking = payload.get("ranking")
     if not isinstance(raw_ranking, list) or not raw_ranking:
         raise ValueError("judge response must contain a non-empty ranking")
@@ -324,9 +311,7 @@ def _parse_ranking(
             if isinstance(index, bool) or not isinstance(index, int):
                 raise ValueError("judge ranking indices must be integers")
             if not 0 <= index < item_count:
-                raise ValueError(
-                    f"judge ranking index {index} is outside 0..{item_count - 1}"
-                )
+                raise ValueError(f"judge ranking index {index} is outside 0..{item_count - 1}")
             if index in seen:
                 raise ValueError(f"judge ranking repeated response index {index}")
             seen.add(index)
@@ -372,22 +357,16 @@ def _band_score(
     if position <= best_position:
         if best_position == 0:
             return best_edge
-        return best_edge + (1 - best_edge) * (
-            (best_position - position) / best_position
-        )
+        return best_edge + (1 - best_edge) * ((best_position - position) / best_position)
     if position >= worst_position:
         span = max_position - worst_position
         return worst_edge * ((max_position - position) / span if span > 0 else 0)
-    for (left_position, left_edge), (right_position, right_edge) in zip(
-        seams, seams[1:]
-    ):
+    for (left_position, left_edge), (right_position, right_edge) in zip(seams, seams[1:]):
         if left_position <= position <= right_position:
             span = right_position - left_position
             if span == 0:
                 return max(left_edge, right_edge)
-            return right_edge + (left_edge - right_edge) * (
-                (right_position - position) / span
-            )
+            return right_edge + (left_edge - right_edge) * ((right_position - position) / span)
     raise RuntimeError("position did not fall within anchor seams")
 
 
@@ -400,9 +379,7 @@ def _ground_truth_score(
     if position < ground_truth_position:
         if ground_truth_position == 0:
             return 0.5
-        return 0.5 + 0.5 * (
-            (ground_truth_position - position) / ground_truth_position
-        )
+        return 0.5 + 0.5 * ((ground_truth_position - position) / ground_truth_position)
     if position == ground_truth_position:
         return 0.5
     span = max_position - ground_truth_position

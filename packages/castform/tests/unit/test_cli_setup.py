@@ -89,9 +89,7 @@ def test_setup_codex_writes_agents_skills(tmp_path):
     assert ".agents/skills" in guide
     assert ".claude/skills" not in guide
     assert "Keep correctness dominant" in guide
-    view_progress = (
-        tmp_path / ".agents" / "skills" / "view-progress" / "SKILL.md"
-    ).read_text()
+    view_progress = (tmp_path / ".agents" / "skills" / "view-progress" / "SKILL.md").read_text()
     assert "castform runs rollout" in view_progress
     assert "--view" not in view_progress
 
@@ -138,9 +136,7 @@ def test_setup_force_overwrites(tmp_path):
 def test_setup_content_cites_real_verbs(tmp_path):
     setup._cmd_setup(_ns(tmp_path, agent="claude"))
     guide = (tmp_path / "CLAUDE.md").read_text()
-    launch_skill = (
-        tmp_path / ".claude" / "skills" / "launch-run" / "SKILL.md"
-    ).read_text()
+    launch_skill = (tmp_path / ".claude" / "skills" / "launch-run" / "SKILL.md").read_text()
     assert "python main.py validate" in guide
     assert "python main.py launch" in guide
     assert "castform launch" not in guide + launch_skill

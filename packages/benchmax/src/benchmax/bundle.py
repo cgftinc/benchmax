@@ -70,9 +70,7 @@ class BundleMetadata:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a non-empty string")
-        if self.env_class_source is not None and not isinstance(
-            self.env_class_source, str
-        ):
+        if self.env_class_source is not None and not isinstance(self.env_class_source, str):
             raise TypeError("env_class_source must be a string or None")
 
     def to_json_bytes(self) -> bytes:
@@ -247,17 +245,14 @@ def dump_bundle(
         for mod in local_modules:
             if not isinstance(mod, ModuleType):
                 raise BundlingError(
-                    f"local_modules must contain module objects, got "
-                    f"{type(mod).__name__}: {mod!r}"
+                    f"local_modules must contain module objects, got {type(mod).__name__}: {mod!r}"
                 )
             cloudpickle.register_pickle_by_value(mod)
         try:
             try:
                 pickled = cloudpickle.dumps((env_class, constructor_args))
             except Exception as e:
-                raise BundlingError(
-                    f"Failed to serialize {env_class.__name__}: {e}"
-                ) from e
+                raise BundlingError(f"Failed to serialize {env_class.__name__}: {e}") from e
         finally:
             for mod in local_modules:
                 try:
@@ -281,9 +276,7 @@ def dump_bundle(
                     registered.append(mod)
                 for _ in range(10):
                     pending = [
-                        m
-                        for m in _unregistered_local_refs(pickled, project_roots)
-                        if m not in seen
+                        m for m in _unregistered_local_refs(pickled, project_roots) if m not in seen
                     ]
                     if not pending:
                         break
@@ -373,8 +366,7 @@ def load_bundle(
     *,
     instantiate: bool = True,
 ) -> (
-    Environment[Any, RolloutAttempt]
-    | tuple[type[Environment[Any, RolloutAttempt]], dict[str, Any]]
+    Environment[Any, RolloutAttempt] | tuple[type[Environment[Any, RolloutAttempt]], dict[str, Any]]
 ):
     """Unpickle and (optionally) instantiate.
 
@@ -405,8 +397,7 @@ def load_bundle(
     env_class, constructor_args = payload
     if not (isinstance(env_class, type) and issubclass(env_class, Environment)):
         raise BundlingError(
-            f"Unpickled class is {type(env_class).__name__}, "
-            "not an Environment implementation."
+            f"Unpickled class is {type(env_class).__name__}, not an Environment implementation."
         )
     if not isinstance(constructor_args, dict):
         raise BundlingError(
@@ -468,8 +459,7 @@ def _ensure_safe_python_version() -> None:
     v = sys.version_info
     if (v.major, v.minor) == (3, 13):
         raise BundlingError(
-            f"Python {v.major}.{v.minor}.{v.micro} is unsupported. "
-            "Use Python 3.12 or >= 3.14."
+            f"Python {v.major}.{v.minor}.{v.micro} is unsupported. Use Python 3.12 or >= 3.14."
         )
 
 
@@ -483,9 +473,7 @@ def unregistered_local_refs(pickled: bytes) -> list[str]:
 
     refs = _referenced_modules(pickled)
     project_roots = tuple(
-        root
-        for name in refs
-        if (root := _project_root_for_module_name(name)) is not None
+        root for name in refs if (root := _project_root_for_module_name(name)) is not None
     )
     return _unregistered_local_refs(pickled, project_roots)
 
@@ -639,9 +627,7 @@ def _imports_from_code(
     instructions = tuple(dis.get_instructions(code))
     names.update(_literal_dynamic_imports(instructions))
     for index, instruction in enumerate(instructions):
-        if instruction.opname != "IMPORT_NAME" or not isinstance(
-            instruction.argval, str
-        ):
+        if instruction.opname != "IMPORT_NAME" or not isinstance(instruction.argval, str):
             continue
         level = 0
         fromlist: object = None
@@ -697,14 +683,8 @@ def _literal_dynamic_imports(
             start -= 1
         call_setup = instructions[start + 1 : call_index]
         uses_import_callable = any(
-            (
-                item.opname == "LOAD_GLOBAL"
-                and item.argval in {"__import__", "import_module"}
-            )
-            or (
-                item.opname in {"LOAD_ATTR", "LOAD_METHOD"}
-                and item.argval == "import_module"
-            )
+            (item.opname == "LOAD_GLOBAL" and item.argval in {"__import__", "import_module"})
+            or (item.opname in {"LOAD_ATTR", "LOAD_METHOD"} and item.argval == "import_module")
             for item in call_setup
         )
         if not uses_import_callable:
@@ -713,9 +693,7 @@ def _literal_dynamic_imports(
             (
                 item.argval
                 for item in call_setup
-                if item.opname == "LOAD_CONST"
-                and isinstance(item.argval, str)
-                and item.argval
+                if item.opname == "LOAD_CONST" and isinstance(item.argval, str) and item.argval
             ),
             None,
         )
@@ -810,8 +788,7 @@ def _module_has_declared_distribution(
     top_level = module_name.partition(".")[0]
     distributions = importlib_metadata.packages_distributions().get(top_level, ())
     return any(
-        canonicalize_name(distribution) in declared_distributions
-        for distribution in distributions
+        canonicalize_name(distribution) in declared_distributions for distribution in distributions
     )
 
 
@@ -962,8 +939,7 @@ def _module_is_project_local(
         module = _module_from_spec(module_name, spec)
 
     return any(
-        not _is_site_package_path(path)
-        and any(path.is_relative_to(root) for root in project_roots)
+        not _is_site_package_path(path) and any(path.is_relative_to(root) for root in project_roots)
         for path in _module_source_paths(module)
     )
 

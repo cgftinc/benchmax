@@ -63,9 +63,7 @@ class PineconeSearch:
         self._embed_model = embed_model
         self._field_mapping = field_mapping
         self._content_field = content_field
-        self._token_provider = as_token_provider(
-            token_provider, env_token("PINECONE_API_KEY")
-        )
+        self._token_provider = as_token_provider(token_provider, env_token("PINECONE_API_KEY"))
         self._client: Any = None
 
     def _get_client(self) -> Any:

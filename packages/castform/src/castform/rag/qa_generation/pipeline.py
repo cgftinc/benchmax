@@ -16,7 +16,6 @@ from castform.model_auth import (
     create_openai_client,
     model_auth_for_endpoint,
 )
-from castform.platform.client import RolloutClient
 from castform.rag.corpus.postgres.source import PostgresChunkSource
 from castform.rag.qa_generation.auto_tune import (
     auto_tune,
@@ -124,11 +123,7 @@ def _is_retryable_openai_error(exc: Exception) -> bool:
         code = str(getattr(exc, "code", "") or "").strip().lower()
         body = str(getattr(exc, "body", "") or "").strip().lower()
         message = str(exc).strip().lower()
-        return (
-            code == "upstream_error"
-            or "internal error" in body
-            or "internal error" in message
-        )
+        return code == "upstream_error" or "internal error" in body or "internal error" in message
     if isinstance(exc, APIError):
         return True
     return False
@@ -351,9 +346,7 @@ def _build_filter_chain(
     source: Any,
 ) -> tuple[list[str], list[EvaluatorFilter]]:
     chain_names = [
-        str(name).strip().lower()
-        for name in (cfg.filtering.filters or [])
-        if str(name).strip()
+        str(name).strip().lower() for name in (cfg.filtering.filters or []) if str(name).strip()
     ]
     filters = [
         _build_filter_from_stage_name(
@@ -366,9 +359,7 @@ def _build_filter_chain(
     return chain_names, filters
 
 
-def _mark_rejected(
-    items: list[GeneratedQA], *, reason: str, reason_code: str
-) -> list[GeneratedQA]:
+def _mark_rejected(items: list[GeneratedQA], *, reason: str, reason_code: str) -> list[GeneratedQA]:
     for item in items:
         _reject_item(item, reason=reason, reason_code=reason_code)
         qa_type = str(item.qa.get("qa_type", "")).strip()
@@ -392,9 +383,7 @@ def _serialize_qa_with_filter_details(item: GeneratedQA) -> dict[str, Any]:
     row["filter_status"] = verdict.status
     row["filter_reason"] = verdict.reason
     row["filter_reasoning"] = verdict.reasoning
-    row["filter_metadata"] = (
-        dict(verdict.metadata) if isinstance(verdict.metadata, dict) else {}
-    )
+    row["filter_metadata"] = dict(verdict.metadata) if isinstance(verdict.metadata, dict) else {}
     return row
 
 
@@ -463,8 +452,7 @@ def _resolve_effective_qa_type(item: GeneratedQA) -> tuple[str, bool, str]:
     original_type = str(item.qa.get("qa_type", "")).strip().lower()
     if not original_type:
         original_type = (
-            str(item.generation_metadata.get("qa_type_target", "")).strip().lower()
-            or "lookup"
+            str(item.generation_metadata.get("qa_type_target", "")).strip().lower() or "lookup"
         )
     effective_type = item.resolve_effective_qa_type()
     if effective_type != original_type:
@@ -524,12 +512,8 @@ def _annotate_generated_items(items: list[GeneratedQA]) -> None:
             qa_type_before=qa_type,
             qa_type_after=qa_type,
             details={
-                "generation_mode": str(
-                    item.generation_metadata.get("generation_mode", "")
-                ).strip(),
-                "source_task_id": str(
-                    item.generation_metadata.get("source_task_id", "")
-                ).strip(),
+                "generation_mode": str(item.generation_metadata.get("generation_mode", "")).strip(),
+                "source_task_id": str(item.generation_metadata.get("source_task_id", "")).strip(),
             },
         )
 
@@ -547,9 +531,7 @@ def _annotate_transformed_items(items: list[GeneratedQA]) -> None:
             qa_type_after=qa_type,
             details={
                 "changed": bool(latest_step.get("changed", False)),
-                "validation_reason": str(
-                    latest_step.get("validation_reason", "")
-                ).strip(),
+                "validation_reason": str(latest_step.get("validation_reason", "")).strip(),
                 "target_style": str(latest_step.get("target_style", "")).strip(),
             },
         )
@@ -575,9 +557,7 @@ def _accept_items_under_type_quota(
         original_type = str(item.qa.get("qa_type", "")).strip() or (
             str(item.generation_metadata.get("qa_type_target", "")).strip() or "lookup"
         )
-        effective_type, was_relabeled, relabel_direction = _resolve_effective_qa_type(
-            item
-        )
+        effective_type, was_relabeled, relabel_direction = _resolve_effective_qa_type(item)
         item.qa["qa_type"] = effective_type
 
         if was_relabeled:
@@ -671,9 +651,7 @@ def _collect_journey_stats(
             if event_type == "quota_rejected":
                 effective_type = (
                     str(event.get("qa_type_after", "")).strip()
-                    or str(
-                        event.get("details", {}).get("effective_qa_type", "")
-                    ).strip()
+                    or str(event.get("details", {}).get("effective_qa_type", "")).strip()
                 )
                 if effective_type:
                     quota_rejected_by_effective_type[effective_type] += 1
@@ -708,9 +686,7 @@ def _relabel_qa_types(items: list[GeneratedQA]) -> dict[str, int]:
     """
     stats = {"relabeled": 0, "lookup_to_multi_hop": 0, "multi_hop_to_lookup": 0}
     for item in items:
-        effective_type, was_relabeled, relabel_direction = _resolve_effective_qa_type(
-            item
-        )
+        effective_type, was_relabeled, relabel_direction = _resolve_effective_qa_type(item)
         item.qa["qa_type"] = effective_type
         if was_relabeled:
             stats["relabeled"] += 1
@@ -772,9 +748,7 @@ def _select_regeneration_seed(
     # within the stale seed pool.
     if context is not None:
         source = getattr(context, "source", None)
-        min_chars = (
-            getattr(context.config.corpus, "min_chunk_chars", 0) if context else 0
-        )
+        min_chars = getattr(context.config.corpus, "min_chunk_chars", 0) if context else 0
         if source is not None:
             try:
                 fresh = source.sample_chunks(1, min_chars=min_chars)
@@ -918,11 +892,7 @@ def _build_regeneration_tasks(
 
     for idx, item in enumerate(items):
         meta = dict(item.generation_metadata)
-        verdict_meta = (
-            dict(item.filter_verdict.metadata)
-            if item.filter_verdict is not None
-            else {}
-        )
+        verdict_meta = dict(item.filter_verdict.metadata) if item.filter_verdict is not None else {}
         verdict_reason = str(
             item.filter_verdict.reason if item.filter_verdict is not None else ""
         ).strip()
@@ -936,20 +906,15 @@ def _build_regeneration_tasks(
             verdict_reason=verdict_reason,
             verdict_reasoning=verdict_reasoning,
         )
-        judge_reason_tag = (
-            str(verdict_meta.get("judge_reason_tag", "")).strip() or "unknown"
-        )
+        judge_reason_tag = str(verdict_meta.get("judge_reason_tag", "")).strip() or "unknown"
         overlap_triggered = bool(verdict_meta.get("overlap_triggered", False))
         expected_action = _expected_action_for_failure_type(failure_type)
         current_count = max(0, _int_or(meta.get("refinement_count", 0), 0))
-        same_seed_failures = max(
-            0, _int_or(meta.get("same_seed_refinement_count", 0), 0)
-        )
+        same_seed_failures = max(0, _int_or(meta.get("same_seed_refinement_count", 0), 0))
         force_reanchor = bool(verdict_meta.get("force_reanchor", False))
 
         qa_type = (
-            str(meta.get("qa_type_target", "")).strip()
-            or str(item.qa.get("qa_type", "")).strip()
+            str(meta.get("qa_type_target", "")).strip() or str(item.qa.get("qa_type", "")).strip()
         )
         if not qa_type:
             qa_type = "lookup"
@@ -983,9 +948,7 @@ def _build_regeneration_tasks(
             context=context,
         )
 
-        source_task_id = (
-            str(meta.get("task_id", "")).strip() or f"task_refine_{idx:05d}"
-        )
+        source_task_id = str(meta.get("task_id", "")).strip() or f"task_refine_{idx:05d}"
         regeneration_attempt = current_count + 1
         task_id = f"{source_task_id}__regen_{current_count + 1:02d}"
         suffix = 1
@@ -1053,14 +1016,10 @@ async def _regenerate_with_generator(
             logger.warning("Dropping regenerated item with missing task_id metadata.")
             continue
         if task_id not in originals_by_task_id:
-            logger.warning(
-                "Dropping regenerated item for unknown task_id '%s'.", task_id
-            )
+            logger.warning("Dropping regenerated item for unknown task_id '%s'.", task_id)
             continue
         if task_id in regenerated_by_task_id:
-            logger.warning(
-                "Dropping duplicate regenerated item for task_id '%s'.", task_id
-            )
+            logger.warning("Dropping duplicate regenerated item for task_id '%s'.", task_id)
             continue
         regenerated_by_task_id[task_id] = regenerated
 
@@ -1079,9 +1038,7 @@ async def _regenerate_with_generator(
         previous_seed_chunk_id = (
             str(source_meta.get("seed_chunk_id", "")).strip() or task.seed_chunk_id
         )
-        same_seed_failures = max(
-            0, _int_or(source_meta.get("same_seed_refinement_count", 0), 0)
-        )
+        same_seed_failures = max(0, _int_or(source_meta.get("same_seed_refinement_count", 0), 0))
         next_same_seed_failures = same_seed_failures + 1
         if task.seed_chunk_id != previous_seed_chunk_id:
             next_same_seed_failures = 1
@@ -1105,8 +1062,7 @@ async def _regenerate_with_generator(
             {
                 "type": "generator_retry",
                 "round": next_count,
-                "source_task_id": str(source_meta.get("task_id", "")).strip()
-                or task.task_id,
+                "source_task_id": str(source_meta.get("task_id", "")).strip() or task.task_id,
                 "seed_chunk_id": task.seed_chunk_id,
                 "reanchored": task.seed_chunk_id != previous_seed_chunk_id,
             }
@@ -1133,9 +1089,7 @@ async def _regenerate_with_generator(
     return regenerated_for_retry, failed_to_regenerate
 
 
-def _build_corpus_profile(
-    cfg: PipelineConfig, source: Any, context: PipelineContext
-) -> None:
+def _build_corpus_profile(cfg: PipelineConfig, source: Any, context: PipelineContext) -> None:
     """Generate corpus summary/example queries from description and samples."""
     profile_cfg = cfg.corpus_context
     default_summary = profile_cfg.description
@@ -1240,9 +1194,7 @@ def _build_corpus_profile(
         summary, queries, raw, user_prompt = "", [], "", ""
 
     summary = summary.strip() or default_summary
-    queries = [
-        str(query).strip() for query in queries if str(query).strip()
-    ] or default_queries
+    queries = [str(query).strip() for query in queries if str(query).strip()] or default_queries
 
     context["corpus_summary"] = summary
     context["corpus_queries"] = "\n".join(f"- {query}" for query in queries)
@@ -1414,9 +1366,7 @@ class Pipeline:
             )
             kb_entities, kb_entity_idx, kb_chunk_idx = extract_entities(all_chunks)
             # Compute co-occurrence from the KeyBERT graph
-            kb_entity_names = sorted(
-                name for name, hashes in kb_entity_idx.items() if hashes
-            )
+            kb_entity_names = sorted(name for name, hashes in kb_entity_idx.items() if hashes)
             kb_cooccurrence: dict[tuple[str, str], int] = {}
             for i, e1 in enumerate(kb_entity_names):
                 for e2 in kb_entity_names[i + 1 :]:
@@ -1431,17 +1381,13 @@ class Pipeline:
             )
 
         else:
-            _print_progress(
-                "[3/6] Skipped entity pattern generation", verbose=cfg.verbose
-            )
+            _print_progress("[3/6] Skipped entity pattern generation", verbose=cfg.verbose)
 
         # --- Build CorpusProfile from stages 2-3 outputs ---
         from castform.rag.qa_generation.corpus_capabilities import CorpusCapabilities
 
         # Use KeyBERT graph directly — already built during extract_entities().
-        entity_patterns = (
-            kb_entities if cfg.corpus_context.generate_entity_patterns else []
-        )
+        entity_patterns = kb_entities if cfg.corpus_context.generate_entity_patterns else []
         entity_chunk_idx = kb_entity_idx if entity_patterns else {}
         chunk_entity_idx = kb_chunk_idx if entity_patterns else {}
         cooccurrence = kb_cooccurrence if entity_patterns else {}
@@ -1466,9 +1412,7 @@ class Pipeline:
 
         # --- Optional wiki preprocessing ---
         if cfg.wiki_preprocessing.enabled:
-            _print_progress(
-                "[3.5/6] Building wiki from entity clusters...", verbose=cfg.verbose
-            )
+            _print_progress("[3.5/6] Building wiki from entity clusters...", verbose=cfg.verbose)
             from castform.rag.qa_generation.wiki_builder import WikiBuilder  # noqa: PLC0415
 
             wiki_client = _build_openai_client(
@@ -1492,9 +1436,7 @@ class Pipeline:
                     clusters,
                     corpus_summary=context.get("corpus_summary", ""),
                     corpus_description=context.get("corpus_description", ""),
-                    corpus_language=str(
-                        context.get("corpus_language", "") or ""
-                    ).strip(),
+                    corpus_language=str(context.get("corpus_language", "") or "").strip(),
                 )
                 context["wiki_index"] = wiki_index
                 context["wiki_builder"] = wiki_builder
@@ -1536,9 +1478,7 @@ class Pipeline:
                     census.chunk_count,
                 )
             if "primary_type_distribution" in tuned:
-                cfg.targets.primary_type_distribution = tuned[
-                    "primary_type_distribution"
-                ]
+                cfg.targets.primary_type_distribution = tuned["primary_type_distribution"]
                 logger.info(
                     "Auto-tune: primary_type_distribution -> %s",
                     tuned["primary_type_distribution"],
@@ -1550,9 +1490,7 @@ class Pipeline:
                     tuned["hop_distribution"],
                 )
             if "reasoning_mode_distribution" in tuned:
-                cfg.targets.reasoning_mode_distribution = tuned[
-                    "reasoning_mode_distribution"
-                ]
+                cfg.targets.reasoning_mode_distribution = tuned["reasoning_mode_distribution"]
                 logger.info(
                     "Auto-tune: reasoning_mode_distribution -> %s",
                     tuned["reasoning_mode_distribution"],
@@ -1579,9 +1517,7 @@ class Pipeline:
 
         _print_progress("[4/6] Preparing generation...", verbose=cfg.verbose)
 
-        linker = _build_linker(
-            cfg, source, profile=profile, wiki_index=context.get("wiki_index")
-        )
+        linker = _build_linker(cfg, source, profile=profile, wiki_index=context.get("wiki_index"))
         generator = _build_generator(cfg, linker=linker)
         guard_filter = DeterministicGuardsFilter(cfg.filtering.deterministic_guards)
         filter_stage_names, filter_chain = _build_filter_chain(
@@ -1626,9 +1562,7 @@ class Pipeline:
             )
         )
         pre_dedup = len(all_passed)
-        all_passed, all_rejected = deduplicator.deduplicate(
-            all_passed, all_rejected, context
-        )
+        all_passed, all_rejected = deduplicator.deduplicate(all_passed, all_rejected, context)
         n_deduped = pre_dedup - len(all_passed)
         if n_deduped > 0:
             _print_progress(
@@ -1648,9 +1582,7 @@ class Pipeline:
         context["rejected_items"] = [
             _serialize_qa_with_filter_details(item) for item in all_rejected
         ]
-        context["passed_items"] = [
-            _serialize_qa_with_filter_details(item) for item in all_passed
-        ]
+        context["passed_items"] = [_serialize_qa_with_filter_details(item) for item in all_passed]
         context["total_regenerations"] = total_regens
 
         _print_progress("[6/6] Formatting output...", verbose=cfg.verbose)
@@ -1692,9 +1624,7 @@ class Pipeline:
 
         retrieval_too_easy_stats = context.get("retrieval_too_easy_filter_stats")
         if isinstance(retrieval_too_easy_stats, dict) and retrieval_too_easy_stats:
-            result["stats"]["retrieval_too_easy_filter"] = dict(
-                retrieval_too_easy_stats
-            )
+            result["stats"]["retrieval_too_easy_filter"] = dict(retrieval_too_easy_stats)
 
         grounding_stats = context.get("grounding_filter_stats")
         if isinstance(grounding_stats, dict) and grounding_stats:
@@ -1807,9 +1737,7 @@ class Pipeline:
                     if inspect.isawaitable(result):
                         await result
                 except Exception:  # noqa: BLE001 — best-effort cleanup
-                    logger.debug(
-                        "Error closing async client during cleanup", exc_info=True
-                    )
+                    logger.debug("Error closing async client during cleanup", exc_info=True)
 
     @staticmethod
     def _run_coro(coro: Any) -> Any:
@@ -1884,25 +1812,15 @@ class Pipeline:
                 item.filter_verdict = None
 
             if metrics is not None:
-                with stage_timer(
-                    metrics, "deterministic_guards", len(active_items)
-                ) as guard_stage:
-                    active_items = await _run_stage(
-                        guard_filter.evaluate, active_items, context
-                    )
-                    guard_stage.items_out_passed += sum(
-                        1 for i in active_items if i.is_passed
-                    )
-                    guard_stage.items_out_rejected += sum(
-                        1 for i in active_items if i.is_rejected
-                    )
+                with stage_timer(metrics, "deterministic_guards", len(active_items)) as guard_stage:
+                    active_items = await _run_stage(guard_filter.evaluate, active_items, context)
+                    guard_stage.items_out_passed += sum(1 for i in active_items if i.is_passed)
+                    guard_stage.items_out_rejected += sum(1 for i in active_items if i.is_rejected)
                     guard_stage.items_out_needs_refinement += sum(
                         1 for i in active_items if i.needs_refinement
                     )
             else:
-                active_items = await _run_stage(
-                    guard_filter.evaluate, active_items, context
-                )
+                active_items = await _run_stage(guard_filter.evaluate, active_items, context)
 
             for _stage_name, stage_filter in zip(filter_stage_names, filter_chain):
                 if metrics is not None:
@@ -1910,19 +1828,13 @@ class Pipeline:
                         active_items = await _run_stage(
                             stage_filter.evaluate, active_items, context
                         )
-                        sm.items_out_passed += sum(
-                            1 for i in active_items if i.is_passed
-                        )
-                        sm.items_out_rejected += sum(
-                            1 for i in active_items if i.is_rejected
-                        )
+                        sm.items_out_passed += sum(1 for i in active_items if i.is_passed)
+                        sm.items_out_rejected += sum(1 for i in active_items if i.is_rejected)
                         sm.items_out_needs_refinement += sum(
                             1 for i in active_items if i.needs_refinement
                         )
                 else:
-                    active_items = await _run_stage(
-                        stage_filter.evaluate, active_items, context
-                    )
+                    active_items = await _run_stage(stage_filter.evaluate, active_items, context)
                 extract_filter_scores(active_items, _stage_name)
 
             passed = [item for item in active_items if item.is_passed]
@@ -1931,9 +1843,7 @@ class Pipeline:
             needs_refinement = [item for item in active_items if item.needs_refinement]
             rejected = [item for item in active_items if item.is_rejected]
             _record_filter_events(passed, event_type="filter_passed")
-            _record_filter_events(
-                needs_refinement, event_type="filter_needs_refinement"
-            )
+            _record_filter_events(needs_refinement, event_type="filter_needs_refinement")
             _record_filter_events(rejected, event_type="filter_rejected")
             final_passed.extend(passed)
             final_rejected.extend(rejected)
@@ -2067,9 +1977,7 @@ class Pipeline:
             corpus_id=cfg.corpus.corpus_id,
             primary_type_distribution=cfg.targets.primary_type_distribution,
             reasoning_mode_distribution=(cfg.targets.reasoning_mode_distribution),
-            hop_distribution={
-                str(k): v for k, v in cfg.targets.hop_distribution.items()
-            },
+            hop_distribution={str(k): v for k, v in cfg.targets.hop_distribution.items()},
             acceptance_policy="quota_aware_v1",
         )
         ckpt_mgr = CheckpointManager(checkpoint_dir=ckpt_dir, config_hash=config_hash)
@@ -2162,9 +2070,7 @@ class Pipeline:
                     consecutive_empty = 0
 
                 if consecutive_empty >= 5:
-                    logger.warning(
-                        "No items accepted in 5 consecutive batches, stopping early"
-                    )
+                    logger.warning("No items accepted in 5 consecutive batches, stopping early")
                     all_rejected.extend(batch_rejected)
                     all_raw.extend(raw)
                     total_regens += regens
@@ -2215,17 +2121,13 @@ class Pipeline:
                         rejected_count=len(batch_rejected),
                         regeneration_count=regens,
                         acceptance_rate=(len(accepted) / len(raw) if raw else 0.0),
-                        cumulative_acceptance_rate=(
-                            cum_acc / cum_gen if cum_gen > 0 else 0.0
-                        ),
+                        cumulative_acceptance_rate=(cum_acc / cum_gen if cum_gen > 0 else 0.0),
                         cumulative_fill_rate=(cum_acc / target if target > 0 else 0.0),
                     )
                     pipeline_metrics.batch_history.append(batch_m)
 
                     remaining = target - cum_acc
-                    if remaining > batch_size and should_early_stop(
-                        pipeline_metrics.batch_history
-                    ):
+                    if remaining > batch_size and should_early_stop(pipeline_metrics.batch_history):
                         logger.warning(
                             "Acceptance rate below threshold for recent batches, stopping early"
                         )
@@ -2252,8 +2154,7 @@ class Pipeline:
                     # Subtract in-flight work from remaining quota so concurrent
                     # batches don't collectively overshoot a type's target.
                     effective_accepted_types = {
-                        t: accepted_type_counts.get(t, 0)
-                        + in_flight_type_counts.get(t, 0)
+                        t: accepted_type_counts.get(t, 0) + in_flight_type_counts.get(t, 0)
                         for t in target_type_counts
                     }
                     tasks = compute_next_batch(
@@ -2273,9 +2174,7 @@ class Pipeline:
                         break
                     batch_in_flight: dict[str, int] = {}
                     for t in tasks:
-                        batch_in_flight[t.qa_type] = (
-                            batch_in_flight.get(t.qa_type, 0) + 1
-                        )
+                        batch_in_flight[t.qa_type] = batch_in_flight.get(t.qa_type, 0) + 1
                     for k, v in batch_in_flight.items():
                         in_flight_type_counts[k] = in_flight_type_counts.get(k, 0) + v
                     batch_context = copy.copy(context)
@@ -2309,9 +2208,7 @@ class Pipeline:
                     )
                     done = list(done_set)
 
-                def _collect_result(
-                    fut: Any, b_idx: int, batch_ctx: PipelineContext
-                ) -> None:
+                def _collect_result(fut: Any, b_idx: int, batch_ctx: PipelineContext) -> None:
                     nonlocal consecutive_empty, total_regens
                     passed, rejected, raw, regens = fut.result()
 
@@ -2366,15 +2263,9 @@ class Pipeline:
                                 accepted_count=len(accepted),
                                 rejected_count=len(batch_rejected),
                                 regeneration_count=regens,
-                                acceptance_rate=(
-                                    len(accepted) / len(raw) if raw else 0.0
-                                ),
-                                cumulative_acceptance_rate=(
-                                    c_acc / c_gen if c_gen > 0 else 0.0
-                                ),
-                                cumulative_fill_rate=(
-                                    c_acc / target if target > 0 else 0.0
-                                ),
+                                acceptance_rate=(len(accepted) / len(raw) if raw else 0.0),
+                                cumulative_acceptance_rate=(c_acc / c_gen if c_gen > 0 else 0.0),
+                                cumulative_fill_rate=(c_acc / target if target > 0 else 0.0),
                             )
                             p_metrics.batch_history.append(batch_m)
 
@@ -2390,9 +2281,7 @@ class Pipeline:
                     b_idx, batch_ctx, in_flight_types = futures.pop(fut)
                     with lock:
                         for k, v in in_flight_types.items():
-                            in_flight_type_counts[k] = max(
-                                0, in_flight_type_counts.get(k, 0) - v
-                            )
+                            in_flight_type_counts[k] = max(0, in_flight_type_counts.get(k, 0) - v)
                     _collect_result(fut, b_idx, batch_ctx)
 
                 with lock:
@@ -2446,11 +2335,7 @@ def _filter_and_sample_seeds(
     excludes those below the p25 threshold. Falls back to unfiltered
     sampling when profile is unavailable or the eligible pool is too small.
     """
-    if (
-        profile is None
-        or not profile.chunk_suitability_scores
-        or profile.census is None
-    ):
+    if profile is None or not profile.chunk_suitability_scores or profile.census is None:
         return source.sample_chunks(n, min_chars=min_chars) or []
 
     # Adaptive threshold: bottom 25% of profile pool scores
@@ -2547,9 +2432,7 @@ def compute_next_batch(
     # wave of k parallel batches would launch k*batch_size multi_hop tasks and
     # starve lookup entirely until multi_hop is saturated.
     type_dist = {
-        t: w
-        for t, w in cfg.targets.primary_type_distribution.items()
-        if t in target_type_counts
+        t: w for t, w in cfg.targets.primary_type_distribution.items() if t in target_type_counts
     }
     if not type_dist:
         type_dist = {t: 1.0 for t in target_type_counts}

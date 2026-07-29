@@ -54,9 +54,7 @@ _TERMINATION_REASON_BY_EXCEPTION = {
     "SandboxBuildFailedError": "sandbox_error",
     "VerifierTimeoutError": "verifier_timeout",
 }
-_HARNESS_REPORTED_TERMINATION_REASONS = frozenset(
-    {"context_exceeded", "output_exceeded"}
-)
+_HARNESS_REPORTED_TERMINATION_REASONS = frozenset({"context_exceeded", "output_exceeded"})
 
 
 class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
@@ -109,9 +107,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         self._sandbox_credentials = sandbox_credentials
         self._requires_public_model_endpoint = requires_public_model_endpoint
         self._trial_slots = (
-            asyncio.Semaphore(max_concurrent_trials)
-            if max_concurrent_trials is not None
-            else None
+            asyncio.Semaphore(max_concurrent_trials) if max_concurrent_trials is not None else None
         )
         self._dataset_cache: dict[
             tuple[Path, DatasetSplit | None, int | None],
@@ -156,9 +152,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         if split == "eval" and not eval_:
             if self._eval_ratio == 0:
                 raise ValueError("HarborEnv automatic eval is disabled by eval_ratio=0")
-            raise ValueError(
-                "HarborEnv automatic eval requires at least two dataset examples"
-            )
+            raise ValueError("HarborEnv automatic eval requires at least two dataset examples")
         return train if split == "train" else eval_
 
     async def _resolve_dataset(
@@ -271,9 +265,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                 timeout_multiplier=self._trial.timeout_multiplier,
                 agent_timeout_multiplier=self._trial.agent_timeout_multiplier,
                 verifier_timeout_multiplier=self._trial.verifier_timeout_multiplier,
-                agent_setup_timeout_multiplier=(
-                    self._trial.agent_setup_timeout_multiplier
-                ),
+                agent_setup_timeout_multiplier=(self._trial.agent_setup_timeout_multiplier),
                 environment_build_timeout_multiplier=(
                     self._trial.environment_build_timeout_multiplier
                 ),
@@ -285,8 +277,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
             )
 
             logger.info(
-                "harbor.rollout.start rollout_id=%s task=%s sandbox=%s "
-                "harness=%s model=%s",
+                "harbor.rollout.start rollout_id=%s task=%s sandbox=%s harness=%s model=%s",
                 request.rollout_id,
                 request.example.id,
                 _sandbox_name(self._trial),
@@ -305,9 +296,7 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
                 rollout = _zero_reward_rollout(
                     request.rollout_id,
                     reward_keys=self._reward_keys,
-                    termination_reason=_exception_termination_reason(
-                        type(error).__name__
-                    ),
+                    termination_reason=_exception_termination_reason(type(error).__name__),
                 )
             else:
                 rollout = _rollout_attempt(
@@ -345,8 +334,7 @@ def _rollout_attempt(
             detail = "the verifier returned no rewards"
         else:
             detail = (
-                f"{result.exception_info.exception_type}: "
-                f"{result.exception_info.exception_message}"
+                f"{result.exception_info.exception_type}: {result.exception_info.exception_message}"
             )
         logger.error(
             "harbor.rollout.zero_reward rollout_id=%s error=%s",
@@ -381,9 +369,7 @@ def _rollout_attempt(
     if "partial_credit" in reward_keys and "partial_credit" not in normalized_rewards:
         if result.exception_info is None and "reward" in normalized_rewards:
             partial_credit = _rewardkit_partial_credit(rewardkit_criteria)
-            normalized_rewards["partial_credit"] = (
-                0.0 if partial_credit is None else partial_credit
-            )
+            normalized_rewards["partial_credit"] = 0.0 if partial_credit is None else partial_credit
         else:
             normalized_rewards["partial_credit"] = 0.0
     _log_rewardkit_criteria(rollout_id, rewardkit_criteria)
@@ -414,13 +400,9 @@ def _result_termination_reason(result: TrialResult) -> str:
 
     agent_result = getattr(result, "agent_result", None)
     metadata = getattr(agent_result, "metadata", None)
-    harvey_metrics = (
-        metadata.get("harvey_metrics") if isinstance(metadata, Mapping) else None
-    )
+    harvey_metrics = metadata.get("harvey_metrics") if isinstance(metadata, Mapping) else None
     reason = (
-        harvey_metrics.get("termination_reason")
-        if isinstance(harvey_metrics, Mapping)
-        else None
+        harvey_metrics.get("termination_reason") if isinstance(harvey_metrics, Mapping) else None
     )
     if reason in _HARNESS_REPORTED_TERMINATION_REASONS:
         return cast(str, reason)
@@ -549,8 +531,7 @@ def _log_rewardkit_criteria(
 
     total_weight = sum(float(item["weight"]) for item in normalized)
     weighted_score = (
-        sum(float(item["weight"]) * float(item["value"]) for item in normalized)
-        / total_weight
+        sum(float(item["weight"]) * float(item["value"]) for item in normalized) / total_weight
         if total_weight > 0
         else 0.0
     )
@@ -683,24 +664,18 @@ def _validate_configuration(
     )
 
     if not isinstance(dataset, DatasetConfig):
-        raise TypeError(
-            f"dataset must be Harbor DatasetConfig, got {type(dataset).__name__}"
-        )
+        raise TypeError(f"dataset must be Harbor DatasetConfig, got {type(dataset).__name__}")
     if eval_dataset is not None and not isinstance(eval_dataset, DatasetConfig):
         raise TypeError(
             "eval_dataset must be Harbor DatasetConfig when provided, got "
             f"{type(eval_dataset).__name__}"
         )
     if not isinstance(trial, HarborTrialTemplate):
-        raise TypeError(
-            f"trial must be HarborTrialTemplate, got {type(trial).__name__}"
-        )
+        raise TypeError(f"trial must be HarborTrialTemplate, got {type(trial).__name__}")
     if not isinstance(trial.agent, (AgentConfig, BundledHarborAgent)):
         raise TypeError("trial.agent must be Harbor AgentConfig or BundledHarborAgent")
     agent_config = (
-        trial.agent.config
-        if isinstance(trial.agent, BundledHarborAgent)
-        else trial.agent
+        trial.agent.config if isinstance(trial.agent, BundledHarborAgent) else trial.agent
     )
     if getattr(agent_config, "model_name", None):
         raise ValueError(
@@ -722,9 +697,7 @@ def _validate_configuration(
         or not 0 <= eval_ratio < 1
     ):
         raise ValueError("eval_ratio must satisfy 0 <= eval_ratio < 1")
-    if sandbox_credentials is not None and not isinstance(
-        sandbox_credentials, SandboxCredentials
-    ):
+    if sandbox_credentials is not None and not isinstance(sandbox_credentials, SandboxCredentials):
         raise TypeError(
             "sandbox_credentials must implement SandboxCredentials, got "
             f"{type(sandbox_credentials).__name__}"
@@ -752,8 +725,7 @@ def _validate_sandbox_credentials(
     sandbox = str(getattr(environment.type, "value", environment.type))
     if sandbox in {"modal", "daytona"} and credentials is None:
         raise ValueError(
-            f"configured Harbor sandbox {sandbox!r} requires explicit "
-            "sandbox_credentials"
+            f"configured Harbor sandbox {sandbox!r} requires explicit sandbox_credentials"
         )
     if credentials is None or credentials.provider is None:
         return

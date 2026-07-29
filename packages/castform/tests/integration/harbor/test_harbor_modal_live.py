@@ -92,9 +92,7 @@ def _live_settings() -> _LiveSettings:
 
     modal_token_id = os.environ.get("MODAL_TOKEN_ID")
     modal_token_secret = os.environ.get("MODAL_TOKEN_SECRET")
-    api_key = os.environ.get("BENCHMAX_HARBOR_API_KEY") or os.environ.get(
-        "CASTFORM_API_KEY"
-    )
+    api_key = os.environ.get("BENCHMAX_HARBOR_API_KEY") or os.environ.get("CASTFORM_API_KEY")
     missing = [
         name
         for name, value in (

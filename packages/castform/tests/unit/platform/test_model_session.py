@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import httpx
-
 from benchmax.auth import StaticBearerAuth
 from castform.platform.model_session import ModelSession, ModelSessionClient
 

@@ -177,9 +177,7 @@ class TestContentField:
             assert client._pc_field("content") == "content"
 
     def test_explicit_field_mapping_composes(self):
-        client = self._movie_client(
-            field_mapping={"path": "file_path"}, content_field="summary"
-        )
+        client = self._movie_client(field_mapping={"path": "file_path"}, content_field="summary")
         assert client._pc_field("content") == "summary"
         assert client._pc_field("file_path") == "path"
 
@@ -187,14 +185,10 @@ class TestContentField:
         # field_mapping already claims the content column with a different
         # key — ambiguous, must fail instead of silently picking a winner.
         with pytest.raises(ValueError, match="conflicts"):
-            self._movie_client(
-                field_mapping={"description": "content"}, content_field="summary"
-            )
+            self._movie_client(field_mapping={"description": "content"}, content_field="summary")
 
     def test_agreeing_content_mappings_pass(self):
-        client = self._movie_client(
-            field_mapping={"summary": "content"}, content_field="summary"
-        )
+        client = self._movie_client(field_mapping={"summary": "content"}, content_field="summary")
         assert client._pc_field("content") == "summary"
 
 

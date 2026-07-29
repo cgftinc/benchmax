@@ -401,9 +401,7 @@ async def _rate_all_turns(
     for ex in examples:
         ctx = trace_contexts.get(ex.trace_id)
         if ctx is not None:
-            tasks.append(
-                asyncio.create_task(_rate_single_turn(client, model, ctx, ex, semaphore))
-            )
+            tasks.append(asyncio.create_task(_rate_single_turn(client, model, ctx, ex, semaphore)))
 
     # Stream results as they complete
     results: list[PivotRating] = []

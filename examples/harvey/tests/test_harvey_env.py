@@ -152,9 +152,7 @@ def test_verifier_env_for_anthropic_copies_only_anthropic_key(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
 
-    assert _verifier_env_for_provider("anthropic") == {
-        "ANTHROPIC_API_KEY": "anthropic-key"
-    }
+    assert _verifier_env_for_provider("anthropic") == {"ANTHROPIC_API_KEY": "anthropic-key"}
 
 
 def test_verifier_env_for_openai_copies_standard_configuration(
@@ -283,8 +281,7 @@ def test_harvey_agent_builds_harbor_task_command(tmp_path: Path) -> None:
     assert "--max-tool-result-chars 12000" in command
     assert "/workspace/output/." in command
     assert (
-        'for path in "$STAGED_RESULT/workspace/documents" '
-        '"$STAGED_RESULT/workspace/output"; do'
+        'for path in "$STAGED_RESULT/workspace/documents" "$STAGED_RESULT/workspace/output"; do'
     ) in command
     assert 'if [ -L "$path" ]; then rm -f "$path"; fi' in command
 
@@ -327,9 +324,7 @@ async def test_harvey_agent_reads_metrics_from_sandbox_before_download(
     await agent.run("Review the documents", FakeEnvironment(), context)  # type: ignore[arg-type]
 
     assert len(commands) == 2
-    assert commands[1] == (
-        "cat /workspace/archive/harvey-labs/results/test-run/metrics.json"
-    )
+    assert commands[1] == ("cat /workspace/archive/harvey-labs/results/test-run/metrics.json")
     assert context.n_input_tokens == 123
     assert context.n_output_tokens == 45
     assert context.metadata == {

@@ -28,9 +28,7 @@ def mod(request, tmp_path, monkeypatch):
 
 
 def _fake_report(ok: bool = True):
-    outcome = types.SimpleNamespace(
-        rewards={"score": 1.0}, termination_reason="finished"
-    )
+    outcome = types.SimpleNamespace(rewards={"score": 1.0}, termination_reason="finished")
     return types.SimpleNamespace(
         ok=ok,
         local={"validate-0": outcome, "validate-1": outcome},
@@ -152,9 +150,7 @@ def test_main_exit_1_when_launch_gated(mod, monkeypatch):
 # ── validate stage: script calls the public group-native function ───────────────
 
 
-def test_validate_delegates_dataset_loading_to_public_group_validation(
-    mod, tmp_path, monkeypatch
-):
+def test_validate_delegates_dataset_loading_to_public_group_validation(mod, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     field = "question" if hasattr(mod, "CustomSearchEnv") else "prompt"
     (tmp_path / "train.jsonl").write_text(f'{{"{field}": "q"}}\n')
@@ -279,9 +275,7 @@ def test_launch_blocked_by_failing_validate(mod, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     launched: dict = {}
     _patch_launch_sdk(mod, monkeypatch, launched, validate_ok=False)
-    monkeypatch.setattr(
-        "builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError)
-    )
+    monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError))
     assert mod.launch() is None
     assert not launched  # never reached upload/launch
 
@@ -318,10 +312,7 @@ def test_launch_confirmed_spreads_uploaded_paths(mod, tmp_path, monkeypatch):
     # LAUNCH_CONFIG feeds launcher_args, minus reserved keys
     assert "type" not in (launched["launcher_args"] or {})
     assert "name" not in (launched["launcher_args"] or {})
-    assert (
-        launched["launcher_args"]["max_context_len"]
-        == mod.LAUNCH_CONFIG["max_context_len"]
-    )
+    assert launched["launcher_args"]["max_context_len"] == mod.LAUNCH_CONFIG["max_context_len"]
 
 
 def test_launch_assume_yes_skips_prompt(mod, tmp_path, monkeypatch):
@@ -329,9 +320,7 @@ def test_launch_assume_yes_skips_prompt(mod, tmp_path, monkeypatch):
     _seed_datasets(tmp_path)
     launched: dict = {}
     _patch_launch_sdk(mod, monkeypatch, launched)
-    monkeypatch.setattr(
-        "builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError)
-    )
+    monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError))
     assert mod.launch(assume_yes=True) == "run-123"
     assert launched["name"] == mod._run_name()
 

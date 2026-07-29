@@ -120,9 +120,9 @@ def citation_score(
     if not fields:
         raise ValueError("source_field must contain at least one field")
     normalize = canonicalize or str.strip
-    cited = {normalize(value) for value in _SOURCE_CITATION.findall(
-        extract_completion_text(completion)
-    )}
+    cited = {
+        normalize(value) for value in _SOURCE_CITATION.findall(extract_completion_text(completion))
+    }
     cited.discard("")
 
     references: set[str] = set()
