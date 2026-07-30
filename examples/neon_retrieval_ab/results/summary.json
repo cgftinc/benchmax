@@ -1,0 +1,171 @@
+{
+  "rows": 430,
+  "usable_gold": 430,
+  "per_mode": {
+    "bm25": {
+      "n": 430,
+      "hit_at_1": 0.4813953488372093,
+      "hit_at_5": 0.6953488372093023,
+      "hit_at_10": 0.7418604651162791,
+      "mrr_at_10": 0.5736544850498339,
+      "mean_gold_rank_when_found": 1.9059561128526645,
+      "gold_not_in_top_10": 111
+    },
+    "vector": {
+      "n": 430,
+      "hit_at_1": 0.4627906976744186,
+      "hit_at_5": 0.7162790697674418,
+      "hit_at_10": 0.7511627906976744,
+      "mrr_at_10": 0.5628857511997047,
+      "mean_gold_rank_when_found": 1.9721362229102166,
+      "gold_not_in_top_10": 107
+    },
+    "hybrid": {
+      "n": 430,
+      "hit_at_1": 0.5627906976744186,
+      "hit_at_5": 0.7581395348837209,
+      "hit_at_10": 0.8232558139534883,
+      "mrr_at_10": 0.6464304171280916,
+      "mean_gold_rank_when_found": 1.9548022598870056,
+      "gold_not_in_top_10": 76
+    }
+  },
+  "paired": {
+    "hybrid_vs_bm25": {
+      "1": {
+        "k": 1,
+        "both_hit": 173,
+        "arm_only": 69,
+        "base_only": 34,
+        "both_miss": 154,
+        "discordant": 103,
+        "net": 35,
+        "exact_binomial_p": 0.0007275705786733463,
+        "chi2_continuity_corrected": 11.223300970873787
+      },
+      "5": {
+        "k": 5,
+        "both_hit": 283,
+        "arm_only": 43,
+        "base_only": 16,
+        "both_miss": 88,
+        "discordant": 59,
+        "net": 27,
+        "exact_binomial_p": 0.0005843646280443461,
+        "chi2_continuity_corrected": 11.457627118644067
+      },
+      "10": {
+        "k": 10,
+        "both_hit": 309,
+        "arm_only": 45,
+        "base_only": 10,
+        "both_miss": 66,
+        "discordant": 55,
+        "net": 35,
+        "exact_binomial_p": 2.0572645155203517e-06,
+        "chi2_continuity_corrected": 21.01818181818182
+      }
+    },
+    "vector_vs_bm25": {
+      "1": {
+        "k": 1,
+        "both_hit": 136,
+        "arm_only": 63,
+        "base_only": 71,
+        "both_miss": 160,
+        "discordant": 134,
+        "net": -8,
+        "exact_binomial_p": 0.5455343664798735,
+        "chi2_continuity_corrected": 0.3656716417910448
+      },
+      "5": {
+        "k": 5,
+        "both_hit": 251,
+        "arm_only": 57,
+        "base_only": 48,
+        "both_miss": 74,
+        "discordant": 105,
+        "net": 9,
+        "exact_binomial_p": 0.4351144948923009,
+        "chi2_continuity_corrected": 0.6095238095238096
+      },
+      "10": {
+        "k": 10,
+        "both_hit": 273,
+        "arm_only": 50,
+        "base_only": 46,
+        "both_miss": 61,
+        "discordant": 96,
+        "net": 4,
+        "exact_binomial_p": 0.75964928832363,
+        "chi2_continuity_corrected": 0.09375
+      }
+    }
+  },
+  "style_buckets": {
+    "keyword": {
+      "n": 204,
+      "per_mode": {
+        "bm25": {
+          "n": 204,
+          "hit_at_1": 0.7058823529411765,
+          "hit_at_5": 0.9215686274509803,
+          "hit_at_10": 0.946078431372549,
+          "mrr_at_10": 0.7991207594148771,
+          "mean_gold_rank_when_found": 1.544041450777202,
+          "gold_not_in_top_10": 11
+        },
+        "vector": {
+          "n": 204,
+          "hit_at_1": 0.5196078431372549,
+          "hit_at_5": 0.7843137254901961,
+          "hit_at_10": 0.7990196078431373,
+          "mrr_at_10": 0.6287698412698413,
+          "mean_gold_rank_when_found": 1.6748466257668713,
+          "gold_not_in_top_10": 41
+        },
+        "hybrid": {
+          "n": 204,
+          "hit_at_1": 0.6617647058823529,
+          "hit_at_5": 0.8774509803921569,
+          "hit_at_10": 0.9313725490196079,
+          "mrr_at_10": 0.7498735605353253,
+          "mean_gold_rank_when_found": 1.8263157894736841,
+          "gold_not_in_top_10": 14
+        }
+      }
+    },
+    "paraphrase": {
+      "n": 226,
+      "per_mode": {
+        "bm25": {
+          "n": 226,
+          "hit_at_1": 0.27876106194690264,
+          "hit_at_5": 0.4911504424778761,
+          "hit_at_10": 0.5575221238938053,
+          "mrr_at_10": 0.37013625509200726,
+          "mean_gold_rank_when_found": 2.4603174603174605,
+          "gold_not_in_top_10": 100
+        },
+        "vector": {
+          "n": 226,
+          "hit_at_1": 0.41150442477876104,
+          "hit_at_5": 0.6548672566371682,
+          "hit_at_10": 0.7079646017699115,
+          "mrr_at_10": 0.5034151566231212,
+          "mean_gold_rank_when_found": 2.275,
+          "gold_not_in_top_10": 66
+        },
+        "hybrid": {
+          "n": 226,
+          "hit_at_1": 0.47345132743362833,
+          "hit_at_5": 0.6504424778761062,
+          "hit_at_10": 0.7256637168141593,
+          "mrr_at_10": 0.5530569602472257,
+          "mean_gold_rank_when_found": 2.1036585365853657,
+          "gold_not_in_top_10": 62
+        }
+      }
+    }
+  }
+}

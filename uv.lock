@@ -17,6 +17,7 @@ members = [
     "benchmax-example-harvey",
     "benchmax-example-math",
     "benchmax-example-neon-rag-smoke",
+    "benchmax-example-neon-retrieval-ab",
     "benchmax-example-postgres-search",
     "benchmax-example-qwen3-ocr",
     "benchmax-example-telestich",
@@ -422,6 +423,35 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "cloudpickle", specifier = ">=3.0.0" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
+[[package]]
+name = "benchmax-example-neon-retrieval-ab"
+version = "0.1.0"
+source = { editable = "examples/neon_retrieval_ab" }
+dependencies = [
+    { name = "benchmax" },
+    { name = "castform", extra = ["neon", "rag"] },
+    { name = "scipy" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "benchmax", editable = "packages/benchmax" },
+    { name = "castform", extras = ["rag", "neon"], editable = "packages/castform" },
+    { name = "scipy", specifier = ">=1.11" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
     { name = "ruff", specifier = ">=0.14.2" },
 ]
 

@@ -1,0 +1,25 @@
+{
+  "corpus": "gitlab_handbook_neon",
+  "schema": "benchmax_corpus",
+  "text_search_config": "pg_catalog.english",
+  "modes": [
+    "lexical",
+    "vector",
+    "hybrid"
+  ],
+  "top_k": 10,
+  "filter": null,
+  "embed_model": "text-embedding-3-large",
+  "embed_base_url": "https://llm.castform.dev/v1",
+  "embed_calls": 7,
+  "rows": 430,
+  "rows_with_gold": 430,
+  "retrieval_calls": 1290,
+  "concurrency": 4,
+  "failures": [],
+  "elapsed_seconds": 92.7,
+  "datasets": [
+    "examples/neon_rag_smoke/datasets/train_large.jsonl",
+    "examples/neon_rag_smoke/datasets/eval_large.jsonl"
+  ]
+}
