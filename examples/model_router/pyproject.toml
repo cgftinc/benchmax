@@ -1,0 +1,21 @@
+[project]
+name = "benchmax-example-model-router"
+version = "0.1.0"
+description = "Model router for coding agents: mine repo-native tasks (codeprobe), collect per-model outcomes (harbor), train a router to predict success + token usage"
+requires-python = "==3.12.*"
+dependencies = [
+    "codeprobe>=0.13,<0.14",
+    "harbor>=0.18.0,<0.19",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+    "convert_to_harbor",
+    "gate_tasks",
+    "audit_trajectories",
+    "baseline_router",
+]

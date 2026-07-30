@@ -1,0 +1,12 @@
+# Scratch and collected artifacts are untracked by default; code and docs
+# are whitelisted. Mined repos, harbor task dirs, and run outputs are
+# regenerable (see README) or belong in a dataset store, not git.
+*
+!.gitignore
+!README.md
+!PLAN.md
+!pyproject.toml
+!convert_to_harbor.py
+!gate_tasks.py
+!audit_trajectories.py
+!baseline_router.py
