@@ -992,7 +992,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
             ),
             too_easy_confidence_threshold=max(
                 0.0,
-                min(1.0, float(retrieval_raw.get("too_easy_confidence_threshold", 0.75))),
+                min(1.0, float(retrieval_raw.get("too_easy_confidence_threshold", 0.85))),
             ),
             too_easy_overlap_threshold=max(
                 0.0,
@@ -1046,7 +1046,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         model=str(refinement_raw.get("model", "gpt-5.4")),
         api_key=str(refinement_raw.get("api_key", "")),
         base_url=str(refinement_raw.get("base_url", "")).strip(),
-        max_refinements_per_item=max(0, int(refinement_raw.get("max_refinements_per_item", 3))),
+        max_refinements_per_item=max(0, int(refinement_raw.get("max_refinements_per_item", 2))),
         max_same_seed_attempts_before_reanchor=max(
             0,
             int(
