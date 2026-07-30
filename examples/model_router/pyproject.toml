@@ -15,7 +15,11 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = [
     "convert_to_harbor",
+    "build_dataset",
+    "scoreboard",
     "gate_tasks",
     "audit_trajectories",
     "baseline_router",
+    "profile_router",
+    "knn_router",
 ]

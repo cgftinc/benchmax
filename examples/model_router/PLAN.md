@@ -137,6 +137,27 @@ to the cheap one (router IQ mostly buys cost-confidence), nobody routes to
 sol, and on fe3ad76e *every* router picked a model that fails it. The
 bottleneck is information about per-model quirks, not router reasoning.
 
+## P0-P2 shakedown results (click, 2026-07-30; 4 test tasks - patterns, not
+verdicts)
+
+- v0 zero-shot: 0% test solve for ALL 7 router models (19/28 picks hedged to
+  sonnet, which solves no test task). The naive router is systematically
+  wrong, not just weak.
+- P1 profile: lifts 5/7 router models 0% -> 25%; picks shift from
+  sonnet-hedging to opus-escalation. Router capability barely matters -
+  terra-as-router is the best row (25% at $2.47, cheapest by 2x). Weak
+  model + information beats strong model without it.
+- P1 answer-sheet diagnostic (routing TRAIN tasks, whose outcomes are in the
+  profile): 70% vs oracle 73%, opus 50%. Found every unique solver; the only
+  misses are the 4 unsolvable tasks (escalated to opus). Mechanism proven.
+  But cost discipline stays mediocre even with answers (6/11 hits picked the
+  cheapest solver; all-pass tasks still sent to opus).
+- Train 70% vs test 25% is the project gap in one number: with per-task
+  answers the prompted router is near-oracle; without them it cannot
+  generalize. That is what P3 volume + P4 training are for.
+- P2 kNN: 25% at $1.28; neighbour similarities 0.01-0.26 (noise), i.e. it
+  degenerates to base rates at this scale, as predicted.
+
 ## Metrics (agreed 2026-07-30)
 
 Measure pass rate and what it cost. One table, one row per policy, following
@@ -311,6 +332,35 @@ each task actually ran on. Notes:
 - Measurable cheaply: mask our own matrix to 75 / 50 / 25% of cells, retrain,
   and plot the degradation. No new agent runs needed.
 
+## Phases (agreed 2026-07-30)
+
+Modular: every stage is a standalone file, stages talk through files on disk
+(`dataset.jsonl`, `picks.jsonl`, the table). Each phase adds one row to the
+same scoreboard - no phase invents its own metric - and ends with an artifact
+the supervisor can eyeball plus an explicit go/kill question.
+
+- **P0 - scoreboard on click.** `build_dataset.py` + `scoreboard.py`,
+  temporal split frozen. Tests the plumbing and that the split does not put
+  all discriminating tasks in one half. Infrastructure, no kill signal.
+- **P1 - v1 profile router.** Per-route profile generated from train-split
+  stats, injected into the prompted router; router cost included. Question:
+  does trace-derived information fix v0's blindness? Kill: lands at random.
+  Artifact: one row + a readable picks file.
+- **P2 - kNN.** Question: does a trivial model match P1? If yes, prompting
+  adds nothing over retrieval.
+- **P3 - breadth collection.** The spend gate (explicit approval): N repos,
+  k=1 train / k=5 test, Modal with allowlist. Question: does the
+  oracle-vs-frontier gap survive scale? Everything before P3 is pipeline
+  verification; everything after is claims.
+- **P4 - trained SFT (variant c: route-as-input, score + token count).**
+  Token head on/off is the ablation; both decision rules and the lambda
+  sweep read off the same predictions. Kill: does not beat P1.
+- **P5 - tools/RL**, only if P4's failures look like missing information
+  rather than missing capacity.
+
+P1/P2 run on click now purely as pipeline shakedown, then re-run unchanged on
+the P3 dataset. Method-vs-method judgment happens once, at scale.
+
 ## Next step
 
-Collect breadth so the variants above have data to run on.
+P0-P2 are built and shaken down on click (`build_dataset.py`, `scoreboard.py`, `profile_router.py`, `knn_router.py`). Next gate: P3 breadth collection (repos + budget).

@@ -70,8 +70,17 @@ def build_task_prompt(task_dir: Path, max_chars: int = 6000) -> str:
     )
 
 
-def route(task_prompt: str, router_model: str) -> dict:
-    full_prompt = ROUTER_SYSTEM_PROMPT + "\n\n" + task_prompt
+def route(task_prompt: str, router_model: str,
+          system_prompt: str | None = None,
+          allowed: set[str] | None = None) -> dict:
+    """One router call. Returns {"model", "reasoning", "router_cost_usd"}.
+
+    system_prompt/allowed default to the zero-shot pool above; the profile
+    router (P1) passes its own stats-bearing prompt and route set.
+    """
+    full_prompt = (system_prompt or ROUTER_SYSTEM_PROMPT) + "\n\n" + task_prompt
+    allowed = allowed or MODELS
+    cost = None
     if router_model.startswith("gpt"):
         res = subprocess.run(
             ["codex", "exec", "-m", router_model, "--skip-git-repo-check",
@@ -89,7 +98,9 @@ def route(task_prompt: str, router_model: str) -> dict:
         )
         if res.returncode != 0:
             raise RuntimeError(f"claude CLI failed: {res.stderr[:200]}")
-        text = json.loads(res.stdout).get("result", "")
+        payload = json.loads(res.stdout)
+        text = payload.get("result", "")
+        cost = payload.get("total_cost_usd")
     m = None
     for cand in re.finditer(r"\{[^{}]*\}", text, re.DOTALL):
         if '"model"' in cand.group(0):
@@ -97,8 +108,9 @@ def route(task_prompt: str, router_model: str) -> dict:
     if not m:
         raise ValueError(f"no JSON in router response: {text[:200]}")
     pick = json.loads(m.group(0))
-    if pick.get("model") not in MODELS:
+    if pick.get("model") not in allowed:
         raise ValueError(f"router picked unknown model: {pick}")
+    pick["router_cost_usd"] = cost
     return pick
 
 

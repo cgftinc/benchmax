@@ -7,6 +7,10 @@
 !PLAN.md
 !pyproject.toml
 !convert_to_harbor.py
+!build_dataset.py
+!scoreboard.py
 !gate_tasks.py
 !audit_trajectories.py
 !baseline_router.py
+!profile_router.py
+!knn_router.py
