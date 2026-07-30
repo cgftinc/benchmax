@@ -40,6 +40,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from castform.rag.corpus.neon.schema import NeonTableSpec
 from castform.rag.corpus.search_schema.search_types import (
     FilterPredicate,
     HybridOptions,
@@ -50,7 +51,6 @@ if TYPE_CHECKING:
     from psycopg import sql
 
     from castform.rag.corpus.neon.client import NeonClient
-    from castform.rag.corpus.neon.schema import NeonTableSpec
 
 SURFACED_RANK_K = 60
 """Reciprocal-rank constant (the standard RRF ``k``). ``score = 1/(K + rank)``."""
@@ -214,8 +214,6 @@ def _resolve_current_spec(
     query — an activation cannot swap it mid-read (see
     :meth:`NeonClient.read_in_snapshot`).
     """
-    from castform.rag.corpus.neon.schema import NeonTableSpec
-
     cur = conn.execute(client.read_ledger_sql(), {"logical": logical_name})
     for version, _state, is_current in cur.fetchall():
         if is_current:
@@ -233,7 +231,10 @@ def _resolve_filter(
     The single filter-mapping seam shared by the sync and async executors; a
     ``None`` filter yields ``(None, {})``. ``filter_mapper`` is imported lazily —
     it pulls psycopg (the ``neon`` extra) the env-facing ``search.py`` must stay
-    importable without.
+    importable without. Consequence: this is the one query-path import a by-value
+    env bundle cannot capture, so a bundled env must leave ``request.filter``
+    unset (``NeonSearch.search`` does) or install ``castform`` with the neon
+    provider present.
     """
     if request.filter is None:
         return None, {}
@@ -432,8 +433,6 @@ async def _resolve_current_spec_async(
     text_search_config: str,
 ) -> NeonTableSpec:
     """Async twin of :func:`_resolve_current_spec` (same current-version resolution)."""
-    from castform.rag.corpus.neon.schema import NeonTableSpec
-
     cur = await conn.execute(client.read_ledger_sql(), {"logical": logical_name})
     for version, _state, is_current in await cur.fetchall():
         if is_current:

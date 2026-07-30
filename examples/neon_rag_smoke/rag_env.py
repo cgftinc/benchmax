@@ -18,14 +18,20 @@ Two authoring traps handled here:
 
 `neon_search_constructor_args` returns exactly the `constructor_args` dict that
 `benchmax.bundle` pickles alongside `SearchEnv` as `(env_class, constructor_args)`;
-`build_env` is the convenience wrapper the smoke drives.
+`build_env` is the convenience wrapper the smoke drives; `build_bundle` is the
+one seam uploaders should call, so the artifact stays self-contained (see
+`NEON_BUNDLE_LOCAL_MODULES`).
 """
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
+
+from benchmax.bundle import Bundle, dump_bundle
 
 # `postgres-search/main.py` is a library env shipped as an un-packaged module
 # (py-modules = []); import it by path the same way its own test-suite does.
@@ -49,6 +55,27 @@ JUDGE_BASE_URL = "https://llm.castform.dev/v1"
 JUDGE_MODEL = "gpt-5.4-mini"
 
 MAX_SEARCH_CALLS = 6
+
+# The neon provider lives in the `castform` distribution, whose PUBLISHED wheels
+# carry no `rag/corpus/neon/` package — an eval image that only `pip install
+# castform` cannot unpickle a by-reference NeonSearch. Naming the entry module
+# here makes `dump_bundle` cloudpickle it BY VALUE; `auto_local_modules` then
+# walks the rest of the referenced castform source in (credentials, query,
+# client, schema), so the artifact needs no castform source at all.
+NEON_BUNDLE_LOCAL_MODULES: tuple[str, ...] = ("castform.rag.corpus.neon.search",)
+
+# Third-party imports the captured neon source still performs lazily at query
+# time. `castform` itself is deliberately absent: nothing of it survives by
+# reference, and the published version would be the wrong one anyway.
+NEON_BUNDLE_PIP_DEPENDENCIES: tuple[str, ...] = (
+    "psycopg[binary]>=3.2.0",
+    "pgvector>=0.3.0",
+)
+
+
+def neon_bundle_local_modules() -> list[ModuleType]:
+    """Import and return the modules `dump_bundle` must capture by value."""
+    return [importlib.import_module(name) for name in NEON_BUNDLE_LOCAL_MODULES]
 
 
 def neon_search_constructor_args(dsn: str) -> dict[str, Any]:
@@ -75,6 +102,29 @@ def neon_search_constructor_args(dsn: str) -> dict[str, Any]:
 def build_env(dsn: str) -> SearchEnv:
     """Construct a `SearchEnv` over the neon bm25 corpus with a baked RO DSN."""
     return SearchEnv(**neon_search_constructor_args(dsn))
+
+
+def build_bundle(
+    dsn: str, *, pip_dependencies: tuple[str, ...] | None = None
+) -> Bundle:
+    """Dump the self-contained deployable bundle for this env.
+
+    The only supported way to build this env's artifact: it captures the neon
+    provider source by value so the bundle loads on an image that has BenchMax
+    but no `castform` neon source. `dsn` is a resolved RO DSN string, baked into
+    the pickle. `pip_dependencies` overrides `NEON_BUNDLE_PIP_DEPENDENCIES` for
+    callers that must pin differently; the captured-module set is not tunable.
+    """
+    return dump_bundle(
+        SearchEnv,
+        constructor_args=neon_search_constructor_args(dsn),
+        pip_dependencies=(
+            NEON_BUNDLE_PIP_DEPENDENCIES
+            if pip_dependencies is None
+            else pip_dependencies
+        ),
+        local_modules=neon_bundle_local_modules(),
+    )
 
 
 # Two QA rows in SearchEnv's row contract (question / answer / reference_chunks),

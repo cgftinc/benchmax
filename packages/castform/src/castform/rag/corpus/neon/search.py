@@ -6,6 +6,14 @@ Structurally implements the ``SearchClient`` protocol (``search`` / ``embed`` /
 via a read-only DSN provider, and the live client nulled across pickling so the
 env bundle never carries a socket.
 
+Every ``castform`` import this module needs on the query path is at module scope,
+never inside a method. ``benchmax.bundle`` captures this module by value into the
+env artifact, and cloudpickle does not put by-value modules back into
+``sys.modules`` — an import statement executed inside a method would still ask the
+sandbox for an installed ``castform`` and fail there. Module-scope imports become
+captured globals instead. ``client.py`` and ``schema.py`` keep psycopg itself lazy,
+so importing them here costs nothing without the ``neon`` extra.
+
 Credential seam (Contract #2, moved to Slice 4 per B1)
 ------------------------------------------------------
 The read-only DSN rides the ``str | TokenProvider | None`` seam (see
@@ -30,6 +38,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from castform.platform.credentials import TokenProvider
+from castform.rag.corpus.neon.client import NeonClient
 from castform.rag.corpus.neon.credentials import resolve_read_dsn_provider
 from castform.rag.corpus.neon.provision import CORPUS_SCHEMA
 from castform.rag.corpus.neon.query import (
@@ -44,7 +53,6 @@ from castform.rag.corpus.neon.schema import DEFAULT_TEXT_SEARCH_CONFIG
 from castform.rag.corpus.search_schema.search_types import SearchMode
 
 if TYPE_CHECKING:
-    from castform.rag.corpus.neon.client import NeonClient
     from castform.rag.corpus.neon.query import QueryRow
 
 __all__ = [
@@ -97,14 +105,10 @@ class NeonSearch:
     def _get_client(self) -> NeonClient:
         """Build the ``NeonClient`` lazily from the resolved RO provider.
 
-        Imports ``NeonClient`` here (not at module load) so this class stays
-        pickle-safe with the ``neon`` extra absent. The provider — not a resolved
-        DSN — is handed to the client, which re-resolves per connect so a rotated
-        RO DSN is always fresh.
+        The provider — not a resolved DSN — is handed to the client, which
+        re-resolves per connect so a rotated RO DSN is always fresh.
         """
         if self._client is None:
-            from castform.rag.corpus.neon.client import NeonClient
-
             self._client = NeonClient(self._dsn_provider)
         return self._client
 
