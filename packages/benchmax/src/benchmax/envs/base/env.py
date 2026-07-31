@@ -66,12 +66,16 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
         *,
         max_turns: int | None = None,
         max_tool_calls: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> None:
         super().__init__()
+        if enable_thinking is not None and not isinstance(enable_thinking, bool):
+            raise TypeError("enable_thinking must be a bool or None")
         if max_turns is not None:
             self.max_turns = max_turns
         if max_tool_calls is not None:
             self.max_tool_calls = max_tool_calls
+        self.enable_thinking = enable_thinking
         self._validate_limits()
 
     @abstractmethod
@@ -155,6 +159,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                             model=request.model,
                             messages=messages,
                             tools=tools,
+                            enable_thinking=self.enable_thinking,
                         )
                     except BadRequestError as error:
                         if error.code == "context_budget_exceeded":
@@ -416,6 +421,7 @@ async def _create_chat_completion(
     model: str,
     messages: Messages,
     tools: Sequence[Tool],
+    enable_thinking: bool | None,
 ) -> ChatCompletion:
     """Request one assistant turn, including tools when available."""
 
@@ -427,18 +433,18 @@ async def _create_chat_completion(
         )
     )
 
+    request_kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "extra_headers": dict(auth_headers),
+    }
     if tools:
-        return await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=tools,
-            extra_headers=dict(auth_headers),
-        )
-    return await client.chat.completions.create(
-        model=model,
-        messages=messages,
-        extra_headers=dict(auth_headers),
-    )
+        request_kwargs["tools"] = tools
+    if enable_thinking is not None:
+        request_kwargs["extra_body"] = {
+            "chat_template_kwargs": {"enable_thinking": enable_thinking}
+        }
+    return await client.chat.completions.create(**request_kwargs)
 
 
 def _function_tool_calls(
