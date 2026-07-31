@@ -29,11 +29,13 @@ class _MathEnv(BaseEnv):
         *,
         max_turns: int = 1,
         max_tool_calls: int | None = None,
+        max_completion_tokens: int | None = None,
         enable_thinking: bool | None = None,
     ) -> None:
         super().__init__(
             max_turns=max_turns,
             max_tool_calls=max_tool_calls,
+            max_completion_tokens=max_completion_tokens,
             enable_thinking=enable_thinking,
         )
         self.reward_calls: list[tuple[str, Messages, Mapping[str, Any], str]] = []
@@ -216,6 +218,54 @@ async def test_base_env_sends_explicit_thinking_choice_without_tools(
 def test_base_env_rejects_non_boolean_thinking_choice(invalid: object) -> None:
     with pytest.raises(TypeError, match="enable_thinking must be a bool or None"):
         _MathEnv(enable_thinking=invalid)  # type: ignore[arg-type]
+
+
+async def test_base_env_sends_explicit_max_completion_tokens() -> None:
+    example = Example(
+        id="completion-cap",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "Use the full budget."}],
+            "answer": "42",
+        },
+    )
+    env = _MathEnv(max_completion_tokens=1024)
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (
+            200,
+            completion_response(content="42"),
+        )
+    ) as server:
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
+
+    assert outcomes["rollout-1"].rewards == {"correctness": 1.0}
+    assert server.requests[0].body["max_completion_tokens"] == 1024
+
+
+async def test_base_env_omits_unspecified_max_completion_tokens() -> None:
+    example = Example(
+        id="completion-cap-omitted",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "Use the default budget."}],
+            "answer": "42",
+        },
+    )
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (
+            200,
+            completion_response(content="42"),
+        )
+    ) as server:
+        await _MathEnv().run_group(_requests(server, example, ["rollout-1"]))
+
+    assert "max_completion_tokens" not in server.requests[0].body
+
+
+@pytest.mark.parametrize("invalid", [False, 0, -1, 1.5, "1024"])
+def test_base_env_rejects_invalid_max_completion_tokens(invalid: object) -> None:
+    with pytest.raises(ValueError, match="max_completion_tokens must be a positive integer"):
+        _MathEnv(max_completion_tokens=invalid)  # type: ignore[arg-type]
 
 
 async def test_output_exceeded_scores_the_partial_transcript() -> None:
