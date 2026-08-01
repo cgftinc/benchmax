@@ -1,0 +1,190 @@
+# Snapshot: Castform 466e947c25eb137e1778d5f8a33c87cc906b729c.
+# Scheduler-specific changes are limited to immutable refs, empty placeholders,
+# secret hygiene, and the explicitly pinned A/B parameters below.
+name: gitlab-bm25-ab-pre-harbor-no-gateway
+
+resources:
+  # instance_type: Standard_D4as_v5
+  infra: azure/centralus
+  accelerators: A100-80GB:4
+  disk_size: 512
+  image_id: docker:slimerl/slime:nightly-dev-20260707a
+
+workdir:
+  url: "https://github.com/castform-ai/castform.git"
+  ref: "466e947c25eb137e1778d5f8a33c87cc906b729c"
+
+envs:
+  # flip to "1" for CPU-only smoke.
+  CPU_ONLY: false
+
+  # ── server-injected by /launch-internal (overwritten at submit) ───────────
+  RUN_ID: ""
+  USER_ID: ""
+  AZURE_CONTAINER_NAME: ""
+  AZURE_STORAGE_ACCOUNT: ""
+  PLATFORM_API_URL: ""
+  LLM_PROXY_URL: ""
+  INGEST_SERVICE_PUBLIC_URL: ""
+  AUTH_SERVICE_PUBLIC_URL: ""
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  OTEL_EXPORTER_OTLP_INSECURE: ""
+  AUTH_CLIENT_ID: ""
+  AUDIENCES: ""
+  SCOPES: ""
+
+  # ── user-tunable ─────────────────────────────────────────────────────────
+  # Disabling fused attention so flash-attn is use. many instabilities with cudnn fused attn (tho faster).
+  NVTE_FUSED_ATTN: 0
+  ARG_MODEL: "Qwen/Qwen3.5-4B"
+  # A/B pins. Raw scheduler tasks use Slime/env names, not public wire names.
+  ARG_LR: "4e-6"
+  ARG_NUM_EPOCH: "5"
+  ARG_N_SAMPLES_PER_PROMPT: "9"
+  ARG_N_SAMPLES_PER_EVAL_PROMPT: "9"
+  ARG_ROLLOUT_MAX_CONTEXT_LEN: "16384"
+  ARG_EVAL_MAX_CONTEXT_LEN: "16384"
+  ARG_MAX_TURNS: "5"
+  ARG_MAX_TOOL_CALLS: "4"
+  ARG_EVAL_INTERVAL: "5"
+  ARG_SAVE_INTERVAL: "5"
+  ARG_KL_LOSS_COEF: "0"
+  ARG_LORA_RANK: "128"
+  ARG_LORA_ALPHA: "256"
+  USER_DATA_PATH: "~/user-data/"
+  # Filled by launch_ab.py from artifacts/uploaded_assets.json.
+  USER_DATA_ARG_ENV_CLS_PATH: ""
+  USER_DATA_ARG_ENV_METADATA_PATH: ""
+  USER_DATA_ARG_TRAIN_DATASET_PATH: ""
+  USER_DATA_ARG_EVAL_DATASET_PATH: ""
+  # Optional: warm-start from a pre-trained HF PEFT LoRA (adversarial loop / continued training)
+  # USER_DATA_ARG_LORA_ADAPTER_PATH: "loras/prev-expt-id/Qwen/Qwen3.5-4B_slime/lora_peft_iter_0000050"
+
+secrets:
+  # ── server-injected by /launch-internal (overwritten at submit) ───────────
+  AUTH_SVC_CLIENT_SECRET: ""
+  AZURE_CONTAINER_SAS: ""
+  WANDB_API_KEY: ""
+  GIT_TOKEN: ""
+
+setup: |
+  set -e
+
+  # Drop cloud creds skypilot copied in (security hygiene).
+  rm -rf ~/.azure/
+
+  if ! command -v cloudflared &> /dev/null; then
+    curl -fsSL -o /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+    chmod +x /usr/local/bin/cloudflared
+  fi
+
+  if ! command -v azcopy &> /dev/null; then
+    curl -fsSL -o /tmp/azcopy.tar.gz https://aka.ms/downloadazcopy-v10-linux
+    tar -xzf /tmp/azcopy.tar.gz -C /tmp
+    cp /tmp/azcopy_linux_amd64_*/azcopy /usr/local/bin/
+    chmod +x /usr/local/bin/azcopy
+    rm -rf /tmp/azcopy.tar.gz /tmp/azcopy_linux_amd64_*
+  fi
+
+run: |
+  set -e
+
+  if [[ "$ARG_MODEL" == *[Gg]emma*4* ]]; then
+    unset NVTE_FUSED_ATTN
+  fi
+
+  if [ -d .git ]; then
+    export GIT_CONFIG_GLOBAL=$(mktemp -t gitconfig.XXXXXX)
+    trap 'rm -f "$GIT_CONFIG_GLOBAL"' EXIT
+    if [ -n "$GIT_TOKEN" ]; then
+      git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "git@github.com:"
+    fi
+    git submodule update --init --filter=blob:none --jobs 4 core/benchmax core/slimefork core/megatron-bridge-fork
+  fi
+  unset GIT_TOKEN
+
+  cd core/trainer
+  WORKDIR=$(pwd)
+
+  if [ "$CPU_ONLY" != "1" ]; then
+    if [ "$(pip show megatron-bridge 2>/dev/null | awk '/^Version:/ {print $2}')" != "0.4.0rc0" ]; then
+      pip uninstall -y megatron-bridge 2>/dev/null || true
+    fi
+    if [ "$(pip show nvidia-cudnn-cu12 2>/dev/null | awk '/^Version:/ {print $2}')" != "9.16.0.29" ]; then
+      pip uninstall -y nvidia-cudnn-cu12 2>/dev/null
+      pip install nvidia-cudnn-cu12==9.16.0.29
+    fi
+    sed -i 's/rope_theta = getattr(config, "rope_theta", 1000000)/rope_theta = config.rope_parameters["rope_theta"]/' /sgl-workspace/sglang/python/sglang/srt/models/qwen3.py
+    sed -i 's/base = config.rope_theta/base = config.rope_parameters["rope_theta"]/' /sgl-workspace/sglang/python/sglang/srt/models/qwen3_moe.py
+    sed -i 's/rope_theta = getattr(config, "rope_theta", 10000)/rope_theta = config.rope_parameters["rope_theta"]/' /sgl-workspace/sglang/python/sglang/srt/models/qwen3_moe.py
+
+    # Gemma4 routing replay: SGLang's RoutedExpertsCapturer.__init__ reads
+    # hf_text_config.num_experts_per_tok, but Gemma4 configs name the field
+    # top_k_experts — engine init crashes when use_rollout_routing_replay is
+    # on. Rewrite to a getattr fallback (identical behavior for models that
+    # do have num_experts_per_tok). No-op if the file/pattern is absent.
+    sed -i 's|topk_size = model_config.hf_text_config.num_experts_per_tok|topk_size = getattr(model_config.hf_text_config, "num_experts_per_tok", None) or model_config.hf_text_config.top_k_experts|' /sgl-workspace/sglang/python/sglang/srt/state_capturer/routed_experts.py 2>/dev/null || true
+    sed -i 's/^\(\s*\)assert len(print_params) == 0, f"Some parameters are not loaded: {print_params}"/\1# assert len(print_params) == 0, f"Some parameters are not loaded: {print_params}"/' /sgl-workspace/sglang/python/sglang/srt/models/step3p5.py
+
+    # Megatron CP assertion removal (megatron-bridge-fork handles CP>1 for gated delta net)
+    sed -i '/assert self\.context_parallel_size == 1, (/,+3d' \
+      /root/Megatron-LM/megatron/core/transformer/transformer_config.py
+
+    curl -L https://raw.githubusercontent.com/sgl-project/sglang/4c0ce0345d0d842d91d3802fdeec29bfc5caa5b0/python/sglang/srt/models/gemma4_mm.py \
+      -o /sgl-workspace/sglang/python/sglang/srt/models/gemma4_mm.py
+    curl -L https://raw.githubusercontent.com/sgl-project/sglang/4c0ce0345d0d842d91d3802fdeec29bfc5caa5b0/python/sglang/srt/models/gemma4_causal.py \
+      -o /sgl-workspace/sglang/python/sglang/srt/models/gemma4_causal.py
+    curl -L https://raw.githubusercontent.com/sgl-project/sglang/ee464fedc63e9cd3e8b5a56c6bbbe4272cd00580/python/sglang/srt/function_call/hunyuan_detector.py \
+      -o /sgl-workspace/sglang/python/sglang/srt/function_call/hunyuan_detector.py
+    curl -L https://raw.githubusercontent.com/sgl-project/sglang/ee464fedc63e9cd3e8b5a56c6bbbe4272cd00580/python/sglang/srt/function_call/function_call_parser.py \
+      -o /sgl-workspace/sglang/python/sglang/srt/function_call/function_call_parser.py
+    curl -L https://raw.githubusercontent.com/sgl-project/sglang/ee464fedc63e9cd3e8b5a56c6bbbe4272cd00580/python/sglang/srt/function_call/minimax_m3.py \
+      -o /sgl-workspace/sglang/python/sglang/srt/function_call/minimax_m3.py
+  fi
+
+  uv venv --system-site-packages --clear
+  source .venv/bin/activate
+  export PYTHONPATH="$WORKDIR:$WORKDIR/src:/root/Megatron-LM:${PYTHONPATH:-}"
+
+  USER_DATA_PATH="${USER_DATA_PATH:-~/user-data}"
+  USER_DATA_PATH="${USER_DATA_PATH/#\~/$HOME}"
+  rm -rf "$USER_DATA_PATH" && mkdir -p "$USER_DATA_PATH"
+  _download_log="/tmp/job_blob_sync_download.log"
+
+  python3 -m trainer.tools.sync.job_blob_sync download \
+    --account-name "$AZURE_STORAGE_ACCOUNT" \
+    --sas-token "$AZURE_CONTAINER_SAS" \
+    --container "$AZURE_CONTAINER_NAME" \
+    --local-root "$USER_DATA_PATH" \
+    --required-files \
+      "$USER_DATA_ARG_ENV_CLS_PATH" \
+      "$USER_DATA_ARG_ENV_METADATA_PATH" \
+      "$USER_DATA_ARG_TRAIN_DATASET_PATH" \
+      "$USER_DATA_ARG_EVAL_DATASET_PATH" \
+    --optional-files \
+      "${USER_DATA_ARG_ENV_CLS_PATH%.pkl}.args.pkl" \
+    ${USER_DATA_ARG_LOAD:+--load-checkpoint-path "$USER_DATA_ARG_LOAD"} \
+    > "$_download_log" 2>&1 &
+  _dl_pid=$!
+
+  uv sync --no-install-package slime --no-install-package torch --prerelease allow
+  python -m ensurepip --upgrade
+  python -m pip install --force-reinstall --no-deps \
+    "https://download.pytorch.org/whl/cu129/torch-2.11.0%2Bcu129-cp312-cp312-manylinux_2_28_x86_64.whl"
+  python -m pip install --force-reinstall --no-deps "nvidia-nccl-cu12==2.30.4"
+  uv pip install --no-deps -e ../slimefork
+  uv pip install --force-reinstall https://github.com/zhuzilin/sgl-router/releases/download/v0.3.2-5f8d397/sglang_router-0.3.2-cp38-abi3-manylinux_2_28_x86_64.whl
+
+  if [ "$CPU_ONLY" != "1" ]; then
+    pip uninstall -y megatron-bridge 2>/dev/null || true
+    uv pip install -e "$WORKDIR/../megatron-bridge-fork" --no-deps --no-build-isolation
+  fi
+
+  if ! wait $_dl_pid; then
+    cat "$_download_log"
+    exit 1
+  fi
+
+  history -c 2>/dev/null; rm -f ~/.bash_history ~/.zsh_history
+
+  python3 -m trainer.tools.run_training

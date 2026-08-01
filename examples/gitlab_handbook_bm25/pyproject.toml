@@ -1,0 +1,19 @@
+[project]
+name = "benchmax-example-gitlab-handbook-bm25"
+version = "0.1.0"
+description = "Pinned GitLab handbook BM25 gateway A/B experiment"
+requires-python = "==3.12.*"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# Each executable declares and locks its own historical or current dependency
+# set through PEP 723 metadata; this workspace package installs no modules.
+[tool.setuptools]
+py-modules = []
+packages = []
+
+[dependency-groups]
+dev = ["ruff>=0.14.2"]

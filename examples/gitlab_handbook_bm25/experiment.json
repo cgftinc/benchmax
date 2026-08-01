@@ -1,0 +1,55 @@
+{
+  "castform_refs": {
+    "post_harbor": "1aed982f2621d87438b3ad095818440a4ea930c5",
+    "pre_harbor": "466e947c25eb137e1778d5f8a33c87cc906b729c"
+  },
+  "benchmax_refs": {
+    "post_harbor": "c19b4addb767a745bc8f75e7167afd3958d4dfa3",
+    "pre_harbor": "26ec5c8afc200f3b0d51d13f7f8752c87bacc178"
+  },
+  "corpus": {
+    "chunking": {
+      "max_chars": 2048,
+      "min_chars": 1024,
+      "overlap_chars": 128
+    },
+    "expected_chunk_count": 31665,
+    "name": "gitlab-handbook-bm25-3078d0213524-staging",
+    "source_commit": "3078d0213524f8ca0c0e3a70680a21929a9f65ff",
+    "source_repo": "https://gitlab.com/gitlab-com/content-sites/handbook.git",
+    "source_subdir": "content/handbook"
+  },
+  "dataset": {
+    "base_url": "https://huggingface.co/datasets/wingedbreadsticks/gitlab-handbook-bm25-3078d0213524/resolve/gold-qwen35-4b-bm25-2026-07-08/",
+    "files": {
+      "eval": {
+        "rows": 64,
+        "sha256": "5dc6595f16e158eb54ed3e3a6f87138414800271db140c78b98729888a137dff"
+      },
+      "train": {
+        "rows": 256,
+        "sha256": "2b81f9163bb3db3885f8c0a0837e9d44a87b024ab9b85e0f9ae9144eea9dedb5"
+      }
+    },
+    "revision": "efafe62fe5da43904e46f90c8031f95b3304bce6"
+  },
+  "training": {
+    "context_tokens": 16384,
+    "epochs": 5,
+    "eval_interval": 5,
+    "eval_samples_per_prompt": 9,
+    "group_size": 9,
+    "judge_model": "gpt-5.4-mini",
+    "learning_rate": 4e-06,
+    "lora_alpha": 256,
+    "lora_rank": 128,
+    "effective_executed_search_calls": {
+      "post_harbor_compatibility": 3,
+      "pre_harbor": 3
+    },
+    "max_search_calls": 4,
+    "max_turns": 5,
+    "model": "Qwen/Qwen3.5-4B",
+    "save_interval": 5
+  }
+}
