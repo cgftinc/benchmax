@@ -6,16 +6,20 @@ from typing import Any
 
 import httpx
 import pytest
+from castform.platform import TrainingRunReconciliation as PublicTrainingRunReconciliation
 from castform.platform.client import (
     LaunchArgSpec,
     RolloutClient,
     StorageClient,
     TrainerClient,
+    TrainingRunReconciliation,
     _BearerAuth,
 )
 from castform.platform.exceptions import (
     AuthenticationError,
+    JobLaunchError,
     RolloutError,
+    TrainerError,
 )
 
 # ---------------------------------------------------------------------------
@@ -73,10 +77,107 @@ def test_launch_training_run_omits_dataset_path_when_not_uploaded():
     )
 
     assert run_id == "run-with-runtime-data"
-    assert captured["body"]["args"] == {
-        "env_cls_path": "x/env-cls.pkl",
-        "env_metadata_path": "x/env-metadata.json",
+    assert captured["body"] == {
+        "name": None,
+        "args": {
+            "env_cls_path": "x/env-cls.pkl",
+            "env_metadata_path": "x/env-metadata.json",
+        },
     }
+
+
+def test_launch_training_run_sends_trainer_ref_at_top_level():
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"runId": "run-pinned"})
+
+    trainer = _make_trainer_with_transport(handler)
+    run_id = trainer.launch_training_run(
+        env_cls_path="x/env-cls.pkl",
+        env_metadata_path="x/env-metadata.json",
+        trainer_ref="15b22afde1983a3c2a287aed088f3ed1fcdfde0a",
+    )
+
+    assert run_id == "run-pinned"
+    assert captured["body"]["trainer_ref"] == "15b22afde1983a3c2a287aed088f3ed1fcdfde0a"
+    assert "trainer_ref" not in captured["body"]["args"]
+
+
+def test_launch_training_run_sends_complete_integrity_contract_exactly():
+    captured: dict[str, Any] = {}
+    expected_resolution = {
+        "resolvedConfig": {"model": "Qwen/Qwen3.5-4B"},
+        "resolvedArgv": ["--num-rollout", "60"],
+    }
+    integrity = {
+        "idempotency_key": f"boardy-reasoning-v2:{'a' * 64}",
+        "request_core_hash": "a" * 64,
+        "maximum_runtime_seconds": 7200,
+        "expected_resolution": expected_resolution,
+        "expected_resolution_sha256": "b" * 64,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(202, json={"runId": "run-integrity"})
+
+    trainer = _make_trainer_with_transport(handler)
+    run_id = trainer.launch_training_run(
+        env_cls_path="x/env-cls.pkl",
+        env_metadata_path="x/env-metadata.json",
+        trainer_ref="trainer-commit",
+        **integrity,
+    )
+
+    assert run_id == "run-integrity"
+    assert {
+        key: captured["body"][key]
+        for key in (
+            "idempotency_key",
+            "request_core_hash",
+            "maximum_runtime_seconds",
+            "expected_resolution",
+            "expected_resolution_sha256",
+        )
+    } == integrity
+    assert captured["body"]["trainer_ref"] == "trainer-commit"
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "idempotency_key",
+        "request_core_hash",
+        "maximum_runtime_seconds",
+        "expected_resolution",
+        "expected_resolution_sha256",
+    ],
+)
+def test_launch_training_run_rejects_partial_integrity_contract(missing):
+    integrity = {
+        "idempotency_key": f"boardy-reasoning-v2:{'a' * 64}",
+        "request_core_hash": "a" * 64,
+        "maximum_runtime_seconds": 7200,
+        "expected_resolution": {"resolvedConfig": {}, "resolvedArgv": []},
+        "expected_resolution_sha256": "b" * 64,
+    }
+    del integrity[missing]
+    trainer = _make_trainer_with_transport(
+        lambda request: pytest.fail("partial integrity contract reached the network")
+    )
+
+    with pytest.raises(ValueError, match=missing):
+        trainer.launch_training_run(
+            env_cls_path="x/env-cls.pkl",
+            env_metadata_path="x/env-metadata.json",
+            **integrity,
+        )
 
 
 def test_launch_training_run_surfaces_server_warnings():
@@ -125,7 +226,7 @@ def test_launch_training_run_omits_training_run_type_from_body():
 
 
 def test_launch_training_run_filters_reserved_paths_from_launcher_args():
-    """launcher_args cannot smuggle in or override the reserved path keys."""
+    """Explicit path kwargs continue to own the nested launcher path keys."""
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -151,6 +252,32 @@ def test_launch_training_run_filters_reserved_paths_from_launcher_args():
     assert captured["body"]["args"]["max_context_tokens"] == 4000
 
 
+@pytest.mark.parametrize(
+    "protected_key",
+    [
+        "trainer_ref",
+        "idempotency_key",
+        "request_core_hash",
+        "maximum_runtime_seconds",
+        "expected_resolution",
+        "expected_resolution_sha256",
+    ],
+)
+def test_launch_training_run_rejects_protected_control_in_launcher_args(
+    protected_key,
+):
+    trainer = _make_trainer_with_transport(
+        lambda request: pytest.fail("protected launcher control reached the network")
+    )
+
+    with pytest.raises(ValueError, match=protected_key):
+        trainer.launch_training_run(
+            env_cls_path="a",
+            env_metadata_path="b",
+            launcher_args={protected_key: "sneaky"},
+        )
+
+
 def test_launch_training_run_rejects_training_run_type_kwarg():
     trainer = _make_trainer_with_transport(
         lambda request: httpx.Response(200, json={"runId": "unused"})
@@ -159,20 +286,6 @@ def test_launch_training_run_rejects_training_run_type_kwarg():
     with pytest.raises(TypeError, match="training_run_type"):
         trainer.launch_training_run(
             training_run_type="simple-cpu",
-            env_cls_path="a",
-            env_metadata_path="b",
-            dataset_path="c",
-        )
-
-
-def test_launch_training_run_rejects_trainer_ref_kwarg():
-    trainer = _make_trainer_with_transport(
-        lambda request: httpx.Response(200, json={"runId": "unused"})
-    )
-
-    with pytest.raises(TypeError, match="trainer_ref"):
-        trainer.launch_training_run(
-            trainer_ref="main",
             env_cls_path="a",
             env_metadata_path="b",
             dataset_path="c",
@@ -194,6 +307,132 @@ def test_launch_training_run_reads_run_id_not_experiment_id():
         )
         == "the-id"
     )
+
+
+# ---------------------------------------------------------------------------
+# reconcile_training_run — owner-scoped, read-only launch reconciliation
+# ---------------------------------------------------------------------------
+
+
+_RECONCILIATION_RESPONSE = {
+    "id": "run-1",
+    "name": "reasoning",
+    "idempotencyKey": f"boardy-reasoning-v2:{'a' * 64}",
+    "requestCoreHash": "a" * 64,
+    "launchPayloadHash": "b" * 64,
+    "launcherArgs": {"trainer": {"num_rollout": 60}},
+    "maximumRuntimeSeconds": 7200,
+    "launcherJobIdPersistedAt": "2026-07-30T09:03:36.000Z",
+    "expectedResolution": {"resolvedConfig": {}, "resolvedArgv": []},
+    "expectedResolutionHash": "c" * 64,
+    "actualResolution": {"resolvedConfig": {"epochs": 1}, "resolvedArgv": []},
+    "actualResolutionHash": "d" * 64,
+    "actualResolutionBodyHash": "e" * 64,
+    "actualResolutionAt": "2026-07-30T09:04:10.000Z",
+    "hasLauncherJob": True,
+}
+
+
+def test_reconcile_training_run_encodes_query_and_maps_typed_response():
+    captured: dict[str, Any] = {}
+    idempotency_key = "boardy-reasoning-v2:a/b c&d"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["key"] = request.url.params["idempotencyKey"]
+        return httpx.Response(200, json=_RECONCILIATION_RESPONSE)
+
+    trainer = _make_trainer_with_transport(handler)
+    result = trainer.reconcile_training_run(idempotency_key)
+
+    assert captured == {
+        "method": "GET",
+        "url": (
+            "https://example.invalid/v1/train/runs/reconcile"
+            "?idempotencyKey=boardy-reasoning-v2%3Aa%2Fb+c%26d"
+        ),
+        "key": idempotency_key,
+    }
+    assert isinstance(result, TrainingRunReconciliation)
+    assert result.id == "run-1"
+    assert result.idempotency_key == _RECONCILIATION_RESPONSE["idempotencyKey"]
+    assert result.launcher_args == {"trainer": {"num_rollout": 60}}
+    assert result.expected_resolution == {"resolvedConfig": {}, "resolvedArgv": []}
+    assert result.actual_resolution_hash == "d" * 64
+    assert result.has_launcher_job is True
+    assert not hasattr(result, "launcher_job_id")
+
+
+def test_training_run_reconciliation_is_public_frozen_and_detached():
+    assert PublicTrainingRunReconciliation is TrainingRunReconciliation
+    response = {
+        **_RECONCILIATION_RESPONSE,
+        "launcherArgs": {"trainer": {"num_rollout": 60}},
+        "expectedResolution": {
+            "resolvedConfig": {"nested": ["expected"]},
+            "resolvedArgv": [],
+        },
+        "actualResolution": {
+            "resolvedConfig": {"nested": ["actual"]},
+            "resolvedArgv": [],
+        },
+    }
+    result = TrainingRunReconciliation.from_response(response)
+
+    with pytest.raises(AttributeError):
+        result.id = "different"
+
+    response["launcherArgs"]["trainer"]["num_rollout"] = 300
+    response["expectedResolution"]["resolvedConfig"]["nested"].append("source")
+    response["actualResolution"]["resolvedConfig"]["nested"].append("source")
+    assert result.launcher_args["trainer"]["num_rollout"] == 60
+    assert result.expected_resolution["resolvedConfig"]["nested"] == ["expected"]
+    assert result.actual_resolution is not None
+    assert result.actual_resolution["resolvedConfig"]["nested"] == ["actual"]
+
+    result.expected_resolution["resolvedConfig"]["nested"].append("result")
+    assert response["expectedResolution"]["resolvedConfig"]["nested"] == [
+        "expected",
+        "source",
+    ]
+
+
+def test_reconcile_training_run_rejects_scheduler_identifier_leak():
+    response = {**_RECONCILIATION_RESPONSE, "launcherJobId": "private-scheduler-id"}
+    trainer = _make_trainer_with_transport(lambda request: httpx.Response(200, json=response))
+
+    with pytest.raises(TrainerError, match="private scheduler identifier"):
+        trainer.reconcile_training_run("owner-key")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"requestCoreHash": None}, "requestCoreHash"),
+        ({"maximumRuntimeSeconds": True}, "maximumRuntimeSeconds"),
+        ({"expectedResolution": []}, "expectedResolution"),
+    ],
+)
+def test_reconcile_training_run_rejects_malformed_response(mutation, message):
+    response = {**_RECONCILIATION_RESPONSE, **mutation}
+    trainer = _make_trainer_with_transport(lambda request: httpx.Response(200, json=response))
+
+    with pytest.raises(TrainerError, match=message):
+        trainer.reconcile_training_run("owner-key")
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_type"),
+    [(401, AuthenticationError), (404, JobLaunchError)],
+)
+def test_reconcile_training_run_preserves_auth_and_http_errors(status_code, error_type):
+    trainer = _make_trainer_with_transport(
+        lambda request: httpx.Response(status_code, json={"error": "no such owner run"})
+    )
+
+    with pytest.raises(error_type, match="no such owner run"):
+        trainer.reconcile_training_run("owner-key")
 
 
 # ---------------------------------------------------------------------------

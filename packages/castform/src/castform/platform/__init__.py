@@ -1,6 +1,11 @@
 """Castform platform clients (storage, training runs, rollout)."""
 
-from .client import RolloutClient, StorageClient, TrainerClient
+from .client import (
+    RolloutClient,
+    StorageClient,
+    TrainerClient,
+    TrainingRunReconciliation,
+)
 from .config import PlatformConfig
 from .credentials import platform_bearer
 from .environment_assets import UploadedEnvironmentAssets, upload_assets
@@ -14,6 +19,7 @@ __all__ = [
     "PlatformConfig",
     "StorageClient",
     "TrainerClient",
+    "TrainingRunReconciliation",
     "UploadedEnvironmentAssets",
     # The seam token-getter: generated scripts pass it to a raw OpenAI client
     # (e.g. the traces pivot), so it's part of the public surface alongside

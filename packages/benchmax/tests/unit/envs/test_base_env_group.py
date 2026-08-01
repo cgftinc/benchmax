@@ -29,8 +29,15 @@ class _MathEnv(BaseEnv):
         *,
         max_turns: int = 1,
         max_tool_calls: int | None = None,
+        max_completion_tokens: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> None:
-        super().__init__(max_turns=max_turns, max_tool_calls=max_tool_calls)
+        super().__init__(
+            max_turns=max_turns,
+            max_tool_calls=max_tool_calls,
+            max_completion_tokens=max_completion_tokens,
+            enable_thinking=enable_thinking,
+        )
         self.reward_calls: list[tuple[str, Messages, Mapping[str, Any], str]] = []
 
     async def create_dataset(
@@ -60,8 +67,17 @@ class _MathEnv(BaseEnv):
 
 
 class _ToolMathEnv(_MathEnv):
-    def __init__(self, *, max_tool_calls: int) -> None:
-        super().__init__(max_turns=2, max_tool_calls=max_tool_calls)
+    def __init__(
+        self,
+        *,
+        max_tool_calls: int,
+        enable_thinking: bool | None = None,
+    ) -> None:
+        super().__init__(
+            max_turns=2,
+            max_tool_calls=max_tool_calls,
+            enable_thinking=enable_thinking,
+        )
         self.tool_calls: list[tuple[str, str, Mapping[str, Any]]] = []
 
     async def list_tools(self) -> list[Tool]:
@@ -168,8 +184,94 @@ async def test_base_env_group_runs_end_to_end_through_distinct_http_endpoints() 
         request.body["messages"] == [{"role": "user", "content": "What is 6 times 7?"}]
         for request in server.requests
     )
+    assert all("chat_template_kwargs" not in request.body for request in server.requests)
     assert {call[0] for call in env.reward_calls} == set(rollout_ids)
     assert all(call[2] == {"answer": "42"} for call in env.reward_calls)
+
+
+@pytest.mark.parametrize("enable_thinking", [True, False])
+async def test_base_env_sends_explicit_thinking_choice_without_tools(
+    enable_thinking: bool,
+) -> None:
+    example = Example(
+        id="thinking-choice",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "Think explicitly?"}],
+            "answer": "42",
+        },
+    )
+    env = _MathEnv(enable_thinking=enable_thinking)
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (
+            200,
+            completion_response(content="42"),
+        )
+    ) as server:
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
+
+    assert outcomes["rollout-1"].rewards == {"correctness": 1.0}
+    assert server.requests[0].body["chat_template_kwargs"] == {"enable_thinking": enable_thinking}
+
+
+@pytest.mark.parametrize("invalid", [0, 1, "true", object()])
+def test_base_env_rejects_non_boolean_thinking_choice(invalid: object) -> None:
+    with pytest.raises(TypeError, match="enable_thinking must be a bool or None"):
+        _MathEnv(enable_thinking=invalid)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("max_completion_tokens", [512, 1024, 2048, 4096])
+async def test_base_env_sends_explicit_max_completion_tokens(
+    max_completion_tokens: int,
+) -> None:
+    example = Example(
+        id="completion-cap",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "Use the full budget."}],
+            "answer": "42",
+        },
+    )
+    env = _MathEnv(max_completion_tokens=max_completion_tokens)
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (
+            200,
+            completion_response(content="42"),
+        )
+    ) as server:
+        outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
+
+    assert outcomes["rollout-1"].rewards == {"correctness": 1.0}
+    assert server.requests[0].body["max_completion_tokens"] == max_completion_tokens
+
+
+async def test_base_env_omits_unspecified_max_completion_tokens() -> None:
+    example = Example(
+        id="completion-cap-omitted",
+        payload={
+            "prompt_messages": [{"role": "user", "content": "Use the default budget."}],
+            "answer": "42",
+        },
+    )
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (
+            200,
+            completion_response(content="42"),
+        )
+    ) as server:
+        await _MathEnv().run_group(_requests(server, example, ["rollout-1"]))
+
+    assert "max_completion_tokens" not in server.requests[0].body
+
+
+@pytest.mark.parametrize("invalid", [False, 0, -1, 1.5, "1024", 4097])
+def test_base_env_rejects_invalid_max_completion_tokens(invalid: object) -> None:
+    with pytest.raises(
+        ValueError,
+        match="max_completion_tokens must be a positive integer at most 4096",
+    ):
+        _MathEnv(max_completion_tokens=invalid)  # type: ignore[arg-type]
 
 
 async def test_output_exceeded_scores_the_partial_transcript() -> None:
@@ -466,7 +568,10 @@ async def test_judge_failure_empties_only_that_sibling_and_is_logged(
     assert "judge unavailable" in caplog.text
 
 
-async def test_base_env_dispatches_an_advertised_tool_and_continues() -> None:
+@pytest.mark.parametrize("enable_thinking", [True, False])
+async def test_base_env_dispatches_an_advertised_tool_and_continues(
+    enable_thinking: bool,
+) -> None:
     def respond(session_id, call_index, body):
         if call_index == 0:
             return 200, completion_response(
@@ -515,13 +620,17 @@ async def test_base_env_dispatches_an_advertised_tool_and_continues() -> None:
             "answer": "42",
         },
     )
-    env = _ToolMathEnv(max_tool_calls=1)
+    env = _ToolMathEnv(max_tool_calls=1, enable_thinking=enable_thinking)
 
     with LocalModelServer(respond) as server:
         outcomes = await env.run_group(_requests(server, example, ["rollout-1"]))
 
     assert outcomes["rollout-1"].rewards == {"correctness": 1.0}
     assert env.tool_calls == [("rollout-1", "multiply", {"left": 6, "right": 7})]
+    assert all(
+        request.body["chat_template_kwargs"] == {"enable_thinking": enable_thinking}
+        for request in server.requests
+    )
 
 
 async def test_model_authored_tool_errors_are_returned_to_the_model() -> None:
@@ -576,6 +685,7 @@ async def test_model_authored_tool_errors_are_returned_to_the_model() -> None:
 
     assert outcomes["rollout-1"].rewards == {"correctness": 1.0}
     assert env.tool_calls == []
+    assert all("chat_template_kwargs" not in request.body for request in server.requests)
 
 
 async def test_unexpected_tool_failure_is_empty_logged_and_does_not_cancel_sibling(

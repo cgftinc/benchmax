@@ -60,18 +60,26 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
 
     max_turns: int | None = None
     max_tool_calls: int | None = None
+    max_completion_tokens: int | None = None
 
     def __init__(
         self,
         *,
         max_turns: int | None = None,
         max_tool_calls: int | None = None,
+        max_completion_tokens: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> None:
         super().__init__()
+        if enable_thinking is not None and not isinstance(enable_thinking, bool):
+            raise TypeError("enable_thinking must be a bool or None")
         if max_turns is not None:
             self.max_turns = max_turns
         if max_tool_calls is not None:
             self.max_tool_calls = max_tool_calls
+        if max_completion_tokens is not None:
+            self.max_completion_tokens = max_completion_tokens
+        self.enable_thinking = enable_thinking
         self._validate_limits()
 
     @abstractmethod
@@ -155,6 +163,8 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
                             model=request.model,
                             messages=messages,
                             tools=tools,
+                            max_completion_tokens=self.max_completion_tokens,
+                            enable_thinking=self.enable_thinking,
                         )
                     except BadRequestError as error:
                         if error.code == "context_budget_exceeded":
@@ -362,6 +372,13 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
             or self.max_tool_calls < 0
         ):
             raise ValueError("max_tool_calls must be a non-negative integer")
+        if self.max_completion_tokens is not None and (
+            isinstance(self.max_completion_tokens, bool)
+            or not isinstance(self.max_completion_tokens, int)
+            or self.max_completion_tokens < 1
+            or self.max_completion_tokens > 4096
+        ):
+            raise ValueError("max_completion_tokens must be a positive integer at most 4096")
 
 
 def _prepare_example(payload: JsonRow) -> tuple[Messages, Mapping[str, Any]]:
@@ -416,6 +433,8 @@ async def _create_chat_completion(
     model: str,
     messages: Messages,
     tools: Sequence[Tool],
+    max_completion_tokens: int | None,
+    enable_thinking: bool | None,
 ) -> ChatCompletion:
     """Request one assistant turn, including tools when available."""
 
@@ -427,18 +446,20 @@ async def _create_chat_completion(
         )
     )
 
+    request_kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "extra_headers": dict(auth_headers),
+    }
     if tools:
-        return await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=tools,
-            extra_headers=dict(auth_headers),
-        )
-    return await client.chat.completions.create(
-        model=model,
-        messages=messages,
-        extra_headers=dict(auth_headers),
-    )
+        request_kwargs["tools"] = tools
+    if max_completion_tokens is not None:
+        request_kwargs["max_completion_tokens"] = max_completion_tokens
+    if enable_thinking is not None:
+        request_kwargs["extra_body"] = {
+            "chat_template_kwargs": {"enable_thinking": enable_thinking}
+        }
+    return await client.chat.completions.create(**request_kwargs)
 
 
 def _function_tool_calls(

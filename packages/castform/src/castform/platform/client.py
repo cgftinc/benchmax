@@ -7,6 +7,7 @@ import json
 import logging
 import warnings
 from collections.abc import Iterator
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,85 @@ class LaunchArgSpec:
     # tuple (not list) so the frozen dataclass actually stays immutable —
     # list would still be mutable in place.
     enum: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class TrainingRunReconciliation:
+    """Owner-scoped result from ``GET /train/runs/reconcile``.
+
+    The platform intentionally exposes only whether a scheduler job was
+    persisted. Its private scheduler identifier is not part of this type. Field
+    assignment is frozen; JSON mappings remain mutable but are detached from
+    the decoded response.
+    """
+
+    id: str
+    name: str
+    idempotency_key: str
+    request_core_hash: str
+    launch_payload_hash: str
+    launcher_args: dict[str, Any]
+    maximum_runtime_seconds: int
+    launcher_job_id_persisted_at: str | None
+    expected_resolution: dict[str, Any]
+    expected_resolution_hash: str
+    actual_resolution: dict[str, Any] | None
+    actual_resolution_hash: str | None
+    actual_resolution_body_hash: str | None
+    actual_resolution_at: str | None
+    has_launcher_job: bool
+
+    @classmethod
+    def from_response(cls, payload: Any) -> TrainingRunReconciliation:
+        """Validate and convert the platform's camelCase response."""
+        if type(payload) is not dict:
+            raise TrainerError("Invalid reconciliation response: expected an object")
+        if "launcherJobId" in payload:
+            raise TrainerError(
+                "Invalid reconciliation response: private scheduler identifier was exposed"
+            )
+
+        def required(key: str, expected_type: type) -> Any:
+            if key not in payload:
+                raise TrainerError(f"Invalid reconciliation response: missing field {key!r}")
+            value = payload[key]
+            if type(value) is not expected_type:
+                raise TrainerError(
+                    f"Invalid reconciliation response: field {key!r} has an invalid type"
+                )
+            return value
+
+        def nullable(key: str, expected_type: type) -> Any:
+            if key not in payload:
+                raise TrainerError(f"Invalid reconciliation response: missing field {key!r}")
+            value = payload[key]
+            if value is not None and type(value) is not expected_type:
+                raise TrainerError(
+                    f"Invalid reconciliation response: field {key!r} has an invalid type"
+                )
+            return value
+
+        return cls(
+            id=required("id", str),
+            name=required("name", str),
+            idempotency_key=required("idempotencyKey", str),
+            request_core_hash=required("requestCoreHash", str),
+            launch_payload_hash=required("launchPayloadHash", str),
+            launcher_args=deepcopy(required("launcherArgs", dict)),
+            maximum_runtime_seconds=required("maximumRuntimeSeconds", int),
+            launcher_job_id_persisted_at=nullable("launcherJobIdPersistedAt", str),
+            expected_resolution=deepcopy(required("expectedResolution", dict)),
+            expected_resolution_hash=required("expectedResolutionHash", str),
+            actual_resolution=(
+                deepcopy(value)
+                if (value := nullable("actualResolution", dict)) is not None
+                else None
+            ),
+            actual_resolution_hash=nullable("actualResolutionHash", str),
+            actual_resolution_body_hash=nullable("actualResolutionBodyHash", str),
+            actual_resolution_at=nullable("actualResolutionAt", str),
+            has_launcher_job=required("hasLauncherJob", bool),
+        )
 
 
 # MIME type mappings for common file extensions
@@ -360,6 +440,13 @@ class TrainerClient:
         dataset_path: str | None = None,
         name: str | None = None,
         launcher_args: dict[str, Any] | None = None,
+        trainer_ref: str | None = None,
+        *,
+        idempotency_key: str | None = None,
+        request_core_hash: str | None = None,
+        maximum_runtime_seconds: int | None = None,
+        expected_resolution: dict[str, Any] | None = None,
+        expected_resolution_sha256: str | None = None,
     ) -> str:
         """Launch a new training run.
 
@@ -374,13 +461,51 @@ class TrainerClient:
             launcher_args: Extra launcher args forwarded to the server
                 (e.g. {"max_context_tokens": 4000}). Bundle and optional dataset
                 path parameters always take precedence over this mapping.
+            trainer_ref: Optional immutable trainer source reference. Sent as a
+                top-level launch field rather than as a trainer argument.
+            idempotency_key: Owner-scoped launch idempotency key.
+            request_core_hash: SHA-256 of the immutable request core.
+            maximum_runtime_seconds: Positive wall-clock runtime limit.
+            expected_resolution: Secret-free resolved-config projection.
+            expected_resolution_sha256: SHA-256 of ``expected_resolution``.
+                The five integrity fields must be supplied together.
         Returns:
             The training run ID.
 
         Raises:
             AuthenticationError: If API key is invalid
             JobLaunchError: If training run launch fails
+            ValueError: If only part of the integrity contract is supplied, or
+                if ``launcher_args`` contains a protected top-level control key
         """
+        integrity_fields = {
+            "idempotency_key": idempotency_key,
+            "request_core_hash": request_core_hash,
+            "maximum_runtime_seconds": maximum_runtime_seconds,
+            "expected_resolution": expected_resolution,
+            "expected_resolution_sha256": expected_resolution_sha256,
+        }
+        if any(value is not None for value in integrity_fields.values()) and any(
+            value is None for value in integrity_fields.values()
+        ):
+            missing = sorted(key for key, value in integrity_fields.items() if value is None)
+            raise ValueError(
+                "Launch integrity fields must be supplied together; missing: " + ", ".join(missing)
+            )
+
+        protected_control_args = {
+            "trainer_ref",
+            *integrity_fields,
+        }
+        protected_in_launcher_args = sorted(
+            protected_control_args.intersection(launcher_args or {})
+        )
+        if protected_in_launcher_args:
+            raise ValueError(
+                "launcher_args must not contain protected top-level control fields: "
+                + ", ".join(protected_in_launcher_args)
+            )
+
         reserved_paths = {
             "env_cls_path",
             "env_metadata_path",
@@ -401,6 +526,10 @@ class TrainerClient:
             "name": name,
             "args": args,
         }
+        if trainer_ref is not None:
+            body["trainer_ref"] = trainer_ref
+        if idempotency_key is not None:
+            body.update(integrity_fields)
         response = self._http_client.post(
             "/v1/train/runs/launch",
             json=body,
@@ -413,6 +542,15 @@ class TrainerClient:
         for warning in body.get("warnings", []) or []:
             warnings.warn(f"launch warning: {warning}", stacklevel=2)
         return body["runId"]
+
+    def reconcile_training_run(self, idempotency_key: str) -> TrainingRunReconciliation:
+        """Read owner-scoped launch state without retrying or dispatching work."""
+        response = self._http_client.get(
+            "/v1/train/runs/reconcile",
+            params={"idempotencyKey": idempotency_key},
+        )
+        self._handle_response_errors(response)
+        return TrainingRunReconciliation.from_response(response.json())
 
     def list_launch_args(self) -> list[LaunchArgSpec]:
         """Fetch the schema of launch args this platform accepts.
