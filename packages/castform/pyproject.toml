@@ -40,6 +40,12 @@ traces = ["tqdm>=4.66.0"]
 chroma = ["chromadb>=1.0.0", "snowballstemmer>=2.2.0"]
 pinecone = ["pinecone>=5.0.0"]
 turbopuffer = ["turbopuffer>=1.16.2"]
+neon = [
+    "psycopg[binary]>=3.2.0",
+    "pgvector>=0.3.0",
+    "openai>=2.15.0",
+    "pydantic>=2.0.0",
+]
 
 [dependency-groups]
 dev = [
