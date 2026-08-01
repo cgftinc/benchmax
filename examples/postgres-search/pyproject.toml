@@ -3,7 +3,7 @@ name = "benchmax-example-postgres-search"
 version = "0.1.0"
 description = "PostgreSQL-backed search environments for benchmax"
 requires-python = "==3.12.*"
-dependencies = ["benchmax", "castform[rag]"]
+dependencies = [ "castform[rag]"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

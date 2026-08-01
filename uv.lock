@@ -211,8 +211,6 @@ name = "benchmax-example-aime"
 version = "0.1.0"
 source = { editable = "examples/aime" }
 dependencies = [
-    { name = "benchmax" },
-    { name = "castform" },
     { name = "harbor" },
     { name = "mini-swe-agent" },
     { name = "numpy" },
@@ -229,8 +227,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "benchmax", editable = "packages/benchmax" },
-    { name = "castform", editable = "packages/castform" },
     { name = "harbor", specifier = ">=0.18.0,<0.19" },
     { name = "mini-swe-agent", specifier = "==2.4.5" },
     { name = "numpy" },
@@ -250,8 +246,6 @@ name = "benchmax-example-dominant-color"
 version = "0.1.0"
 source = { editable = "examples/dominant-color" }
 dependencies = [
-    { name = "benchmax" },
-    { name = "castform" },
     { name = "pillow" },
 ]
 
@@ -263,11 +257,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "benchmax", editable = "packages/benchmax" },
-    { name = "castform", editable = "packages/castform" },
-    { name = "pillow", specifier = ">=10" },
-]
+requires-dist = [{ name = "pillow", specifier = ">=10" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -281,8 +271,6 @@ name = "benchmax-example-geo3k"
 version = "0.1.0"
 source = { editable = "examples/geo3k" }
 dependencies = [
-    { name = "benchmax" },
-    { name = "castform" },
     { name = "datasets" },
     { name = "pillow" },
 ]
@@ -296,8 +284,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "benchmax", editable = "packages/benchmax" },
-    { name = "castform", editable = "packages/castform" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "pillow", specifier = ">=10" },
 ]
@@ -314,8 +300,6 @@ name = "benchmax-example-harvey"
 version = "0.1.0"
 source = { editable = "examples/harvey" }
 dependencies = [
-    { name = "benchmax" },
-    { name = "castform" },
     { name = "harbor", extra = ["modal"] },
     { name = "httpx" },
     { name = "openai" },
@@ -330,8 +314,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "benchmax", editable = "packages/benchmax" },
-    { name = "castform", editable = "packages/castform" },
     { name = "harbor", extras = ["modal"], specifier = ">=0.18.0,<0.19" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "openai", specifier = ">=2.15.0" },
@@ -349,8 +331,6 @@ name = "benchmax-example-math"
 version = "0.1.0"
 source = { editable = "examples/math" }
 dependencies = [
-    { name = "benchmax" },
-    { name = "castform" },
     { name = "datasets" },
 ]
 
@@ -362,11 +342,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "benchmax", editable = "packages/benchmax" },
-    { name = "castform", editable = "packages/castform" },
-    { name = "datasets", specifier = ">=4.0.0" },
-]
+requires-dist = [{ name = "datasets", specifier = ">=4.0.0" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -380,7 +356,6 @@ name = "benchmax-example-postgres-search"
 version = "0.1.0"
 source = { editable = "examples/postgres-search" }
 dependencies = [
-    { name = "benchmax" },
     { name = "castform", extra = ["rag"] },
 ]
 
@@ -393,10 +368,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "benchmax", editable = "packages/benchmax" },
-    { name = "castform", extras = ["rag"], editable = "packages/castform" },
-]
+requires-dist = [{ name = "castform", extras = ["rag"], editable = "packages/castform" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -411,8 +383,6 @@ name = "benchmax-example-qwen3-ocr"
 version = "0.1.0"
 source = { editable = "examples/qwen3-ocr-reverse" }
 dependencies = [
-    { name = "benchmax" },
-    { name = "castform" },
     { name = "datasets" },
     { name = "scipy" },
 ]
@@ -426,8 +396,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "benchmax", editable = "packages/benchmax" },
-    { name = "castform", editable = "packages/castform" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "scipy", specifier = ">=1.16.0" },
 ]
@@ -444,8 +412,6 @@ name = "benchmax-example-telestich"
 version = "0.1.0"
 source = { editable = "examples/telestich" }
 dependencies = [
-    { name = "benchmax" },
-    { name = "castform" },
     { name = "english-words" },
     { name = "openai" },
     { name = "pronouncing" },
@@ -461,8 +427,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "benchmax", editable = "packages/benchmax" },
-    { name = "castform", editable = "packages/castform" },
     { name = "english-words" },
     { name = "openai" },
     { name = "pronouncing" },
