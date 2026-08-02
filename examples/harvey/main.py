@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
-
 from benchmax.bundle import dump_bundle
 from benchmax.envs.environment import Environment
 from benchmax.envs.harbor import (
