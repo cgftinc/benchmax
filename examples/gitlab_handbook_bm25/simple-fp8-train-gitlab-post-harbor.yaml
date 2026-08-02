@@ -1,0 +1,260 @@
+# GitLab post-Harbor compatibility run using the FP8-capable trainer snapshot.
+# The bundled environment advertises 4 searches but enforces 3 executed tool
+# calls, matching the historical pre-Harbor arm's effective limit.
+name: gitlab-bm25-postharbor-fp8-4b-vast-wa-consumer-3tools
+
+# One-job exception approved for the Washington Vast offer.  The production
+# default remains datacenter-only; this override is serialized with this job.
+config:
+  vast:
+    datacenter_only: false
+
+resources:
+  # The live Washington offer is a consumer-hosted 4x H100 SXM machine.
+  infra: "vast/Washington, US, NA"
+  accelerators: H100:4
+  # Vast reports 64 GB as this offer's allocatable (chunked) disk capacity.
+  disk_size: 64
+  image_id: docker:slimerl/slime:nightly-dev-20260707a
+
+workdir:
+  url: "https://github.com/castform-ai/castform.git"
+  # Pinned FP8/logit-optimization snapshot from origin/add_logit_optimization.
+  ref: "59f3fc948c91370e66a1d69919c34583cb76de88"
+
+envs:
+  # ── server-injected by /launch-internal (overwritten at submit) ──────────
+  RUN_ID: ""
+  USER_ID: ""
+  AZURE_CONTAINER_NAME: ""
+  AZURE_STORAGE_ACCOUNT: ""
+  PLATFORM_API_URL: ""
+  LLM_PROXY_URL: ""
+  INGEST_SERVICE_PUBLIC_URL: ""
+  AUTH_SERVICE_PUBLIC_URL: ""
+  CASTFORM_LLM_URL: ""
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  OTEL_EXPORTER_OTLP_INSECURE: ""
+  AUTH_CLIENT_ID: ""
+  AUDIENCES: ""
+  SCOPES: ""
+  TITO_PUBLIC_BASE_URL: ""
+  USER_DATA_ARG_SAVE: ""
+  USER_DATA_ARG_LOAD: ""
+
+  # ── user-tunable ────────────────────────────────────────────────────────
+  RUN_NAME: "gitlab-bm25-postharbor-fp8-4b-vast-wa-consumer-3tools"
+  NVTE_FUSED_ATTN: 0
+  NVTE_FP8_BLOCK_SCALING_FP32_SCALES: "1"
+  # Manual SkyPilot launches register here to receive a fresh per-run TITO
+  # hostname and Cloudflare connector token.
+  CASTFORM_PLATFORM_URL: "https://api.castform.dev"
+
+  # Pin the runtime revisions that contain Qwen3.5 and FP8 train/rollout support.
+  SLIME_COMMIT: "8ea14d4cc6468f9509342e2a6cfa73a2ea2ab838"
+  MEGATRON_BRIDGE_COMMIT: "16210e6af689f9ab3168dad8f116528bb4bbe062"
+
+  # Match the existing post-Harbor run's model. Qwen does not publish an
+  # official Qwen3.5-4B FP8 checkpoint, so both actor and rollout start from
+  # the BF16 base; FP8 training and rollout weight updates happen at runtime.
+  ARG_MODEL: "Qwen/Qwen3.5-4B"
+
+  # TransformerEngine FP8 forward/backward GEMMs. Keep fp8_param_gather off:
+  # it is currently incompatible with CPU Adam offload.
+  ARG_TRANSFORMER_IMPL: "transformer_engine"
+  ARG_BF16: "true"
+  ARG_FP8_FORMAT: "e4m3"
+  ARG_FP8_RECIPE: "blockwise"
+
+  # Exact experiment overrides from post_harbor/task.yaml. GPU topology and
+  # rollout batch size deliberately fall through to the pinned 4B config:
+  # three actor GPUs, one rollout GPU, and rollout_batch_size=15.
+  ARG_LR: "4e-6"
+  ARG_NUM_EPOCH: "5"
+  ARG_N_SAMPLES_PER_PROMPT: "9"
+  ARG_N_SAMPLES_PER_EVAL_PROMPT: "9"
+  ARG_ROLLOUT_MAX_CONTEXT_LEN: "16384"
+  ARG_EVAL_MAX_CONTEXT_LEN: "16384"
+  ARG_EVAL_INTERVAL: "5"
+  ARG_SAVE_INTERVAL: "5"
+  ARG_KL_LOSS_COEF: "0"
+  ARG_LORA_RANK: "128"
+  ARG_LORA_ALPHA: "256"
+
+  USER_DATA_PATH: "~/user-data/"
+  # Reuse the uploaded post-Harbor bundle and shared content-addressed dataset.
+  USER_DATA_ARG_ENV_CLS_PATH: "envs/gitlab-bm25-gateway-ab/post_harbor/011b7003f5e2458a/env-cls.pkl"
+  USER_DATA_ARG_ENV_METADATA_PATH: "envs/gitlab-bm25-gateway-ab/post_harbor/011b7003f5e2458a/env-metadata.json"
+  USER_DATA_ARG_DATASET_PATH: "datasets/gitlab-bm25-gateway-ab/88c5853e435b75ff"
+
+secrets:
+  # ── server-injected by /launch-internal (overwritten at submit) ──────────
+  AUTH_SVC_CLIENT_SECRET: ""
+  AZURE_CONTAINER_SAS: ""
+  CLOUDFLARE_TUNNEL_TOKEN: ""
+  GIT_TOKEN: ""
+  CASTFORM_AUTH_TOKEN: ""
+  WANDB_API_KEY: ""
+
+run: |
+  set -e
+
+  # Scheduler launches arrive fully provisioned. Manual SkyPilot launches use
+  # CASTFORM_AUTH_TOKEN to register a new run and provision a fresh named
+  # Cloudflare tunnel instead of reusing a stale token from an older .env.
+  _platform_job_env_file=$(mktemp)
+  trap 'rm -f "$_platform_job_env_file"' EXIT
+  # Platform may return fields added after this pinned trainer revision.
+  # Require every field this trainer needs, but discard additional response
+  # fields rather than writing unrecognized values into the job environment.
+  PYTHONPATH=core/trainer/src python3 - "$_platform_job_env_file" <<'PY'
+  import sys
+
+  from trainer.tools import ensure_platform_job_env as platform_job_env
+
+  _post_registration = platform_job_env._post_registration
+
+
+  def _post_registration_compat(*args, **kwargs):
+      payload = _post_registration(*args, **kwargs)
+      envs = payload.get("envs")
+      secrets = payload.get("secrets")
+      if not isinstance(envs, dict) or not isinstance(secrets, dict):
+          return payload
+
+      missing_envs = sorted(platform_job_env.PLATFORM_ENV_KEYS - set(envs))
+      missing_secrets = sorted(
+          platform_job_env.PLATFORM_SECRET_KEYS - set(secrets)
+      )
+      if missing_envs or missing_secrets:
+          details = []
+          if missing_envs:
+              details.append(f"envs: {', '.join(missing_envs)}")
+          if missing_secrets:
+              details.append(f"secrets: {', '.join(missing_secrets)}")
+          raise platform_job_env.PlatformJobEnvError(
+              "Platform registration is missing required job environment "
+              f"fields ({'; '.join(details)})"
+          )
+
+      payload = dict(payload)
+      payload["envs"] = {
+          name: envs[name] for name in platform_job_env.PLATFORM_ENV_KEYS
+      }
+      payload["secrets"] = {
+          name: secrets[name]
+          for name in platform_job_env.PLATFORM_SECRET_KEYS
+      }
+      return payload
+
+
+  platform_job_env._post_registration = _post_registration_compat
+  platform_job_env.main(["--output", sys.argv[1]])
+  PY
+  set -a
+  . "$_platform_job_env_file"
+  set +a
+  rm -f "$_platform_job_env_file"
+  trap - EXIT
+  unset CASTFORM_AUTH_TOKEN
+
+  export PYTHONPATH="$(pwd)/core/trainer/src:${PYTHONPATH:-}"
+
+  # Prefetch the shared 4B base checkpoint while machine tooling is prepared.
+  export CASTFORM_MODEL_DOWNLOAD_MODEL="$ARG_MODEL"
+  export CASTFORM_MODEL_DOWNLOAD_DIR="/root/$ARG_MODEL"
+  export CASTFORM_MODEL_DOWNLOAD_STATUS="/tmp/castform-model-download.status"
+  export CASTFORM_MODEL_DOWNLOAD_LOG="/tmp/castform-model-download.log"
+  python3 -m trainer.tools.prefetch_model &
+  export CASTFORM_MODEL_DOWNLOAD_PID=$!
+
+  python3 -m trainer.tools.ensure_machine_tools
+
+  if [ -d .git ]; then
+    export GIT_CONFIG_GLOBAL=$(mktemp -t gitconfig.XXXXXX)
+    trap 'rm -f "$GIT_CONFIG_GLOBAL"' EXIT
+    if [ -n "$GIT_TOKEN" ]; then
+      git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "git@github.com:"
+    fi
+    git submodule update --init --filter=blob:none --jobs 4 core/benchmax core/slimefork core/megatron-bridge-fork
+    git -C core/slimefork fetch --filter=blob:none origin "$SLIME_COMMIT"
+    git -C core/slimefork checkout --detach "$SLIME_COMMIT"
+    test "$(git -C core/slimefork rev-parse HEAD)" = "$SLIME_COMMIT"
+    git -C core/megatron-bridge-fork fetch --filter=blob:none origin "$MEGATRON_BRIDGE_COMMIT"
+    git -C core/megatron-bridge-fork checkout --detach "$MEGATRON_BRIDGE_COMMIT"
+    test "$(git -C core/megatron-bridge-fork rev-parse HEAD)" = "$MEGATRON_BRIDGE_COMMIT"
+  fi
+  unset GIT_TOKEN
+
+  cd core/trainer
+  WORKDIR=$(pwd)
+
+  cp pyproject-optimized.toml pyproject.toml
+  cp uv-optimized.lock uv.lock
+
+  # Use the checked-out Bridge while retaining Megatron Core from the Slime image.
+  export PYTHONPATH="$WORKDIR/../megatron-bridge-fork/src:$WORKDIR:$WORKDIR/src:/root/Megatron-LM:${PYTHONPATH:-}"
+  python3 -m trainer.tools.apply_model_runtime_patches --model "$ARG_MODEL"
+  python3 -m pip uninstall -y megatron-bridge
+
+  uv venv --system-site-packages --clear
+  source .venv/bin/activate
+
+  USER_DATA_PATH="${USER_DATA_PATH:-~/user-data}"
+  USER_DATA_PATH="${USER_DATA_PATH/#\~/$HOME}"
+  export USER_DATA_PATH
+  rm -rf "$USER_DATA_PATH" && mkdir -p "$USER_DATA_PATH"
+
+  _download_log="/tmp/job_blob_sync_download.log"
+  python3 -m trainer.tools.sync.job_blob_sync download \
+    --account-name "$AZURE_STORAGE_ACCOUNT" \
+    --sas-token "$AZURE_CONTAINER_SAS" \
+    --container "$AZURE_CONTAINER_NAME" \
+    --local-root "$USER_DATA_PATH" \
+    --required-files \
+      "$USER_DATA_ARG_ENV_CLS_PATH" \
+      "$USER_DATA_ARG_ENV_METADATA_PATH" \
+    --required-prefixes \
+      "$USER_DATA_ARG_DATASET_PATH" \
+    ${USER_DATA_ARG_LOAD:+--load-checkpoint-path "$USER_DATA_ARG_LOAD"} \
+    > "$_download_log" 2>&1 &
+  _dl_pid=$!
+
+  # Keep the image's CUDA-matched Torch and exclude any locked Bridge package.
+  uv sync --no-install-package torch --no-install-package megatron-bridge --prerelease allow
+  uv pip install -e "$WORKDIR/../megatron-bridge-fork" --no-deps --no-build-isolation
+
+  _runtime_check_before="/tmp/castform-runtime-verify-before-repair.json"
+  _runtime_check_after="/tmp/castform-runtime-verify-after-repair.json"
+  python3 -m trainer.tools.runtime_probe verify-dependencies --output "$_runtime_check_before"
+
+  if python3 -m trainer.tools.runtime_probe needs-repair "$_runtime_check_before" torch; then
+    uv pip install --reinstall --no-deps \
+      "https://download.pytorch.org/whl/cu129/torch-2.11.0%2Bcu129-cp312-cp312-manylinux_2_28_x86_64.whl"
+  fi
+  if python3 -m trainer.tools.runtime_probe needs-repair "$_runtime_check_before" nccl; then
+    uv pip install --reinstall --no-deps "nvidia-nccl-cu12==2.30.4"
+  fi
+  if python3 -m trainer.tools.runtime_probe needs-repair "$_runtime_check_before" cudnn; then
+    uv pip install --reinstall --no-deps "nvidia-cudnn-cu12==9.16.0.29"
+  fi
+  if python3 -m trainer.tools.runtime_probe needs-repair "$_runtime_check_before" slime; then
+    uv pip install --no-deps -e ../slimefork
+  fi
+  if python3 -m trainer.tools.runtime_probe needs-repair "$_runtime_check_before" sglang-router; then
+    uv pip install --reinstall --no-deps https://github.com/zhuzilin/sgl-router/releases/download/v0.3.2-5f8d397/sglang_router-0.3.2-cp38-abi3-manylinux_2_28_x86_64.whl
+  fi
+  python3 -m trainer.tools.runtime_probe verify-dependencies \
+    --output "$_runtime_check_after" \
+    --deep-imports \
+    --no-require-cuda \
+    --strict
+
+  if ! wait $_dl_pid; then
+    cat "$_download_log"
+    exit 1
+  fi
+
+  history -c 2>/dev/null; rm -f ~/.bash_history ~/.zsh_history
+
+  python3 -m trainer.tools.run_training_optimized

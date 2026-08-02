@@ -1,0 +1,7 @@
+artifacts/
+pre_harbor/artifacts/
+post_harbor/artifacts/
+shared/
+__pycache__/
+*.pyc
+*.egg-info/
