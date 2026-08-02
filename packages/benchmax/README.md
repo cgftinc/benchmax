@@ -83,6 +83,8 @@ environment class + constructor arguments
 
 benchmax creates the portable artifact so the same environment can be loaded outside the author's checkout. `castform` handles uploading the bundle, validating it remotely, and using it for training.
 
+Remote runtimes install `pip_dependencies` without enabling prereleases globally. If a dependency graph needs a prerelease, list that package explicitly even when it would normally be transitive. For example, use `pip_dependencies=["parent-package==1.0.0", "transitive-package==2.0.0rc1"]`.
+
 ## further reading
 
 - [base environment guide](src/benchmax/envs/base/README.md)

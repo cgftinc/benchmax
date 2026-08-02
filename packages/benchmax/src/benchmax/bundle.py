@@ -203,6 +203,9 @@ def dump_bundle(
         env_class: A concrete Environment implementation.
         constructor_args: kwargs for ``env_class(**...)`` on load.
         pip_dependencies: Recorded in metadata. NOT installed by this call.
+            List every required prerelease explicitly, including a prerelease
+            that would otherwise only be a transitive dependency. Remote
+            runtimes do not enable prereleases globally.
         local_modules: Additional modules to pickle by value. Use this for
             local source outside the environment's own Python project. Such
             source otherwise fails loudly unless its installed distribution is
