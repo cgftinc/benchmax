@@ -75,10 +75,41 @@ leaves the fix reachable via `git log --all`.
 ## Repo candidates
 
 Merge style does not matter (the gh API path covers squash merges). What
-matters is PR narrative discipline and test culture. Validated or shortlisted:
-click, pydantic, pytest, flask/jinja, rich (py); fastify, zod (ts);
-caddy, cli/cli (go). Skipped: pandas/django/scikit-learn (slow suites),
-fastapi (docs/i18n churn in PRs).
+matters is PR narrative discipline, test culture, and 2026 merge activity
+(checked via gh search, 2026-07-30).
+
+Farm roster (decided 2026-07-30): depth-first, most tasks from a small set of
+high-quality Python repos, all on the one pip converter path. Target ~300
+mined -> ~260-280 gated including click's 19.
+
+| repo    | 2026 merges | --count | note |
+|---------|-------------|---------|------|
+| pytest  | 332         | 60      | best measured mining quality (q=0.75) |
+| pydantic| 298         | 60      | needs --pip extras (dirty-equals etc.) |
+| numpy   | 884         | 60      | needs --apt build-essential; meson compile tax; freshest tasks |
+| sympy   | 262         | 50      | symbolic-math domain |
+| xarray  | 175         | 50      | needs --pip hypothesis |
+
+Bench (if a repo underperforms the gate): pylint (231), dask (146).
+No codeprobe patch needed: --count's "(3-20)" is help text only, no
+IntRange or downstream clamp; search window = count*8 straight into
+gh pr list.
+
+Skipped: pandas/scikit-learn (slow suites), fastapi (docs/i18n churn),
+jinja (0 merges in 2026), rich (32), flask (15), requests (chore-heavy).
+django (491, postgres-backed) stays skipped for now; targeted verify
+commands may void the slow-suite objection - free to revisit via mining.
+
+Later waves (need converter per-repo profiles: base image, install cmd,
+verify normalizer, optional sidecar): TS single-package fastify/zod/hono
+(fastify mined verify cmds are jest-style but its runner is borp - the
+normalizer must fix them); Go + postgres sidecar river/sqlc (river: 5 tasks
+mined at q=1.00, sidecar pattern validated). Postgres-only repos are tier-2
+cheap (postgres:16-alpine sidecar boots ~1s via compose). TS monorepos
+(vitest 679, typescript-eslint 349) and Rust wait: monorepo task-to-package
+mapping unvalidated; Rust unit tests live inside impl files so the file-copy
+test overlay would clobber agent edits (needs hunk-level overlay).
+Ruby/Rust also blocked at the miner: codeprobe supports Python/Go/JS-TS only.
 
 ## Collected data: the click matrix (19 tasks x 7 routes, 2026-07-30)
 
@@ -361,6 +392,173 @@ the supervisor can eyeball plus an explicit go/kill question.
 P1/P2 run on click now purely as pipeline shakedown, then re-run unchanged on
 the P3 dataset. Method-vs-method judgment happens once, at scale.
 
+## P3 prep decisions (2026-07-30; collection NOT started)
+
+- Route pool: cut fable (dominated: worse than opus at 1.5x price). Six
+  routes remain: haiku / sonnet / opus, luna / terra / sol.
+- Auth: keep subscription creds shipped via --ae (same plumbing as local
+  docker); throttling accepted. OAuth tokens expire mid-farm, so long runs
+  re-mint between batches.
+- Concurrency: small on purpose - ~2 concurrent claude + 2 concurrent codex.
+  At that scale Modal buys no parallelism; its only remaining value is
+  allowlist enforcement.
+- **Decided: collect on local docker** (Rules + audit only; audit has caught
+  2/2 real cheats plus one attempt). Modal's only remaining value at our
+  concurrency is allowlist enforcement; skipping it for now.
+- Modal validated anyway (2026-07-30, codex terra on cd9bdd96, allowlist
+  task): works end to end with copied subscription creds, reward 1.0,
+  speed and cost a wash vs local (88s vs 79s warm; agent setup faster on
+  Modal, agent execution slower). Available as a drop-in (`-e modal`) if
+  enforcement becomes worth it; enforcement-blocks-anything probe never run.
+- Distribution: `harbor publish` (task datasets, public/private) and
+  `harbor upload` (run results) cover sharing; decide visibility timing
+  vs the blog post.
+- Converter's Dockerfile template is Python-only (pip install -e .); TS
+  repos (fastify/zod) need a second template - keep P3 pure Python.
+- Order: farm tasks with codeprobe first (no model spend; fixes true
+  per-repo yield and the cost estimate), then the Modal one-task check,
+  then collection.
+
+## Farm execution log (2026-07-31)
+
+Mining: all 5 repos mined deep in one night, 280 tasks, ~$33 LLM spend
+(numpy 60 / pytest 60 / pydantic 60 / sympy 50 / xarray 50). --count>20
+confirmed working (no cap). Stale-clone gotcha: `gh pr list` returns merge
+SHAs the local clone lacks; fetch all branch heads before mining (backport
+branches too), else those PRs are silently skipped.
+
+Converter went through real hardening (recipes in README): per-repo
+--apt/--install-cmd; submodule init in the leak-guard (numpy vendors meson;
+submodules are external repos, no leak); empty-overlay tasks skipped as
+unverifiable (16 dropped); bare-`pytest` verify commands pointed at the
+overlay files. Repo-specific traps that cost gate re-runs: pydantic
+editable+extras pip resolution picks a mismatched pydantic-core (two-step
+install); pytest needs SETUPTOOLS_SCM_PRETEND_VERSION (no tags in the
+leak-guarded checkout); xarray needs h5py explicitly + pytest-mypy-plugins
+pinned <4 (per-commit extras/flag drift). Smoke-test recipe per repo BEFORE
+gating: build one image, run `<verify_command> --collect-only -q`.
+
+Initial gate yields: pytest 45/60, pydantic 23/54, xarray 37/49, numpy
+23/51, and sympy 39/50: 167 passes from 264 converted tasks. The recovery
+audit below subsequently promoted 29 more without weakening the verifier.
+
+Collection (decided, running): local docker, 6 routes, k=1, 2 claude + 2
+codex lanes. Infra: docker VM memory raised 8->14 GiB after exit-137 OOM
+kills corrupted ~25% of trials AND could silently flip gate verdicts
+(oracle killed = fail). Orchestration is gap-fill: `fill_missing.py` computes
+(task, model) pairs lacking a completed clean trial across base and suffixed
+run directories (max 3 attempts each) and safely materializes exact fill
+sets. `run_family.sh` loops until nothing is missing, optionally waiting for
+an explicit producer sentinel when the farm is still growing. `run_gates.sh`
+accepts repository arguments and delegates idempotent farm promotion to
+`gate_tasks.py --promote-to`, including its manifest merge. All state is
+recomputed from disk, so restarts are free. Auth: claude OAuth token
+read fresh from the macOS keychain each round (they expire; harbor masks
+secrets in persisted config.json, so configs are NOT an auth source);
+codex just needs CODEX_FORCE_AUTH_JSON=1 (harness copies local creds).
+
+Data-integrity gotcha found during collection: Harbor still runs the verifier
+after an agent/API exception, so an auth or quota failure on an untouched
+checkout can have a numeric reward of 0. These are infrastructure, not model
+failures. `fill_missing.py` now requires a clean numeric result before marking
+a cell done, and `build_dataset.py` independently drops exception-bearing
+trials. `AgentTimeoutError` is retained because the fixed agent time budget is
+part of the benchmark. Infrastructure attempts still count toward the retry
+cap so an exhausted subscription cannot loop forever; retired cells remain
+absent and can be reopened with a higher cap after access is restored.
+
+After the Claude subscription expired, 818 quota/auth trial directories
+(`ApiRateLimitError` or zero-token `UnknownApiError`) were moved out of the
+farm runs to Trash. They contained no usable model outcomes and would only
+consume the retry cap. This reopens 83 Opus, 111 Sonnet, and 155 Haiku cells
+for clean backfill after Claude access is restored.
+
+Provisional prototype set (2026-08-01): all three Codex routes have clean
+coverage on all 167 gated tasks. Opus has 84 numeric outcomes, but one
+(`27aaf685`) is audit-tainted because it downloaded the target Pydantic
+package from PyPI, leaving an audited rectangular set of **83 tasks x 4
+routes = 332 unique cells** (Opus / Sol / Terra / Luna). The artifact is
+`dataset_opus_codex_83.jsonl`; its repo mix is pytest 41 / xarray 27 /
+pydantic 15, so it has no numpy or sympy coverage and is selection-biased.
+Use it for pipeline and router prototyping only until Claude backfill lands.
+On this set: Opus solves 41/83, Sol 38/83, Terra 37/83, Luna 37/83, and the
+per-task oracle solves 44/83. Only 10/83 tasks discriminate among routes.
+The temporal test slice has just 2 discriminating tasks, making current
+P1/P2 test scores too small for method claims.
+
+Prototype split decision: use per-repository chronology rather than one
+global timestamp cut. Each repo contributes its older half to train and
+newer half to test. Because all three repo counts are odd, the middle task
+from each repo goes to train. This uses every task and produces 43 train / 40
+test: train is pydantic 8 / pytest 21 / xarray 14, test is pydantic 7 /
+pytest 20 / xarray 13. Pass `--split-strategy repo-temporal` consistently to
+`profile_router.py`, `knn_router.py`, and `scoreboard.py`.
+
+P0/P1 prototype rerun with `gpt-5.6-terra` as the router model on the 40-task
+repo-temporal test half: the naive prior-only router solved 21/40 (52.5%) at
+$34.97 selected-agent cost; the train-profile/stats router solved 20/40
+(50.0%) at $6.43. Router-call cost is unavailable from subscription-backed
+`codex exec`, so these totals include the selected coding agent only. Naive
+picks were Terra 16 / Sol 16 / Luna 7 / Opus 1; stats picks were Luna 26 /
+Terra 14. Always-Luna solves 21/40 for $2.55, so both prompted routers are
+currently dominated. On the six route-disagreement test tasks, naive solves
+2 and stats solves 1; treat this as a prototype diagnostic, not a method
+claim.
+
+Sanity trials passed: codex/terra solved a pydantic task (r=1.0, $0.13);
+claude/sonnet made a genuine near-miss attempt on a pytest task (244
+passed, 1 failed on the PR's behavior test, $0.52).
+
+## Task-pool recovery and expansion (2026-08-01)
+
+Re-audited all 97 post-conversion gate rejections against their raw oracle
+logs. The main recoverable causes were verifier commands that passed fixture
+or source files directly to pytest, dependency drift in xarray, and NumPy
+tasks built with a newer pytest than their base commit's exact requirements
+pin. Pydantic also needed Hypothesis, but most remaining Pydantic failures
+depend on a ground-truth-era compiled `pydantic-core`; forcing those through
+without rebuilding the core would make the benchmark environment less
+faithful, not more useful. The two SymPy errors were a nondiscriminating task
+and a 608-module verifier timeout, so neither was promoted.
+
+Recovery result after a k=1 screen and independent k=3 confirmation:
+
+| repo | newly recovered |
+|---|---:|
+| pytest | 9 |
+| pydantic | 2 |
+| xarray | 6 |
+| numpy | 12 |
+| sympy | 0 |
+| **total** | **29** |
+
+The gated pool was therefore **196 tasks**, up from 167. All 29 were copied
+into `harbor_tasks/farm`; the farm received its own 196-entry pass manifest,
+so it is directly consumable by `build_dataset.py`. Future gates can use
+`--promote-to harbor_tasks/farm`, which copies only passes and merges their
+verdicts idempotently.
+
+Expansion wave result (2026-08-02): duplicate-safe depth mining added 231 raw
+tasks with zero overlap against the original task IDs: pytest 71, xarray 80,
+and SymPy 80. Codex enriched all 71 pytest and 80 xarray tasks plus the newest
+50 SymPy tasks. Conversion and k=1 screening retained 33 pytest, 46 xarray,
+and 40 SymPy candidates. Thirty of the SymPy candidates were selected for the
+k=3 target, leaving ten screened candidates as reserve. Independent k=3
+confirmation promoted 33 pytest, 46 xarray, and 30 SymPy tasks: **109 new
+tasks**, bringing the self-contained farm to **305 pass-only tasks**. Current
+composition is pytest 87 / xarray 89 / SymPy 69 / NumPy 35 / Pydantic 25.
+
+The wave also replaced the hand-copied install commands with strict TOML
+environment profiles for the five repositories. `convert_to_harbor.py
+--profile <repo>` validates the profile schema, records profile provenance,
+resolves `{pytest_version}` from each historical base commit, and still allows
+explicit CLI overrides for experiments. Real conversion tests regenerated one
+task per repository and matched the already k=3-gated reference artifacts.
+
 ## Next step
 
-P0-P2 are built and shaken down on click (`build_dataset.py`, `scoreboard.py`, `profile_router.py`, `knn_router.py`). Next gate: P3 breadth collection (repos + budget).
+Complete Sol/Terra/Luna collection over the 305-task farm, retrying only clean
+infrastructure gaps, then rebuild a rectangular Codex matrix. After Claude
+access resets, backfill the missing Claude cells and revisit test-split k=5
+runs and a proper compiled-core Pydantic environment if its marginal yield is
+still worth the setup cost.

@@ -1,0 +1,12 @@
+schema_version = 1
+name = "pydantic"
+repo = "pydantic"
+repo_url = "https://github.com/pydantic/pydantic"
+base_image = "python:3.12-slim"
+apt_packages = []
+install_cmd = "pip install --no-cache-dir -e . && pip install --no-cache-dir pytest=={pytest_version} hypothesis dirty-equals pytest-mock pytest-pretty pytest-examples faker pytest-benchmark pytest-codspeed pytest-run-parallel packaging jsonschema pytz"
+
+[timeouts]
+build_sec = 900
+agent_sec = 1800
+verifier_sec = 600

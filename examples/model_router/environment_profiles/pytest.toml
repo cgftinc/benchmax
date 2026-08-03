@@ -1,0 +1,12 @@
+schema_version = 1
+name = "pytest"
+repo = "pytest"
+repo_url = "https://github.com/pytest-dev/pytest"
+base_image = "python:3.12-slim"
+apt_packages = []
+install_cmd = "SETUPTOOLS_SCM_PRETEND_VERSION=9.9.9 pip install --no-cache-dir -e .[dev]"
+
+[timeouts]
+build_sec = 900
+agent_sec = 1800
+verifier_sec = 600

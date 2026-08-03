@@ -5,8 +5,10 @@ Walks <jobs_dir>/**/<task>__<suffix>/result.json, joins each trial with its
 task's metadata (task.toml) and gate verdict (manifest.json), audits its
 trajectory for cheat commands, and emits one JSON row per kept trial.
 
-Kept:    real-agent trials with a reward, on gate-passed tasks, audit-clean.
-Dropped: oracle/nop trials, non-gated tasks, tainted trials (all loudly).
+Kept:    clean real-agent trials with a reward, on gate-passed tasks,
+         audit-clean. Agent timeouts count as benchmark outcomes.
+Dropped: oracle/nop trials, agent infrastructure failures, non-gated tasks,
+         tainted trials (all loudly).
 
 Row: task_id, repo, task_dir, merged_at, difficulty, quality_score, route
 (model), harness, reward, cost_usd, n_input_tokens, n_cache_tokens,
@@ -31,6 +33,20 @@ from collections import Counter
 from pathlib import Path
 
 from audit_trajectories import REAL_AGENTS, audit_trial, patterns
+
+
+def is_infrastructure_failure(result: dict) -> bool:
+    """Whether an agent exception makes the verifier reward unusable.
+
+    Harbor still invokes the verifier after many agent/API failures. That
+    commonly produces reward=0 for an untouched checkout, which must not be
+    interpreted as a model attempt. A timeout is the one exception: the
+    benchmark deliberately gives agents a fixed execution budget, so the
+    resulting workspace remains a valid outcome.
+    """
+    exception_type = ((result.get("exception_info") or {})
+                      .get("exception_type"))
+    return bool(exception_type and exception_type != "AgentTimeoutError")
 
 
 def load_tasks(tasks_dirs: list[Path]) -> tuple[dict, dict]:
@@ -70,6 +86,9 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=Path("dataset.jsonl"))
     ap.add_argument("--repo-root", type=Path, default=Path("."),
                     help="dir holding local repo clones, for merged_at dates")
+    ap.add_argument("--require-route", action="append", default=[],
+                    help="retain only tasks with a kept trial for every named "
+                         "route; repeat for a rectangular router dataset")
     args = ap.parse_args()
 
     meta, verdicts = load_tasks(args.tasks_dirs)
@@ -92,6 +111,11 @@ def main() -> int:
             route = ((d.get("config") or {}).get("agent") or {}).get("model_name")
             reward = ((d.get("verifier_result") or {}).get("rewards") or {}).get("reward")
             task_id = trial_dir.name.split("__")[0]
+            if is_infrastructure_failure(d):
+                exception_type = (d["exception_info"].get("exception_type")
+                                  or "unknown")
+                drops[f"agent-infra:{exception_type}"] += 1
+                continue
             if reward is None or not route:
                 drops["no-reward-or-model"] += 1
                 continue
@@ -125,6 +149,23 @@ def main() -> int:
                 "n_output_tokens": ar.get("n_output_tokens"),
                 "trial_dir": str(trial_dir),
             })
+
+    required_routes = set(args.require_route)
+    if required_routes:
+        observed_routes = {r["route"] for r in rows}
+        if missing := sorted(required_routes - observed_routes):
+            ap.error("required route has no kept trials: " + ", ".join(missing))
+        routes_by_task: dict[str, set[str]] = {}
+        for row in rows:
+            routes_by_task.setdefault(row["task_id"], set()).add(row["route"])
+        complete_tasks = {
+            task_id for task_id, routes in routes_by_task.items()
+            if required_routes <= routes
+        }
+        before = len(rows)
+        rows = [r for r in rows if r["task_id"] in complete_tasks]
+        print(f"required-route filter retained {len(complete_tasks)} tasks "
+              f"and {len(rows)}/{before} trials")
 
     with args.out.open("w") as f:
         for r in rows:

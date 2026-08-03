@@ -1,0 +1,12 @@
+schema_version = 1
+name = "sympy"
+repo = "sympy"
+repo_url = "https://github.com/sympy/sympy"
+base_image = "python:3.12-slim"
+apt_packages = []
+install_cmd = "pip install --no-cache-dir -e . pytest hypothesis"
+
+[timeouts]
+build_sec = 900
+agent_sec = 1800
+verifier_sec = 600

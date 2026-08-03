@@ -29,18 +29,20 @@ import argparse
 import json
 import statistics as st
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 def load_matrix(dataset: Path):
-    """(task, route) -> (p_hat, mean_cost); plus task -> merged_at."""
-    cells, dates = defaultdict(list), {}
+    """Outcome matrix plus per-task merge date and repository."""
+    cells, dates, repos = defaultdict(list), {}, {}
     for line in dataset.read_text().splitlines():
         if not line.strip():
             continue
         r = json.loads(line)
         cells[(r["task_id"], r["route"])].append(r)
         dates[r["task_id"]] = r.get("merged_at") or ""
+        repos[r["task_id"]] = r.get("repo") or ""
     routes = sorted({k[1] for k in cells})
     tasks = sorted({k[0] for k in cells})
     full = [t for t in tasks if all((t, r) in cells for r in routes)]
@@ -51,14 +53,40 @@ def load_matrix(dataset: Path):
                  st.mean(x["cost_usd"] or 0.0 for x in cells[(t, r)]))
         for t in full for r in routes
     }
-    return matrix, full, routes, dates
+    return matrix, full, routes, dates, repos
+
+
+def date_key(value: str):
+    """Comparable UTC key for ISO 8601 dates, including mixed offsets."""
+    try:
+        return datetime.fromisoformat(value).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
 
 
 def split_tasks(tasks, dates, test_frac):
     """Temporal split: latest test_frac of tasks (by merged_at) are test."""
-    ordered = sorted(tasks, key=lambda t: dates.get(t) or "")
+    ordered = sorted(tasks, key=lambda t: (date_key(dates.get(t) or ""), t))
     n_test = max(1, round(len(ordered) * test_frac))
     return ordered[:-n_test], ordered[-n_test:]
+
+
+def split_tasks_by_repo(tasks, dates, repos):
+    """Older/newer halves per repo, assigning an odd extra task to train.
+
+    No task in a repo's test half predates a task in that repo's train half.
+    """
+    train, test = [], []
+    for repo in sorted({repos[t] for t in tasks}):
+        ordered = sorted(
+            (t for t in tasks if repos[t] == repo),
+            key=lambda t: (date_key(dates.get(t) or ""), t),
+        )
+        mid = (len(ordered) + 1) // 2
+        train.extend(ordered[:mid])
+        test.extend(ordered[mid:])
+    key = lambda t: (date_key(dates.get(t) or ""), t)
+    return sorted(train, key=key), sorted(test, key=key)
 
 
 def report(matrix, tasks, routes, picks, label):
@@ -101,13 +129,22 @@ def main() -> int:
                     help="JSONL {task_id, model, router_cost_usd}")
     ap.add_argument("--split", choices=["all", "train", "test"], default="all")
     ap.add_argument("--test-frac", type=float, default=0.2)
+    ap.add_argument("--split-strategy",
+                    choices=["global-temporal", "repo-temporal"],
+                    default="global-temporal",
+                    help="repo-temporal uses older/newer halves within each "
+                         "repo and assigns an odd extra task to train")
     args = ap.parse_args()
 
-    matrix, tasks, routes, dates = load_matrix(args.dataset)
-    train, test = split_tasks(tasks, dates, args.test_frac)
-    print(f"temporal split: {len(train)} train "
-          f"(..{dates.get(train[-1], '?')[:10]}), {len(test)} test "
-          f"({dates.get(test[0], '?')[:10]}..)")
+    matrix, tasks, routes, dates, repos = load_matrix(args.dataset)
+    if args.split_strategy == "repo-temporal":
+        train, test = split_tasks_by_repo(tasks, dates, repos)
+        print(f"repo-temporal split: {len(train)} train, {len(test)} test")
+    else:
+        train, test = split_tasks(tasks, dates, args.test_frac)
+        print(f"temporal split: {len(train)} train "
+              f"(..{dates.get(train[-1], '?')[:10]}), {len(test)} test "
+              f"({dates.get(test[0], '?')[:10]}..)")
     scored = {"all": tasks, "train": train, "test": test}[args.split]
 
     picks = None

@@ -7,6 +7,7 @@
 !PLAN.md
 !pyproject.toml
 !convert_to_harbor.py
+!enrich_with_codex.py
 !build_dataset.py
 !scoreboard.py
 !gate_tasks.py
@@ -14,3 +15,10 @@
 !baseline_router.py
 !profile_router.py
 !knn_router.py
+!environment_profiles/
+!environment_profiles/*.toml
+!test_environment_profiles.py
+!fill_missing.py
+!run_family.sh
+!run_gates.sh
+!test_fill_missing.py

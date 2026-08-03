@@ -28,7 +28,7 @@ import statistics as st
 from collections import Counter
 from pathlib import Path
 
-from scoreboard import load_matrix, split_tasks
+from scoreboard import load_matrix, split_tasks, split_tasks_by_repo
 
 _WORD = re.compile(r"[a-z][a-z0-9_.-]{2,}")
 
@@ -56,12 +56,18 @@ def main() -> int:
     ap.add_argument("dataset", type=Path)
     ap.add_argument("-k", type=int, default=3, help="neighbours")
     ap.add_argument("--test-frac", type=float, default=0.2)
+    ap.add_argument("--split-strategy",
+                    choices=["global-temporal", "repo-temporal"],
+                    default="global-temporal")
     ap.add_argument("--out", type=Path, default=Path("picks_knn.jsonl"))
     args = ap.parse_args()
 
     rows = [json.loads(l) for l in args.dataset.read_text().splitlines() if l.strip()]
-    matrix, tasks, routes, dates = load_matrix(args.dataset)
-    train, test = split_tasks(tasks, dates, args.test_frac)
+    matrix, tasks, routes, dates, repos = load_matrix(args.dataset)
+    if args.split_strategy == "repo-temporal":
+        train, test = split_tasks_by_repo(tasks, dates, repos)
+    else:
+        train, test = split_tasks(tasks, dates, args.test_frac)
 
     task_dirs = {r["task_id"]: r["task_dir"] for r in rows}
     docs = {t: Path(task_dirs[t], "instruction.md").read_text() for t in tasks}

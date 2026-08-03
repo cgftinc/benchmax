@@ -24,7 +24,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from baseline_router import build_task_prompt, route
-from scoreboard import load_matrix, split_tasks
+from scoreboard import load_matrix, split_tasks, split_tasks_by_repo
 
 PROFILE_HEADER = """\
 You are a coding task router. Your objective is to maximize the \
@@ -97,6 +97,9 @@ def main() -> int:
     ap.add_argument("dataset", type=Path)
     ap.add_argument("--router-model", default="claude-sonnet-4-6")
     ap.add_argument("--test-frac", type=float, default=0.2)
+    ap.add_argument("--split-strategy",
+                    choices=["global-temporal", "repo-temporal"],
+                    default="global-temporal")
     ap.add_argument("--route-split", choices=["test", "train"], default="test",
                     help="train = answer-sheet diagnostic: the profile "
                          "contains these tasks' own outcomes")
@@ -104,8 +107,11 @@ def main() -> int:
     args = ap.parse_args()
 
     rows = [json.loads(l) for l in args.dataset.read_text().splitlines() if l.strip()]
-    matrix, tasks, routes, dates = load_matrix(args.dataset)
-    train, test = split_tasks(tasks, dates, args.test_frac)
+    matrix, tasks, routes, dates, repos = load_matrix(args.dataset)
+    if args.split_strategy == "repo-temporal":
+        train, test = split_tasks_by_repo(tasks, dates, repos)
+    else:
+        train, test = split_tasks(tasks, dates, args.test_frac)
     titles = task_titles(rows)
     task_dirs = {r["task_id"]: r["task_dir"] for r in rows}
 

@@ -1,0 +1,13 @@
+schema_version = 1
+name = "numpy"
+repo = "numpy"
+repo_url = "https://github.com/numpy/numpy"
+base_image = "python:3.12-slim"
+apt_packages = ["build-essential", "pkg-config"]
+install_cmd = "pip install --no-cache-dir meson-python meson ninja cython pytest pytest-xdist pytest-timeout hypothesis && pip install --no-cache-dir --no-build-isolation -e ."
+post_install_cmd = "pip install --no-cache-dir pytest=={pytest_version}"
+
+[timeouts]
+build_sec = 900
+agent_sec = 1800
+verifier_sec = 600
