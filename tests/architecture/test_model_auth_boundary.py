@@ -4,11 +4,13 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
+BENCHMAX_SOURCE = ROOT / "packages" / "benchmax" / "src" / "benchmax"
 CASTFORM_SOURCE = ROOT / "packages" / "castform" / "src" / "castform"
 QA_GENERATION_SOURCE = CASTFORM_SOURCE / "rag" / "qa_generation"
 MODEL_RUNTIME_SOURCES = (
+    BENCHMAX_SOURCE / "auth.py",
+    BENCHMAX_SOURCE / "rag" / "embed.py",
     CASTFORM_SOURCE / "model_auth.py",
-    CASTFORM_SOURCE / "rag" / "corpus" / "embed.py",
 )
 
 

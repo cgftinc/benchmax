@@ -90,10 +90,11 @@ that data at runtime. Passing `[]` explicitly uploads an empty JSONL file.
 <!-- rag:start -->
 For the RAG template, inspect retrieval separately from answer correctness. Verify
 that reference source IDs and model citations use the same canonicalization, and
-test a known query against the configured corpus before validation. Keep corpus
-ingestion or QA generation in `generate_data` using public `castform.rag` library
-interfaces; the rollout environment should depend only on the search client and
-other code it actually imports.
+test a known query against the configured corpus before validation. Start from the
+matching provider example under
+https://github.com/castform-ai/benchmax/tree/main/examples. Keep corpus ingestion
+or QA generation in the data stage using public `castform.rag` interfaces; the
+rollout environment should depend only on its search adapter and runtime SDKs.
 <!-- rag:end -->
 
 The Castform CLI is for login, setup, doctor, guide, run inspection and run

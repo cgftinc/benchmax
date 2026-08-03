@@ -36,9 +36,10 @@ show me the result before proposing a launch.
 **RAG environment:**
 
 ```
-Build a Castform search environment over <corpus>. Keep corpus preparation in the
-data stage, test retrieval and reward behavior locally, and show me validation
-results before proposing a launch.
+Build a Castform RAG environment over <corpus>. Use the matching provider example
+under https://github.com/castform-ai/benchmax/tree/main/examples as the starting
+point, test retrieval and reward behavior locally, and show me validation results
+before proposing a launch.
 ```
 
 Use these skills in order:

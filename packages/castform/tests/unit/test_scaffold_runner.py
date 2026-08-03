@@ -1,7 +1,6 @@
-"""Every scaffold seed's `main.py` staged runner: argparse dispatch + the
+"""The scaffold seed's `main.py` staged runner: argparse dispatch + the
 upload-once path (data → bundle → upload → validate → launch), with the SDK
-monkeypatched (no network). Parametrized over both seeds — the runner is
-env-type-agnostic."""
+monkeypatched (no network)."""
 
 from __future__ import annotations
 
@@ -15,17 +14,14 @@ import pytest
 from ._scaffold import discover_env_class, load_module
 
 _SCAFFOLD_DIR = Path(scaffold_pkg.__file__).parent
-_SEEDS = {
-    "generic": _SCAFFOLD_DIR / "generic_main.py",
-    "rag": _SCAFFOLD_DIR / "rag_main.py",
-}
+_SEED = _SCAFFOLD_DIR / "generic_main.py"
 
 
-@pytest.fixture(params=["generic", "rag"])
-def mod(request, tmp_path, monkeypatch):
+@pytest.fixture
+def mod(tmp_path, monkeypatch):
     """Load a scaffold seed as a module (its `__main__` block does not fire)."""
     monkeypatch.chdir(tmp_path)
-    return load_module(_SEEDS[request.param])
+    return load_module(_SEED)
 
 
 def _fake_report(ok: bool = True):
@@ -51,15 +47,6 @@ def test_import_defines_stages_without_running(mod, tmp_path, monkeypatch):
     block is import-safe)."""
     assert all(hasattr(mod, n) for n in ("main", "generate_data", "validate", "launch"))
     assert not (tmp_path / "train.jsonl").exists()
-
-
-def test_rag_runtime_dependency_matches_the_generating_sdk(mod):
-    if not hasattr(mod, "CustomSearchEnv"):
-        pytest.skip("generic scaffold has no Castform runtime dependency")
-
-    from importlib.metadata import version
-
-    assert mod.RUNTIME_DEPENDENCIES == [f"castform=={version('castform')}"]
 
 
 # ── argparse dispatch: the staged upload-once flow ──────────────────────────────
@@ -285,8 +272,3 @@ def test_runtime_dependencies_are_script_owned(mod):
     env_class = discover_env_class(mod)
     assert isinstance(mod.RUNTIME_DEPENDENCIES, list)
     assert not hasattr(env_class, "PIP_DEPENDENCIES")
-
-
-def test_rag_seed_does_not_import_workspace_showcase():
-    source = _SEEDS["rag"].read_text()
-    assert "postgres_search_env" not in source

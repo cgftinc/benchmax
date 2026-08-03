@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -360,6 +360,7 @@ class TrainerClient:
         dataset_path: str | None = None,
         name: str | None = None,
         launcher_args: dict[str, Any] | None = None,
+        extra_secrets: Mapping[str, str] | None = None,
     ) -> str:
         """Launch a new training run.
 
@@ -374,6 +375,10 @@ class TrainerClient:
             launcher_args: Extra launcher args forwarded to the server
                 (e.g. {"max_context_tokens": 4000}). Bundle and optional dataset
                 path parameters always take precedence over this mapping.
+            extra_secrets: Runtime-only environment secrets forwarded over the
+                authenticated launch request. They are not stored in the
+                environment bundle or launcher args. The server rejects reserved
+                platform-owned names.
         Returns:
             The training run ID.
 
@@ -401,6 +406,8 @@ class TrainerClient:
             "name": name,
             "args": args,
         }
+        if extra_secrets:
+            body["extraSecrets"] = dict(extra_secrets)
         response = self._http_client.post(
             "/v1/train/runs/launch",
             json=body,

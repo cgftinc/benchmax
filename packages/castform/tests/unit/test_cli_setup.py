@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
-import sys
 import tomllib
 from pathlib import Path
 
@@ -181,71 +179,36 @@ def test_setup_refuses_existing_main_py(tmp_path, capsys):
     assert "already exists" in capsys.readouterr().err
 
 
-def test_setup_template_rag_writes_searchenv(tmp_path):
-    """The RAG seed is a standalone BaseEnv, not a workspace-example import."""
-    from benchmax.envs import BaseEnv
-
-    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
-    main_py = (tmp_path / "main.py").read_text()
-    assert "class CustomSearchEnv(BaseEnv)" in main_py
-    assert "postgres_search_env" not in main_py
-    assert "MAX_SEARCH_CALLS = 6" in main_py
-    # Self-contained: reward arithmetic and budgets are visible/editable here.
-    assert "async def compute_reward" in main_py
-    assert "citation_recall" in main_py
-    assert "VALIDATE_CONFIG = {" in main_py
-    assert "LAUNCH_CONFIG = {" in main_py
-    mod = load_module(tmp_path / "main.py")
-    env_cls = discover_env_class(mod)  # imported SearchEnv is ignored (other module)
-    assert env_cls.__name__ == "CustomSearchEnv"
-    assert issubclass(env_cls, BaseEnv)
-    assert isinstance(env_cls(), BaseEnv)  # no-arg construct, no network
-    assert env_cls().max_turns == 7
-    assert mod.VALIDATE_CONFIG["max_context_tokens"] == 2048
-    assert mod.VALIDATE_CONFIG["local_timeout_seconds"] == 120
-    assert mod.LAUNCH_CONFIG["max_context_tokens"] == 16384
-
-
-def test_setup_template_rag_writes_seed_and_datasets(tmp_path, monkeypatch):
-    """--template rag ships the SearchEnv main.py + tiny seed datasets (question/
-    answer/reference_chunks shape). Real data replaces them via public Castform
-    RAG library calls; the datasets skip-if-exists, so real data is not clobbered."""
+def test_setup_template_rag_uses_generic_seed_and_provider_guidance(
+    tmp_path, monkeypatch
+):
+    """The RAG template links to maintained examples instead of copying an adapter."""
     monkeypatch.setattr(setup, "version", lambda distribution: "0.1.2")
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
-    assert (tmp_path / "main.py").exists()
-    assert (tmp_path / "train.jsonl").exists()
-    assert (tmp_path / "eval.jsonl").exists()
+
     module = load_module(tmp_path / "main.py")
-    assert discover_env_class(module).__name__ == "CustomSearchEnv"
-    assert set(_read_jsonl(tmp_path / "train.jsonl")[0]) >= {
-        "question",
-        "answer",
-        "reference_chunks",
+    assert discover_env_class(module).__name__ == "CustomEnv"
+    assert set(_read_jsonl(tmp_path / "train.jsonl")[0]) == {
+        "prompt",
+        "ground_truth",
     }
+
     project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
     assert project["project"]["dependencies"] == [
         "benchmax==0.1.2",
         "castform[rag]==0.1.2",
     ]
-
-
-def test_generated_rag_project_imports_without_workspace_examples(tmp_path):
-    """Model the installed-wheel shape where showcase modules are unavailable."""
-
-    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
-    code = """
-import importlib.util
-import sys
-
-sys.path[:] = [entry for entry in sys.path if '/examples/' not in entry]
-sys.modules['postgres_search_env'] = None
-spec = importlib.util.spec_from_file_location('generated_rag_main', 'main.py')
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-assert module.CustomSearchEnv()
-"""
-    subprocess.run([sys.executable, "-c", code], cwd=tmp_path, check=True)
+    guidance = "\n".join(
+        [
+            (tmp_path / "GETTING_STARTED.md").read_text(),
+            (
+                tmp_path / ".agents" / "skills" / "generate-data" / "SKILL.md"
+            ).read_text(),
+        ]
+    )
+    for example in ("neon_rag", "turbopuffer_rag", "chroma_rag", "pinecone_rag"):
+        assert f"benchmax/tree/main/examples/{example}" in guidance
+    assert "HostedCorpusSearch" not in (tmp_path / "main.py").read_text()
 
 
 def test_setup_template_rag_refuses_existing_main_py(tmp_path, capsys):
@@ -261,7 +224,7 @@ def test_setup_template_rag_force_overwrites(tmp_path):
     (tmp_path / "main.py").write_text("MINE")
     assert setup._cmd_setup(_ns(tmp_path, template="rag", force=True)) == 0
     main_py = (tmp_path / "main.py").read_text()
-    assert "CustomSearchEnv" in main_py and main_py != "MINE"
+    assert "class CustomEnv(BaseEnv)" in main_py and main_py != "MINE"
 
 
 def test_setup_force_replaces_main_py_but_keeps_datasets(tmp_path):
@@ -317,6 +280,7 @@ def test_setup_env_conditional_surfacing(tmp_path):
         "reference_chunks",
         "source-ID canonicalization",
         "castform.rag",
+        "benchmax/tree/main/examples",
     ):
         assert sentinel in rag, f"rag scaffold missing {sentinel!r}"
         assert sentinel not in generic, f"generic scaffold leaked {sentinel!r}"
@@ -325,57 +289,3 @@ def test_setup_env_conditional_surfacing(tmp_path):
     for blob in (generic, rag):
         assert "main.py" in blob
         assert "does not write" not in blob and "does **not** write" not in blob
-
-
-def test_rag_scaffold_reward_threads_canonicalize_and_timeout(tmp_path, monkeypatch):
-    """The scaffold's inline compute_reward must honor a _canonicalize_id override
-    (citations) and the env's judge_timeout — behavior the inherited SearchEnv had,
-    which a naive inline reward silently drops (review findings #0, #6)."""
-    import asyncio
-
-    from benchmax.envs import BaseRollout, StaticBearerAuth
-    from benchmax.rewards import Judge, RubricEvaluation
-
-    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
-    mod = load_module(tmp_path / "main.py")
-    env_cls = discover_env_class(mod)
-
-    env = env_cls.__new__(env_cls)  # skip network __init__
-    env._judge = Judge(
-        model="m",
-        base_url="u",
-        auth=StaticBearerAuth("k"),
-        timeout=99.0,
-    )
-    # A corpus-specific matcher (case-insensitive) — proves _canonicalize_id is threaded.
-    env._canonicalize_id = lambda s: str(s or "").strip().lower()
-
-    captured: dict = {}
-
-    async def _fake_judge(**kw):
-        captured.update(kw)
-        return RubricEvaluation(1.0, "", "")
-
-    monkeypatch.setattr(mod, "evaluate_single_rubric", _fake_judge)
-
-    msgs = [{"role": "assistant", "content": "<answer>x [Source: DOCA]</answer>"}]
-    task = {
-        "question": "Q",
-        "ground_truth": "x",
-        "reference_chunks": [{"metadata": {"file": "doca"}}],
-    }
-    reward = asyncio.run(
-        env.compute_reward(
-            BaseRollout(
-                rollout_id="r",
-                termination_reason="finished",
-                messages=msgs,
-                example_args=task,
-            )
-        )
-    )
-
-    assert captured["judge"].timeout == 99.0  # #6: env judge_timeout threaded
-    # #0: "DOCA" cite matched gold "doca" via the injected lowercasing canonicalizer
-    # (citation_recall is the deterministic source-match component)
-    assert reward["citation_recall"] > 0

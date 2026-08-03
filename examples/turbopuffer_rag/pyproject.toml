@@ -1,0 +1,18 @@
+[project]
+name = "benchmax-example-turbopuffer-rag"
+version = "0.1.0"
+description = "End-to-end TurboPuffer RAG environment"
+requires-python = "==3.12.*"
+dependencies = [
+    "castform[rag,turbopuffer]",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["data", "main", "search", "turbopuffer_rag_env"]
+
+[dependency-groups]
+dev = ["pytest>=8.4.2", "pytest-asyncio>=1.2.0", "ruff>=0.14.2"]

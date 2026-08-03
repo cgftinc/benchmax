@@ -1,4 +1,4 @@
-"""Email chunker that reconstructs reply chains before sliding-window chunking.
+"""Email data-preparation chunker that reconstructs reply chains.
 
 This chunker expects canonical message rows (see preprocess/email/schema.py).
 It groups by thread_id, reconstructs reply paths from reply_to, and chunks each

@@ -1,4 +1,4 @@
-"""Tests for filter predicate builder DSL."""
+"""Tests for the Castform filter predicate builder DSL."""
 
 from __future__ import annotations
 

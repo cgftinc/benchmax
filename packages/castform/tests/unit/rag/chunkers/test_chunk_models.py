@@ -1,4 +1,4 @@
-"""Tests for Chunk and ChunkCollection data models."""
+"""Tests for Castform Chunk and ChunkCollection data models."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Parsing helpers for JSON-style filter objects into predicate AST."""
+"""Parse JSON-style filter objects for Castform corpus workflows."""
 
 from __future__ import annotations
 

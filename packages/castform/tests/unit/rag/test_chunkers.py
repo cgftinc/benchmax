@@ -1,4 +1,4 @@
-"""Tests for the MarkdownChunker and _preprocess_mdx helper."""
+"""Tests for Castform MarkdownChunker preprocessing."""
 
 from __future__ import annotations
 

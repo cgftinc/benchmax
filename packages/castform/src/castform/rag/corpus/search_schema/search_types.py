@@ -1,4 +1,4 @@
-"""Backend-neutral search schema and predicate AST models."""
+"""Search schema and predicate AST models for Castform data preparation."""
 
 from __future__ import annotations
 

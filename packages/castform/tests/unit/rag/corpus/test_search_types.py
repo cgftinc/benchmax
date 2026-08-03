@@ -1,4 +1,4 @@
-"""Tests for search schema types: validate_search_spec_shape and required_operators."""
+"""Tests for Castform search schema types and validation."""
 
 from __future__ import annotations
 

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 import httpx
+from openai import AsyncOpenAI, OpenAI
 
 __all__ = [
     "InjectedAuth",
@@ -24,6 +25,8 @@ __all__ = [
     "RequestModelAuth",
     "StaticBearerAuth",
     "bind_model_auth",
+    "create_async_openai_client",
+    "create_openai_client",
 ]
 
 
@@ -97,6 +100,52 @@ class RequestModelAuth(httpx.Auth):
         for name, value in headers.items():
             request.headers[name] = value
         yield request
+
+
+def create_openai_client(
+    *,
+    model: str,
+    base_url: str,
+    auth: ModelAuth,
+    request_id: str,
+    max_retries: int = 2,
+) -> OpenAI:
+    """Create a synchronous OpenAI-compatible client with explicit auth."""
+
+    context = ModelRequestContext(
+        base_url=base_url,
+        model=model,
+        rollout_id=request_id,
+    )
+    return OpenAI(
+        base_url=base_url,
+        api_key="benchmax-explicit-auth",
+        http_client=httpx.Client(auth=RequestModelAuth(auth, context)),
+        max_retries=max_retries,
+    )
+
+
+def create_async_openai_client(
+    *,
+    model: str,
+    base_url: str,
+    auth: ModelAuth,
+    request_id: str,
+    max_retries: int = 2,
+) -> AsyncOpenAI:
+    """Create an asynchronous OpenAI-compatible client with explicit auth."""
+
+    context = ModelRequestContext(
+        base_url=base_url,
+        model=model,
+        rollout_id=request_id,
+    )
+    return AsyncOpenAI(
+        base_url=base_url,
+        api_key="benchmax-explicit-auth",
+        http_client=httpx.AsyncClient(auth=RequestModelAuth(auth, context)),
+        max_retries=max_retries,
+    )
 
 
 def _resolve_headers_sync(

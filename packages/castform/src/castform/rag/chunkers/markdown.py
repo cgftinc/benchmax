@@ -1,4 +1,4 @@
-"""Markdown document chunker with header-aware splitting."""
+"""Markdown data-preparation chunker with header-aware splitting."""
 
 import re
 from dataclasses import dataclass, field

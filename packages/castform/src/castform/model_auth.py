@@ -5,14 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-import httpx
 from benchmax.auth import (
     ModelAuth,
     ModelRequestContext,
-    RequestModelAuth,
     StaticBearerAuth,
+    create_async_openai_client,
+    create_openai_client,
 )
-from openai import AsyncOpenAI, OpenAI
 
 from castform import config
 from castform.platform.credentials import castform_model_bearer
@@ -68,50 +67,4 @@ def model_auth_for_endpoint(
     raise ValueError(
         f"{purpose} requires an explicit API key because {base_url!r} is not "
         "the configured Castform LLM endpoint."
-    )
-
-
-def create_openai_client(
-    *,
-    model: str,
-    base_url: str,
-    auth: ModelAuth,
-    request_id: str,
-    max_retries: int = 2,
-) -> OpenAI:
-    """Create a sync OpenAI-compatible client using the ModelAuth seam."""
-
-    context = ModelRequestContext(
-        base_url=base_url,
-        model=model,
-        rollout_id=request_id,
-    )
-    return OpenAI(
-        base_url=base_url,
-        api_key="benchmax-explicit-auth",
-        http_client=httpx.Client(auth=RequestModelAuth(auth, context)),
-        max_retries=max_retries,
-    )
-
-
-def create_async_openai_client(
-    *,
-    model: str,
-    base_url: str,
-    auth: ModelAuth,
-    request_id: str,
-    max_retries: int = 2,
-) -> AsyncOpenAI:
-    """Create an async OpenAI-compatible client using the ModelAuth seam."""
-
-    context = ModelRequestContext(
-        base_url=base_url,
-        model=model,
-        rollout_id=request_id,
-    )
-    return AsyncOpenAI(
-        base_url=base_url,
-        api_key="benchmax-explicit-auth",
-        http_client=httpx.AsyncClient(auth=RequestModelAuth(auth, context)),
-        max_retries=max_retries,
     )
