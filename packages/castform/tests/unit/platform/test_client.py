@@ -77,6 +77,30 @@ def test_launch_training_run_omits_dataset_path_when_not_uploaded():
         "env_cls_path": "x/env-cls.pkl",
         "env_metadata_path": "x/env-metadata.json",
     }
+    assert "extraSecrets" not in captured["body"]
+
+
+def test_launch_training_run_forwards_runtime_secrets_outside_args():
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"runId": "run-with-secret"})
+
+    trainer = _make_trainer_with_transport(handler)
+    run_id = trainer.launch_training_run(
+        env_cls_path="x/env-cls.pkl",
+        env_metadata_path="x/env-metadata.json",
+        extra_secrets={"NEON_CORPUS_DSN_RO": "postgresql://ro@host/db"},
+    )
+
+    assert run_id == "run-with-secret"
+    assert captured["body"]["extraSecrets"] == {
+        "NEON_CORPUS_DSN_RO": "postgresql://ro@host/db"
+    }
+    assert "NEON_CORPUS_DSN_RO" not in captured["body"]["args"]
 
 
 def test_launch_training_run_surfaces_server_warnings():

@@ -1,11 +1,10 @@
-"""content_field sugar on the Turbopuffer source/search — BYO namespaces
+"""content_field sugar on the Turbopuffer source — BYO namespaces
 whose text attribute isn't named `content`."""
 
 from __future__ import annotations
 
 import pytest
 from castform.rag.corpus.turbopuffer.namespace import resolve_content_attr
-from castform.rag.corpus.turbopuffer.search import TpufSearch
 
 
 class TestResolveContentAttr:
@@ -29,13 +28,3 @@ class TestResolveContentAttr:
     def test_conflicting_values_raise(self):
         with pytest.raises(ValueError, match="conflicts"):
             resolve_content_attr(["title"], "description")
-
-
-class TestTpufSearchContentField:
-    def test_content_field_sets_content_attr(self):
-        search = TpufSearch("ns", content_field="body", token_provider=lambda: "k")
-        assert search._content_attr == ["body"]
-
-    def test_default_unchanged(self):
-        search = TpufSearch("ns", token_provider=lambda: "k")
-        assert search._content_attr is None

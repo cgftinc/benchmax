@@ -1,4 +1,4 @@
-"""Inspector for navigating and visualizing chunk collections."""
+"""Inspector for navigating and visualizing data-preparation chunks."""
 
 import random
 from typing import Any

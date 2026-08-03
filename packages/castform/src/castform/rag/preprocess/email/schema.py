@@ -1,4 +1,4 @@
-"""Canonical email schema + normalization helpers.
+"""Canonical email schema and normalization helpers for data preparation.
 
 Canonical input schema (JSONL rows):
 - One object per parsed email message.

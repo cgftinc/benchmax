@@ -1,7 +1,7 @@
 """PineconeIndexClient — low-level Pinecone SDK wrapper.
 
-Handles query building, batch upsert, and ID pagination.  Used by both
-``PineconeChunkSource`` (data prep) and ``PineconeSearch`` (RL env).
+Handles query building, batch upsert, and ID pagination for
+``PineconeChunkSource`` data preparation. Rollout adapters live in examples.
 
 **No Chunk / Pydantic imports.**  All methods accept and return plain
 Python types (dicts, lists, strings).  Chunk conversion is handled by

@@ -1,16 +1,14 @@
-"""castform setup — scaffold a project for an agent-driven RL run (slice 1.8).
+"""Scaffold a Castform project for an agent-driven RL run.
 
 Logs you in (no-op if already authed), then writes the agent scaffold from the
 packaged templates (``castform.cli.scaffold``): CLAUDE.md / AGENTS.md, the
 per-stage skills into each agent's skills dir (claude → ``.claude/skills/``,
 codex → ``.agents/skills/``, with the body's path references retargeted), a
 starter prompt, and a standalone ``pyproject.toml`` + runnable seed ``main.py`` +
-tiny seed datasets per template (``generic`` → a minimal single-turn env,
-``rag`` → a hosted-corpus search env) so ``python main.py validate`` runs on day
-one. ``--no-template`` skips the seed (docs + skills only; the agent writes
+tiny seed datasets (a minimal single-turn env) so ``python main.py validate``
+runs on day one. The ``rag`` template adds RAG dependencies and links to the
+maintained Benchmax examples. ``--no-template`` skips the seed (docs + skills only; the agent writes
 ``main.py`` from the design-environment skill). Does NOT open the agent.
-The scaffold prose duplicates the web-app generator (``buildAgentContextBody``)
-for now — accepted divergence debt; keep aligned.
 """
 
 from __future__ import annotations
@@ -57,9 +55,10 @@ _TEMPLATE_SEEDS = {
         "tests": "generic_env_tests.py",
     },
     "rag": {
-        "main": "rag_main.py",
-        "train": "rag_train_dataset.jsonl",
-        "eval": "rag_eval_dataset.jsonl",
+        "main": "generic_main.py",
+        "train": "generic_train_dataset.jsonl",
+        "eval": "generic_eval_dataset.jsonl",
+        "tests": "generic_env_tests.py",
     },
 }
 
@@ -371,9 +370,9 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--template",
         choices=["generic", "rag"],
         default="generic",
-        help="Env seed: 'generic' = a minimal single-turn env, 'rag' = a hosted-"
-        "corpus search env (both ship a pyproject, runnable main.py, and tiny "
-        "datasets; default: generic)",
+        help="Project guidance: 'generic' = a minimal single-turn env, 'rag' = "
+        "the same runnable seed plus RAG dependencies and links to maintained "
+        "Benchmax examples (default: generic)",
     )
     p.add_argument(
         "--no-template",

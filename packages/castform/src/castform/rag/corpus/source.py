@@ -1,4 +1,4 @@
-"""ChunkSource protocol — the interface all corpus backends must implement."""
+"""ChunkSource protocol for Castform data-preparation backends."""
 
 from __future__ import annotations
 

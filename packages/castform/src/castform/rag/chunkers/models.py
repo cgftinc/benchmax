@@ -1,4 +1,4 @@
-"""Data models for chunking."""
+"""Data models for Castform chunking and ingestion workflows."""
 
 import hashlib
 import json

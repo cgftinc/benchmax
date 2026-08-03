@@ -1,4 +1,4 @@
-"""Storage utilities for persisting and loading chunk collections."""
+"""Storage utilities for Castform data-preparation chunk collections."""
 
 from pathlib import Path
 from typing import Any

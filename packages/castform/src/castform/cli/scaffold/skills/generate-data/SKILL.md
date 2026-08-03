@@ -38,22 +38,31 @@ an empty list deliberately uploads an empty JSONL.
 ## Hosted corpus and RAG
 
 Install `castform[rag]` in the project and use public modules under
-`castform.rag` from the data stage. Typical code composes:
+`castform.rag` from the data stage. Before implementing the workflow, inspect the
+matching maintained example:
+
+- `neon_rag`: https://github.com/castform-ai/benchmax/tree/main/examples/neon_rag
+- `turbopuffer_rag`: https://github.com/castform-ai/benchmax/tree/main/examples/turbopuffer_rag
+- `chroma_rag`: https://github.com/castform-ai/benchmax/tree/main/examples/chroma_rag
+- `pinecone_rag`: https://github.com/castform-ai/benchmax/tree/main/examples/pinecone_rag
+
+Use its `README.md`, `main.py`, `data.py`, `environment.py`, and `search.py` as the
+reference for the provider. Typical data code composes:
 
 - `castform.rag.chunkers` to turn source files into chunks;
 - `castform.rag.corpus.postgres.client.CorpusClient` to create/find a corpus and
   upload chunks;
 - `castform.rag.qa_generation` to build grounded QA rows;
-- `castform.rag.corpus.postgres.search.PostgresSearch` in the runtime environment.
+- the provider's example-local search adapter for runtime reads.
 
 Read the concrete class signatures before wiring them; these are library
 components, not one magical pipeline command. Persist generated rows as ordinary
 project data and test at least one known retrieval query before validation.
 
-For this RAG scaffold, set `CORPUS_NAME`, replace the placeholder seed rows with
-real `question`, `answer`, and `reference_chunks` values, and put ingestion or QA
-generation calls inside `generate_data`. Confirm that each reference chunk carries
-the source metadata expected by the citation reward.
+Replace the generic seed environment and rows with the selected RAG example's
+structure. Confirm that each row contains `question`, `answer`, and
+`reference_chunks`, and that every reference chunk carries the source metadata
+expected by the citation reward.
 <!-- rag:end -->
 
 ## Harbor-managed datasets

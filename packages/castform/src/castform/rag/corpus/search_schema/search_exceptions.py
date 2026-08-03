@@ -1,4 +1,4 @@
-"""Exceptions for backend-agnostic search/filter handling."""
+"""Exceptions for Castform corpus search and filtering."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Ergonomic helpers for building filter predicates."""
+"""Ergonomic helpers for Castform data-preparation filter predicates."""
 
 from __future__ import annotations
 

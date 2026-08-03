@@ -1,8 +1,7 @@
 """ChromaClient — low-level Chroma SDK wrapper.
 
-Handles lazy client/collection init, query execution, and content
-extraction.  Used by both ``ChromaChunkSource`` (data prep) and
-``ChromaSearch`` (RL env).
+Handles lazy client/collection init, query execution, and content extraction
+for ``ChromaChunkSource`` data preparation. Rollout adapters live in examples.
 
 **No Chunk / Pydantic imports.**  All methods accept and return plain
 Python types.

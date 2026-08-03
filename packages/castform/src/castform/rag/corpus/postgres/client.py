@@ -424,8 +424,7 @@ class CorpusClient:
             return inserted_count, chunk_ids
 
         # Progress rendering is preparation-only. Keep it out of the module import
-        # path so a rollout that only uses PostgresSearch needs base Castform, not
-        # the heavier ``castform[rag]`` preparation extra.
+        # path so ordinary API consumers avoid the heavier progress dependency.
         from tqdm.auto import tqdm
 
         pbar = tqdm(

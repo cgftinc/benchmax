@@ -1,0 +1,21 @@
+[project]
+name = "benchmax-example-neon-rag"
+version = "0.1.0"
+description = "End-to-end Neon Lakebase RAG environment"
+requires-python = "==3.12.*"
+dependencies = [
+    "castform[rag]",
+    "pgvector>=0.3.0",
+    "psycopg[binary]>=3.2.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["data", "main", "neon_rag_env", "setup_neon"]
+packages = ["neon_backend"]
+
+[dependency-groups]
+dev = ["pytest>=8.4.2", "pytest-asyncio>=1.2.0", "ruff>=0.14.2"]
