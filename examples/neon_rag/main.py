@@ -26,7 +26,7 @@ RUN_NAME = "neon-rag"
 VALIDATION_MODEL = "gpt-5.4-mini"
 TRAINING_ARGS = {
     "model": "Qwen/Qwen3.5-4B",
-    "max_context_tokens": 8_192,
+    "max_context_tokens": 10_000,
     "num_epochs": 3,
 }
 RUNTIME_DEPENDENCIES = [
@@ -45,7 +45,7 @@ def validate(env: NeonRagEnv, uploaded_assets):
             split="eval",
             base_dir=DATA_DIR,
             remote_assets=uploaded_assets,
-            max_context_tokens=4_096,
+            max_context_tokens=10_000,
         )
     )
     _print_validation(report)
