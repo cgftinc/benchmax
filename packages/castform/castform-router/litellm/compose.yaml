@@ -1,0 +1,20 @@
+services:
+  litellm:
+    build:
+      context: ..
+      dockerfile: litellm/Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "4000:4000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 20

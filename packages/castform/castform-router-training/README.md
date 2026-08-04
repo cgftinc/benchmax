@@ -14,7 +14,7 @@ credential helper; secrets do not belong in the project file.
 
 Copy `project.example.json`. Repositories may be SSH/HTTPS URLs or local Git paths.
 Pin `revision` to the branch, tag, or commit the training run should inspect. Backend
-names must match the aliases configured in `../castform-router/litellm_config.yaml`.
+names must match the aliases configured in `../castform-router/litellm/config.yaml`.
 
 ## 2. Mine task seeds
 
