@@ -617,6 +617,7 @@ def _record(
         masked_prompt.append(message)
     target = copy.deepcopy(completion)
     target["step_loss_mask"] = 1
+    messages = [_sft_message(message) for message in [*masked_prompt, target]]
     return {
         "schema_version": SCHEMA_VERSION,
         "id": record_id,
@@ -624,12 +625,51 @@ def _record(
         "source_kind": "judge_guided_on_policy",
         "prompt_messages": masked_prompt,
         "completion_messages": [target],
+        "messages": messages,
         "tools": tools,
         "task": {
             "compaction_event_id": event_id,
             "judge_decisions": decisions,
         },
     }
+
+
+def _sft_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one OpenAI message for Slime's standard JSONL Dataset."""
+
+    normalized = {
+        key: copy.deepcopy(value)
+        for key, value in message.items()
+        if key != "tool_calls" and value is not None
+    }
+    calls = _tool_calls(message)
+    if calls:
+        normalized["tool_calls"] = [
+            {
+                "id": call["id"],
+                "type": "function",
+                "function": {
+                    "name": call["name"],
+                    "arguments": _tool_arguments(call["arguments"]),
+                },
+            }
+            for call in calls
+        ]
+    return normalized
+
+
+def _tool_arguments(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, dict):
+        return copy.deepcopy(arguments)
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            return {"value": arguments}
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+    if arguments is None:
+        return {}
+    return {"value": copy.deepcopy(arguments)}
 
 
 def _openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -339,47 +339,36 @@ def validate(env: HarveyLabHarborEnv, uploaded_assets: Any) -> Any:
     return report
 
 
-def launch(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
+def launch(
+    uploaded_assets: Any,
+    *,
+    assume_yes: bool,
+    training_mode: Literal["rl", "sft"] = "rl",
+) -> str | None:
     from castform import config
     from castform.platform.client import TrainerClient
 
+    is_sft = training_mode == "sft"
+    stage = "launch-sft" if is_sft else "launch"
     if not assume_yes:
-        reply = input("launch training on GPUs? this spends credits. [y/N] ")
+        kind = "AutoCompact SFT" if is_sft else "training"
+        reply = input(f"launch {kind} on GPUs? this spends credits. [y/N] ")
         if reply.strip().lower() not in ("y", "yes"):
-            print("launch: cancelled")
+            print(f"{stage}: cancelled")
             return None
 
+    launcher_args = dict(TRAINING_ARGS)
+    name = RUN_NAME
+    if is_sft:
+        name = f"{RUN_NAME}-autocompact-sft"
+        launcher_args.update(training_mode="sft", group_size=1)
     with TrainerClient() as trainer:
         run_id = trainer.launch_training_run(
-            name=RUN_NAME,
-            launcher_args=TRAINING_ARGS,
+            name=name,
+            launcher_args=launcher_args,
             **dataclasses.asdict(uploaded_assets),
         )
-    print(f"launch: started {run_id}")
-    print(f"view: {config.web_app_url()}/train/{run_id}")
-    return run_id
-
-
-def launch_sft(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
-    from castform import config
-    from castform.platform.client import TrainerClient
-
-    if not assume_yes:
-        reply = input("launch AutoCompact SFT on GPUs? this spends credits. [y/N] ")
-        if reply.strip().lower() not in ("y", "yes"):
-            print("launch-sft: cancelled")
-            return None
-    with TrainerClient() as trainer:
-        run_id = trainer.launch_training_run(
-            name=f"{RUN_NAME}-autocompact-sft",
-            launcher_args={
-                **TRAINING_ARGS,
-                "training_mode": "sft",
-                "group_size": 1,
-            },
-            **dataclasses.asdict(uploaded_assets),
-        )
-    print(f"launch-sft: started {run_id}")
+    print(f"{stage}: started {run_id}")
     print(f"view: {config.web_app_url()}/train/{run_id}")
     return run_id
 
@@ -552,25 +541,27 @@ def main(argv: list[str] | None = None) -> int:
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
     print(f"[stage 3/{total_stages}] uploading environment")
-    dataset_files = None
+    upload_kwargs: dict[str, Any] = {
+        "bundle": bundled_environment,
+        "run_name": RUN_NAME,
+    }
     if args.action == "launch-sft":
         output_dir = Path(args.output_dir).expanduser().resolve()
         train_path = output_dir / "train.jsonl"
         eval_path = output_dir / "eval.jsonl"
         if not train_path.is_file() or not eval_path.is_file():
             parser.error("launch-sft requires <output-dir>/train.jsonl and eval.jsonl")
-        dataset_files = {"train.jsonl": train_path, "eval.jsonl": eval_path}
-    uploaded_assets = upload_assets(
-        bundle=bundled_environment,
-        run_name=RUN_NAME,
-        dataset_files=dataset_files,
-    )
+        upload_kwargs["dataset_files"] = {
+            "train.jsonl": train_path,
+            "eval.jsonl": eval_path,
+        }
+    uploaded_assets = upload_assets(**upload_kwargs)
     print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
     print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
     print(f"  dataset_path: {uploaded_assets.dataset_path}")
     if args.action == "launch-sft":
         print("[stage 4/4] launching SFT")
-        launch_sft(uploaded_assets, assume_yes=args.yes)
+        launch(uploaded_assets, assume_yes=args.yes, training_mode="sft")
         return 0
     print(f"[stage 4/{total_stages}] validating environment")
     report = validate(HarveyLabHarborEnv(**constructor_args), uploaded_assets)
