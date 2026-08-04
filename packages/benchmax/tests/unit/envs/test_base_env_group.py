@@ -220,7 +220,7 @@ def test_base_env_rejects_non_boolean_thinking_choice(invalid: object) -> None:
         _MathEnv(enable_thinking=invalid)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("max_completion_tokens", [512, 1024, 2048, 4096])
+@pytest.mark.parametrize("max_completion_tokens", [512, 1024, 2048, 4096, 16_384])
 async def test_base_env_sends_explicit_max_completion_tokens(
     max_completion_tokens: int,
 ) -> None:
@@ -265,11 +265,11 @@ async def test_base_env_omits_unspecified_max_completion_tokens() -> None:
     assert "max_completion_tokens" not in server.requests[0].body
 
 
-@pytest.mark.parametrize("invalid", [False, 0, -1, 1.5, "1024", 4097])
+@pytest.mark.parametrize("invalid", [False, 0, -1, 1.5, "1024", 16_385])
 def test_base_env_rejects_invalid_max_completion_tokens(invalid: object) -> None:
     with pytest.raises(
         ValueError,
-        match="max_completion_tokens must be a positive integer at most 4096",
+        match="max_completion_tokens must be a positive integer at most 16384",
     ):
         _MathEnv(max_completion_tokens=invalid)  # type: ignore[arg-type]
 

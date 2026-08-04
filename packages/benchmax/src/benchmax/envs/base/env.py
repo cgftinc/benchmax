@@ -376,9 +376,9 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
             isinstance(self.max_completion_tokens, bool)
             or not isinstance(self.max_completion_tokens, int)
             or self.max_completion_tokens < 1
-            or self.max_completion_tokens > 4096
+            or self.max_completion_tokens > 16_384
         ):
-            raise ValueError("max_completion_tokens must be a positive integer at most 4096")
+            raise ValueError("max_completion_tokens must be a positive integer at most 16384")
 
 
 def _prepare_example(payload: JsonRow) -> tuple[Messages, Mapping[str, Any]]:
