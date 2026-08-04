@@ -1,5 +1,5 @@
 [project]
-name = "castform-litellm-router"
+name = "castform-router"
 version = "0.1.0"
 description = "Minimal Qwen-scored LiteLLM backend router"
 requires-python = "==3.12.*"

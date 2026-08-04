@@ -1,0 +1,9 @@
+{
+  "repositories": [
+    {"name": "api", "url": "git@github.com:acme/api.git", "revision": "main"}
+  ],
+  "backends": [
+    {"name": "small-route", "model": "provider/small", "provider": "provider"},
+    {"name": "large-route", "model": "provider/large", "provider": "provider"}
+  ]
+}

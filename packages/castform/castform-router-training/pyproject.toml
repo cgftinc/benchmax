@@ -1,0 +1,30 @@
+[project]
+name = "castform-router-training"
+version = "0.1.0"
+description = "Simple Git repository to Qwen router fine-tuning pipeline"
+requires-python = "==3.12.*"
+dependencies = []
+
+[project.optional-dependencies]
+training = [
+  "accelerate>=1.10,<2",
+  "peft>=0.17,<1",
+  "torch>=2.7,<3",
+  "transformers>=5,<6",
+]
+
+[project.scripts]
+castform-router-training = "castform_router_training.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.4,<9", "ruff>=0.14,<1"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["castform_router_training"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
