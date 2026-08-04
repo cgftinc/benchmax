@@ -1,0 +1,143 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:-litellm-local-db}
+      POSTGRES_DB: litellm
+    volumes:
+      - litellm-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mock-upstream:
+    image: python:3.12-slim
+    command: ["python", "/workspace/mock_upstream.py"]
+    environment:
+      CASTFORM_TRACE_DIR: /traces
+    volumes:
+      - ./mock_upstream.py:/workspace/mock_upstream.py:ro
+      - ./castform_router:/workspace/castform_router:ro
+      - castform-traces:/traces
+    expose:
+      - "8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2)",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.94.0
+    command: ["--config", "/app/litellm_config.yaml", "--port", "4000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-upstream:
+        condition: service_healthy
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-local-dev-salt-not-for-production}
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:-litellm-local-db}@postgres:5432/litellm
+      STORE_MODEL_IN_DB: "True"
+      UI_USERNAME: ${UI_USERNAME:-admin}
+      UI_PASSWORD: ${UI_PASSWORD:-sk-local-dev}
+      MOCK_UPSTREAM_API_KEY: ${MOCK_UPSTREAM_API_KEY:-mock-key}
+      MOCK_UPSTREAM_BASE_URL: http://mock-upstream:8080/v1
+      CASTFORM_CLAUDE_ROUTE_MODEL: ${CASTFORM_CLAUDE_ROUTE_MODEL:-openai/claude-sonnet}
+      CASTFORM_CLAUDE_ROUTE_BASE_URL: ${CASTFORM_CLAUDE_ROUTE_BASE_URL:-http://mock-upstream:8080/v1}
+      CASTFORM_CLAUDE_ROUTE_API_KEY: ${CASTFORM_CLAUDE_ROUTE_API_KEY:-mock-key}
+      CASTFORM_GLM_ROUTE_MODEL: ${CASTFORM_GLM_ROUTE_MODEL:-openai/glm-5.1}
+      CASTFORM_GLM_ROUTE_BASE_URL: ${CASTFORM_GLM_ROUTE_BASE_URL:-http://mock-upstream:8080/v1}
+      CASTFORM_GLM_ROUTE_API_KEY: ${CASTFORM_GLM_ROUTE_API_KEY:-mock-key}
+      CASTFORM_CODEX_ROUTE_MODEL: ${CASTFORM_CODEX_ROUTE_MODEL:-openai/openai-codex}
+      CASTFORM_CODEX_ROUTE_BASE_URL: ${CASTFORM_CODEX_ROUTE_BASE_URL:-http://mock-upstream:8080/v1}
+      CASTFORM_CODEX_ROUTE_API_KEY: ${CASTFORM_CODEX_ROUTE_API_KEY:-mock-key}
+      CASTFORM_LLAMA_ROUTE_MODEL: ${CASTFORM_LLAMA_ROUTE_MODEL:-openai/llama-local}
+      CASTFORM_LLAMA_ROUTE_BASE_URL: ${CASTFORM_LLAMA_ROUTE_BASE_URL:-http://mock-upstream:8080/v1}
+      CASTFORM_LLAMA_ROUTE_API_KEY: ${CASTFORM_LLAMA_ROUTE_API_KEY:-mock-key}
+      CASTFORM_ROUTER_UPSTREAM_MODEL: ${CASTFORM_ROUTER_UPSTREAM_MODEL:-openai/qwen35-08b-router}
+      CASTFORM_ROUTER_UPSTREAM_BASE_URL: ${CASTFORM_ROUTER_UPSTREAM_BASE_URL:-http://mock-upstream:8080/v1}
+      CASTFORM_ROUTER_UPSTREAM_API_KEY: ${CASTFORM_ROUTER_UPSTREAM_API_KEY:-local}
+      CASTFORM_AUTO_MODEL: ${CASTFORM_AUTO_MODEL:-castform-auto}
+      CASTFORM_CODEX_MODEL: ${CASTFORM_CODEX_MODEL:-castform-auto-codex}
+      CASTFORM_CLAUDE_MODEL: ${CASTFORM_CLAUDE_MODEL:-castform-auto-claude}
+      CASTFORM_OPEN_MODEL: ${CASTFORM_OPEN_MODEL:-castform-auto-open}
+      CASTFORM_AUTO_FALLBACK_MODEL: ${CASTFORM_AUTO_FALLBACK_MODEL:-claude-route}
+      CASTFORM_AUTO_ROUTES_JSON: ${CASTFORM_AUTO_ROUTES_JSON:-}
+      CASTFORM_ROUTER_MODEL_BASE_URL: http://localhost:4000
+      CASTFORM_ROUTER_MODEL_NAME: ${CASTFORM_ROUTER_MODEL_NAME:-castform-router-0.8b}
+      CASTFORM_ROUTER_MODEL_API_KEY: ${CASTFORM_ROUTER_MODEL_API_KEY:-${LITELLM_MASTER_KEY:-sk-local-dev}}
+      CASTFORM_ROUTER_MODEL_TIMEOUT_SECONDS: ${CASTFORM_ROUTER_MODEL_TIMEOUT_SECONDS:-60}
+      CASTFORM_ROUTER_QUALITY_THRESHOLD: ${CASTFORM_ROUTER_QUALITY_THRESHOLD:-0.84}
+      CASTFORM_ROUTER_SESSION_TTL_SECONDS: ${CASTFORM_ROUTER_SESSION_TTL_SECONDS:-3600}
+      CASTFORM_TRACE_DIR: /traces
+    volumes:
+      - ./litellm_config.yaml:/app/litellm_config.yaml:ro
+      - ./castform_router:/app/castform_router:ro
+      - castform-traces:/traces
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=2)",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  trace-ui:
+    image: python:3.12-slim
+    command: ["python", "/workspace/trace_ui.py"]
+    depends_on:
+      litellm:
+        condition: service_healthy
+    environment:
+      CASTFORM_TRACE_DIR: /traces
+      CASTFORM_TRAINING_RUNS_DIR: /training-runs
+      CASTFORM_WEB_ROOT: /workspace/web
+      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev}
+      # The job-level scorer calls the 0.8B alias through LiteLLM. Override the
+      # base URL only when deliberately bypassing the gateway for diagnosis.
+      CASTFORM_ROUTER_MODEL_BASE_URL: ${CASTFORM_ROUTER_MODEL_BASE_URL:-http://litellm:4000}
+      CASTFORM_ROUTER_MODEL_NAME: ${CASTFORM_ROUTER_MODEL_NAME:-castform-router-0.8b}
+      CASTFORM_ROUTER_MODEL_API_KEY: ${CASTFORM_ROUTER_MODEL_API_KEY:-${LITELLM_MASTER_KEY:-sk-local-dev}}
+      CASTFORM_ROUTER_MODEL_LABEL: ${CASTFORM_ROUTER_MODEL_LABEL:-castform-router-0.8b}
+      CASTFORM_ROUTER_MODEL_STATUS: ${CASTFORM_ROUTER_MODEL_STATUS:-plumbing_only}
+    volumes:
+      - ./trace_ui.py:/workspace/trace_ui.py:ro
+      - ./web:/workspace/web:ro
+      - ./castform_router:/workspace/castform_router:ro
+      - ./training_runs:/training-runs
+      - castform-traces:/traces
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:3000/health', timeout=2)",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  castform-traces:
+  litellm-postgres:

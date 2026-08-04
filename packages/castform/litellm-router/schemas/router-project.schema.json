@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://castform.com/schemas/router-project.schema.json",
+  "title": "Castform router project",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "repositories",
+    "allowed_routes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "auth_profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/auth"
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          },
+          "auth_profile": {
+            "type": "string"
+          },
+          "auth": {
+            "$ref": "#/$defs/auth"
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "repo"
+            ]
+          },
+          {
+            "required": [
+              "url"
+            ]
+          }
+        ]
+      }
+    },
+    "pull_requests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "limit_per_repo": {
+          "description": "CodeProbe task count. The current upstream scan window caps this at 20.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "eval_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "include_body": {
+          "type": "boolean"
+        },
+        "exclude_labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "allowed_routes": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "benchmark": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tasks_per_repo": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "repetitions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "average_run_cost_usd": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "execution": {
+          "description": "Where repository code is executed. Defaults to isolated Castform Cloud; use customer_runner to keep code inside customer infrastructure.",
+          "default": "castform_hosted",
+          "enum": [
+            "castform_hosted",
+            "customer_runner"
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "env": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{1,127}$"
+    },
+    "auth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "strategy"
+          ],
+          "properties": {
+            "strategy": {
+              "const": "public"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "strategy",
+            "token_env"
+          ],
+          "properties": {
+            "strategy": {
+              "const": "token_env"
+            },
+            "token_env": {
+              "$ref": "#/$defs/env"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "strategy",
+            "app_id_env",
+            "private_key_env",
+            "installation_id_env"
+          ],
+          "properties": {
+            "strategy": {
+              "const": "github_app"
+            },
+            "app_id_env": {
+              "$ref": "#/$defs/env"
+            },
+            "private_key_env": {
+              "$ref": "#/$defs/env"
+            },
+            "installation_id_env": {
+              "$ref": "#/$defs/env"
+            },
+            "installation_token_env": {
+              "$ref": "#/$defs/env"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

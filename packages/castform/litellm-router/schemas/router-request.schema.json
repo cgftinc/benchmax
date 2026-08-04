@@ -1,0 +1,80 @@
+{
+  "$id": "https://castform.ai/schemas/router-request.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "candidate_routes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "harness": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "provider": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "route_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "route_id",
+          "harness",
+          "model",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "minItems": 2,
+      "type": "array"
+    },
+    "request_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1"
+    },
+    "task": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "domain"
+      ],
+      "type": "object"
+    },
+    "user_context": {
+      "type": "object"
+    },
+    "workspace_context": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "request_id",
+    "task",
+    "user_context",
+    "workspace_context",
+    "candidate_routes"
+  ],
+  "title": "Castform Router Request v1",
+  "type": "object"
+}

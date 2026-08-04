@@ -1,0 +1,39 @@
+{
+  "schema_version": "1",
+  "name": "numpy-click-router-pilot",
+  "auth_profiles": {
+    "public-github": {
+      "strategy": "public"
+    }
+  },
+  "repositories": [
+    {
+      "repo": "numpy/numpy",
+      "revision": "main",
+      "auth_profile": "public-github"
+    },
+    {
+      "repo": "pallets/click",
+      "revision": "main",
+      "auth_profile": "public-github"
+    }
+  ],
+  "pull_requests": {
+    "limit_per_repo": 20,
+    "eval_ratio": 0.2,
+    "include_body": false,
+    "exclude_labels": [
+      "dependencies"
+    ]
+  },
+  "allowed_routes": [
+    "claude-code/haiku@anthropic",
+    "claude-code/sonnet@anthropic",
+    "codex/5.6-balanced@openai"
+  ],
+  "benchmark": {
+    "repetitions": 1,
+    "average_run_cost_usd": 1.0,
+    "execution": "castform_hosted"
+  }
+}
