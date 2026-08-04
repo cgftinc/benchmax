@@ -15,6 +15,7 @@ from benchmax.envs.shared_types import (
     RolloutFailure,
     RolloutOutcome,
     RolloutRequest,
+    ValidationDiagnostic,
 )
 
 __all__ = ["Environment"]
@@ -41,6 +42,11 @@ class Environment[Payload, Attempt: RolloutAttempt](ABC):
         """Use a public model URL when rollouts run in a remote sandbox."""
 
         return False
+
+    def validation_diagnostics(self) -> Sequence[ValidationDiagnostic]:
+        """Return static warnings and errors for environment configuration."""
+
+        return ()
 
     @abstractmethod
     async def create_dataset(

@@ -6,16 +6,26 @@ from typing import Any
 
 import pytest
 from benchmax.auth import InjectedAuth, ModelRequestContext, StaticBearerAuth
-from benchmax.envs import Dataset, Example, RolloutOutcome
+from benchmax.envs.harbor import (
+    BundledAgentSource,
+    BundledHarborAgent,
+    HarborEnv,
+    HarborTrialTemplate,
+)
 from castform.model_auth import CastformModelAuth
 from castform.platform.environment_assets import UploadedEnvironmentAssets
 from castform.platform.model_session import ModelSession
 from castform.validation import validate_environment
+from harbor import DatasetConfig, EnvironmentType
+from harbor.models.trial.config import AgentConfig, EnvironmentConfig, VerifierConfig
+
+from benchmax.envs import Dataset, Example, RolloutOutcome
 
 
 class FakeModelSessionClient:
     instances: list[FakeModelSessionClient] = []
     capture_num_calls = 1
+    capture_payload: dict[str, Any] | None = None
 
     def __init__(self, *, base_url, model_auth):
         self.base_url = base_url
@@ -37,6 +47,8 @@ class FakeModelSessionClient:
 
     async def collect(self, session):
         self.collected.append(session.session_id)
+        if self.capture_payload is not None:
+            return dict(self.capture_payload)
         return {"num_calls": self.capture_num_calls, "truncated": False}
 
     async def discard(self, session):
@@ -50,6 +62,7 @@ class FakeModelSessionClient:
 def fake_model_sessions(monkeypatch):
     FakeModelSessionClient.instances.clear()
     FakeModelSessionClient.capture_num_calls = 1
+    FakeModelSessionClient.capture_payload = None
     monkeypatch.setattr(
         "castform.validation.ModelSessionClient",
         FakeModelSessionClient,
@@ -75,6 +88,47 @@ class RecordingEnvironment:
             Example(id="example-2", payload={}),
         ]
         return Dataset(examples[:max_examples])
+
+    async def run_group(self, requests):
+        group = list(requests)
+        self.groups.append(group)
+        return {
+            request.rollout_id: RolloutOutcome(
+                rewards={"score": 1.0},
+                termination_reason="finished",
+            )
+            for request in group
+        }
+
+
+class RecordingHarborEnvironment(HarborEnv):
+    def __init__(
+        self,
+        *,
+        tmp_path: Path,
+        agent_kwargs: dict[str, Any] | None = None,
+        agent: Any | None = None,
+    ) -> None:
+        super().__init__(
+            dataset=DatasetConfig(path=tmp_path),
+            trial=HarborTrialTemplate(
+                agent=agent or AgentConfig(name="mini-swe-agent", kwargs=agent_kwargs or {}),
+                environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
+                verifier=VerifierConfig(),
+                trials_dir=tmp_path / "trials",
+            ),
+            requires_public_model_endpoint=False,
+        )
+        self.groups: list[list[Any]] = []
+
+    async def create_dataset(
+        self,
+        split,
+        base_dir,
+        *,
+        max_examples: int | None = None,
+    ):
+        return Dataset([Example(id="harbor-example", payload={})])
 
     async def run_group(self, requests):
         group = list(requests)
@@ -122,6 +176,215 @@ async def test_validation_uses_first_dataset_item_for_two_local_siblings(
     assert len(sessions.collected) == 2
     assert sessions.discarded == []
     assert sessions.closed
+
+
+@pytest.mark.parametrize("token_field", ["max_tokens", "max_completion_tokens"])
+async def test_harbor_static_validation_warns_for_harness_output_caps(
+    tmp_path: Path,
+    token_field: str,
+) -> None:
+    env = RecordingHarborEnvironment(
+        tmp_path=tmp_path,
+        agent_kwargs={token_field: 1024},
+    )
+
+    report = await validate_environment(
+        env,
+        model="test-model",
+        split="train",
+        base_dir=tmp_path,
+        model_auth=StaticBearerAuth("test-token"),
+    )
+
+    assert report.ok
+    warnings = getattr(report, "static_warnings", {})
+    assert warnings
+    assert token_field in str(warnings)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("temperature", 0.7),
+        ("top_p", 0.9),
+        ("presence_penalty", 0.2),
+        ("frequency_penalty", 0.2),
+        ("seed", 42),
+        ("stop", ["DONE"]),
+    ],
+)
+async def test_harbor_static_validation_rejects_trainer_owned_agent_sampling(
+    tmp_path: Path,
+    field: str,
+    value: Any,
+) -> None:
+    env = RecordingHarborEnvironment(
+        tmp_path=tmp_path,
+        agent_kwargs={field: value},
+    )
+
+    report = await validate_environment(
+        env,
+        model="test-model",
+        split="train",
+        base_dir=tmp_path,
+        model_auth=StaticBearerAuth("test-token"),
+    )
+
+    assert not report.ok
+    errors = getattr(report, "static_errors", {})
+    assert errors
+    assert field in str(errors)
+    assert env.groups == []
+
+
+async def test_harbor_static_validation_finds_nested_model_sampling(
+    tmp_path: Path,
+) -> None:
+    env = RecordingHarborEnvironment(
+        tmp_path=tmp_path,
+        agent_kwargs={"model_kwargs": {"temperature": 0.7}},
+    )
+
+    report = await validate_environment(
+        env,
+        model="test-model",
+        split="train",
+        base_dir=tmp_path,
+        model_auth=StaticBearerAuth("test-token"),
+    )
+
+    assert not report.ok
+    assert "model_kwargs.temperature" in str(getattr(report, "static_errors", {}))
+    assert env.groups == []
+
+
+async def test_harbor_static_validation_inspects_bundled_agent_kwargs(
+    tmp_path: Path,
+) -> None:
+    bundled = BundledHarborAgent(
+        config=AgentConfig(
+            import_path="agent:Agent",
+            kwargs={"temperature": 0.7},
+        ),
+        source=BundledAgentSource.from_files({"agent.py": b"class Agent:\n    pass\n"}),
+    )
+    env = RecordingHarborEnvironment(tmp_path=tmp_path, agent=bundled)
+
+    report = await validate_environment(
+        env,
+        model="test-model",
+        split="train",
+        base_dir=tmp_path,
+        model_auth=StaticBearerAuth("test-token"),
+    )
+
+    assert not report.ok
+    assert "temperature" in str(getattr(report, "static_errors", {}))
+    assert env.groups == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("n", 2),
+        ("tool_choice", "none"),
+        ("logprobs", True),
+        ("response_format", {"type": "json_object"}),
+        ("return_routed_experts", True),
+        ("max_new_tokens", 1024),
+        ("reasoning_effort", "high"),
+    ],
+)
+async def test_harbor_static_validation_rejects_unsupported_model_controls(
+    tmp_path: Path,
+    field: str,
+    value: Any,
+) -> None:
+    env = RecordingHarborEnvironment(
+        tmp_path=tmp_path,
+        agent_kwargs={field: value},
+    )
+
+    report = await validate_environment(
+        env,
+        model="test-model",
+        split="train",
+        base_dir=tmp_path,
+        model_auth=StaticBearerAuth("test-token"),
+    )
+
+    assert not report.ok
+    assert field in str(getattr(report, "static_errors", {}))
+    assert env.groups == []
+
+
+async def test_local_validation_fails_on_proxy_session_contract_errors(
+    fake_model_sessions,
+) -> None:
+    fake_model_sessions.capture_payload = {
+        "num_calls": 2,
+        "truncated": False,
+        "contract_errors": [
+            {
+                "turn": 1,
+                "field": "messages[1].content",
+                "code": "history_diverged",
+                "message": "committed assistant response changed",
+            }
+        ],
+    }
+
+    report = await validate_environment(
+        RecordingEnvironment(),
+        model="test-model",
+        model_auth=StaticBearerAuth("rollout-token"),
+    )
+
+    assert not report.ok
+    assert all("history_diverged" in error for error in report.local_errors.values())
+
+
+async def test_local_validation_surfaces_proxy_contract_warnings_without_failing(
+    fake_model_sessions,
+) -> None:
+    fake_model_sessions.capture_payload = {
+        "num_calls": 2,
+        "truncated": False,
+        "contract_warnings": [
+            {
+                "turn": 0,
+                "field": "max_tokens",
+                "code": "output_cap_clamped",
+                "requested": 4096,
+                "effective": 1024,
+            }
+        ],
+    }
+
+    report = await validate_environment(
+        RecordingEnvironment(),
+        model="test-model",
+        model_auth=StaticBearerAuth("rollout-token"),
+    )
+
+    assert report.ok
+    warnings = getattr(report, "local_warnings", {})
+    assert warnings
+    assert "output_cap_clamped" in str(warnings)
+
+
+async def test_single_call_validation_warns_that_history_was_not_exercised() -> None:
+    report = await validate_environment(
+        RecordingEnvironment(),
+        model="test-model",
+        model_auth=StaticBearerAuth("rollout-token"),
+    )
+
+    assert report.ok
+    warnings = getattr(report, "local_warnings", {})
+    assert warnings
+    assert "multi-turn" in str(warnings).lower()
 
 
 async def test_validation_rejects_an_empty_dataset() -> None:
@@ -210,6 +473,54 @@ async def test_remote_validation_rejects_a_finished_event_without_a_trace(
     assert report.remote_errors == {"remote-0": "missing_model_trace"}
     assert report.remote is not None
     assert report.remote["remote-1"].termination_reason == "context_exceeded"
+
+
+async def test_remote_validation_rejects_proxy_session_contract_errors(
+    monkeypatch,
+) -> None:
+    class ContractErrorRolloutClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_group(self, **kwargs):
+            return [
+                {
+                    "rollout_id": f"remote-{index}",
+                    "success": True,
+                    "rewards": {"score": 1.0},
+                    "termination_reason": "finished",
+                    "contract_errors": [
+                        {
+                            "turn": 1,
+                            "field": "temperature",
+                            "code": "sampling_policy_conflict",
+                            "requested": 0.7,
+                            "configured": 0.2,
+                        }
+                    ],
+                }
+                for index in range(2)
+            ]
+
+    monkeypatch.setattr(
+        "castform.validation.RolloutClient",
+        ContractErrorRolloutClient,
+    )
+
+    report = await validate_environment(
+        RecordingEnvironment(),
+        model="test-model",
+        model_auth=StaticBearerAuth("rollout-token"),
+        remote_assets=UploadedEnvironmentAssets(
+            env_cls_path="envs/run/env-cls.pkl",
+            env_metadata_path="envs/run/env-metadata.json",
+            dataset_path=None,
+        ),
+    )
+
+    assert not report.ok
+    assert report.remote_errors
+    assert "sampling_policy_conflict" in str(report.remote_errors)
 
 
 async def test_auth_binding_covers_dataset_creation_and_all_managed_purposes() -> None:

@@ -212,6 +212,71 @@ def test_scorecard_marks_error_settlements_and_shows_messages(mod, capsys):
     assert "❌ validation failed" in output
 
 
+def test_scorecard_surfaces_static_and_runtime_contract_warnings(mod, capsys):
+    outcome = types.SimpleNamespace(
+        rewards={"correct": 1.0},
+        termination_reason="finished",
+        error=None,
+    )
+    report = types.SimpleNamespace(
+        ok=True,
+        local={"validate-0": outcome},
+        remote=None,
+        static_warnings={"agent.kwargs.max_tokens": "output cap is trainer-clamped"},
+        local_warnings={
+            "validate-0": ["max_tokens requested 4096 but the effective output cap was 1024"]
+        },
+        remote_warnings={},
+        local_errors={},
+        remote_errors={},
+    )
+
+    mod._print_validation(report)
+
+    output = capsys.readouterr().out
+    assert "agent.kwargs.max_tokens" in output
+    assert "effective output cap was 1024" in output
+    assert "✅ validation passed" in output
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "CLAUDE.md",
+        "STARTER.md",
+        "skills/design-environment/SKILL.md",
+    ],
+)
+def test_scaffold_design_guidance_documents_model_parameter_ownership(
+    relative_path: str,
+) -> None:
+    guidance = (_SCAFFOLD_DIR / relative_path).read_text().lower()
+
+    assert "max_tokens" in guidance
+    assert "max_completion_tokens" in guidance
+    assert "temperature" in guidance
+    assert "top_p" in guidance
+    assert "warning" in guidance
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "skills/verify-environment/SKILL.md",
+        "skills/launch-run/SKILL.md",
+    ],
+)
+def test_scaffold_validation_guidance_requires_training_contract_checks(
+    relative_path: str,
+) -> None:
+    guidance = (_SCAFFOLD_DIR / relative_path).read_text().lower()
+
+    assert "sampling" in guidance
+    assert "history" in guidance
+    assert "validate_environment" in guidance
+    assert "do not launch" in guidance or "never launch" in guidance
+
+
 # ── launch stage: [y/N] confirm and the asdict spread ───────────────────────────
 
 _Uploaded = dataclasses.make_dataclass(
@@ -255,9 +320,9 @@ def test_launch_confirmed_spreads_uploaded_paths(mod, monkeypatch):
     # LAUNCH_CONFIG feeds launcher_args, minus reserved keys
     assert "type" not in (launched["launcher_args"] or {})
     assert "name" not in (launched["launcher_args"] or {})
-    assert launched["launcher_args"]["max_context_tokens"] == mod.LAUNCH_CONFIG[
-        "max_context_tokens"
-    ]
+    assert (
+        launched["launcher_args"]["max_context_tokens"] == mod.LAUNCH_CONFIG["max_context_tokens"]
+    )
 
 
 def test_launch_assume_yes_skips_prompt(mod, monkeypatch):

@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
-from benchmax.bundle import dump_bundle
 from benchmax.envs.environment import Environment
 from benchmax.envs.harbor import (
     BundledAgentSource,
@@ -40,6 +39,8 @@ from harbor import (
     TrialEnvironmentConfig,
     TrialVerifierConfig,
 )
+
+from benchmax.bundle import dump_bundle
 
 _HARNESS_SOURCE = BundledAgentSource.from_directory(
     Path(__file__).parent / "harness",
@@ -297,9 +298,9 @@ def validate(env: HarveyLabHarborEnv, uploaded_assets: Any) -> Any:
                 base_dir=Path(tmp),
                 remote_assets=uploaded_assets,
                 # Small enough that the budget stop ends trials in minutes
-                # instead of the full 30-turn loop; 4096 was measured too
-                # small for even the first model call.
-                max_context_tokens=6144,
+                # instead of the full 30-turn loop; 6144 was measured too
+                # small for the harness prompt plus its first useful turn.
+                max_context_tokens=8192,
                 # Modal sandbox build plus a several-turn trial still exceeds
                 # the 120s local default.
                 local_timeout_seconds=1800,

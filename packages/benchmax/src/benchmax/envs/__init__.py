@@ -19,6 +19,7 @@ from benchmax.envs.shared_types import (
     RolloutFailure,
     RolloutOutcome,
     RolloutRequest,
+    ValidationDiagnostic,
 )
 
 __all__ = [
@@ -39,6 +40,7 @@ __all__ = [
     "RolloutFailure",
     "RolloutOutcome",
     "RolloutRequest",
+    "ValidationDiagnostic",
     "Tool",
     "StaticBearerAuth",
     "bind_model_auth",

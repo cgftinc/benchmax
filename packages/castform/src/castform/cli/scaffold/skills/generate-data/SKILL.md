@@ -74,9 +74,10 @@ chosen Harbor workflow genuinely needs a folder or artifact uploaded.
 
 ## Traces
 
-Install `castform[traces]`, normalize provider traces with the adapter for that
-provider, and pass them through `castform.traces.TracesPipeline`. Keep the resulting
-train/eval split and detected prompt/tool assumptions visible in the project.
+Normalize provider traces with the adapter for that provider and pass them through
+`castform.traces.TracesPipeline`, which ships with the base `castform` package.
+Keep the resulting train/eval split and detected prompt/tool assumptions visible
+in the project.
 Inspect for secrets, relayed tool output, duplicates and trivial examples before
 using traces as training data.
 

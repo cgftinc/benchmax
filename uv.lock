@@ -15,6 +15,7 @@ members = [
     "benchmax-example-dominant-color",
     "benchmax-example-geo3k",
     "benchmax-example-harvey",
+    "benchmax-example-ineqmath-45",
     "benchmax-example-math",
     "benchmax-example-neon-rag",
     "benchmax-example-pinecone-rag",
@@ -355,6 +356,35 @@ dev = [
 ]
 
 [[package]]
+name = "benchmax-example-ineqmath-45"
+version = "0.1.0"
+source = { editable = "examples/ineqmath-45" }
+dependencies = [
+    { name = "castform" },
+    { name = "harbor" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "castform", editable = "packages/castform" },
+    { name = "harbor", specifier = ">=0.18.0,<0.19" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "ruff", specifier = ">=0.14.2" },
+]
+
+[[package]]
 name = "benchmax-example-math"
 version = "0.1.0"
 source = { editable = "examples/math" }
@@ -543,6 +573,7 @@ source = { editable = "packages/castform" }
 dependencies = [
     { name = "benchmax" },
     { name = "httpx", extra = ["http2"] },
+    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -562,10 +593,6 @@ rag = [
     { name = "ruamel-yaml" },
     { name = "scikit-learn" },
     { name = "sentence-transformers" },
-    { name = "tqdm" },
-]
-traces = [
-    { name = "tqdm" },
 ]
 turbopuffer = [
     { name = "turbopuffer" },
@@ -594,11 +621,10 @@ requires-dist = [
     { name = "scikit-learn", marker = "extra == 'rag'", specifier = ">=1.8.0" },
     { name = "sentence-transformers", marker = "extra == 'rag'", specifier = ">=5.2.3" },
     { name = "snowballstemmer", marker = "extra == 'chroma'", specifier = ">=2.2.0" },
-    { name = "tqdm", marker = "extra == 'rag'", specifier = ">=4.66.0" },
-    { name = "tqdm", marker = "extra == 'traces'", specifier = ">=4.66.0" },
+    { name = "tqdm", specifier = ">=4.66.0" },
     { name = "turbopuffer", marker = "extra == 'turbopuffer'", specifier = ">=2.6.0,<3" },
 ]
-provides-extras = ["rag", "traces", "chroma", "pinecone", "turbopuffer"]
+provides-extras = ["rag", "chroma", "pinecone", "turbopuffer"]
 
 [package.metadata.requires-dev]
 dev = [

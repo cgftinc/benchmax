@@ -60,6 +60,13 @@ can be a valid completed result. An operational failure instead has a
 non-`finished` `termination_reason`, empty rewards, an `error` message on the
 outcome, and a corresponding log entry.
 
+Validation checks model-request ownership before running and checks tracked
+sampling and history behavior at runtime. Harnesses may request `max_tokens` or
+`max_completion_tokens`, but the scorecard emits a warning when Castform can
+clamp the effective ceiling. Do not set trainer-owned controls such as
+`temperature`, `top_p`, `top_k`, penalties, `seed`, or `stop`; fix any static or
+runtime contract error before launch.
+
 After a green baseline, decide deliberately:
 
 - iterate on the environment, data or reward and validate again; or

@@ -34,7 +34,6 @@ from benchmax.envs import (
     canonical_example_id,
 )
 from benchmax.rewards import extract_completion_text
-
 from castform import validate_environment
 from castform.platform.client import TrainerClient
 from castform.platform.environment_assets import upload_assets
@@ -191,6 +190,14 @@ def generate_data(force: bool = False) -> bool:
 
 
 def _print_validation(report: Any) -> None:
+    for location in ("static", "local", "remote"):
+        warnings = getattr(report, f"{location}_warnings", {}) or {}
+        for item, messages in warnings.items():
+            values = messages if isinstance(messages, list) else [messages]
+            for message in values:
+                print(f"⚠️ {location} {item}: {message}")
+    for item, error in (getattr(report, "static_errors", {}) or {}).items():
+        print(f"❌ static {item}: {error}")
     for location in ("local", "remote"):
         outcomes = getattr(report, location)
         if outcomes is None:

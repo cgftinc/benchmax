@@ -8,6 +8,7 @@ requires-python = "==3.12.*"
 dependencies = [
     "benchmax==0.2.2",
     "httpx[http2]>=0.27.0",
+    "tqdm>=4.66.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -34,9 +35,7 @@ rag = [
     "ruamel-yaml>=0.19.1",
     "scikit-learn>=1.8.0",
     "sentence-transformers>=5.2.3",
-    "tqdm>=4.66.0",
 ]
-traces = ["tqdm>=4.66.0"]
 chroma = ["chromadb>=1.5.9,<2", "snowballstemmer>=2.2.0"]
 pinecone = ["pinecone>=9.1.0,<10"]
 turbopuffer = ["turbopuffer>=2.6.0,<3"]
