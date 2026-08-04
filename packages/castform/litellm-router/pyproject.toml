@@ -1,28 +1,12 @@
 [project]
 name = "castform-litellm-router"
 version = "0.1.0"
-description = "LiteLLM gateway workspace and castform-auto router middleware"
+description = "Minimal Qwen-scored LiteLLM backend router"
 requires-python = "==3.12.*"
 dependencies = []
 
-[project.optional-dependencies]
-training = [
-    "accelerate>=1.10,<2",
-    "peft>=0.17,<1",
-    "torch>=2.7,<3",
-    "transformers>=5,<6",
-]
-
-[project.scripts]
-castform = "castform_router.task_cli:main"
-castform-router = "castform_router.workspace_cli:main"
-
 [dependency-groups]
-dev = [
-    "pytest>=8.4,<9",
-    "pytest-asyncio>=1.2,<2",
-    "ruff>=0.14,<1",
-]
+dev = ["pytest>=8.4,<9", "pytest-asyncio>=1.2,<2", "ruff>=0.14,<1"]
 
 [build-system]
 requires = ["hatchling>=1.27"]
