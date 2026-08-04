@@ -117,7 +117,6 @@ def test_lab_source_bundle_captures_the_tree(
     assert "harvey-labs/.git/HEAD" not in files
     assert "harvey_agent.py" in files
     assert "harvey_runtime.py" in files
-    assert "autocompact.py" in files
 
 
 def test_harvey_harness_stays_lean_by_default() -> None:
@@ -126,7 +125,6 @@ def test_harvey_harness_stays_lean_by_default() -> None:
     harness = harvey_main.harvey_harness()
 
     assert {name for name, _ in harness.source.files} == {
-        "autocompact.py",
         "harvey_agent.py",
         "harvey_runtime.py",
     }
