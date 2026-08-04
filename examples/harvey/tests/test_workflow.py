@@ -77,7 +77,14 @@ def test_launch_reuses_the_assets_that_were_validated(monkeypatch) -> None:
         "judge_concurrency": 1,
     }
     assert calls[1:] == [
-        ("upload", {"bundle": bundled_environment, "run_name": "harvey"}),
+        (
+            "upload",
+            {
+                "bundle": bundled_environment,
+                "run_name": "harvey",
+                "dataset_files": None,
+            },
+        ),
         ("validate", uploaded_assets),
         ("launch", uploaded_assets),
     ]
@@ -161,3 +168,43 @@ def test_main_rejects_base_url_for_anthropic(capsys: pytest.CaptureFixture[str])
         )
 
     assert "--judge-provider openai" in capsys.readouterr().err
+
+
+def test_collect_enables_online_judge_and_uses_output_trials_dir(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    stub_source = BundledAgentSource.from_files({"harvey_agent.py": b"stub"})
+    captured = {}
+    monkeypatch.setattr(example, "_lab_source_bundle", lambda: stub_source)
+    monkeypatch.setattr(example, "generate_data", lambda **kwargs: None)
+    monkeypatch.setattr(example, "ensure_session", lambda: None)
+    monkeypatch.setattr(example, "_check_judge_credentials", lambda args: None)
+    monkeypatch.setattr(
+        example,
+        "collect",
+        lambda args, env: captured.update(args=args, env=env) or {},
+    )
+
+    assert (
+        example.main(
+            [
+                "collect",
+                "--yes",
+                "--output-dir",
+                str(tmp_path),
+                *CREDENTIAL_ARGS,
+            ]
+        )
+        == 0
+    )
+
+    env = captured["env"]
+    assert env._trial.trials_dir == tmp_path / "trials"
+    assert env._trial.agent.config.env == {
+        "HARBOR_HARVEY_AUTOCOMPACT_MODE": "judge",
+        "HARBOR_HARVEY_MAX_COMPACTIONS": "2",
+        "HARBOR_HARVEY_COMPACTION_JUDGE_PROVIDER": "anthropic",
+        "HARBOR_HARVEY_COMPACTION_JUDGE_MODEL": "anthropic/claude-sonnet-4-6",
+        "HARBOR_HARVEY_COMPACTION_JUDGE_API_KEY": "anthropic-key",
+    }

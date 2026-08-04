@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import json
 import re
 import sys
 import tempfile
@@ -43,7 +44,7 @@ from harbor import (
 
 _HARNESS_SOURCE = BundledAgentSource.from_directory(
     Path(__file__).parent / "harness",
-    files=("harvey_agent.py", "harvey_runtime.py"),
+    files=("autocompact.py", "harvey_agent.py", "harvey_runtime.py"),
 )
 _ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -52,6 +53,7 @@ def harvey_harness(
     *,
     max_timeout_secs: float | None = None,
     source: BundledAgentSource | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> BundledHarborAgent:
     """The default harness: Harvey's native agent loop bundled from ``harness/``.
 
@@ -66,6 +68,7 @@ def harvey_harness(
         config=TrialAgentConfig(
             import_path="harvey_agent:HarveyHarnessAgent",
             max_timeout_sec=max_timeout_secs,
+            env=dict(env or {}),
         ),
         source=source or _HARNESS_SOURCE,
     )
@@ -159,6 +162,7 @@ class HarveyLabHarborEnv(HarborEnv):
         modal_app_name: str | None = None,
         sandbox_timeout_secs: int | None = None,
         sandbox_idle_timeout_secs: int | None = None,
+        trials_dir: str | Path = "/tmp/castform-harvey-harbor-trials",
     ) -> None:
         if harness is not None and max_agent_timeout_secs is not None:
             raise ValueError(
@@ -207,7 +211,7 @@ class HarveyLabHarborEnv(HarborEnv):
                     kwargs=environment_kwargs,
                 ),
                 verifier=TrialVerifierConfig(env=verifier_env),
-                trials_dir=Path("/tmp/castform-harvey-harbor-trials"),
+                trials_dir=Path(trials_dir),
             ),
             sandbox_credentials=sandbox_credentials,
             max_concurrent_trials=max_concurrent_trials,
@@ -224,7 +228,23 @@ TRAINING_ARGS = {"model": MODEL}
 
 
 def _constructor_args(args: argparse.Namespace) -> dict[str, Any]:
-    return {
+    harness_env: dict[str, str] = {}
+    if getattr(args, "autocompact_mode", "off") != "off":
+        harness_env = {
+            "HARBOR_HARVEY_AUTOCOMPACT_MODE": args.autocompact_mode,
+            "HARBOR_HARVEY_MAX_COMPACTIONS": str(args.max_compactions),
+        }
+    if getattr(args, "autocompact_mode", "off") == "judge":
+        harness_env.update(
+            {
+                "HARBOR_HARVEY_COMPACTION_JUDGE_PROVIDER": args.judge_provider,
+                "HARBOR_HARVEY_COMPACTION_JUDGE_MODEL": args.judge_model,
+                "HARBOR_HARVEY_COMPACTION_JUDGE_API_KEY": args.judge_api_key,
+            }
+        )
+        if args.judge_base_url:
+            harness_env["HARBOR_HARVEY_COMPACTION_JUDGE_BASE_URL"] = args.judge_base_url
+    constructor_args = {
         "sandbox_credentials": ModalCredentials(
             token_id=args.modal_token_id, token_secret=args.modal_token_secret
         ),
@@ -237,8 +257,18 @@ def _constructor_args(args: argparse.Namespace) -> dict[str, Any]:
         "judge_concurrency": args.judge_concurrency,
         # Hermetic harness: the LAB tree rides in the bundle instead of being
         # cloned on the trial host.
-        "harness": harvey_harness(source=_lab_source_bundle()),
+        "harness": harvey_harness(source=_lab_source_bundle(), env=harness_env),
     }
+    if getattr(args, "action", None) == "collect":
+        constructor_args.update(
+            {
+                "max_concurrent_trials": args.max_concurrent_trials,
+                "trials_dir": str(
+                    Path(args.output_dir).expanduser().resolve() / "trials"
+                ),
+            }
+        )
+    return constructor_args
 
 
 def _check_judge_credentials(args: argparse.Namespace) -> None:
@@ -330,6 +360,64 @@ def launch(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
     return run_id
 
 
+def launch_sft(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
+    from castform import config
+    from castform.platform.client import TrainerClient
+
+    if not assume_yes:
+        reply = input("launch AutoCompact SFT on GPUs? this spends credits. [y/N] ")
+        if reply.strip().lower() not in ("y", "yes"):
+            print("launch-sft: cancelled")
+            return None
+    with TrainerClient() as trainer:
+        run_id = trainer.launch_training_run(
+            name=f"{RUN_NAME}-autocompact-sft",
+            launcher_args={
+                **TRAINING_ARGS,
+                "training_mode": "sft",
+                "group_size": 1,
+            },
+            **dataclasses.asdict(uploaded_assets),
+        )
+    print(f"launch-sft: started {run_id}")
+    print(f"view: {config.web_app_url()}/train/{run_id}")
+    return run_id
+
+
+def collect(args: argparse.Namespace, env: HarveyLabHarborEnv) -> dict[str, Any] | None:
+    from castform import config
+    from castform.model_auth import model_auth_for_endpoint
+    from collection import collect_trajectories
+
+    if not args.yes:
+        reply = input("collect judge-guided Modal trajectories? this spends credits. [y/N] ")
+        if reply.strip().lower() not in ("y", "yes"):
+            print("collect: cancelled")
+            return None
+    base_url = args.model_base_url or config.llm_url()
+    model_auth = model_auth_for_endpoint(
+        api_key=args.model_api_key or "",
+        base_url=base_url,
+        purpose="Harvey AutoCompact collection",
+    )
+    manifest = asyncio.run(
+        collect_trajectories(
+            env,
+            output_dir=Path(args.output_dir),
+            model=args.model,
+            base_url=base_url,
+            model_auth=model_auth,
+            max_examples=args.max_examples,
+            rollouts_per_task=args.rollouts_per_task,
+            max_concurrent_tasks=args.max_concurrent_trials,
+            max_compactions=args.max_compactions,
+            resume=args.resume,
+        )
+    )
+    print(json.dumps(manifest, indent=2, sort_keys=True))
+    return manifest
+
+
 def _print_validation(report: Any) -> None:
     for location in ("local", "remote"):
         outcomes = getattr(report, location)
@@ -361,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "action",
         nargs="?",
-        choices=("data", "validate", "launch"),
+        choices=("data", "validate", "launch", "collect", "launch-sft"),
         default="validate",
     )
     parser.add_argument("--force", action="store_true")
@@ -406,10 +494,39 @@ def main(argv: list[str] | None = None) -> int:
         default=1,
         help="Maximum concurrent judge calls (default: 1).",
     )
+    parser.add_argument("--output-dir", default="harvey-autocompact-data")
+    parser.add_argument("--model", default=MODEL)
+    parser.add_argument("--model-base-url")
+    parser.add_argument("--model-api-key")
+    parser.add_argument("--max-examples", type=int)
+    parser.add_argument("--rollouts-per-task", type=int, default=1)
+    parser.add_argument("--max-concurrent-trials", type=int, default=4)
+    parser.add_argument("--max-compactions", type=int, default=2)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--autocompact-mode",
+        choices=("off", "judge", "autonomous"),
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(argv)
+    args.autocompact_mode = args.autocompact_mode or (
+        "judge" if args.action == "collect" else "off"
+    )
+    for name in ("rollouts_per_task", "max_concurrent_trials", "max_compactions"):
+        if getattr(args, name) < 1:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
+    if args.max_examples is not None and args.max_examples < 1:
+        parser.error("--max-examples must be positive")
     if args.judge_base_url and args.judge_provider != "openai":
         parser.error("--judge-base-url is only supported with --judge-provider openai")
-    total_stages = {"data": 1, "validate": 4, "launch": 5}[args.action]
+    total_stages = {
+        "data": 1,
+        "validate": 4,
+        "launch": 5,
+        "collect": 2,
+        "launch-sft": 4,
+    }[args.action]
 
     # The data stage never talks to the judge, so it skips the preflight.
     if args.action != "data":
@@ -424,6 +541,10 @@ def main(argv: list[str] | None = None) -> int:
     # LAB tree, which the data stage must not pay for.
     constructor_args = _constructor_args(args)
     ensure_session()
+    if args.action == "collect":
+        print("[stage 2/2] collecting judge-guided train trajectories")
+        collect(args, HarveyLabHarborEnv(**constructor_args))
+        return 0
     print(f"[stage 2/{total_stages}] bundling environment")
     bundled_environment = dump_bundle(
         HarveyLabHarborEnv,
@@ -431,10 +552,26 @@ def main(argv: list[str] | None = None) -> int:
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
     print(f"[stage 3/{total_stages}] uploading environment")
-    uploaded_assets = upload_assets(bundle=bundled_environment, run_name=RUN_NAME)
+    dataset_files = None
+    if args.action == "launch-sft":
+        output_dir = Path(args.output_dir).expanduser().resolve()
+        train_path = output_dir / "train.jsonl"
+        eval_path = output_dir / "eval.jsonl"
+        if not train_path.is_file() or not eval_path.is_file():
+            parser.error("launch-sft requires <output-dir>/train.jsonl and eval.jsonl")
+        dataset_files = {"train.jsonl": train_path, "eval.jsonl": eval_path}
+    uploaded_assets = upload_assets(
+        bundle=bundled_environment,
+        run_name=RUN_NAME,
+        dataset_files=dataset_files,
+    )
     print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
     print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
     print(f"  dataset_path: {uploaded_assets.dataset_path}")
+    if args.action == "launch-sft":
+        print("[stage 4/4] launching SFT")
+        launch_sft(uploaded_assets, assume_yes=args.yes)
+        return 0
     print(f"[stage 4/{total_stages}] validating environment")
     report = validate(HarveyLabHarborEnv(**constructor_args), uploaded_assets)
     if not report.ok:

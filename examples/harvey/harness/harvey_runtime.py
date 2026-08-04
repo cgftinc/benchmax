@@ -39,6 +39,7 @@ def _load_harvey() -> None:
 
 _load_harvey()
 
+from autocompact import HTTPJudge, NoopJudge, run_autocompact_agent  # noqa: E402
 from harness.adapters.base import ModelAdapter, ModelResponse, ToolCall  # noqa: E402
 from harness.agent_loop import run_agent  # noqa: E402
 from harness.tools import ToolExecutor, get_all_tool_definitions  # noqa: E402
@@ -118,8 +119,9 @@ class OpenAIChatCompletionsAdapter(ModelAdapter):
         request: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "tools": [self._translate_tool(tool) for tool in tools],
         }
+        if tools:
+            request["tools"] = [self._translate_tool(tool) for tool in tools]
         if not self.gateway_controls_sampling:
             request["temperature"] = self.temperature
         if self.reasoning_effort and self.reasoning_effort.lower() != "none":
@@ -368,7 +370,7 @@ class HarborOwnedSandbox(Sandbox):
         return rewritten
 
 
-def _redact_artifacts(path: Path, secret: str) -> None:
+def _redact_artifacts(path: Path, secrets: list[str]) -> None:
     if not path.exists():
         return
     for candidate in path.rglob("*"):
@@ -378,7 +380,10 @@ def _redact_artifacts(path: Path, secret: str) -> None:
             original = candidate.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        redacted = original.replace(secret, "${REDACTED_API_KEY}")
+        redacted = original
+        for secret in secrets:
+            if secret:
+                redacted = redacted.replace(secret, "${REDACTED_API_KEY}")
         if redacted != original:
             candidate.write_text(redacted, encoding="utf-8")
 
@@ -411,6 +416,8 @@ def run(args: argparse.Namespace) -> None:
         "reasoning_effort": args.reasoning_effort,
         "skills": skill_names,
         "base_url": base_url,
+        "autocompact_mode": args.autocompact_mode,
+        "max_compactions": args.max_compactions,
         "started_at": datetime.now(UTC).isoformat(),
     }
     (results_dir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
@@ -437,19 +444,44 @@ def run(args: argparse.Namespace) -> None:
             temperature=args.temperature,
             reasoning_effort=args.reasoning_effort,
         )
-        result = run_agent(
-            adapter=adapter,
-            system_prompt=system_prompt,
-            user_prompt=instruction,
-            tool_executor=TruncatingToolExecutor(
-                sandbox=sandbox,
-                shell_timeout=args.shell_timeout,
-                max_result_chars=args.max_tool_result_chars,
-            ),
-            tools=get_all_tool_definitions(),
-            max_turns=args.max_turns,
-            transcript_path=str(results_dir / "transcript.jsonl"),
+        tool_executor = TruncatingToolExecutor(
+            sandbox=sandbox,
+            shell_timeout=args.shell_timeout,
+            max_result_chars=args.max_tool_result_chars,
         )
+        if args.autocompact_mode == "off":
+            result = run_agent(
+                adapter=adapter,
+                system_prompt=system_prompt,
+                user_prompt=instruction,
+                tool_executor=tool_executor,
+                tools=get_all_tool_definitions(),
+                max_turns=args.max_turns,
+                transcript_path=str(results_dir / "transcript.jsonl"),
+            )
+        else:
+            if args.autocompact_mode == "judge":
+                judge_api_key = os.environ.get("HARBOR_HARVEY_COMPACTION_JUDGE_API_KEY", "")
+                judge = HTTPJudge(
+                    provider=args.compaction_judge_provider,
+                    model=args.compaction_judge_model,
+                    api_key=judge_api_key,
+                    base_url=args.compaction_judge_base_url,
+                )
+            else:
+                judge_api_key = ""
+                judge = NoopJudge()
+            result = run_autocompact_agent(
+                adapter=adapter,
+                judge=judge,
+                system_prompt=system_prompt,
+                user_prompt=instruction,
+                tool_executor=tool_executor,
+                tools=get_all_tool_definitions(),
+                max_turns=args.max_turns,
+                max_compactions=args.max_compactions,
+                trajectory_path=results_dir / "autocompact-trajectory.json",
+            )
     finally:
         sandbox.stop()
 
@@ -463,12 +495,21 @@ def run(args: argparse.Namespace) -> None:
         "total_tokens": result["input_tokens"] + result["output_tokens"],
         "wall_clock_seconds": result["wall_clock_seconds"],
         "finished_cleanly": result["finished_cleanly"],
-        "termination_reason": adapter.termination_reason or "finished",
+        "termination_reason": adapter.termination_reason
+        or result.get("termination_reason")
+        or "finished",
+        "compactions": result.get("compactions", 0),
+        "sft_record_count": result.get("sft_record_count", 0),
+        "judge_input_tokens": result.get("judge_input_tokens", 0),
+        "judge_output_tokens": result.get("judge_output_tokens", 0),
         "completed_at": datetime.now(UTC).isoformat(),
         **result["tool_metrics"],
     }
     (results_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    _redact_artifacts(results_dir, api_key)
+    _redact_artifacts(
+        results_dir,
+        [api_key, judge_api_key if args.autocompact_mode == "judge" else ""],
+    )
     print(
         json.dumps(
             {"event": "run_complete", "results_dir": str(results_dir), **metrics},
@@ -498,6 +539,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shell-timeout", type=int, default=60)
     parser.add_argument("--reasoning-effort")
     parser.add_argument("--skills", nargs="*", default=None)
+    parser.add_argument(
+        "--autocompact-mode",
+        choices=("off", "judge", "autonomous"),
+        default=os.environ.get("HARBOR_HARVEY_AUTOCOMPACT_MODE", "off"),
+    )
+    parser.add_argument(
+        "--max-compactions",
+        type=int,
+        default=int(os.environ.get("HARBOR_HARVEY_MAX_COMPACTIONS", "2")),
+    )
+    parser.add_argument(
+        "--compaction-judge-provider",
+        choices=("anthropic", "openai"),
+        default=os.environ.get("HARBOR_HARVEY_COMPACTION_JUDGE_PROVIDER", "anthropic"),
+    )
+    parser.add_argument(
+        "--compaction-judge-model",
+        default=os.environ.get("HARBOR_HARVEY_COMPACTION_JUDGE_MODEL", ""),
+    )
+    parser.add_argument(
+        "--compaction-judge-base-url",
+        default=os.environ.get("HARBOR_HARVEY_COMPACTION_JUDGE_BASE_URL") or None,
+    )
     return parser.parse_args()
 
 

@@ -50,6 +50,47 @@ the dataset resolves through harbor at trainer runtime, so launch only uploads t
 
 validate stops after the checks: it runs sample rollouts with a standard model, locally and in a hosted sandbox, just to confirm the environment runs end to end. both locations run real modal sandbox trials.
 
+## collect AutoCompact SFT data
+
+`collect` runs only the Harbor training split. An online judge may replace the
+base model's proposed action with `compact()`, repair its summary, and repair
+the first continuation. Every accepted compaction event becomes three
+call-level records; ordinary turns are retained in the raw trajectory but are
+not exported for SFT.
+
+```bash
+uv run python main.py collect --yes \
+  --output-dir ./harvey-autocompact-data \
+  --model Qwen/Qwen3.5-35B-A3B \
+  --modal-token-id "$MODAL_TOKEN_ID" \
+  --modal-token-secret "$MODAL_TOKEN_SECRET" \
+  --judge-provider anthropic \
+  --judge-model 'anthropic/claude-sonnet-4-6' \
+  --judge-api-key "$ANTHROPIC_API_KEY"
+```
+
+Use `--max-examples 1` for a smoke run and `--resume` to skip completed
+per-rollout shards. The output includes raw trajectories, deterministic
+`train.jsonl`/`eval.jsonl`, passed-only views, and `manifest.json`. The split
+is by Harvey task id, so a compaction triplet can never cross splits. The
+separate 126-task Harbor evaluation split is not read.
+
+Launch SFT from an existing collection with the same credentials:
+
+```bash
+uv run python main.py launch-sft --yes \
+  --output-dir ./harvey-autocompact-data \
+  --modal-token-id "$MODAL_TOKEN_ID" \
+  --modal-token-secret "$MODAL_TOKEN_SECRET" \
+  --judge-provider anthropic \
+  --judge-model 'anthropic/claude-sonnet-4-6' \
+  --judge-api-key "$ANTHROPIC_API_KEY"
+```
+
+SFT uses the uploaded call-level JSONL directly. Prompt assistant messages are
+loss-masked; only the single assistant completion in each record contributes
+to loss.
+
 ## environment
 
 ```python

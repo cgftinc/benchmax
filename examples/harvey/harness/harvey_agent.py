@@ -341,7 +341,10 @@ class HarveyHarnessAgent(BaseAgent):
                 'python3" >&2',
                 "  exit 1",
                 "fi",
+                "set +e",
                 '"${RUNNER[@]}" ' + " ".join(shlex.quote(arg) for arg in args),
+                "RUN_STATUS=$?",
+                "set -e",
                 f"RESULT_DIR={shlex.quote(result_dir)}",
                 f"STAGED_RESULT={shlex.quote(str(EnvironmentPaths.agent_dir / 'harvey-results'))}",
                 'rm -rf "$STAGED_RESULT"',
@@ -357,6 +360,7 @@ class HarveyHarnessAgent(BaseAgent):
                 f"if [ -d {shlex.quote(self.harbor_output_dir)} ]; then cp -a "
                 f"{shlex.quote(self.harbor_output_dir + '/.')} "
                 f"{shlex.quote(str(EnvironmentPaths.artifacts_dir / 'harvey-output/'))}; fi",
+                'exit "$RUN_STATUS"',
             ]
         )
 
