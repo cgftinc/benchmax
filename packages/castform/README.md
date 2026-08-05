@@ -60,12 +60,14 @@ The CLI does not duplicate that orchestration. Use it for `login`, `setup`,
 
 ## Optional libraries
 
-Add only the features the project uses:
+Add only the optional features the project uses:
 
 ```bash
 uv add 'castform[rag]'
-uv add 'castform[traces]'
 ```
+
+Trace adapters and `castform.traces.TracesPipeline` ship with the base
+`castform` package; no trace-specific extra is required.
 
 Vector-store integrations ship as their own extras: `castform[chroma]`,
 `castform[pinecone]`, `castform[turbopuffer]`.

@@ -26,6 +26,7 @@ from benchmax.envs.shared_types import (
     RolloutAttempt,
     RolloutOutcome,
     RolloutRequest,
+    ValidationDiagnostic,
 )
 
 if TYPE_CHECKING:
@@ -59,6 +60,72 @@ _TERMINATION_REASON_BY_EXCEPTION = {
 _HARNESS_REPORTED_TERMINATION_REASONS = frozenset(
     {"context_exceeded", "output_exceeded", "max_turns_exceeded", "tool_budget_exceeded"}
 )
+_TRAINER_OWNED_MODEL_FIELDS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "presence_penalty",
+        "frequency_penalty",
+        "seed",
+        "stop",
+    }
+)
+_OUTPUT_CAP_FIELDS = frozenset({"max_tokens", "max_completion_tokens"})
+_UNSUPPORTED_MODEL_FIELDS = frozenset(
+    {
+        "best_of",
+        "do_sample",
+        "function_call",
+        "functions",
+        "grammar",
+        "max_new_tokens",
+        "min_p",
+        "min_tokens",
+        "num_beams",
+        "prediction",
+        "reasoning_effort",
+        "repetition_penalty",
+        "typical_p",
+        "verbosity",
+        "web_search_options",
+    }
+)
+
+
+def _walk_model_controls(
+    value: Mapping[str, object],
+    prefix: str = "agent.kwargs",
+) -> Sequence[tuple[str, str, object]]:
+    controls: list[tuple[str, str, object]] = []
+    for field, child in value.items():
+        path = f"{prefix}.{field}"
+        controls.append((path, field, child))
+        if isinstance(child, Mapping):
+            controls.extend(_walk_model_controls(child, path))
+    return controls
+
+
+def _unsupported_model_control(field: str, value: object) -> bool:
+    if field == "return_routed_experts":
+        return True
+    if field in _UNSUPPORTED_MODEL_FIELDS:
+        return value is not None
+    if field == "n":
+        return value not in (None, 1)
+    if field == "tool_choice":
+        return value not in (None, "auto")
+    if field == "logprobs":
+        return value not in (None, False)
+    if field == "top_logprobs":
+        return value is not None
+    if field == "parallel_tool_calls":
+        return value not in (None, True)
+    if field == "response_format":
+        return value not in (None, {}, {"type": "text"})
+    if field == "logit_bias":
+        return value not in (None, {})
+    return False
 
 
 class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
@@ -73,6 +140,48 @@ class HarborEnv(Environment["TaskConfig", RolloutAttempt]):
         """Use a public model URL when Harbor runs in a remote sandbox."""
 
         return self._requires_public_model_endpoint
+
+    def validation_diagnostics(self) -> Sequence[ValidationDiagnostic]:
+        """Flag Harbor harness controls that conflict with tracked training."""
+
+        agent = self._trial.agent
+        config = agent.config if isinstance(agent, BundledHarborAgent) else agent
+        kwargs = getattr(config, "kwargs", None)
+        if not isinstance(kwargs, Mapping):
+            return ()
+        diagnostics: list[ValidationDiagnostic] = []
+        for path, field, value in _walk_model_controls(kwargs):
+            if field in _OUTPUT_CAP_FIELDS:
+                diagnostics.append(
+                    ValidationDiagnostic(
+                        severity="warning",
+                        code="harness_output_cap",
+                        location=path,
+                        message=(
+                            f"{path} is a harness-requested output cap; Castform may clamp it "
+                            "to the remaining trainer context budget"
+                        ),
+                    )
+                )
+            elif field in _TRAINER_OWNED_MODEL_FIELDS:
+                diagnostics.append(
+                    ValidationDiagnostic(
+                        severity="error",
+                        code="trainer_owned_model_control",
+                        location=path,
+                        message=(f"{path} is trainer-owned and cannot be set by a Harbor harness"),
+                    )
+                )
+            elif _unsupported_model_control(field, value):
+                diagnostics.append(
+                    ValidationDiagnostic(
+                        severity="error",
+                        code="unsupported_model_control",
+                        location=path,
+                        message=f"{path}={value!r} is unsupported by tracked training sessions",
+                    )
+                )
+        return tuple(diagnostics)
 
     def __init__(
         self,

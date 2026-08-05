@@ -401,7 +401,7 @@ def validate(env: DominantColorEnv, uploaded_assets: Any) -> Any:
         validate_environment(
             env,
             model=VALIDATE_MODEL,
-            split="eval",
+            split="train",
             base_dir=DATA_DIR,
             remote_assets=uploaded_assets,
             max_context_tokens=2048,

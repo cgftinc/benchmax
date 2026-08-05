@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from benchmax.auth import ModelAuth, StaticBearerAuth, bind_model_auth
-from benchmax.envs import DatasetSplit, Environment, RolloutOutcome, RolloutRequest
 
+from benchmax.envs import DatasetSplit, Environment, RolloutOutcome, RolloutRequest
 from castform import config
 from castform.model_auth import CastformModelAuth
 from castform.platform.client import RolloutClient
@@ -35,11 +35,16 @@ class ValidationReport:
     remote: dict[str, RolloutOutcome] | None = None
     local_errors: dict[str, str] = field(default_factory=dict)
     remote_errors: dict[str, str] = field(default_factory=dict)
+    static_warnings: dict[str, str] = field(default_factory=dict)
+    static_errors: dict[str, str] = field(default_factory=dict)
+    local_warnings: dict[str, list[str]] = field(default_factory=dict)
+    remote_warnings: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
         return (
-            not self.local_errors
+            not self.static_errors
+            and not self.local_errors
             and _outcomes_executed(self.local)
             and (
                 self.remote is None or (not self.remote_errors and _outcomes_executed(self.remote))
@@ -76,6 +81,24 @@ async def validate_environment(
         max_context_tokens=max_context_tokens,
         local_timeout_seconds=local_timeout_seconds,
     )
+    diagnostics_method = getattr(env, "validation_diagnostics", None)
+    diagnostics = tuple(diagnostics_method()) if callable(diagnostics_method) else ()
+    static_warnings = {
+        diagnostic.location or f"warning-{index}": diagnostic.message
+        for index, diagnostic in enumerate(diagnostics)
+        if diagnostic.severity == "warning"
+    }
+    static_errors = {
+        diagnostic.location or f"error-{index}": diagnostic.message
+        for index, diagnostic in enumerate(diagnostics)
+        if diagnostic.severity == "error"
+    }
+    if static_errors:
+        return ValidationReport(
+            local={},
+            static_warnings=static_warnings,
+            static_errors=static_errors,
+        )
     resolved_base_url = config.llm_url()
     resolved_model_auth = model_auth or CastformModelAuth()
     if auth_bindings is None:
@@ -92,7 +115,7 @@ async def validate_environment(
     # model-call 5xx) should not force a full re-run of the whole pipeline.
     # A genuine environment defect still fails on the second attempt.
     for attempt in range(2):
-        local, local_errors, rollout_ids = await _run_local_validation(
+        local, local_errors, local_warnings, rollout_ids = await _run_local_validation(
             env=env,
             model=model,
             split=split,
@@ -115,6 +138,7 @@ async def validate_environment(
 
     remote: dict[str, RolloutOutcome] | None = None
     remote_errors: dict[str, str] = {}
+    remote_warnings: dict[str, list[str]] = {}
     if remote_assets is not None:
         client = RolloutClient(server_url=platform_url)
         for attempt in range(2):
@@ -133,12 +157,19 @@ async def validate_environment(
                 raise ValueError(f"hosted validation returned {len(events)} rollouts; expected 2")
             remote = {}
             remote_errors = {}
+            remote_warnings = {}
             for index, event in enumerate(events):
                 rollout_id = str(event.get("rollout_id") or f"remote-{index}")
                 if event.get("success") is not True:
                     remote_errors[rollout_id] = str(
                         event.get("error") or "rollout produced no usable model trace"
                     )
+                contract_errors = _contract_diagnostics(event, "contract_errors")
+                if contract_errors:
+                    _append_error(remote_errors, rollout_id, "; ".join(contract_errors))
+                contract_warnings = _contract_diagnostics(event, "contract_warnings")
+                if contract_warnings:
+                    remote_warnings[rollout_id] = contract_warnings
                 remote[rollout_id] = RolloutOutcome(
                     rewards=dict(event.get("rewards") or {}),
                     termination_reason=str(event.get("termination_reason") or "unknown"),
@@ -155,6 +186,10 @@ async def validate_environment(
         remote=remote,
         local_errors=local_errors,
         remote_errors=remote_errors,
+        static_warnings=static_warnings,
+        static_errors=static_errors,
+        local_warnings=local_warnings,
+        remote_warnings=remote_warnings,
     )
 
 
@@ -169,7 +204,12 @@ async def _run_local_validation(
     proxy_base_url: str,
     max_context_tokens: int,
     timeout_seconds: float | None,
-) -> tuple[dict[str, RolloutOutcome], dict[str, str], tuple[str, str]]:
+) -> tuple[
+    dict[str, RolloutOutcome],
+    dict[str, str],
+    dict[str, list[str]],
+    tuple[str, str],
+]:
     """Run one local group through ephemeral tracked llm-proxy sessions."""
 
     rollout_ids = tuple(f"validate-{uuid.uuid4()}" for _ in range(2))
@@ -230,6 +270,7 @@ async def _run_local_validation(
                     for rollout_id, outcome in local.items()
                     if outcome.error is not None
                 }
+                local_warnings: dict[str, list[str]] = {}
                 for session in sessions:
                     try:
                         capture = await session_client.collect(session)
@@ -243,7 +284,21 @@ async def _run_local_validation(
                             local_errors.setdefault(
                                 session.session_id, "rollout produced no usable model trace"
                             )
-                return local, local_errors, rollout_ids
+                        contract_errors = _contract_diagnostics(capture, "contract_errors")
+                        if contract_errors:
+                            _append_error(
+                                local_errors,
+                                session.session_id,
+                                "; ".join(contract_errors),
+                            )
+                        contract_warnings = _contract_diagnostics(capture, "contract_warnings")
+                        if contract_warnings:
+                            local_warnings[session.session_id] = contract_warnings
+                        if capture.get("num_calls") == 1:
+                            local_warnings.setdefault(session.session_id, []).append(
+                                "multi-turn history contract was not exercised"
+                            )
+                return local, local_errors, local_warnings, rollout_ids
     except TimeoutError as error:
         if not timeout.expired():
             raise
@@ -297,3 +352,25 @@ def _outcomes_executed(outcomes: dict[str, RolloutOutcome]) -> bool:
 
 def _termination_is_non_error(reason: str) -> bool:
     return reason.strip().lower() in _VALIDATION_NON_ERROR_TERMINATIONS
+
+
+def _contract_diagnostics(payload: Mapping[str, Any], field: str) -> list[str]:
+    raw = payload.get(field)
+    if not isinstance(raw, list):
+        return []
+    formatted: list[str] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            formatted.append(str(item))
+            continue
+        code = str(item.get("code") or "session_contract")
+        location = item.get("field")
+        message = item.get("message")
+        detail = str(message) if message else repr(dict(item))
+        formatted.append(f"{code}{f' at {location}' if location else ''}: {detail}")
+    return formatted
+
+
+def _append_error(errors: dict[str, str], rollout_id: str, detail: str) -> None:
+    previous = errors.get(rollout_id)
+    errors[rollout_id] = f"{previous}; {detail}" if previous else detail

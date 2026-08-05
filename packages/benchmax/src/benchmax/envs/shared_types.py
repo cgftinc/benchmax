@@ -13,10 +13,21 @@ __all__ = [
     "RolloutFailure",
     "RolloutOutcome",
     "RolloutRequest",
+    "ValidationDiagnostic",
 ]
 
 DatasetSplit = Literal["train", "eval"]
 type RewardMap = Mapping[str, float]
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationDiagnostic:
+    """A configuration issue discoverable before executing a rollout."""
+
+    severity: Literal["warning", "error"]
+    code: str
+    message: str
+    location: str | None = None
 
 
 class RolloutFailure(RuntimeError):  # noqa: N818 — public exported name

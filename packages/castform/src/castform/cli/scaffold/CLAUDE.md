@@ -53,6 +53,14 @@ completed zero reward is valid, while an empty result with a failure termination
 reason is not. Hosted validation uses the exact uploaded assets that launch would
 consume.
 
+Model sampling is trainer-owned. Harness code may request only an output ceiling
+with `max_tokens` or `max_completion_tokens`; validation prints a warning because
+the effective cap may be lower. Do not set `temperature`, `top_p`, `top_k`,
+penalties, `seed`, or `stop` in harness model kwargs. Static validation rejects
+those controls and unsupported response options. Tracked local and hosted
+validation also rejects sampling conflicts, changed tools, overlapping calls,
+and rewritten multi-turn history. Never launch with a contract error.
+
 ## Bundle and launch boundary
 
 The launch stage must remain visibly ordered:

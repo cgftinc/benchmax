@@ -5,9 +5,13 @@ description: Design a benchmax environment, its ordered dataset, tools, and expl
 
 # Design an environment
 
+Before coding, inspect the maintained [examples](https://github.com/castform-ai/benchmax/tree/main/examples), choose the closest task shape, and follow its `README.md` and `main.py`.
+
 Use `BaseEnv` for the standard OpenAI-compatible chat and tool loop. Use
-`HarborEnv` when Harbor owns the complete agent/sandbox/verifier harness. Extend
-`Environment` directly only for another genuinely different rollout loop.
+`HarborEnv` for a Harbor dataset/package or tasks that ship their own instruction,
+sandbox, and verifier. Start with `aime` for packaged tasks or `harvey` for a
+custom harness. Do not infer Harbor from a judge, tool, or Dockerfile alone.
+Extend `Environment` directly only for another genuinely different rollout loop.
 
 ## Required BaseEnv shape
 
@@ -15,6 +19,7 @@ Use `BaseEnv` for the standard OpenAI-compatible chat and tool loop. Use
 from pathlib import Path
 
 from benchmax.envs import BaseEnv, BaseRollout, DatasetSplit, JsonlDataset
+from benchmax.envs.base import resolve_dataset_path
 from benchmax.rewards import extract_completion_text
 
 
@@ -24,7 +29,8 @@ class MyEnv(BaseEnv):
     async def create_dataset(
         self, split: DatasetSplit, base_dir: Path
     ) -> JsonlDataset:
-        return JsonlDataset(base_dir / f"{split}.jsonl", row_to_example=...)
+        path = resolve_dataset_path(base_dir, f"{split}.jsonl")
+        return JsonlDataset(path, row_to_example=...)
 
     async def compute_reward(self, rollout: BaseRollout) -> dict[str, float]:
         answer = extract_completion_text(rollout.messages)
@@ -67,6 +73,16 @@ async def run_tool(self, rollout_id: str, tool_name: str, **tool_args):
 ```
 
 Keep clients pickle-safe. Use `InjectedAuth` for calls through the Castform LLM endpoint so Castform supplies the current session credential. Use explicit `StaticBearerAuth` for a user-managed external endpoint; never read Castform credentials from benchmax environment code.
+
+## Model-request ownership
+
+Treat model sampling as trainer-owned. A harness may request an output ceiling
+with `max_tokens` or `max_completion_tokens`; static validation emits a warning
+because Castform may clamp that ceiling to the remaining context budget. Do not
+set `temperature`, `top_p`, `top_k`, penalties, `seed`, or `stop` in agent or
+nested model kwargs. Static validation rejects them instead of allowing a later
+training failure. It also rejects unsupported controls such as `n > 1`, forced
+`tool_choice`, logprobs, and non-text response formats.
 
 ## Review before handoff
 

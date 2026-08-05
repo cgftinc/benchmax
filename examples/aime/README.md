@@ -52,9 +52,9 @@ class AimeMiniSweHarborEnv(HarborEnv):
 
 harbor resolves the dataset, runs each rollout as a sandboxed trial, and settles the reward with the dataset's verifier.
 
-## harness
+## why the custom harness
 
-the agent harness lives in [`harness/`](harness/): the upstream mini-swe-agent installed offline — wheels are prefetched on the trial host and uploaded into the sandbox, so the sandbox itself needs no apt or PyPI access. it is the default, not a requirement. pass any `BundledHarborAgent` as `harness=` to run a different agent loop against the same dataset and verifier:
+this is operational hardening, not an AIME requirement. Harbor's stock mini-swe installer ran apt and PyPI setup in every fresh sandbox, taking 40–90 seconds and sometimes exceeding its setup timeout. the harness in [`harness/`](harness/) instead prefetches wheels on the trial host and installs them offline. use `TrialAgentConfig(name="mini-swe-agent")` when stock installation is reliable; pass a `BundledHarborAgent` only when a custom harness is actually needed:
 
 ```python
 env = AimeMiniSweHarborEnv(

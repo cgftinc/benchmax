@@ -19,7 +19,7 @@ _SKILLS = (
     "view-progress",
 )
 
-# Every template now ships these — a runnable seed + tiny day-one datasets.
+# BaseEnv templates ship these — a runnable seed + tiny day-one datasets.
 _SEED_FILES = (
     "pyproject.toml",
     "main.py",
@@ -160,6 +160,7 @@ def test_setup_generic_ships_seed_env_and_data(tmp_path, monkeypatch):
         "benchmax==0.1.2",
         "castform==0.1.2",
     ]
+    assert project["dependency-groups"]["dev"] == ["pytest>=8.4"]
 
 
 def test_setup_no_template_ships_docs_and_skills_only(tmp_path):
@@ -179,9 +180,7 @@ def test_setup_refuses_existing_main_py(tmp_path, capsys):
     assert "already exists" in capsys.readouterr().err
 
 
-def test_setup_template_rag_uses_generic_seed_and_provider_guidance(
-    tmp_path, monkeypatch
-):
+def test_setup_template_rag_uses_generic_seed_and_provider_guidance(tmp_path, monkeypatch):
     """The RAG template links to maintained examples instead of copying an adapter."""
     monkeypatch.setattr(setup, "version", lambda distribution: "0.1.2")
     assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
@@ -201,14 +200,43 @@ def test_setup_template_rag_uses_generic_seed_and_provider_guidance(
     guidance = "\n".join(
         [
             (tmp_path / "GETTING_STARTED.md").read_text(),
-            (
-                tmp_path / ".agents" / "skills" / "generate-data" / "SKILL.md"
-            ).read_text(),
+            (tmp_path / ".agents" / "skills" / "generate-data" / "SKILL.md").read_text(),
         ]
     )
     for example in ("neon_rag", "turbopuffer_rag", "chroma_rag", "pinecone_rag"):
         assert f"benchmax/tree/main/examples/{example}" in guidance
     assert "HostedCorpusSearch" not in (tmp_path / "main.py").read_text()
+
+
+def test_setup_template_harbor_uses_runtime_data_and_explicit_args(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(setup, "version", lambda distribution: "0.1.2")
+    assert setup._cmd_setup(_ns(tmp_path, template="harbor")) == 0
+
+    module = load_module(tmp_path / "main.py")
+    assert discover_env_class(module).__name__ == "CustomHarborEnv"
+    assert not (tmp_path / "train.jsonl").exists()
+    assert not (tmp_path / "eval.jsonl").exists()
+
+    project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
+    assert project["project"]["dependencies"] == [
+        "benchmax==0.1.2",
+        "castform==0.1.2",
+        "harbor[modal]>=0.18.0,<0.19",
+    ]
+    assert project["dependency-groups"]["dev"] == ["pytest>=8.4"]
+    main = (tmp_path / "main.py").read_text()
+    assert "def _constructor_args(args: argparse.Namespace)" in main
+    assert 'TrialAgentConfig(name="mini-swe-agent")' in main
+    assert "upload_assets(bundle=bundle, run_name=run_name)" in main
+    assert "os.environ" not in main
+
+    getting_started = (tmp_path / "GETTING_STARTED.md").read_text()
+    assert "Harbor package" in getting_started
+    assert "AIME" in getting_started and "Harvey" in getting_started
+    assert "--verifier-env OPENAI_API_KEY=<key>" in getting_started
+    output = capsys.readouterr().out
+    assert "Harbor package <org/package>" in output
+    assert "synthetic dataset" not in output
 
 
 def test_setup_template_rag_refuses_existing_main_py(tmp_path, capsys):
@@ -252,6 +280,7 @@ def test_getting_started_teaches_script_workflow(tmp_path):
     assert "castform launch" not in gs
     assert "castform data" not in gs
     assert "Useful CLI commands" in gs
+    assert "closest maintained example" in gs.lower()
 
 
 def test_setup_env_conditional_surfacing(tmp_path):
@@ -280,10 +309,14 @@ def test_setup_env_conditional_surfacing(tmp_path):
         "reference_chunks",
         "source-ID canonicalization",
         "castform.rag",
-        "benchmax/tree/main/examples",
     ):
         assert sentinel in rag, f"rag scaffold missing {sentinel!r}"
         assert sentinel not in generic, f"generic scaffold leaked {sentinel!r}"
+
+    # Both flows send the agent to the closest maintained example; only the RAG
+    # flow adds provider-specific implementation guidance.
+    for blob in (generic, rag):
+        assert "benchmax/tree/main/examples" in blob
 
     # reversed convention + main.py naming in both scaffolds' guide/skills
     for blob in (generic, rag):

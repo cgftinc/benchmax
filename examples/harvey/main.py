@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
-from benchmax.bundle import dump_bundle
 from benchmax.envs.environment import Environment
 from benchmax.envs.harbor import (
     BundledAgentSource,
@@ -40,6 +39,8 @@ from harbor import (
     TrialEnvironmentConfig,
     TrialVerifierConfig,
 )
+
+from benchmax.bundle import dump_bundle
 
 _HARNESS_SOURCE = BundledAgentSource.from_directory(
     Path(__file__).parent / "harness",
@@ -293,13 +294,13 @@ def validate(env: HarveyLabHarborEnv, uploaded_assets: Any) -> Any:
             validate_environment(
                 env,
                 model=VALIDATE_MODEL,
-                split="eval",
+                split="train",
                 base_dir=Path(tmp),
                 remote_assets=uploaded_assets,
                 # Small enough that the budget stop ends trials in minutes
-                # instead of the full 30-turn loop; 4096 was measured too
-                # small for even the first model call.
-                max_context_tokens=6144,
+                # instead of the full 30-turn loop; 6144 was measured too
+                # small for the harness prompt plus its first useful turn.
+                max_context_tokens=8192,
                 # Modal sandbox build plus a several-turn trial still exceeds
                 # the 120s local default.
                 local_timeout_seconds=1800,
@@ -331,6 +332,14 @@ def launch(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
 
 
 def _print_validation(report: Any) -> None:
+    for location in ("static", "local", "remote"):
+        warnings = getattr(report, f"{location}_warnings", {}) or {}
+        for item, messages in warnings.items():
+            values = messages if isinstance(messages, list) else [messages]
+            for message in values:
+                print(f"⚠️ {location} {item}: {message}")
+    for item, error in (getattr(report, "static_errors", {}) or {}).items():
+        print(f"❌ static {item}: {error}")
     for location in ("local", "remote"):
         outcomes = getattr(report, location)
         if outcomes is None:

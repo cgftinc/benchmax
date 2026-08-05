@@ -228,7 +228,7 @@ def validate(env: MathEnv, uploaded_assets):
         validate_environment(
             env,
             model=VALIDATION_MODEL,
-            split="eval",
+            split="train",
             base_dir=DATA_DIR,
             remote_assets=uploaded_assets,
             max_context_tokens=2048,

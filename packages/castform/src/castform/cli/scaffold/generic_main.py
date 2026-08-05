@@ -17,10 +17,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
-import difflib
 import json
 from pathlib import Path
 from typing import Any
+
+from benchmax.envs.base import resolve_dataset_path
 
 from benchmax.bundle import dump_bundle
 from benchmax.envs import (
@@ -34,7 +35,6 @@ from benchmax.envs import (
     canonical_example_id,
 )
 from benchmax.rewards import extract_completion_text
-
 from castform import validate_environment
 from castform.platform.client import TrainerClient
 from castform.platform.environment_assets import upload_assets
@@ -44,12 +44,12 @@ from castform.platform.login import ensure_session
 class CustomEnv(BaseEnv):
     """A single-turn env: the model answers a prompt, scored against ground_truth.
 
-    No tools and no LLM judge — the reward itself is deterministic string overlap
+    No tools and no LLM judge — the reward is normalized exact-match correctness
     and needs no separate judge call. Swap in your own reward / tools / judge.
     """
 
     # Advertised to the model each rollout (optional; default ""). Keep it short.
-    system_prompt = "Answer the question concisely and directly."
+    system_prompt = "Return only the answer, without explanation."
     max_turns = 1
 
     async def create_dataset(
@@ -60,7 +60,7 @@ class CustomEnv(BaseEnv):
         max_examples: int | None = None,
     ) -> JsonlDataset[JsonRow]:
         return JsonlDataset(
-            base_dir / f"{split}.jsonl",
+            resolve_dataset_path(base_dir, f"{split}.jsonl"),
             row_to_example=self._example_from_row,
             max_examples=max_examples,
         )
@@ -69,12 +69,25 @@ class CustomEnv(BaseEnv):
         prompt = row.get("prompt")
         if not isinstance(prompt, str):
             raise TypeError("dataset rows require a string 'prompt'")
+        if not prompt.strip():
+            raise ValueError("dataset rows require a non-empty 'prompt'")
+        ground_truth = row.get("ground_truth")
+        if not isinstance(ground_truth, str):
+            raise TypeError("dataset rows require a string 'ground_truth'")
+        if not ground_truth.strip():
+            raise ValueError("dataset rows require a non-empty 'ground_truth'")
+        extra = {
+            key: value
+            for key, value in row.items()
+            if key not in ("prompt", "ground_truth", "prompt_messages")
+        }
         payload: JsonRow = {
+            **extra,
             "prompt_messages": [
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": prompt},
             ],
-            **{key: value for key, value in row.items() if key != "prompt"},
+            "ground_truth": ground_truth,
         }
         return Example(id=canonical_example_id(payload), payload=payload)
 
@@ -82,25 +95,14 @@ class CustomEnv(BaseEnv):
         self,
         rollout: BaseRollout,
     ) -> dict[str, float]:
-        """Score the answer against `ground_truth`. Return positive scores only; all
-        components are SUMMED into one scalar — this is your whole training signal,
-        so edit it. (Deterministic overlap here; swap in an LLM judge for open-ended
-        answers — see the design-environment skill.)
-        """
-        t = rollout.example_args
+        """Score a normalized exact answer against the required ground truth."""
         answer = extract_completion_text(rollout.messages).strip()
-        gold = str(t.get("ground_truth") or t.get("answer") or "").strip()
-        if not answer:
-            return {"overlap": 0.0, "contains_gold": 0.0, "answered": 0.0}
-        overlap = (
-            difflib.SequenceMatcher(None, answer.lower(), gold.lower()).ratio() if gold else 0.0
-        )
-        contains = 1.0 if gold and gold.lower() in answer.lower() else 0.0
-        return {
-            "overlap": overlap,  # fuzzy match with the gold answer, in [0, 1]
-            "contains_gold": 0.5 * contains,  # the gold string appears verbatim
-            "answered": 0.1,  # small shaping: produced a non-empty answer
-        }
+        gold = rollout.example_args.get("ground_truth")
+        if not isinstance(gold, str) or not gold.strip():
+            raise ValueError("rollout requires a non-empty string 'ground_truth'")
+        normalized_answer = " ".join(answer.casefold().split())
+        normalized_gold = " ".join(gold.casefold().split())
+        return {"correctness": float(normalized_answer == normalized_gold)}
 
 
 # ── Run config — validate/launch read these so the run reproduces from this
@@ -112,6 +114,7 @@ VALIDATE_CONFIG = {
 }
 
 LAUNCH_CONFIG = {
+    "model": "Qwen/Qwen3.5-4B",
     # Total prompt + response tokens across the WHOLE rollout. Single-turn answers
     # are short; raise it if your task needs longer prompts or tool transcripts.
     "max_context_tokens": 4096,
@@ -135,7 +138,6 @@ LAUNCH_CONFIG = {
 
 TRAIN_FILE = "train.jsonl"
 EVAL_FILE = "eval.jsonl"
-ENV_ARGS: dict[str, Any] = {}  # CustomEnv constructor kwargs (none by default)
 
 # Dependencies installed in the remote rollout runtime. Keep this declaration at
 # the script boundary: add only packages imported by your env/reward/tool code.
@@ -172,6 +174,16 @@ def _run_name() -> str:
     return str(LAUNCH_CONFIG.get("name") or CustomEnv.__name__.lower())
 
 
+def _constructor_args(args: argparse.Namespace) -> dict[str, Any]:
+    """Build explicit, serializable kwargs shared by local and remote envs.
+
+    Add task configuration and credentials as CLI arguments, then translate them
+    here instead of reading ambient environment variables inside ``CustomEnv``.
+    """
+    del args
+    return {}
+
+
 def generate_data(force: bool = False) -> bool:
     """Produce `train.jsonl` / `eval.jsonl`.
 
@@ -180,17 +192,32 @@ def generate_data(force: bool = False) -> bool:
     the gen code here so the dataset stays reproducible from this file. Re-run with
     --force to regenerate; skip-if-exists otherwise.
     """
-    have = Path(TRAIN_FILE).exists() and Path(EVAL_FILE).exists()
-    if have and not force:
+    datasets = (
+        (Path(TRAIN_FILE), _SEED_TRAIN),
+        (Path(EVAL_FILE), _SEED_EVAL),
+    )
+    pending = (
+        list(datasets) if force else [(path, rows) for path, rows in datasets if not path.exists()]
+    )
+    if not pending:
         print(f"data: {TRAIN_FILE} / {EVAL_FILE} present — skipping (--force to redo)")
         return True
-    _write_jsonl(TRAIN_FILE, _SEED_TRAIN)
-    _write_jsonl(EVAL_FILE, _SEED_EVAL)
-    print(f"data: wrote {len(_SEED_TRAIN)} train / {len(_SEED_EVAL)} eval rows")
+    for path, rows in pending:
+        _write_jsonl(str(path), rows)
+    written = ", ".join(f"{path} ({len(rows)} rows)" for path, rows in pending)
+    print(f"data: wrote {written}")
     return True
 
 
 def _print_validation(report: Any) -> None:
+    for location in ("static", "local", "remote"):
+        warnings = getattr(report, f"{location}_warnings", {}) or {}
+        for item, messages in warnings.items():
+            values = messages if isinstance(messages, list) else [messages]
+            for message in values:
+                print(f"⚠️ {location} {item}: {message}")
+    for item, error in (getattr(report, "static_errors", {}) or {}).items():
+        print(f"❌ static {item}: {error}")
     for location in ("local", "remote"):
         outcomes = getattr(report, location)
         if outcomes is None:
@@ -287,11 +314,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "data":
         return 0
 
+    constructor_args = _constructor_args(args)
     ensure_session()  # data preparation stays usable without platform login
     print(f"[stage 2/{total_stages}] bundling environment")
     bundled_environment = dump_bundle(
         CustomEnv,
-        constructor_args=ENV_ARGS,
+        constructor_args=constructor_args,
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
     print(f"[stage 3/{total_stages}] uploading environment and dataset")
@@ -305,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
     print(f"  dataset_path: {uploaded_assets.dataset_path}")
     print(f"[stage 4/{total_stages}] validating environment")
-    report = validate(CustomEnv(**ENV_ARGS), uploaded_assets)
+    report = validate(CustomEnv(**constructor_args), uploaded_assets)
     if not report.ok:
         return 1
     if args.action == "launch":

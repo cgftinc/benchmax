@@ -14,8 +14,16 @@ uv run python main.py launch
 ```
 
 Do not pass `--yes` unless the user has already explicitly authorized the cost.
+Never launch after `validate_environment` reports a static or runtime sampling
+or history-contract error. Review output-cap warnings (`max_tokens` or
+`max_completion_tokens`) and confirm any effective clamp is intentional.
 
 ## Required ordering
+
+Accept user configuration as explicit `main.py` arguments, normalize it once in
+`_constructor_args(args)`, and reuse that dictionary for local construction and
+`dump_bundle`. Avoid ambient `os.environ` reads in environments, tools, rewards,
+and harness configuration.
 
 Read the script and confirm that the launch action does all of the following
 in order:
@@ -44,7 +52,7 @@ runtime:
 ```python
 bundle = dump_bundle(
     CustomEnv,
-    constructor_args=ENV_ARGS,
+    constructor_args=constructor_args,
     pip_dependencies=RUNTIME_DEPENDENCIES,
 )
 ```

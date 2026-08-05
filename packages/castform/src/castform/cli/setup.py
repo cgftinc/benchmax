@@ -4,11 +4,11 @@ Logs you in (no-op if already authed), then writes the agent scaffold from the
 packaged templates (``castform.cli.scaffold``): CLAUDE.md / AGENTS.md, the
 per-stage skills into each agent's skills dir (claude → ``.claude/skills/``,
 codex → ``.agents/skills/``, with the body's path references retargeted), a
-starter prompt, and a standalone ``pyproject.toml`` + runnable seed ``main.py`` +
-tiny seed datasets (a minimal single-turn env) so ``python main.py validate``
-runs on day one. The ``rag`` template adds RAG dependencies and links to the
-maintained Benchmax examples. ``--no-template`` skips the seed (docs + skills only; the agent writes
-``main.py`` from the design-environment skill). Does NOT open the agent.
+starter prompt, and a standalone ``pyproject.toml`` + runnable seed ``main.py``.
+The default and ``rag`` templates include tiny single-turn datasets; the
+``harbor`` template resolves its dataset through Harbor at runtime. ``--no-template``
+skips the seed (docs + skills only; the agent writes ``main.py`` from the
+design-environment skill). Does NOT open the agent.
 """
 
 from __future__ import annotations
@@ -45,8 +45,8 @@ _SKILLS = (
 # under `.agents/skills/` and point AGENTS.md at them explicitly.
 _SKILLS_DIR = {"claude": ".claude/skills", "codex": ".agents/skills"}
 
-# Per-template seed files in the scaffold dir: a runnable `main.py` + tiny seed
-# datasets, copied into the project so `python main.py validate` runs day one.
+# Per-template seed files in the scaffold dir. Runtime-resolved environments such
+# as Harbor intentionally omit local dataset files.
 _TEMPLATE_SEEDS = {
     "generic": {
         "main": "generic_main.py",
@@ -60,6 +60,11 @@ _TEMPLATE_SEEDS = {
         "eval": "generic_eval_dataset.jsonl",
         "tests": "generic_env_tests.py",
     },
+    "harbor": {
+        "main": "harbor_main.py",
+        "tests": "harbor_env_tests.py",
+        "starter": "HARBOR_STARTER.md",
+    },
 }
 
 
@@ -67,15 +72,21 @@ def _project_toml(template: str) -> str:
     benchmax_requirement = _installed_requirement("benchmax")
     castform_name = "castform[rag]" if template == "rag" else "castform"
     castform_requirement = _installed_requirement(castform_name, distribution="castform")
-    return f'''[project]
+    dependencies = [benchmax_requirement, castform_requirement]
+    if template == "harbor":
+        dependencies.append("harbor[modal]>=0.18.0,<0.19")
+    dependency_lines = "\n".join(f'    "{requirement}",' for requirement in dependencies)
+    return f"""[project]
 name = "castform-environment"
 version = "0.1.0"
 requires-python = "==3.12.*"
 dependencies = [
-    "{benchmax_requirement}",
-    "{castform_requirement}",
+{dependency_lines}
 ]
-'''
+
+[dependency-groups]
+dev = ["pytest>=8.4"]
+"""
 
 
 def _installed_requirement(name: str, *, distribution: str | None = None) -> str:
@@ -124,8 +135,14 @@ def _apply_template_conditionals(text: str, template: str) -> str:
 _PRIMARY_PROMPT = (
     "i want to start a training run to improve a model on <your task>. create a "
     "reasonable environment with relevant tools, generate a small synthetic "
-    "dataset, run a baseline eval, review the results, and propose next steps to "
+    "dataset, run baseline validation, review the results, and propose next steps to "
     "either iterate or launch."
+)
+_HARBOR_PROMPT = (
+    "i want to train on the Harbor package <org/package> using Modal. inspect its "
+    "task, harness, sandbox, and verifier requirements, adapt the Harbor scaffold "
+    "from the closest Benchmax example, validate it, and show me the result before "
+    "proposing a launch."
 )
 
 # (command, what it does) — the few verbs worth surfacing right after setup.
@@ -147,7 +164,7 @@ def _wrap(text: str, width: int) -> list[str]:
     return textwrap.wrap(text, width) or [""]
 
 
-def _print_get_started() -> None:
+def _print_get_started(template: str) -> None:
     """Render the get-started block: an ``ask your agent`` divider over the one
     prompt to paste (plain indented lines — no box, so it copy-pastes clean),
     then a ``helpful commands`` divider over an unboxed command list. Command and
@@ -158,7 +175,8 @@ def _print_get_started() -> None:
 
     print()
     print("  " + rule_label("ask your agent", ORANGE, width))
-    for ln in _wrap(_PRIMARY_PROMPT, width - 2):
+    prompt = _HARBOR_PROMPT if template == "harbor" else _PRIMARY_PROMPT
+    for ln in _wrap(prompt, width - 2):
         print("    " + paint(ln, italic=True))
 
     print()
@@ -238,7 +256,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     agents = _choose_agents(args.agent)
     root = _scaffold()
     instructions = (root / "CLAUDE.md").read_text(encoding="utf-8")
-    starter = (root / "STARTER.md").read_text(encoding="utf-8")
+    starter_name = _TEMPLATE_SEEDS[args.template].get("starter", "STARTER.md")
+    starter = (root / starter_name).read_text(encoding="utf-8")
 
     print()
     print(paint(f"Scaffolding {target} for your coding agent…", bold=True))
@@ -270,13 +289,11 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             dest = target.joinpath(*skills_dir, name, "SKILL.md")
             skill_writes.append(w(dest, prep(skill, agent)))
 
-    # 3) env template — every template ships a standalone pyproject, runnable
-    #    main.py, and tiny seed datasets so `python main.py validate` runs on day
-    #    one; the agent then
-    #    tailors them. --no-template skips the seed (docs + skills only). main.py
-    #    honors --force (the guard above cleared it); the datasets ALWAYS
-    #    skip-if-exists — --force is only for the main.py guard, and real prepared
-    #    data must never be clobbered by the placeholder.
+    # 3) env template — every template ships a standalone pyproject and runnable
+    #    main.py. BaseEnv templates also include tiny seed datasets; Harbor resolves
+    #    package data at runtime. --no-template skips the seed (docs + skills only).
+    #    main.py honors --force (the guard above cleared it); dataset placeholders
+    #    ALWAYS skip-if-exists so real prepared data is never clobbered.
     env_writes: list[bool] = []
     if not args.no_template:
         seed = _TEMPLATE_SEEDS[args.template]
@@ -289,14 +306,15 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             )
         )
         env_writes.append(w(target / "main.py", (root / seed["main"]).read_text("utf-8")))
-        env_writes.append(
-            _write(
-                target / "train.jsonl",
-                (root / seed["train"]).read_text("utf-8"),
-                force=False,
-                log=log,
+        if "train" in seed:
+            env_writes.append(
+                _write(
+                    target / "train.jsonl",
+                    (root / seed["train"]).read_text("utf-8"),
+                    force=False,
+                    log=log,
+                )
             )
-        )
         # tests/ mirrors the examples' layout: conftest pins the import path,
         # and templates with a deterministic reward seed a reward test to grow.
         env_writes.append(
@@ -316,14 +334,15 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                     log=log,
                 )
             )
-        env_writes.append(
-            _write(
-                target / "eval.jsonl",
-                (root / seed["eval"]).read_text("utf-8"),
-                force=False,
-                log=log,
+        if "eval" in seed:
+            env_writes.append(
+                _write(
+                    target / "eval.jsonl",
+                    (root / seed["eval"]).read_text("utf-8"),
+                    force=False,
+                    log=log,
+                )
             )
-        )
 
     if args.verbose:
         print("\n".join(log))
@@ -337,12 +356,12 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 f"{len(_SKILLS)} stages × {n_ag} agent{'s' * (n_ag != 1)}",
             ),
         ]
-        if env_writes:  # every template ships a seed main.py + datasets
+        if env_writes:
             groups.append(
                 (
                     "env template",
                     env_writes,
-                    f"pyproject + main.py + datasets + tests ({args.template})",
+                    f"pyproject + main.py + data/tests ({args.template})",
                 )
             )
         label_w = max(len(label) for label, _, _ in groups)
@@ -352,7 +371,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     print()
     print(paint(f"{target} has been set up for castform and your coding agent.", bold=True))
 
-    _print_get_started()
+    _print_get_started(args.template)
     return 0
 
 
@@ -368,16 +387,16 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--force", action="store_true", help="Overwrite existing scaffold files")
     p.add_argument(
         "--template",
-        choices=["generic", "rag"],
+        choices=["generic", "rag", "harbor"],
         default="generic",
         help="Project guidance: 'generic' = a minimal single-turn env, 'rag' = "
-        "the same runnable seed plus RAG dependencies and links to maintained "
-        "Benchmax examples (default: generic)",
+        "the same runnable seed plus RAG dependencies, 'harbor' = a runtime "
+        "Harbor package with Modal sandboxes (default: generic)",
     )
     p.add_argument(
         "--no-template",
         action="store_true",
-        help="Skip the seed main.py + datasets (scaffold docs + skills only)",
+        help="Skip the seed main.py and any datasets (scaffold docs + skills only)",
     )
     p.add_argument("--skip-login", action="store_true", help="Don't sign in (scaffold only)")
     p.add_argument(

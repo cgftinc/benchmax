@@ -21,6 +21,16 @@ that were just uploaded — the same ones a launch would train on. Keep the loca
 budget shared through `VALIDATE_CONFIG["max_context_tokens"]`; the local
 wall-clock backstop is `VALIDATE_CONFIG["local_timeout_seconds"]`.
 
+`validate_environment` first performs static model-parameter checks, then uses
+tracked model sessions locally and remotely to enforce the same sampling and
+multi-turn history contract as training. Review static and runtime warnings as
+well as outcomes. A `max_tokens` or `max_completion_tokens` warning is allowed
+when the effective cap is acceptable. Sampling conflicts, unsupported controls,
+changed tools, overlapping generations, and rewritten assistant history are
+errors. Do not launch while any contract error remains. If validation made only
+one model call, treat the “multi-turn history was not exercised” warning as a
+coverage gap for harnesses expected to loop.
+
 ## Read both outcomes
 
 For each sibling, inspect:

@@ -4,6 +4,7 @@ monkeypatched (no network)."""
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import types
 from pathlib import Path
@@ -47,6 +48,68 @@ def test_import_defines_stages_without_running(mod, tmp_path, monkeypatch):
     block is import-safe)."""
     assert all(hasattr(mod, n) for n in ("main", "generate_data", "validate", "launch"))
     assert not (tmp_path / "train.jsonl").exists()
+
+
+def test_constructor_args_follow_the_example_shape(mod):
+    assert mod._constructor_args(types.SimpleNamespace()) == {}
+
+
+def test_launch_config_names_the_training_model(mod):
+    assert mod.LAUNCH_CONFIG["model"] == "Qwen/Qwen3.5-4B"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {},
+        {"prompt": "", "ground_truth": "Paris"},
+        {"prompt": 123, "ground_truth": "Paris"},
+        {"prompt": "Capital of France?"},
+        {"prompt": "Capital of France?", "ground_truth": ""},
+        {"prompt": "Capital of France?", "ground_truth": 123},
+    ],
+)
+def test_row_converter_rejects_malformed_seed_rows(mod, row):
+    with pytest.raises((TypeError, ValueError)):
+        mod.CustomEnv()._example_from_row(row)
+
+
+def test_row_converter_owns_reserved_prompt_messages(mod):
+    example = mod.CustomEnv()._example_from_row(
+        {
+            "prompt": "Capital of France?",
+            "ground_truth": "Paris",
+            "prompt_messages": [{"role": "user", "content": "override"}],
+        }
+    )
+
+    assert example.payload["prompt_messages"][-1]["content"] == "Capital of France?"
+
+
+def test_dataset_path_uses_the_safe_resolver(mod, tmp_path, monkeypatch):
+    data_path = tmp_path / "train.jsonl"
+    data_path.write_text('{"prompt":"question","ground_truth":"answer"}\n')
+    calls: list[tuple[Path, str]] = []
+
+    def fake_resolve(base_dir, relative_path):
+        calls.append((base_dir, relative_path))
+        return data_path
+
+    monkeypatch.setattr(mod, "resolve_dataset_path", fake_resolve)
+    dataset = asyncio.run(mod.CustomEnv().create_dataset("train", tmp_path))
+
+    assert len(dataset) == 1
+    assert calls == [(tmp_path, "train.jsonl")]
+
+
+def test_generate_data_preserves_an_existing_split_without_force(mod, tmp_path):
+    train_path = tmp_path / mod.TRAIN_FILE
+    train_path.write_text("curated train data\n")
+
+    assert mod.generate_data(force=False)
+
+    assert train_path.read_text() == "curated train data\n"
+    assert (tmp_path / mod.EVAL_FILE).exists()
 
 
 # ── argparse dispatch: the staged upload-once flow ──────────────────────────────
@@ -156,7 +219,9 @@ def test_validate_passes_uploaded_assets_and_config(mod, tmp_path, monkeypatch):
         return _fake_report(ok=True)
 
     monkeypatch.setattr(mod, "validate_environment", fake_validate_environment)
-    report = mod.validate(env_class(**mod.ENV_ARGS), remote_assets)
+    report = mod.validate(
+        env_class(**mod._constructor_args(types.SimpleNamespace())), remote_assets
+    )
 
     assert report.ok
     assert isinstance(captured["env"], env_class)
@@ -176,7 +241,7 @@ def test_validate_surfaces_public_dataset_materialization_failure(mod, monkeypat
     env_class = discover_env_class(mod)
 
     with pytest.raises(RuntimeError, match="dataset materialization failed"):
-        mod.validate(env_class(**mod.ENV_ARGS), None)
+        mod.validate(env_class(**mod._constructor_args(types.SimpleNamespace())), None)
 
 
 def test_scorecard_marks_error_settlements_and_shows_messages(mod, capsys):
@@ -210,6 +275,78 @@ def test_scorecard_marks_error_settlements_and_shows_messages(mod, capsys):
     assert "error=KeyError: 'ground_truth'" in output
     assert "❌ local validate-2: judge_error" in output
     assert "❌ validation failed" in output
+
+
+def test_scorecard_surfaces_static_and_runtime_contract_warnings(mod, capsys):
+    outcome = types.SimpleNamespace(
+        rewards={"correct": 1.0},
+        termination_reason="finished",
+        error=None,
+    )
+    report = types.SimpleNamespace(
+        ok=True,
+        local={"validate-0": outcome},
+        remote=None,
+        static_warnings={"agent.kwargs.max_tokens": "output cap is trainer-clamped"},
+        local_warnings={
+            "validate-0": ["max_tokens requested 4096 but the effective output cap was 1024"]
+        },
+        remote_warnings={},
+        local_errors={},
+        remote_errors={},
+    )
+
+    mod._print_validation(report)
+
+    output = capsys.readouterr().out
+    assert "agent.kwargs.max_tokens" in output
+    assert "effective output cap was 1024" in output
+    assert "✅ validation passed" in output
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "CLAUDE.md",
+        "STARTER.md",
+        "skills/design-environment/SKILL.md",
+    ],
+)
+def test_scaffold_design_guidance_documents_model_parameter_ownership(
+    relative_path: str,
+) -> None:
+    guidance = (_SCAFFOLD_DIR / relative_path).read_text().lower()
+
+    assert "max_tokens" in guidance
+    assert "max_completion_tokens" in guidance
+    assert "temperature" in guidance
+    assert "top_p" in guidance
+    assert "warning" in guidance
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "skills/verify-environment/SKILL.md",
+        "skills/launch-run/SKILL.md",
+    ],
+)
+def test_scaffold_validation_guidance_requires_training_contract_checks(
+    relative_path: str,
+) -> None:
+    guidance = (_SCAFFOLD_DIR / relative_path).read_text().lower()
+
+    assert "sampling" in guidance
+    assert "history" in guidance
+    assert "validate_environment" in guidance
+    assert "do not launch" in guidance or "never launch" in guidance
+
+
+def test_launch_skill_uses_explicit_constructor_args_not_legacy_global() -> None:
+    guidance = (_SCAFFOLD_DIR / "skills/launch-run/SKILL.md").read_text()
+
+    assert "constructor_args=constructor_args" in guidance
+    assert "constructor_args=ENV_ARGS" not in guidance
 
 
 # ── launch stage: [y/N] confirm and the asdict spread ───────────────────────────
@@ -255,9 +392,9 @@ def test_launch_confirmed_spreads_uploaded_paths(mod, monkeypatch):
     # LAUNCH_CONFIG feeds launcher_args, minus reserved keys
     assert "type" not in (launched["launcher_args"] or {})
     assert "name" not in (launched["launcher_args"] or {})
-    assert launched["launcher_args"]["max_context_tokens"] == mod.LAUNCH_CONFIG[
-        "max_context_tokens"
-    ]
+    assert (
+        launched["launcher_args"]["max_context_tokens"] == mod.LAUNCH_CONFIG["max_context_tokens"]
+    )
 
 
 def test_launch_assume_yes_skips_prompt(mod, monkeypatch):
