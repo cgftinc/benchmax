@@ -160,6 +160,7 @@ def test_setup_generic_ships_seed_env_and_data(tmp_path, monkeypatch):
         "benchmax==0.1.2",
         "castform==0.1.2",
     ]
+    assert project["dependency-groups"]["dev"] == ["pytest>=8.4"]
 
 
 def test_setup_no_template_ships_docs_and_skills_only(tmp_path):
@@ -222,6 +223,7 @@ def test_setup_template_harbor_uses_runtime_data_and_explicit_args(tmp_path, mon
         "castform==0.1.2",
         "harbor[modal]>=0.18.0,<0.19",
     ]
+    assert project["dependency-groups"]["dev"] == ["pytest>=8.4"]
     main = (tmp_path / "main.py").read_text()
     assert "def _constructor_args(args: argparse.Namespace)" in main
     assert 'TrialAgentConfig(name="mini-swe-agent")' in main

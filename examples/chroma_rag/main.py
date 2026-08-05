@@ -53,7 +53,7 @@ def validate(env: ChromaRagEnv, uploaded_assets):
         validate_environment(
             env,
             model="gpt-5.4-mini",
-            split="eval",
+            split="train",
             base_dir=DATA_DIR,
             remote_assets=uploaded_assets,
             max_context_tokens=4_096,

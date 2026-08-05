@@ -4,6 +4,7 @@ monkeypatched (no network)."""
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import types
 from pathlib import Path
@@ -51,6 +52,64 @@ def test_import_defines_stages_without_running(mod, tmp_path, monkeypatch):
 
 def test_constructor_args_follow_the_example_shape(mod):
     assert mod._constructor_args(types.SimpleNamespace()) == {}
+
+
+def test_launch_config_names_the_training_model(mod):
+    assert mod.LAUNCH_CONFIG["model"] == "Qwen/Qwen3.5-4B"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {},
+        {"prompt": "", "ground_truth": "Paris"},
+        {"prompt": 123, "ground_truth": "Paris"},
+        {"prompt": "Capital of France?"},
+        {"prompt": "Capital of France?", "ground_truth": ""},
+        {"prompt": "Capital of France?", "ground_truth": 123},
+    ],
+)
+def test_row_converter_rejects_malformed_seed_rows(mod, row):
+    with pytest.raises((TypeError, ValueError)):
+        mod.CustomEnv()._example_from_row(row)
+
+
+def test_row_converter_owns_reserved_prompt_messages(mod):
+    example = mod.CustomEnv()._example_from_row(
+        {
+            "prompt": "Capital of France?",
+            "ground_truth": "Paris",
+            "prompt_messages": [{"role": "user", "content": "override"}],
+        }
+    )
+
+    assert example.payload["prompt_messages"][-1]["content"] == "Capital of France?"
+
+
+def test_dataset_path_uses_the_safe_resolver(mod, tmp_path, monkeypatch):
+    data_path = tmp_path / "train.jsonl"
+    data_path.write_text('{"prompt":"question","ground_truth":"answer"}\n')
+    calls: list[tuple[Path, str]] = []
+
+    def fake_resolve(base_dir, relative_path):
+        calls.append((base_dir, relative_path))
+        return data_path
+
+    monkeypatch.setattr(mod, "resolve_dataset_path", fake_resolve)
+    dataset = asyncio.run(mod.CustomEnv().create_dataset("train", tmp_path))
+
+    assert len(dataset) == 1
+    assert calls == [(tmp_path, "train.jsonl")]
+
+
+def test_generate_data_preserves_an_existing_split_without_force(mod, tmp_path):
+    train_path = tmp_path / mod.TRAIN_FILE
+    train_path.write_text("curated train data\n")
+
+    assert mod.generate_data(force=False)
+
+    assert train_path.read_text() == "curated train data\n"
+    assert (tmp_path / mod.EVAL_FILE).exists()
 
 
 # ── argparse dispatch: the staged upload-once flow ──────────────────────────────
@@ -281,6 +340,13 @@ def test_scaffold_validation_guidance_requires_training_contract_checks(
     assert "history" in guidance
     assert "validate_environment" in guidance
     assert "do not launch" in guidance or "never launch" in guidance
+
+
+def test_launch_skill_uses_explicit_constructor_args_not_legacy_global() -> None:
+    guidance = (_SCAFFOLD_DIR / "skills/launch-run/SKILL.md").read_text()
+
+    assert "constructor_args=constructor_args" in guidance
+    assert "constructor_args=ENV_ARGS" not in guidance
 
 
 # ── launch stage: [y/N] confirm and the asdict spread ───────────────────────────

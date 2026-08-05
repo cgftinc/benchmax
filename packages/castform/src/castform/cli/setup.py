@@ -83,6 +83,9 @@ requires-python = "==3.12.*"
 dependencies = [
 {dependency_lines}
 ]
+
+[dependency-groups]
+dev = ["pytest>=8.4"]
 """
 
 
@@ -132,7 +135,7 @@ def _apply_template_conditionals(text: str, template: str) -> str:
 _PRIMARY_PROMPT = (
     "i want to start a training run to improve a model on <your task>. create a "
     "reasonable environment with relevant tools, generate a small synthetic "
-    "dataset, run a baseline eval, review the results, and propose next steps to "
+    "dataset, run baseline validation, review the results, and propose next steps to "
     "either iterate or launch."
 )
 _HARBOR_PROMPT = (

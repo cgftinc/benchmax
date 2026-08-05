@@ -52,7 +52,7 @@ runtime:
 ```python
 bundle = dump_bundle(
     CustomEnv,
-    constructor_args=ENV_ARGS,
+    constructor_args=constructor_args,
     pip_dependencies=RUNTIME_DEPENDENCIES,
 )
 ```

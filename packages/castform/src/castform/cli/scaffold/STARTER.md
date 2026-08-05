@@ -29,7 +29,7 @@ Point your coding agent at the real task and ask it to load the matching skill i
 
 ```
 Build a Castform environment for <task>. Start with a small representative train
-and eval set. Use the closest maintained example under
+set and add an eval set when available. Use the closest maintained example under
 https://github.com/castform-ai/benchmax/tree/main/examples as the starting point,
 define an explicit reward shape, validate two sibling rollouts, and show me the
 result before proposing a launch.
@@ -61,6 +61,9 @@ reward components, and produced believable task-specific scores. A zero score
 can be a valid completed result. An operational failure instead has a
 non-`finished` `termination_reason`, empty rewards, an `error` message on the
 outcome, and a corresponding log entry.
+
+Validation smoke-tests the required train split. Eval data is optional and remains
+the right source for measuring generalization when the task provides it.
 
 Validation checks model-request ownership before running and checks tracked
 sampling and history behavior at runtime. Harnesses may request `max_tokens` or

@@ -125,7 +125,7 @@ def validate(env: AimeMiniSweHarborEnv, uploaded_assets: Any) -> Any:
             validate_environment(
                 env,
                 model=VALIDATE_MODEL,
-                split="eval",
+                split="train",
                 base_dir=Path(tmp),
                 remote_assets=uploaded_assets,
             )
