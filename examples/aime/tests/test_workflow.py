@@ -68,3 +68,24 @@ def test_main_requires_credential_arguments(capsys: pytest.CaptureFixture[str]) 
     stderr = capsys.readouterr().err
     for name in ("--modal-token-id", "--modal-token-secret"):
         assert name in stderr
+
+
+def test_print_validation_surfaces_contract_diagnostics(capsys) -> None:
+    example._print_validation(
+        SimpleNamespace(
+            static_warnings={"agent.kwargs.max_tokens": "output cap may be clamped"},
+            static_errors={"agent.kwargs.temperature": "trainer-owned"},
+            local_warnings={"local-1": ["history not exercised"]},
+            remote_warnings={},
+            local={},
+            remote=None,
+            local_errors={},
+            remote_errors={},
+            ok=False,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert "⚠️ static agent.kwargs.max_tokens: output cap may be clamped" in output
+    assert "⚠️ local local-1: history not exercised" in output
+    assert "❌ static agent.kwargs.temperature: trainer-owned" in output
