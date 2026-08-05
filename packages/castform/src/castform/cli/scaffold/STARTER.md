@@ -29,8 +29,10 @@ Point your coding agent at the real task and ask it to load the matching skill i
 
 ```
 Build a Castform environment for <task>. Start with a small representative train
-and eval set, define an explicit reward shape, validate two sibling rollouts, and
-show me the result before proposing a launch.
+and eval set. Use the closest maintained example under
+https://github.com/castform-ai/benchmax/tree/main/examples as the starting point,
+define an explicit reward shape, validate two sibling rollouts, and show me the
+result before proposing a launch.
 ```
 
 **RAG environment:**

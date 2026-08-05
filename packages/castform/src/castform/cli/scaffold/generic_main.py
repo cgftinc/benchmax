@@ -134,7 +134,6 @@ LAUNCH_CONFIG = {
 
 TRAIN_FILE = "train.jsonl"
 EVAL_FILE = "eval.jsonl"
-ENV_ARGS: dict[str, Any] = {}  # CustomEnv constructor kwargs (none by default)
 
 # Dependencies installed in the remote rollout runtime. Keep this declaration at
 # the script boundary: add only packages imported by your env/reward/tool code.
@@ -169,6 +168,16 @@ def _load_jsonl(path: str) -> list[dict[str, Any]]:
 
 def _run_name() -> str:
     return str(LAUNCH_CONFIG.get("name") or CustomEnv.__name__.lower())
+
+
+def _constructor_args(args: argparse.Namespace) -> dict[str, Any]:
+    """Build explicit, serializable kwargs shared by local and remote envs.
+
+    Add task configuration and credentials as CLI arguments, then translate them
+    here instead of reading ambient environment variables inside ``CustomEnv``.
+    """
+    del args
+    return {}
 
 
 def generate_data(force: bool = False) -> bool:
@@ -294,11 +303,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "data":
         return 0
 
+    constructor_args = _constructor_args(args)
     ensure_session()  # data preparation stays usable without platform login
     print(f"[stage 2/{total_stages}] bundling environment")
     bundled_environment = dump_bundle(
         CustomEnv,
-        constructor_args=ENV_ARGS,
+        constructor_args=constructor_args,
         pip_dependencies=RUNTIME_DEPENDENCIES,
     )
     print(f"[stage 3/{total_stages}] uploading environment and dataset")
@@ -312,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
     print(f"  dataset_path: {uploaded_assets.dataset_path}")
     print(f"[stage 4/{total_stages}] validating environment")
-    report = validate(CustomEnv(**ENV_ARGS), uploaded_assets)
+    report = validate(CustomEnv(**constructor_args), uploaded_assets)
     if not report.ok:
         return 1
     if args.action == "launch":

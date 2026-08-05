@@ -49,6 +49,10 @@ def test_import_defines_stages_without_running(mod, tmp_path, monkeypatch):
     assert not (tmp_path / "train.jsonl").exists()
 
 
+def test_constructor_args_follow_the_example_shape(mod):
+    assert mod._constructor_args(types.SimpleNamespace()) == {}
+
+
 # ── argparse dispatch: the staged upload-once flow ──────────────────────────────
 
 
@@ -156,7 +160,9 @@ def test_validate_passes_uploaded_assets_and_config(mod, tmp_path, monkeypatch):
         return _fake_report(ok=True)
 
     monkeypatch.setattr(mod, "validate_environment", fake_validate_environment)
-    report = mod.validate(env_class(**mod.ENV_ARGS), remote_assets)
+    report = mod.validate(
+        env_class(**mod._constructor_args(types.SimpleNamespace())), remote_assets
+    )
 
     assert report.ok
     assert isinstance(captured["env"], env_class)
@@ -176,7 +182,7 @@ def test_validate_surfaces_public_dataset_materialization_failure(mod, monkeypat
     env_class = discover_env_class(mod)
 
     with pytest.raises(RuntimeError, match="dataset materialization failed"):
-        mod.validate(env_class(**mod.ENV_ARGS), None)
+        mod.validate(env_class(**mod._constructor_args(types.SimpleNamespace())), None)
 
 
 def test_scorecard_marks_error_settlements_and_shows_messages(mod, capsys):
