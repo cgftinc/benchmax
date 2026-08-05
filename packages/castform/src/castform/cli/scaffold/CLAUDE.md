@@ -1,8 +1,14 @@
 # Castform environment project
 
-This is a standalone Python 3.12 project. Treat `main.py` as the reviewed,
-reproducible workflow for data preparation, validation, bundling, upload and
-launch. Do not recreate those stages with hidden CLI state.
+`castform setup` intentionally does not generate environment code. Before coding,
+inspect the maintained examples at
+https://github.com/castform-ai/benchmax/tree/main/examples, choose the closest
+task shape, and adapt its `README.md`, project structure, and `main.py`. Those
+examples are the source of truth; do not start from an assumed generic environment.
+
+Treat the resulting `main.py` as the reviewed, reproducible workflow for data
+preparation, validation, bundling, upload and launch. Do not recreate those stages
+with hidden CLI state.
 
 ## Required loop
 
@@ -46,8 +52,8 @@ into a reward.
 
 Local validation obtains its example through the environment's public
 `create_dataset` method, then calls `validate_environment` once with exactly two
-siblings through ephemeral tracked llm-proxy sessions. The generated validation
-config shares one context budget across local and hosted execution and applies a
+siblings through ephemeral tracked llm-proxy sessions. The validation
+path shares one context budget across local and hosted execution and applies a
 wall-clock backstop to the complete local lifecycle. Review both outcomes; a
 completed zero reward is valid, while an empty result with a failure termination
 reason is not. Hosted validation uses the exact uploaded assets that launch would
@@ -95,15 +101,13 @@ that data at runtime. Passing `[]` explicitly uploads an empty JSONL file.
 - For LLM judges, use a fixed task reference and treat judge failure as an
   operational failure, never as a legitimate score.
 
-<!-- rag:start -->
-For the RAG template, inspect retrieval separately from answer correctness. Verify
+For a RAG environment, inspect retrieval separately from answer correctness. Verify
 that reference source IDs and model citations use the same canonicalization, and
 test a known query against the configured corpus before validation. Start from the
 matching provider example under
 https://github.com/castform-ai/benchmax/tree/main/examples. Keep corpus ingestion
 or QA generation in the data stage using public `castform.rag` interfaces; the
 rollout environment should depend only on its search adapter and runtime SDKs.
-<!-- rag:end -->
 
 The Castform CLI is for login, setup, doctor, guide, run inspection and run
 cancellation. Project data and launches stay in scripts.

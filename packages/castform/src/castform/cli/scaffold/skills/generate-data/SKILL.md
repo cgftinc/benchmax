@@ -9,11 +9,12 @@ Data preparation is a Python workflow. Keep it in `main.py`'s `generate_data`
 stage or a nearby project script so its inputs, transformations and outputs are
 reviewable. There is no separate data or corpus orchestration CLI.
 
-## BaseEnv JSONL path
+## Follow the selected example's data contract
 
-The generated BaseEnv seed reads `train.jsonl` and `eval.jsonl`. Each line is a
-JSON object containing the fields the environment's row converter and reward
-actually use:
+Many BaseEnv examples read `train.jsonl` and `eval.jsonl`; other examples resolve
+packages, repositories, corpora, or provider-hosted data at runtime. Follow the
+selected maintained example. When it uses JSONL, each line contains the fields
+the environment's row converter and reward actually use:
 
 ```jsonl
 {"prompt": "What is 2 + 2?", "ground_truth": "4"}
@@ -34,17 +35,12 @@ decides what it uploads: omit a split when the environment resolves it at runtim
 and do not upload unrelated preparation artifacts. `None` means “do not upload”;
 an empty list deliberately uploads an empty JSONL.
 
-<!-- rag:start -->
 ## Hosted corpus and RAG
 
 Install `castform[rag]` in the project and use public modules under
 `castform.rag` from the data stage. Before implementing the workflow, inspect the
-matching maintained example:
-
-- `neon_rag`: https://github.com/castform-ai/benchmax/tree/main/examples/neon_rag
-- `turbopuffer_rag`: https://github.com/castform-ai/benchmax/tree/main/examples/turbopuffer_rag
-- `chroma_rag`: https://github.com/castform-ai/benchmax/tree/main/examples/chroma_rag
-- `pinecone_rag`: https://github.com/castform-ai/benchmax/tree/main/examples/pinecone_rag
+matching provider under the maintained
+[Benchmax examples](https://github.com/castform-ai/benchmax/tree/main/examples).
 
 Use its `README.md`, `main.py`, `data.py`, `environment.py`, and `search.py` as the
 reference for the provider. Typical data code composes:
@@ -59,11 +55,8 @@ Read the concrete class signatures before wiring them; these are library
 components, not one magical pipeline command. Persist generated rows as ordinary
 project data and test at least one known retrieval query before validation.
 
-Replace the generic seed environment and rows with the selected RAG example's
-structure. Confirm that each row contains `question`, `answer`, and
-`reference_chunks`, and that every reference chunk carries the source metadata
-expected by the citation reward.
-<!-- rag:end -->
+Use the selected RAG example's schema and source-metadata contract rather than
+assuming one universal row shape.
 
 ## Harbor-managed datasets
 

@@ -1,23 +1,16 @@
-"""Scaffold a Castform project for an agent-driven RL run.
+"""Scaffold Castform guidance for an agent-driven RL project.
 
-Logs you in (no-op if already authed), then writes the agent scaffold from the
-packaged templates (``castform.cli.scaffold``): CLAUDE.md / AGENTS.md, the
+Logs you in (no-op if already authed), then writes CLAUDE.md / AGENTS.md, the
 per-stage skills into each agent's skills dir (claude → ``.claude/skills/``,
-codex → ``.agents/skills/``, with the body's path references retargeted), a
-starter prompt, and a standalone ``pyproject.toml`` + runnable seed ``main.py``.
-The default and ``rag`` templates include tiny single-turn datasets; the
-``harbor`` template resolves its dataset through Harbor at runtime. ``--no-template``
-skips the seed (docs + skills only; the agent writes ``main.py`` from the
-design-environment skill). Does NOT open the agent.
+codex → ``.agents/skills/``, with path references retargeted), and a starter
+prompt. Environment code is intentionally not generated: the agent selects and
+adapts the closest maintained Benchmax example. Does NOT open the agent.
 """
 
 from __future__ import annotations
 
 import argparse
-import re
-import sys
 from importlib import resources
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from castform import config
@@ -45,104 +38,19 @@ _SKILLS = (
 # under `.agents/skills/` and point AGENTS.md at them explicitly.
 _SKILLS_DIR = {"claude": ".claude/skills", "codex": ".agents/skills"}
 
-# Per-template seed files in the scaffold dir. Runtime-resolved environments such
-# as Harbor intentionally omit local dataset files.
-_TEMPLATE_SEEDS = {
-    "generic": {
-        "main": "generic_main.py",
-        "train": "generic_train_dataset.jsonl",
-        "eval": "generic_eval_dataset.jsonl",
-        "tests": "generic_env_tests.py",
-    },
-    "rag": {
-        "main": "generic_main.py",
-        "train": "generic_train_dataset.jsonl",
-        "eval": "generic_eval_dataset.jsonl",
-        "tests": "generic_env_tests.py",
-    },
-    "harbor": {
-        "main": "harbor_main.py",
-        "tests": "harbor_env_tests.py",
-        "starter": "HARBOR_STARTER.md",
-    },
-}
-
-
-def _project_toml(template: str) -> str:
-    benchmax_requirement = _installed_requirement("benchmax")
-    castform_name = "castform[rag]" if template == "rag" else "castform"
-    castform_requirement = _installed_requirement(castform_name, distribution="castform")
-    dependencies = [benchmax_requirement, castform_requirement]
-    if template == "harbor":
-        dependencies.append("harbor[modal]>=0.18.0,<0.19")
-    dependency_lines = "\n".join(f'    "{requirement}",' for requirement in dependencies)
-    return f"""[project]
-name = "castform-environment"
-version = "0.1.0"
-requires-python = "==3.12.*"
-dependencies = [
-{dependency_lines}
-]
-
-[dependency-groups]
-dev = ["pytest>=8.4"]
-"""
-
-
-def _installed_requirement(name: str, *, distribution: str | None = None) -> str:
-    """Pin scaffolds to the package pair that generated them."""
-
-    distribution = distribution or name
-    try:
-        installed = version(distribution)
-    except PackageNotFoundError as error:
-        raise RuntimeError(
-            f"cannot scaffold without an installed {distribution!r} distribution"
-        ) from error
-    return f"{name}=={installed}"
-
 
 def _retarget(text: str, agent: str) -> str:
     """Rewrite the scaffold's ``.claude/skills`` references to ``agent``'s dir."""
     return text.replace(".claude/skills", _SKILLS_DIR[agent])
 
 
-# Env-conditional surfacing: content between ``<!-- rag:start -->`` and
-# ``<!-- rag:end -->`` (HTML comments, invisible when rendered) is RAG-specific —
-# a single-source doc that the setup mechanism tailors per template.
-_RAG_BLOCK_RE = re.compile(
-    r"^[ \t]*<!--\s*rag:start\s*-->.*?^[ \t]*<!--\s*rag:end\s*-->[ \t]*\n?",
-    re.DOTALL | re.MULTILINE | re.IGNORECASE,
-)
-_RAG_MARKER_RE = re.compile(
-    r"^[ \t]*<!--\s*rag:(?:start|end)\s*-->[ \t]*\n?",
-    re.MULTILINE | re.IGNORECASE,
-)
-
-
-def _apply_template_conditionals(text: str, template: str) -> str:
-    """Tailor a scaffold doc to the env template. ``--template rag`` KEEPS the
-    RAG-specific blocks (dropping just the delimiter comments); every other template
-    STRIPS them, so a generic scaffold carries no RAG-specific guidance."""
-    if template == "rag":
-        return _RAG_MARKER_RE.sub("", text)
-    return _RAG_BLOCK_RE.sub("", text)
-
-
 # The one prompt we surface in-terminal — kept in sync with GETTING_STARTED.md's
 # generic variant and the web onboarding copy. The other variants (rag / traces)
 # stay in GETTING_STARTED.md so the terminal stays a single clear call to action.
 _PRIMARY_PROMPT = (
-    "i want to start a training run to improve a model on <your task>. create a "
-    "reasonable environment with relevant tools, generate a small synthetic "
-    "dataset, run baseline validation, review the results, and propose next steps to "
-    "either iterate or launch."
-)
-_HARBOR_PROMPT = (
-    "i want to train on the Harbor package <org/package> using Modal. inspect its "
-    "task, harness, sandbox, and verifier requirements, adapt the Harbor scaffold "
-    "from the closest Benchmax example, validate it, and show me the result before "
-    "proposing a launch."
+    "i want to improve a model on <your task>. inspect the maintained Benchmax "
+    "examples, choose the closest task shape, adapt it into this project, validate "
+    "the environment, review the results, and propose next steps before launching."
 )
 
 # (command, what it does) — the few verbs worth surfacing right after setup.
@@ -164,7 +72,7 @@ def _wrap(text: str, width: int) -> list[str]:
     return textwrap.wrap(text, width) or [""]
 
 
-def _print_get_started(template: str) -> None:
+def _print_get_started() -> None:
     """Render the get-started block: an ``ask your agent`` divider over the one
     prompt to paste (plain indented lines — no box, so it copy-pastes clean),
     then a ``helpful commands`` divider over an unboxed command list. Command and
@@ -175,8 +83,7 @@ def _print_get_started(template: str) -> None:
 
     print()
     print("  " + rule_label("ask your agent", ORANGE, width))
-    prompt = _HARBOR_PROMPT if template == "harbor" else _PRIMARY_PROMPT
-    for ln in _wrap(prompt, width - 2):
+    for ln in _wrap(_PRIMARY_PROMPT, width - 2):
         print("    " + paint(ln, italic=True))
 
     print()
@@ -237,27 +144,13 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     target = Path(args.dir).resolve()
     target.mkdir(parents=True, exist_ok=True)
 
-    # A seed main.py must not silently overwrite (or be masked by) a stale one — the
-    # old env would still `validate` green and masquerade as a working baseline. Fail
-    # loudly (require a clean dir or --force) instead of the usual skip-if-exists.
-    main_py = target / "main.py"
-    if not args.no_template and main_py.exists() and not args.force:
-        print(
-            f"Error: {main_py} already exists — refusing to overwrite it (a stale env "
-            "would still validate green and mask your task). Re-run with --force to "
-            "replace it, or use a clean directory.",
-            file=sys.stderr,
-        )
-        return 1
-
     print()
     _login_first(args.skip_login)
 
     agents = _choose_agents(args.agent)
     root = _scaffold()
     instructions = (root / "CLAUDE.md").read_text(encoding="utf-8")
-    starter_name = _TEMPLATE_SEEDS[args.template].get("starter", "STARTER.md")
-    starter = (root / starter_name).read_text(encoding="utf-8")
+    starter = (root / "STARTER.md").read_text(encoding="utf-8")
 
     print()
     print(paint(f"Scaffolding {target} for your coding agent…", bold=True))
@@ -268,9 +161,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         return _write(dest, text, force=args.force, log=log)
 
     def prep(text: str, agent: str) -> str:
-        # Tailor to the env template (strip RAG blocks for non-rag), then retarget
-        # the skills-dir references to the agent.
-        return _retarget(_apply_template_conditionals(text, args.template), agent)
+        return _retarget(text, agent)
 
     bodies = [(a, f) for a, f in (("claude", "CLAUDE.md"), ("codex", "AGENTS.md")) if a in agents]
 
@@ -289,61 +180,6 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             dest = target.joinpath(*skills_dir, name, "SKILL.md")
             skill_writes.append(w(dest, prep(skill, agent)))
 
-    # 3) env template — every template ships a standalone pyproject and runnable
-    #    main.py. BaseEnv templates also include tiny seed datasets; Harbor resolves
-    #    package data at runtime. --no-template skips the seed (docs + skills only).
-    #    main.py honors --force (the guard above cleared it); dataset placeholders
-    #    ALWAYS skip-if-exists so real prepared data is never clobbered.
-    env_writes: list[bool] = []
-    if not args.no_template:
-        seed = _TEMPLATE_SEEDS[args.template]
-        env_writes.append(
-            _write(
-                target / "pyproject.toml",
-                _project_toml(args.template),
-                force=False,
-                log=log,
-            )
-        )
-        env_writes.append(w(target / "main.py", (root / seed["main"]).read_text("utf-8")))
-        if "train" in seed:
-            env_writes.append(
-                _write(
-                    target / "train.jsonl",
-                    (root / seed["train"]).read_text("utf-8"),
-                    force=False,
-                    log=log,
-                )
-            )
-        # tests/ mirrors the examples' layout: conftest pins the import path,
-        # and templates with a deterministic reward seed a reward test to grow.
-        env_writes.append(
-            _write(
-                target / "tests" / "conftest.py",
-                (root / "tests_conftest.py").read_text("utf-8"),
-                force=False,
-                log=log,
-            )
-        )
-        if "tests" in seed:
-            env_writes.append(
-                _write(
-                    target / "tests" / "test_env.py",
-                    (root / seed["tests"]).read_text("utf-8"),
-                    force=False,
-                    log=log,
-                )
-            )
-        if "eval" in seed:
-            env_writes.append(
-                _write(
-                    target / "eval.jsonl",
-                    (root / seed["eval"]).read_text("utf-8"),
-                    force=False,
-                    log=log,
-                )
-            )
-
     if args.verbose:
         print("\n".join(log))
     else:
@@ -356,14 +192,6 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 f"{len(_SKILLS)} stages × {n_ag} agent{'s' * (n_ag != 1)}",
             ),
         ]
-        if env_writes:
-            groups.append(
-                (
-                    "env template",
-                    env_writes,
-                    f"pyproject + main.py + data/tests ({args.template})",
-                )
-            )
         label_w = max(len(label) for label, _, _ in groups)
         for label, writes, detail in groups:
             print(_group_status(label, writes, detail, label_w))
@@ -371,7 +199,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     print()
     print(paint(f"{target} has been set up for castform and your coding agent.", bold=True))
 
-    _print_get_started(args.template)
+    _print_get_started()
     return 0
 
 
@@ -385,19 +213,6 @@ def register(sub: argparse._SubParsersAction) -> None:
         help="Coding agent to scaffold for (default: both)",
     )
     p.add_argument("--force", action="store_true", help="Overwrite existing scaffold files")
-    p.add_argument(
-        "--template",
-        choices=["generic", "rag", "harbor"],
-        default="generic",
-        help="Project guidance: 'generic' = a minimal single-turn env, 'rag' = "
-        "the same runnable seed plus RAG dependencies, 'harbor' = a runtime "
-        "Harbor package with Modal sandboxes (default: generic)",
-    )
-    p.add_argument(
-        "--no-template",
-        action="store_true",
-        help="Skip the seed main.py and any datasets (scaffold docs + skills only)",
-    )
     p.add_argument("--skip-login", action="store_true", help="Don't sign in (scaffold only)")
     p.add_argument(
         "-v",

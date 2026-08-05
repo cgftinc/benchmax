@@ -51,11 +51,9 @@ claim a stored run exposes it until the platform does.
 - judge errors: fix auth/provider/runtime reliability; never reinterpret the
   zeroed failure reward as the judge's verdict.
 
-<!-- rag:start -->
 For RAG, separate retrieval from answer quality: gold never retrieved, gold
 retrieved but not cited, and correct cited answers are different failure modes.
 Check source-ID canonicalization before changing reward weights.
-<!-- rag:end -->
 
 Every `runs` read supports `--json`. Use it for programmatic comparison, but do not
 build an unbounded polling loop. Re-run status and scalar reads after returning to

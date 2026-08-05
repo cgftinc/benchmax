@@ -31,20 +31,25 @@ uv tool install -U castform
 castform login
 castform setup --dir my-environment
 cd my-environment
-uv sync
-uv run python main.py
 ```
 
-`castform setup` writes a `pyproject.toml`, a runnable `main.py`, small seed
-datasets and script-focused agent skills. Bare `main.py` prepares data and runs
-local validation with two siblings; it never launches training. After reviewing
-the result, launch explicitly:
+`castform setup` writes coding-agent guidance and script-focused skills. It does
+not generate environment code or choose between `BaseEnv`, `HarborEnv`, RAG, or
+another task shape. Ask your agent to inspect the maintained
+[Benchmax examples](https://github.com/castform-ai/benchmax/tree/main/examples),
+choose the closest example, and adapt its project structure and `main.py`.
+
+Once the agent has created the project, bare `main.py` should prepare data and
+run local validation with two siblings; it must never launch training. After
+reviewing the result, launch explicitly:
 
 ```bash
+uv sync
+uv run python main.py
 uv run python main.py launch
 ```
 
-The generated script makes every boundary visible:
+The resulting script should make every boundary visible:
 
 1. prepare or reference data with normal Python library calls;
 2. materialize an example through `Environment.create_dataset`, then call

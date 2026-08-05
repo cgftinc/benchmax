@@ -5,7 +5,7 @@ description: Design a benchmax environment, its ordered dataset, tools, and expl
 
 # Design an environment
 
-Before coding, inspect the maintained [examples](https://github.com/castform-ai/benchmax/tree/main/examples), choose the closest task shape, and follow its `README.md` and `main.py`.
+Before coding, inspect the maintained [examples](https://github.com/castform-ai/benchmax/tree/main/examples), choose the closest task shape, and follow its `README.md`, project structure, and `main.py`. The examples are the source of truth for current APIs and patterns; do not recreate an environment from a scaffold snippet.
 
 Use `BaseEnv` for the standard OpenAI-compatible chat and tool loop. Use
 `HarborEnv` for a Harbor dataset/package or tasks that ship their own instruction,
@@ -13,29 +13,9 @@ sandbox, and verifier. Start with `aime` for packaged tasks or `harvey` for a
 custom harness. Do not infer Harbor from a judge, tool, or Dockerfile alone.
 Extend `Environment` directly only for another genuinely different rollout loop.
 
-## Required BaseEnv shape
-
-```python
-from pathlib import Path
-
-from benchmax.envs import BaseEnv, BaseRollout, DatasetSplit, JsonlDataset
-from benchmax.envs.base import resolve_dataset_path
-from benchmax.rewards import extract_completion_text
-
-
-class MyEnv(BaseEnv):
-    max_turns = 1
-
-    async def create_dataset(
-        self, split: DatasetSplit, base_dir: Path
-    ) -> JsonlDataset:
-        path = resolve_dataset_path(base_dir, f"{split}.jsonl")
-        return JsonlDataset(path, row_to_example=...)
-
-    async def compute_reward(self, rollout: BaseRollout) -> dict[str, float]:
-        answer = extract_completion_text(rollout.messages)
-        return {"correct": float(answer == rollout.example_args["answer"])}
-```
+Do not normalize every task into one project layout. Preserve the selected
+example's division between `main.py`, environment, harness, data, and search
+modules, changing only what the task requires.
 
 Build each `Example` with a stable ID, normally
 `canonical_example_id(payload)`. `prompt_messages` is the reserved BaseEnv payload
@@ -93,6 +73,5 @@ training failure. It also rejects unsupported controls such as `n > 1`, forced
 4. Load **verify-environment** and run the real two-sibling validation.
 5. Record every remote runtime import in `RUNTIME_DEPENDENCIES` for **launch-run**.
 
-For Harbor, require sandbox credentials and the matching provider extra in the
-bundle dependencies, for example
-`harbor[modal]>=0.18,<0.19`.
+For Harbor, copy the sandbox credential flow and provider dependency constraint
+from the selected maintained example.

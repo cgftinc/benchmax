@@ -64,12 +64,12 @@ modules under the environment project automatically. Source from another project
 must be explicit: use `local_modules=` to capture it, or list its installed
 distribution in `pip_dependencies` to keep it as a remote reference.
 
-For Harbor, add the selected provider extra explicitly, such as
-`harbor[modal]>=0.18,<0.19` or `harbor[daytona]>=0.18,<0.19`.
+For Harbor, copy the selected provider extra and version constraint from the
+maintained example.
 
 ## Launch configuration
 
-Review `LAUNCH_CONFIG` in source. In particular:
+Review the training arguments passed by the selected example. In particular:
 
 - `max_context_tokens` is the whole-rollout prompt-plus-response token budget;
 - keep trainer turn/tool limits compatible with the environment's own limits;
@@ -77,11 +77,9 @@ Review `LAUNCH_CONFIG` in source. In particular:
 - use `TrainerClient.list_launch_args()` when you need the live accepted schema
   instead of guessing an argument name.
 
-<!-- rag:start -->
 For search environments, budget for repeated tool output across turns. Confirm
 the rollout bundle includes the runtime search client but not large local corpus-
 preparation dependencies unless the environment imports them.
-<!-- rag:end -->
 
 ## Credentials
 

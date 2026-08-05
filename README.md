@@ -29,7 +29,8 @@ castform --version
 castform setup
 ```
 
-this signs you in and creates a starter environment.
+this signs you in and installs coding-agent guidance. it does not generate an
+environment; ask your agent to choose and adapt the closest maintained example.
 
 working examples live under [`examples/`](examples/)
 

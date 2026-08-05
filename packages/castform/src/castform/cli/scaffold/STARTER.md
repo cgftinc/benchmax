@@ -1,7 +1,16 @@
 # Get started
 
-`castform setup` created a standalone Python 3.12 project. The project script,
-not the CLI, owns the reproducible training workflow:
+`castform setup` installed coding-agent guidance and skills. It intentionally did
+not generate a `main.py`, datasets, tests, or dependency file because it cannot
+know the correct environment shape from setup alone.
+
+Ask your coding agent to inspect the maintained examples at
+https://github.com/castform-ai/benchmax/tree/main/examples, choose the closest
+task shape, and adapt its `README.md`, project structure, and `main.py`. The
+examples are the source of truth for current Benchmax patterns.
+
+Once created, the project script—not the CLI—owns the reproducible training
+workflow:
 
 ```bash
 uv sync
@@ -23,7 +32,8 @@ partial and correct answers.
 ## Work with your agent
 
 Point your coding agent at the real task and ask it to load the matching skill in
-`.claude/skills/` before each stage.
+`.claude/skills/` before each stage. It must choose an example before choosing an
+environment base class or project layout.
 
 **General environment:**
 
@@ -77,7 +87,7 @@ After a green baseline, decide deliberately:
 - iterate on the environment, data or reward and validate again; or
 - inspect the bundle dependencies and run `uv run python main.py launch`.
 
-The seed script uploads its JSONL splits. If the environment instead resolves a
+The project script may upload JSONL splits. If the environment instead resolves a
 split at runtime—through Harbor, Git, or another provider—omit that split from
 `upload_assets`. Use `None`/omission for no upload; `[]` uploads an empty
 JSONL deliberately.

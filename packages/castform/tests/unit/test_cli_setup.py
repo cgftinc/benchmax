@@ -1,15 +1,13 @@
-"""Slice 1.8 offline: `castform setup` scaffolds the right files (no login)."""
+"""Offline tests for the coding-agent guidance written by ``castform setup``."""
 
 from __future__ import annotations
 
 import argparse
-import json
-import tomllib
 from pathlib import Path
 
+import pytest
+from castform import cli
 from castform.cli import setup
-
-from ._scaffold import discover_env_class, load_module
 
 _SKILLS = (
     "design-environment",
@@ -19,8 +17,7 @@ _SKILLS = (
     "view-progress",
 )
 
-# BaseEnv templates ship these — a runnable seed + tiny day-one datasets.
-_SEED_FILES = (
+_ENV_FILES = (
     "pyproject.toml",
     "main.py",
     "train.jsonl",
@@ -28,297 +25,120 @@ _SEED_FILES = (
 )
 
 
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+def _ns(tmp: Path, **overrides: object) -> argparse.Namespace:
+    values: dict[str, object] = {
+        "dir": str(tmp),
+        "agent": "both",
+        "force": False,
+        "skip_login": True,
+        "verbose": False,
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
 
 
-def _ns(tmp, **kw):
-    base = dict(
-        dir=str(tmp),
-        agent="both",
-        force=False,
-        skip_login=True,
-        no_template=False,
-        template="generic",
-        verbose=False,
-    )
-    base.update(kw)
-    return argparse.Namespace(**base)
-
-
-def test_setup_writes_both_agents(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(setup, "version", lambda distribution: "0.1.2")
+def test_setup_writes_guidance_for_both_agents(tmp_path, capsys):
     assert setup._cmd_setup(_ns(tmp_path)) == 0
     assert (tmp_path / "CLAUDE.md").exists()
     assert (tmp_path / "AGENTS.md").exists()
     assert (tmp_path / "GETTING_STARTED.md").exists()
-    # both agents get the full skill set, each under its own skills dir
+
     for name in _SKILLS:
         assert (tmp_path / ".claude" / "skills" / name / "SKILL.md").exists()
         assert (tmp_path / ".agents" / "skills" / name / "SKILL.md").exists()
-    # same prose, but each body points at its own agent's skills dir
+
     assert ".claude/skills" in (tmp_path / "CLAUDE.md").read_text()
     assert ".agents/skills" in (tmp_path / "AGENTS.md").read_text()
-    out = capsys.readouterr().out  # the get-started block is emitted
-    assert "ask your agent" in out  # the prompt box
-    assert "helpful commands" in out  # the commands divider
-    assert "python main.py validate" in out
-    assert "python main.py launch" in out
-    assert "castform launch" not in out
-    assert "castform guide" in out  # the guide is surfaced in the commands
+
+    output = capsys.readouterr().out
+    assert "ask your agent" in output
+    assert "Benchmax" in output and "examples" in output
+    assert "helpful commands" in output
 
 
-def test_setup_claude_only(tmp_path):
-    assert setup._cmd_setup(_ns(tmp_path, agent="claude")) == 0
-    assert (tmp_path / "CLAUDE.md").exists()
-    assert not (tmp_path / "AGENTS.md").exists()
-    assert (tmp_path / ".claude" / "skills" / "launch-run" / "SKILL.md").exists()
-
-
-def test_setup_codex_writes_agents_skills(tmp_path):
-    assert setup._cmd_setup(_ns(tmp_path, agent="codex")) == 0
-    assert (tmp_path / "AGENTS.md").exists()
-    assert not (tmp_path / "CLAUDE.md").exists()
-    assert not (tmp_path / ".claude").exists()  # no claude dir for codex-only
-    # codex gets the same skills under .agents/skills, and AGENTS.md points there
+@pytest.mark.parametrize(
+    ("agent", "guide", "skills_dir", "absent"),
+    [
+        ("claude", "CLAUDE.md", ".claude", "AGENTS.md"),
+        ("codex", "AGENTS.md", ".agents", "CLAUDE.md"),
+    ],
+)
+def test_setup_can_target_one_agent(tmp_path, agent, guide, skills_dir, absent):
+    assert setup._cmd_setup(_ns(tmp_path, agent=agent)) == 0
+    assert (tmp_path / guide).exists()
+    assert not (tmp_path / absent).exists()
     for name in _SKILLS:
-        assert (tmp_path / ".agents" / "skills" / name / "SKILL.md").exists()
-    guide = (tmp_path / "AGENTS.md").read_text()
-    assert ".agents/skills" in guide
-    assert ".claude/skills" not in guide
-    assert "Keep correctness dominant" in guide
-    view_progress = (tmp_path / ".agents" / "skills" / "view-progress" / "SKILL.md").read_text()
-    assert "castform runs rollout" in view_progress
-    assert "--view" not in view_progress
+        assert (tmp_path / skills_dir / "skills" / name / "SKILL.md").exists()
 
 
-def test_setup_default_shows_grouped_summary(tmp_path, capsys):
+def test_setup_writes_no_environment_files(tmp_path):
     assert setup._cmd_setup(_ns(tmp_path)) == 0
-    out = capsys.readouterr().out
-    assert "agent guides" in out and "agent skills" in out
-    assert "env template" in out  # generic now ships a seed main.py + datasets
-    # no per-file log by default
-    assert "wrote " not in out
-    assert "SKILL.md" not in out
+    for name in _ENV_FILES:
+        assert not (tmp_path / name).exists(), name
+    assert not (tmp_path / "tests").exists()
 
 
-def test_setup_no_template_rerun_reports_already_present(tmp_path, capsys):
-    """The docs+skills scaffold is idempotent: re-running --no-template reports
-    everything already present. (A seed template instead hits the main.py overwrite
-    guard on re-run — see test_setup_refuses_existing_main_py.)"""
-    assert setup._cmd_setup(_ns(tmp_path, no_template=True)) == 0
-    capsys.readouterr()  # discard first run
-    assert setup._cmd_setup(_ns(tmp_path, no_template=True)) == 0
+def test_setup_never_changes_existing_environment_files(tmp_path):
+    for name in _ENV_FILES:
+        (tmp_path / name).write_text(f"existing {name}")
+
+    assert setup._cmd_setup(_ns(tmp_path, force=True)) == 0
+    for name in _ENV_FILES:
+        assert (tmp_path / name).read_text() == f"existing {name}"
+
+
+def test_setup_rerun_reports_guidance_already_present(tmp_path, capsys):
+    assert setup._cmd_setup(_ns(tmp_path)) == 0
+    capsys.readouterr()
+    assert setup._cmd_setup(_ns(tmp_path)) == 0
     assert "already present" in capsys.readouterr().out
 
 
-def test_setup_verbose_lists_every_file(tmp_path, capsys):
+def test_setup_verbose_lists_every_guidance_file(tmp_path, capsys):
     assert setup._cmd_setup(_ns(tmp_path, verbose=True)) == 0
-    out = capsys.readouterr().out
-    assert "wrote " in out and "SKILL.md" in out  # full per-file log
-    assert "agent skills" not in out  # grouped summary suppressed
-
-
-def test_setup_skips_existing_without_force(tmp_path):
-    (tmp_path / "CLAUDE.md").write_text("MINE")
-    assert setup._cmd_setup(_ns(tmp_path, agent="claude")) == 0
-    assert (tmp_path / "CLAUDE.md").read_text() == "MINE"
-
-
-def test_setup_force_overwrites(tmp_path):
-    (tmp_path / "CLAUDE.md").write_text("MINE")
-    assert setup._cmd_setup(_ns(tmp_path, agent="claude", force=True)) == 0
-    assert (tmp_path / "CLAUDE.md").read_text() != "MINE"
-
-
-def test_setup_content_cites_real_verbs(tmp_path):
-    setup._cmd_setup(_ns(tmp_path, agent="claude"))
-    guide = (tmp_path / "CLAUDE.md").read_text()
-    launch_skill = (tmp_path / ".claude" / "skills" / "launch-run" / "SKILL.md").read_text()
-    assert "python main.py validate" in guide
-    assert "python main.py launch" in guide
-    assert "castform launch" not in guide + launch_skill
-    assert "max_context_tokens" in launch_skill
-    assert "upload_assets(bundle=bundle" in launch_skill
-
-
-def test_setup_generic_ships_seed_env_and_data(tmp_path, monkeypatch):
-    """The generic flow ships a runnable seed main.py (a minimal single-turn env)
-    plus tiny day-one datasets, so `python main.py validate` runs with zero edits."""
-    monkeypatch.setattr(setup, "version", lambda distribution: "0.1.2")
-    assert setup._cmd_setup(_ns(tmp_path)) == 0
-    assert (tmp_path / "CLAUDE.md").exists()  # docs written
-    for name in _SEED_FILES:
-        assert (tmp_path / name).exists(), name
-    # the seed loads: a no-tool CustomEnv + non-empty datasets
-    module = load_module(tmp_path / "main.py")
-    assert discover_env_class(module).__name__ == "CustomEnv"
-    assert _read_jsonl(tmp_path / "train.jsonl")
-    assert _read_jsonl(tmp_path / "eval.jsonl")
-    project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
-    assert project["project"]["dependencies"] == [
-        "benchmax==0.1.2",
-        "castform==0.1.2",
-    ]
-    assert project["dependency-groups"]["dev"] == ["pytest>=8.4"]
-
-
-def test_setup_no_template_ships_docs_and_skills_only(tmp_path):
-    """--no-template scaffolds docs + skills only — no seed main.py / datasets."""
-    assert setup._cmd_setup(_ns(tmp_path, no_template=True)) == 0
-    assert (tmp_path / "CLAUDE.md").exists()  # docs written
-    for name in _SEED_FILES:
-        assert not (tmp_path / name).exists(), name
-
-
-def test_setup_refuses_existing_main_py(tmp_path, capsys):
-    """The overwrite guard now applies to every seed-writing template: an existing
-    main.py + no --force must fail loudly and leave the file untouched."""
-    (tmp_path / "main.py").write_text("MINE")
-    assert setup._cmd_setup(_ns(tmp_path)) == 1
-    assert (tmp_path / "main.py").read_text() == "MINE"  # untouched
-    assert "already exists" in capsys.readouterr().err
-
-
-def test_setup_template_rag_uses_generic_seed_and_provider_guidance(tmp_path, monkeypatch):
-    """The RAG template links to maintained examples instead of copying an adapter."""
-    monkeypatch.setattr(setup, "version", lambda distribution: "0.1.2")
-    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 0
-
-    module = load_module(tmp_path / "main.py")
-    assert discover_env_class(module).__name__ == "CustomEnv"
-    assert set(_read_jsonl(tmp_path / "train.jsonl")[0]) == {
-        "prompt",
-        "ground_truth",
-    }
-
-    project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
-    assert project["project"]["dependencies"] == [
-        "benchmax==0.1.2",
-        "castform[rag]==0.1.2",
-    ]
-    guidance = "\n".join(
-        [
-            (tmp_path / "GETTING_STARTED.md").read_text(),
-            (tmp_path / ".agents" / "skills" / "generate-data" / "SKILL.md").read_text(),
-        ]
-    )
-    for example in ("neon_rag", "turbopuffer_rag", "chroma_rag", "pinecone_rag"):
-        assert f"benchmax/tree/main/examples/{example}" in guidance
-    assert "HostedCorpusSearch" not in (tmp_path / "main.py").read_text()
-
-
-def test_setup_template_harbor_uses_runtime_data_and_explicit_args(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(setup, "version", lambda distribution: "0.1.2")
-    assert setup._cmd_setup(_ns(tmp_path, template="harbor")) == 0
-
-    module = load_module(tmp_path / "main.py")
-    assert discover_env_class(module).__name__ == "CustomHarborEnv"
-    assert not (tmp_path / "train.jsonl").exists()
-    assert not (tmp_path / "eval.jsonl").exists()
-
-    project = tomllib.loads((tmp_path / "pyproject.toml").read_text())
-    assert project["project"]["dependencies"] == [
-        "benchmax==0.1.2",
-        "castform==0.1.2",
-        "harbor[modal]>=0.18.0,<0.19",
-    ]
-    assert project["dependency-groups"]["dev"] == ["pytest>=8.4"]
-    main = (tmp_path / "main.py").read_text()
-    assert "def _constructor_args(args: argparse.Namespace)" in main
-    assert 'TrialAgentConfig(name="mini-swe-agent")' in main
-    assert "upload_assets(bundle=bundle, run_name=run_name)" in main
-    assert "os.environ" not in main
-
-    getting_started = (tmp_path / "GETTING_STARTED.md").read_text()
-    assert "Harbor package" in getting_started
-    assert "AIME" in getting_started and "Harvey" in getting_started
-    assert "--verifier-env OPENAI_API_KEY=<key>" in getting_started
     output = capsys.readouterr().out
-    assert "Harbor package <org/package>" in output
-    assert "synthetic dataset" not in output
+    assert "wrote " in output and "SKILL.md" in output
+    assert "agent skills" not in output
 
 
-def test_setup_template_rag_refuses_existing_main_py(tmp_path, capsys):
-    """The hollow-pass guard: existing main.py + --template rag (no --force) must
-    fail loudly and leave the file untouched — never silently skip."""
-    (tmp_path / "main.py").write_text("MINE")
-    assert setup._cmd_setup(_ns(tmp_path, template="rag")) == 1
-    assert (tmp_path / "main.py").read_text() == "MINE"  # untouched
-    assert "already exists" in capsys.readouterr().err
+def test_setup_preserves_or_forces_existing_guidance(tmp_path):
+    guide = tmp_path / "CLAUDE.md"
+    guide.write_text("MINE")
 
-
-def test_setup_template_rag_force_overwrites(tmp_path):
-    (tmp_path / "main.py").write_text("MINE")
-    assert setup._cmd_setup(_ns(tmp_path, template="rag", force=True)) == 0
-    main_py = (tmp_path / "main.py").read_text()
-    assert "class CustomEnv(BaseEnv)" in main_py and main_py != "MINE"
-
-
-def test_setup_force_replaces_main_py_but_keeps_datasets(tmp_path):
-    """--force clears the main.py overwrite guard but must NOT clobber datasets —
-    real project-generated output is never overwritten by the placeholder seed."""
-    (tmp_path / "main.py").write_text("MINE")
-    (tmp_path / "train.jsonl").write_text("REAL TRAIN DATA")
-    (tmp_path / "eval.jsonl").write_text("REAL EVAL DATA")
-    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'mine'\n")
-    assert setup._cmd_setup(_ns(tmp_path, template="rag", force=True)) == 0
-    assert (tmp_path / "main.py").read_text() != "MINE"  # guard cleared, seed written
-    assert (tmp_path / "train.jsonl").read_text() == "REAL TRAIN DATA"  # kept
-    assert (tmp_path / "eval.jsonl").read_text() == "REAL EVAL DATA"  # kept
-    assert "name = 'mine'" in (tmp_path / "pyproject.toml").read_text()
-
-
-def test_getting_started_teaches_script_workflow(tmp_path):
-    """GETTING_STARTED teaches the script workflow and baseline handoff."""
     assert setup._cmd_setup(_ns(tmp_path, agent="claude")) == 0
-    gs = (tmp_path / "GETTING_STARTED.md").read_text()
-    assert "Build a Castform environment for <task>" in gs
-    assert "uv run python main.py validate" in gs
-    assert "uv run python main.py launch" in gs
-    assert "green baseline" in gs and "iterate" in gs.lower()
-    assert "castform launch" not in gs
-    assert "castform data" not in gs
-    assert "Useful CLI commands" in gs
-    assert "closest maintained example" in gs.lower()
+    assert guide.read_text() == "MINE"
+
+    assert setup._cmd_setup(_ns(tmp_path, agent="claude", force=True)) == 0
+    assert guide.read_text() != "MINE"
 
 
-def test_setup_env_conditional_surfacing(tmp_path):
-    """Generic scaffold carries NO RAG-specific guidance; --template rag surfaces it.
-    Single-source docs use `<!-- rag:start/end -->` markers that setup strips for
-    non-rag templates. Also: the scaffold guide names main.py and drops the old
-    'setup does not write main.py' convention."""
+def test_setup_guidance_uses_benchmax_examples_as_source_of_truth(tmp_path):
+    assert setup._cmd_setup(_ns(tmp_path, agent="claude")) == 0
+    guide = (tmp_path / "CLAUDE.md").read_text()
+    starter = (tmp_path / "GETTING_STARTED.md").read_text()
+    design = (
+        tmp_path / ".claude" / "skills" / "design-environment" / "SKILL.md"
+    ).read_text()
+    combined = "\n".join((guide, starter, design))
 
-    def _emit(template):
-        d = tmp_path / template
-        assert setup._cmd_setup(_ns(d, template=template)) == 0
-        texts = [(d / "CLAUDE.md").read_text()]
-        for name in _SKILLS:
-            texts.append((d / ".claude" / "skills" / name / "SKILL.md").read_text())
-        return "\n".join(texts)
+    assert "https://github.com/castform-ai/benchmax/tree/main/examples" in combined
+    assert "source of truth" in combined
+    assert "does not generate environment code" in combined
+    assert "choose the closest" in combined
+    assert "uv run python main.py validate" in combined
+    assert "uv run python main.py launch" in combined
 
-    generic = _emit("generic")
-    rag = _emit("rag")
 
-    # the delimiter comments never leak into either emitted scaffold
-    for blob in (generic, rag):
-        assert "rag:start" not in blob and "rag:end" not in blob
-
-    # RAG-only guidance is present in the RAG scaffold and absent from generic.
-    for sentinel in (
-        "reference_chunks",
-        "source-ID canonicalization",
-        "castform.rag",
-    ):
-        assert sentinel in rag, f"rag scaffold missing {sentinel!r}"
-        assert sentinel not in generic, f"generic scaffold leaked {sentinel!r}"
-
-    # Both flows send the agent to the closest maintained example; only the RAG
-    # flow adds provider-specific implementation guidance.
-    for blob in (generic, rag):
-        assert "benchmax/tree/main/examples" in blob
-
-    # reversed convention + main.py naming in both scaffolds' guide/skills
-    for blob in (generic, rag):
-        assert "main.py" in blob
-        assert "does not write" not in blob and "does **not** write" not in blob
+def test_setup_parser_has_no_environment_template_flags():
+    setup_parser = next(
+        action
+        for action in cli.build_parser()._actions
+        if action.dest == "command"
+    ).choices["setup"]
+    option_strings = {
+        option
+        for action in setup_parser._actions
+        for option in action.option_strings
+    }
+    assert "--template" not in option_strings
+    assert "--no-template" not in option_strings

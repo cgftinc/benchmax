@@ -17,9 +17,9 @@ The validation stage must first obtain its example through
 containing exactly two siblings of that example locally and in the hosted
 sandbox. This exercises the public data materialization and deployment contract
 as part of validation. Hosted validation always runs against the exact assets
-that were just uploaded — the same ones a launch would train on. Keep the local and hosted rollout-model context
-budget shared through `VALIDATE_CONFIG["max_context_tokens"]`; the local
-wall-clock backstop is `VALIDATE_CONFIG["local_timeout_seconds"]`.
+that were just uploaded — the same ones a launch would train on. Follow the
+selected example's validation structure and keep the local and hosted rollout
+context budget and wall-clock backstop explicit.
 
 `validate_environment` first performs static model-parameter checks, then uses
 tracked model sessions locally and remotely to enforce the same sampling and
@@ -55,9 +55,8 @@ Do not call the baseline green when:
 
 ## Targeted checks
 
-Before launch, add unit tests for empty, wrong, partial and correct answers. Put
-them in `tests/` next to `main.py` (its `conftest.py` pins the import path so
-`from main import ...` resolves) and run `uv run pytest tests`. Exercise
+Before launch, add unit tests for empty, wrong, partial and correct answers using
+the selected example's test layout, and run `uv run pytest tests`. Exercise
 tool exceptions and judge exceptions and assert the failure termination reason,
 zeroed declared shape and log message. For a group-relative reward, verify that one
 failed sibling does not alter successful siblings' scoring inputs.

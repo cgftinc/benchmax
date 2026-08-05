@@ -34,9 +34,11 @@ _CMD_PREFIXES = ("castform", "uv ", "uv\t", "pip ", "cd ", "python", "source ", 
 
 _GUIDE = """# Get started
 
-Use `castform setup` to create a project with an environment script. The script owns
-data preparation, local validation, bundling, upload, and launch; the CLI handles
-your Castform session and run inspection or cancellation.
+Use `castform setup` to install coding-agent guidance and skills. Setup does not
+generate environment code. Ask your agent to inspect the maintained Benchmax
+examples, choose the closest task shape, and adapt that example into the project.
+The resulting script owns data preparation, local validation, bundling, upload,
+and launch; the CLI handles your Castform session and run inspection or cancellation.
 
 ## Quick commands
 
