@@ -156,17 +156,14 @@ class HTTPJudge:
             "visible_context": visible_context,
             "candidate": candidate,
             "response_schema": {
-                "decision": "keep | replace_with_compact | replace_with_action",
-                "replacement": "required assistant message for replace_with_action",
+                "decision": "keep | replace_with_compact",
                 "reason_code": "short machine-readable code",
             },
         }
         decision = self._request(payload)
         choice = decision.get("decision")
-        if choice not in {"keep", "replace_with_compact", "replace_with_action"}:
+        if choice not in {"keep", "replace_with_compact"}:
             raise JudgeProtocolError(f"invalid action judge decision: {choice!r}")
-        if choice == "replace_with_action":
-            _validate_assistant_message(decision.get("replacement"))
         return decision
 
     def review_summary(self, visible_context, candidate):
@@ -231,10 +228,8 @@ class HTTPJudge:
     def _validate_decision(kind: str, decision: dict[str, Any]) -> None:
         choice = decision.get("decision")
         if kind == "action":
-            if choice not in {"keep", "replace_with_compact", "replace_with_action"}:
+            if choice not in {"keep", "replace_with_compact"}:
                 raise JudgeProtocolError(f"invalid action judge decision: {choice!r}")
-            if choice == "replace_with_action":
-                _validate_assistant_message(decision.get("replacement"))
             return
         if kind == "summary":
             if choice not in {"keep", "repair"}:
@@ -547,10 +542,8 @@ def _approved_action(
     if choice == "keep":
         _validate_assistant_message(candidate)
         return copy.deepcopy(candidate)
-    if choice == "replace_with_action":
-        replacement = copy.deepcopy(decision["replacement"])
-        _validate_assistant_message(replacement)
-        return replacement
+    if choice != "replace_with_compact":
+        raise JudgeProtocolError(f"invalid approved action decision: {choice!r}")
     call_id = f"compact-{event_id}-{uuid.uuid4().hex[:8]}"
     return {
         "role": "assistant",
