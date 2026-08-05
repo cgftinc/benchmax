@@ -1,0 +1,19 @@
+[project]
+name = "castform-router"
+version = "0.1.0"
+description = "Minimal Qwen-scored LiteLLM backend router"
+requires-python = "==3.12.*"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.4,<9", "pytest-asyncio>=1.2,<2", "ruff>=0.14,<1"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["castform_router"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

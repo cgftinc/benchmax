@@ -1,0 +1,33 @@
+model_list:
+  - model_name: castform-router-qwen
+    litellm_params:
+      model: os.environ/CASTFORM_QWEN_MODEL
+      api_base: os.environ/CASTFORM_QWEN_BASE_URL
+      api_key: os.environ/CASTFORM_QWEN_API_KEY
+
+  - model_name: small-route
+    litellm_params:
+      model: os.environ/CASTFORM_SMALL_MODEL
+      api_key: os.environ/CASTFORM_SMALL_API_KEY
+
+  - model_name: medium-route
+    litellm_params:
+      model: os.environ/CASTFORM_MEDIUM_MODEL
+      api_key: os.environ/CASTFORM_MEDIUM_API_KEY
+
+  - model_name: large-route
+    litellm_params:
+      model: os.environ/CASTFORM_LARGE_MODEL
+      api_key: os.environ/CASTFORM_LARGE_API_KEY
+
+  - model_name: castform-auto
+    litellm_params:
+      model: os.environ/CASTFORM_LARGE_MODEL
+      api_key: os.environ/CASTFORM_LARGE_API_KEY
+
+litellm_settings:
+  callbacks: castform_router.litellm_callback.castform_auto_router
+  drop_params: false
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

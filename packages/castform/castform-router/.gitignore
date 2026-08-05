@@ -1,0 +1,9 @@
+.env
+litellm/.env
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+training_runs/*
+!training_runs/.gitkeep
