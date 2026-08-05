@@ -1,0 +1,1 @@
+{"messages": [{"role": "user", "content": "Draft A"}, {"role": "assistant", "content": "First draft", "weight": 0}, {"role": "user", "content": "Improve it"}, {"role": "assistant", "content": "Final draft", "weight": 1}]}

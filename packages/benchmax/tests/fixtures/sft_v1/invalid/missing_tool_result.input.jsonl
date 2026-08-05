@@ -1,0 +1,1 @@
+{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]}, {"role": "assistant", "content": "done"}], "tools": [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}]}

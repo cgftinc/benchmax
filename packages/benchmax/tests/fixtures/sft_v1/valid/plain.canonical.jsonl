@@ -1,0 +1,2 @@
+{"messages":[{"content":"Be terse.","role":"system"},{"content":"What is 2 + 2?","role":"user"},{"content":"4","role":"assistant"}]}
+{"messages":[{"content":"Say café – naïve.","role":"user"},{"content":"café – naïve ✓","role":"assistant","weight":1}],"metadata":{"id":"row-2"},"tools":[]}

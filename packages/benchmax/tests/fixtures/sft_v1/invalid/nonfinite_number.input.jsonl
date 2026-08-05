@@ -1,0 +1,2 @@
+{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}], "metadata": {"x": NaN}}
+{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}], "metadata": {"x": 1e999}}

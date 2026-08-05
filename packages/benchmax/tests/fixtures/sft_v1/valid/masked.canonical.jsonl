@@ -1,0 +1,1 @@
+{"messages":[{"content":"Draft A","role":"user"},{"content":"First draft","role":"assistant","weight":0},{"content":"Improve it","role":"user"},{"content":"Final draft","role":"assistant","weight":1}]}
