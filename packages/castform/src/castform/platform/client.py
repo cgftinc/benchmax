@@ -9,9 +9,14 @@ import warnings
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    # Runtime import stays inside launch_sft_run: sft.py imports this module
+    # for StorageClient, so a top-level import would be circular.
+    from .sft import SftTrainingConfig, UploadedSftAssets
 
 from castform import config
 
@@ -420,6 +425,60 @@ class TrainerClient:
         for warning in body.get("warnings", []) or []:
             warnings.warn(f"launch warning: {warning}", stacklevel=2)
         return body["runId"]
+
+    def launch_sft_run(
+        self,
+        *,
+        assets: UploadedSftAssets,
+        name: str,
+        config: SftTrainingConfig | None = None,
+    ) -> str:
+        """Launch an env-less SFT run through the dedicated SFT endpoint.
+
+        Only the typed uploaded reference and the genuine v1 choices cross the
+        wire; the platform owns the model, LoRA policy, topology, and
+        scheduling. No environment paths, secrets, or template selectors are
+        accepted or synthesized.
+
+        Args:
+            assets: Result of ``upload_sft_assets`` — the dataset prefix plus
+                its literal format identifier.
+            name: Run name (same safe-name limits as RL runs).
+            config: The v1 training choices; defaults to
+                ``SftTrainingConfig()``.
+
+        Returns:
+            The training run ID.
+
+        Raises:
+            AuthenticationError: If the bearer is invalid.
+            JobLaunchError: If the platform rejects or fails the launch,
+                including when SFT launch is disabled.
+        """
+
+        from .sft import SftTrainingConfig, UploadedSftAssets
+
+        if not isinstance(assets, UploadedSftAssets):
+            raise TypeError(
+                f"assets must be an UploadedSftAssets from upload_sft_assets, "
+                f"got {type(assets).__name__}"
+            )
+        resolved = config if config is not None else SftTrainingConfig()
+        if not isinstance(resolved, SftTrainingConfig):
+            raise TypeError(f"config must be an SftTrainingConfig, got {type(config).__name__}")
+        response = self._http_client.post(
+            "/v1/train/runs/sft",
+            json={
+                "name": name,
+                "dataset": {
+                    "format": assets.dataset_format,
+                    "path": assets.dataset_path,
+                },
+                "args": resolved.as_args(),
+            },
+        )
+        self._handle_response_errors(response)
+        return response.json()["runId"]
 
     def list_launch_args(self) -> list[LaunchArgSpec]:
         """Fetch the schema of launch args this platform accepts.

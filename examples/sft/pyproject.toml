@@ -1,0 +1,16 @@
+[project]
+name = "benchmax-example-sft"
+version = "0.1.0"
+description = "SFT dataset construction examples for the castform platform"
+requires-python = "==3.12.*"
+dependencies = ["castform"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["pii_masking"]
+
+[dependency-groups]
+dev = ["pytest>=8.4.2", "pytest-asyncio>=1.2.0", "ruff>=0.14.2"]

@@ -15,6 +15,11 @@ dev = [
     "pytest-asyncio>=1.2.0",
     "ruff>=0.14.2",
 ]
+# Live-run dependency for examples/sft/pii_masking only; deliberately not a
+# runtime dependency of benchmax or castform.
+sft-example = [
+    "datasets==5.0.1",
+]
 
 # Repo-root ruff config. No package or example declares its own [tool.ruff],
 # so this governs the whole workspace tree.
