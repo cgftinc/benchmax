@@ -170,7 +170,7 @@ wheels = [
 
 [[package]]
 name = "benchmax"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "packages/benchmax" }
 dependencies = [
     { name = "cloudpickle" },
@@ -568,7 +568,7 @@ wheels = [
 
 [[package]]
 name = "castform"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "packages/castform" }
 dependencies = [
     { name = "benchmax" },
