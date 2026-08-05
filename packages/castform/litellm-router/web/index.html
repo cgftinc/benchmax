@@ -370,14 +370,14 @@
               <span>One prediction per route</span>
             </div>
             <pre>{
-  "schema_version": "1",
-  "router_model_version": "qwen35-08b-sft-v1",
+  "schema_version": "2",
+  "router_model_version": "qwen35-08b-sft-v2",
   "predictions": [{
     "route_id": "claude-code/sonnet@anthropic",
     "success_probability": 0.82,
-    "expected_input_tokens": 28000,
-    "expected_cache_read_tokens": 9000,
-    "expected_output_tokens": 4200
+    "input_token_band": "under_64k",
+    "cache_read_token_band": "under_64k",
+    "output_token_band": "4k_8k"
   }]
 }</pre>
           </section>
@@ -385,7 +385,7 @@
         <p class="training-context-note">
           <strong>User context rule:</strong>
           repository-mined PRs do not reliably identify a developer persona, so
-          <code>user_context</code> stays empty for v1. Add role or team context
+          <code>user_context</code> stays empty for v2. Add role or team context
           only when the same field is captured during training and production.
         </p>
 

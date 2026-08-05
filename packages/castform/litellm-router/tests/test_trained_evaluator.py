@@ -23,15 +23,15 @@ class RouterHandler(BaseHTTPRequestHandler):
                 {
                     "route_id": route["route_id"],
                     "success_probability": 0.9 - (index * 0.1),
-                    "expected_input_tokens": 100,
-                    "expected_cache_read_tokens": 20,
-                    "expected_output_tokens": 30,
+                    "input_token_band": "under_64k",
+                    "cache_read_token_band": "zero",
+                    "output_token_band": "under_4k",
                 }
             )
         content = json.dumps(
             {
-                "schema_version": "1",
-                "router_model_version": "test-router-v1",
+                "schema_version": "2",
+                "router_model_version": "test-router-v2",
                 "predictions": predictions,
             }
         )
@@ -91,9 +91,9 @@ def test_evaluator_emits_benchmax_picks_and_metrics(tmp_path: Path) -> None:
                 {
                     "route_id": route["route_id"],
                     "success_probability": 0.8,
-                    "expected_input_tokens": 100,
-                    "expected_cache_read_tokens": 20,
-                    "expected_output_tokens": 30,
+                    "input_token_band": "under_64k",
+                    "cache_read_token_band": "zero",
+                    "output_token_band": "under_4k",
                 }
                 for route in routes
             ]
@@ -121,7 +121,9 @@ def test_evaluator_emits_benchmax_picks_and_metrics(tmp_path: Path) -> None:
         json.loads(line)
         for line in Path(result["picks"]).read_text(encoding="utf-8").splitlines()
     ]
-    assert result["router_model_version"] == "test-router-v1"
+    assert result["router_model_version"] == "test-router-v2"
     assert result["brier_score"] == 0.005
+    assert result["token_band_accuracy"] == 1.0
+    assert result["token_band_accuracy_by_class"]["output"] == 1.0
     assert picks[0]["model"] == "claude-sonnet-4-6"
     assert picks[0]["route_id"] == "claude-code/sonnet@anthropic"

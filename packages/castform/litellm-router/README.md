@@ -374,27 +374,27 @@ always-route policy, random selection, and the oracle ceiling.
 ## Trained-router serving output
 
 Benchmax does not prescribe the final 800M serving format. This workspace locks
-the following v1 per-route scoring contract so the deployment policy can sweep
+the following v2 per-route scoring contract so the deployment policy can sweep
 cost-quality tradeoffs without retraining:
 
 ```json
 {
-  "schema_version": "1",
-  "router_model_version": "qwen35-08b-sft-v1",
+  "schema_version": "2",
+  "router_model_version": "qwen35-08b-sft-v2",
   "predictions": [
     {
       "route_id": "claude-code/glm-5.1@zai",
       "success_probability": 0.8,
-      "expected_input_tokens": 34000,
-      "expected_cache_read_tokens": 8000,
-      "expected_output_tokens": 9000
+      "input_token_band": "under_64k",
+      "cache_read_token_band": "under_64k",
+      "output_token_band": "8k_16k"
     },
     {
       "route_id": "codex/openai-codex@openai",
       "success_probability": 0.88,
-      "expected_input_tokens": 39000,
-      "expected_cache_read_tokens": 10000,
-      "expected_output_tokens": 10000
+      "input_token_band": "under_64k",
+      "cache_read_token_band": "under_64k",
+      "output_token_band": "8k_16k"
     }
   ]
 }
@@ -439,10 +439,44 @@ customer policy change without retraining the LLM.
 
 Start with supervised fine-tuning. Each example contains the pre-solve task and
 all eligible routes; the assistant target contains measured success rates and
-mean token classes. The formatter aggregates repeated runs, drops tasks without
-full route coverage, and creates temporal or whole-repository evaluation
+categorical token bands. Success targets use a Beta(1,1) posterior mean, so a
+single pass/fail becomes 0.6667/0.3333 instead of false certainty at 1/0. Exact
+mean token counts remain in audit-only label metadata, while the learned JSON
+uses stable input, cache-read, and output bands. The formatter drops tasks
+without full route coverage and creates temporal or whole-repository evaluation
 splits. It does not add a synthetic user persona: user context should be added
 only when the same field exists in both training data and production requests.
+
+For the shared `castform-ai/model-router` corpus, scaffold the pinned six-route
+baseline directly from a local checkout:
+
+```bash
+uv run castform-router scaffold-model-router-sft /path/to/model-router \
+  --output training_runs/model-router-sft \
+  --model claude-haiku-4-5 \
+  --model claude-opus-5 \
+  --model claude-sonnet-4-6 \
+  --model gpt-5.6-luna \
+  --model gpt-5.6-sol \
+  --model gpt-5.6-terra
+```
+
+After the DeepSeek farm has complete task coverage, add its Claude Code route:
+
+```bash
+  --model deepseek-v4-flash
+```
+
+The provider is inferred from the served model, producing the route ID
+`claude-code/deepseek-v4-flash@deepseek`. Do not add a partial DeepSeek sample
+to the main SFT matrix: full-matrix filtering would reduce the whole training
+set to only the sampled tasks. Partial traces remain useful for contract,
+cost, and evaluator smoke tests.
+
+This writes the source hash, route manifest, repo-temporal train/eval files,
+training configuration, and example request/response contracts. It does not
+start training. A route is included in the formatted dataset only when every
+selected model has a verified outcome for that task.
 
 After the Benchmax dataset stage:
 
@@ -479,9 +513,10 @@ uv run castform-router evaluate-trained training_runs/<workspace-id>
 
 This validates every held-out JSON response, emits
 `benchmax/model_router/router_outputs/picks_trained.jsonl`, reports Brier score
-and total-token mean absolute error, and prints the existing Benchmax
-`scoreboard.py` command to run next. Route costs are means from the training
-split only; held-out outcome costs are not leaked into selection.
+plus per-class token-band accuracy and representative total-token mean absolute
+error, and prints the existing Benchmax `scoreboard.py` command to run next.
+Route costs are means from the training split only; held-out outcome costs are
+not leaked into selection.
 
 Inside Compose, `CASTFORM_ROUTER_MODEL_BASE_URL` defaults to LiteLLM and
 `CASTFORM_ROUTER_MODEL_NAME` defaults to `castform-router-0.8b`. Setting the

@@ -8,6 +8,10 @@ from typing import Any
 
 from castform_router.job_router import JobRouter
 from castform_router.router_protocol import OpenAICompatibleRouteScorer
+from castform_router.token_bands import (
+    token_band_for_count,
+    token_band_representative,
+)
 from castform_router.types import HarnessRoute, HarnessRouteRequest
 
 
@@ -57,6 +61,11 @@ def evaluate_trained_router(
     picks: list[dict[str, Any]] = []
     squared_errors: list[float] = []
     absolute_token_errors: list[float] = []
+    token_band_results: dict[str, list[bool]] = {
+        "input": [],
+        "cache_read": [],
+        "output": [],
+    }
     for example in examples:
         request_payload = example["request"]
         task = request_payload["task"]
@@ -105,6 +114,28 @@ def evaluate_trained_router(
                     - _target_total_tokens(target)
                 )
             )
+            if "input_token_band" in target:
+                token_band_results["input"].append(
+                    token_band_for_count(
+                        prediction.expected_input_tokens,
+                        "input",
+                    )
+                    == target["input_token_band"]
+                )
+                token_band_results["cache_read"].append(
+                    token_band_for_count(
+                        prediction.expected_cache_read_tokens,
+                        "cache_read",
+                    )
+                    == target["cache_read_token_band"]
+                )
+                token_band_results["output"].append(
+                    token_band_for_count(
+                        prediction.expected_output_tokens,
+                        "output",
+                    )
+                    == target["output_token_band"]
+                )
 
     output_dir = workspace / "benchmax" / "model_router" / "router_outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -126,6 +157,17 @@ def evaluate_trained_router(
             if absolute_token_errors
             else None
         ),
+        "token_band_accuracy": _mean_bool(
+            [
+                result
+                for results in token_band_results.values()
+                for result in results
+            ]
+        ),
+        "token_band_accuracy_by_class": {
+            token_class: _mean_bool(results)
+            for token_class, results in token_band_results.items()
+        },
         "picks": str(picks_path),
         "next_command": (
             "python scoreboard.py dataset.jsonl --split test "
@@ -143,6 +185,18 @@ def evaluate_trained_router(
 
 
 def _target_total_tokens(target: dict[str, Any]) -> int:
+    if "input_token_band" in target:
+        return (
+            token_band_representative(target["input_token_band"], "input")
+            + token_band_representative(
+                target["cache_read_token_band"],
+                "cache_read",
+            )
+            + token_band_representative(
+                target["output_token_band"],
+                "output",
+            )
+        )
     return sum(
         int(target.get(field, 0))
         for field in (
@@ -151,6 +205,12 @@ def _target_total_tokens(target: dict[str, Any]) -> int:
             "expected_output_tokens",
         )
     )
+
+
+def _mean_bool(values: list[bool]) -> float | None:
+    if not values:
+        return None
+    return round(sum(values) / len(values), 6)
 
 
 def _read_object(path: Path) -> dict[str, Any]:

@@ -5,20 +5,25 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from dataclasses import asdict
 from typing import Any, Protocol
 
+from castform_router.token_bands import (
+    token_band_for_count,
+    token_band_names,
+    token_band_representative,
+)
 from castform_router.types import (
     HarnessRoutePrediction,
     HarnessRouteRequest,
 )
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
+LEGACY_SCHEMA_VERSION = "1"
 SYSTEM_PROMPT = (
-    "You are Castform Router v1, a pre-solve route scorer for software "
+    "You are Castform Router v2, a pre-solve route scorer for software "
     "engineering tasks. For every candidate route, estimate its probability "
-    "of successfully completing the task and its expected input, cache-read, "
-    "and output token counts.\n\n"
+    "of successfully completing the task and classify its expected input, "
+    "cache-read, and output token usage into the schema's bands.\n\n"
     "Rules:\n"
     "1. Use only the task, user_context, workspace_context, and candidate "
     "route metadata in the request.\n"
@@ -35,7 +40,16 @@ SYSTEM_PROMPT = (
 _RESPONSE_KEYS = frozenset(
     {"schema_version", "router_model_version", "predictions"}
 )
-_PREDICTION_KEYS = frozenset(
+_V2_PREDICTION_KEYS = frozenset(
+    {
+        "route_id",
+        "success_probability",
+        "input_token_band",
+        "cache_read_token_band",
+        "output_token_band",
+    }
+)
+_V1_PREDICTION_KEYS = frozenset(
     {
         "route_id",
         "success_probability",
@@ -95,9 +109,20 @@ def model_response_payload(
         "router_model_version": router_model_version,
         "predictions": [
             {
-                key: value
-                for key, value in asdict(prediction).items()
-                if value not in (None, (), [])
+                "route_id": prediction.route_id,
+                "success_probability": prediction.success_probability,
+                "input_token_band": token_band_for_count(
+                    prediction.expected_input_tokens,
+                    "input",
+                ),
+                "cache_read_token_band": token_band_for_count(
+                    prediction.expected_cache_read_tokens,
+                    "cache_read",
+                ),
+                "output_token_band": token_band_for_count(
+                    prediction.expected_output_tokens,
+                    "output",
+                ),
             }
             for prediction in predictions
         ],
@@ -138,25 +163,25 @@ def model_response_json_schema(
                             "minimum": 0,
                             "maximum": 1,
                         },
-                        "expected_input_tokens": {
-                            "type": "integer",
-                            "minimum": 0,
+                        "input_token_band": {
+                            "type": "string",
+                            "enum": list(token_band_names("input")),
                         },
-                        "expected_cache_read_tokens": {
-                            "type": "integer",
-                            "minimum": 0,
+                        "cache_read_token_band": {
+                            "type": "string",
+                            "enum": list(token_band_names("cache_read")),
                         },
-                        "expected_output_tokens": {
-                            "type": "integer",
-                            "minimum": 0,
+                        "output_token_band": {
+                            "type": "string",
+                            "enum": list(token_band_names("output")),
                         },
                     },
                     "required": [
                         "route_id",
                         "success_probability",
-                        "expected_input_tokens",
-                        "expected_cache_read_tokens",
-                        "expected_output_tokens",
+                        "input_token_band",
+                        "cache_read_token_band",
+                        "output_token_band",
                     ],
                 },
             },
@@ -184,8 +209,12 @@ def parse_model_response(
             "router response contains unexpected fields: "
             + ", ".join(sorted(unexpected_response_keys))
         )
-    if value.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(f"router response schema_version must be {SCHEMA_VERSION!r}")
+    schema_version = value.get("schema_version")
+    if schema_version not in {SCHEMA_VERSION, LEGACY_SCHEMA_VERSION}:
+        raise ValueError(
+            "router response schema_version must be "
+            f"{SCHEMA_VERSION!r} or legacy {LEGACY_SCHEMA_VERSION!r}"
+        )
     version = value.get("router_model_version")
     if not isinstance(version, str) or not version.strip():
         raise ValueError("router_model_version must be a non-empty string")
@@ -198,7 +227,12 @@ def parse_model_response(
     for raw in raw_predictions:
         if not isinstance(raw, dict):
             raise ValueError("every router prediction must be an object")
-        unexpected_prediction_keys = set(raw) - _PREDICTION_KEYS
+        allowed_keys = (
+            _V2_PREDICTION_KEYS
+            if schema_version == SCHEMA_VERSION
+            else _V1_PREDICTION_KEYS
+        )
+        unexpected_prediction_keys = set(raw) - allowed_keys
         if unexpected_prediction_keys:
             raise ValueError(
                 "router prediction contains unexpected fields: "
@@ -214,34 +248,54 @@ def parse_model_response(
             raw.get("success_probability"),
             "success_probability",
         )
-        uncertainty = (
-            _bounded_float(raw["uncertainty"], "uncertainty")
-            if "uncertainty" in raw
-            else None
-        )
-        reason_codes = raw.get("reason_codes", [])
-        if not isinstance(reason_codes, list) or not all(
-            isinstance(code, str) for code in reason_codes
-        ):
-            raise ValueError("reason_codes must be an array of strings")
+        if schema_version == SCHEMA_VERSION:
+            input_tokens = token_band_representative(
+                raw.get("input_token_band"),
+                "input",
+            )
+            cache_tokens = token_band_representative(
+                raw.get("cache_read_token_band"),
+                "cache_read",
+            )
+            output_tokens = token_band_representative(
+                raw.get("output_token_band"),
+                "output",
+            )
+            uncertainty = None
+            reason_codes: tuple[str, ...] = ()
+        else:
+            input_tokens = _nonnegative_int(
+                raw.get("expected_input_tokens"),
+                "expected_input_tokens",
+            )
+            cache_tokens = _nonnegative_int(
+                raw.get("expected_cache_read_tokens"),
+                "expected_cache_read_tokens",
+            )
+            output_tokens = _nonnegative_int(
+                raw.get("expected_output_tokens"),
+                "expected_output_tokens",
+            )
+            uncertainty = (
+                _bounded_float(raw["uncertainty"], "uncertainty")
+                if "uncertainty" in raw
+                else None
+            )
+            raw_reason_codes = raw.get("reason_codes", [])
+            if not isinstance(raw_reason_codes, list) or not all(
+                isinstance(code, str) for code in raw_reason_codes
+            ):
+                raise ValueError("reason_codes must be an array of strings")
+            reason_codes = tuple(raw_reason_codes)
         predictions.append(
             HarnessRoutePrediction(
                 route_id=route_id,
                 success_probability=probability,
-                expected_input_tokens=_nonnegative_int(
-                    raw.get("expected_input_tokens"),
-                    "expected_input_tokens",
-                ),
-                expected_cache_read_tokens=_nonnegative_int(
-                    raw.get("expected_cache_read_tokens"),
-                    "expected_cache_read_tokens",
-                ),
-                expected_output_tokens=_nonnegative_int(
-                    raw.get("expected_output_tokens"),
-                    "expected_output_tokens",
-                ),
+                expected_input_tokens=input_tokens,
+                expected_cache_read_tokens=cache_tokens,
+                expected_output_tokens=output_tokens,
                 uncertainty=uncertainty,
-                reason_codes=tuple(reason_codes),
+                reason_codes=reason_codes,
             )
         )
 
@@ -304,7 +358,7 @@ class OpenAICompatibleRouteScorer:
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": "castform_router_response_v1",
+                    "name": "castform_router_response_v2",
                     "strict": True,
                     "schema": model_response_json_schema(
                         expected_route_ids=expected_route_ids,

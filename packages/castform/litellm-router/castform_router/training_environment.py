@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from castform_router.router_protocol import SCHEMA_VERSION
+from castform_router.token_bands import token_band_names
+
 
 @dataclass(frozen=True, slots=True)
 class TrainingRoute:
@@ -279,14 +282,21 @@ def build_training_workspace(
             "base_model": "Qwen/Qwen3.5-0.8B",
             "base_model_ablation": "Qwen/Qwen3.5-0.8B-Base",
             "adapter": "lora",
+            "success_target": {
+                "method": "beta_posterior_mean",
+                "alpha": 1.0,
+                "beta": 1.0,
+            },
+            "token_target": "categorical_bands",
             "epochs": 3,
             "learning_rate": 0.0002,
             "max_sequence_length": 8192,
             "train_file": "router/data/train.jsonl",
             "eval_file": "router/data/eval.jsonl",
-            "output_dir": "router/checkpoints/qwen35-08b-sft-v1",
+            "output_dir": "router/checkpoints/qwen35-08b-sft-v2",
             "objective": (
-                "predict per-route success probability and token classes; "
+                "predict Beta-smoothed per-route success probability and "
+                "categorical token bands; "
                 "selection remains deterministic policy code"
             ),
         },
@@ -349,9 +359,9 @@ def build_training_workspace(
 
 def _router_contract(routes: list[TrainingRoute]) -> dict[str, Any]:
     return {
-        "schema_version": "1",
+        "schema_version": SCHEMA_VERSION,
         "learned_model_input": {
-            "schema_version": "1",
+            "schema_version": SCHEMA_VERSION,
             "request_id": "<string>",
             "task": {
                 "text": "<pre-solve task text>",
@@ -374,15 +384,17 @@ def _router_contract(routes: list[TrainingRoute]) -> dict[str, Any]:
             ],
         },
         "learned_model_output": {
-            "schema_version": "1",
-            "router_model_version": "qwen35-08b-sft-<version>",
+            "schema_version": SCHEMA_VERSION,
+            "router_model_version": "qwen35-08b-sft-v2",
             "predictions": [
                 {
                     "route_id": route.route_id,
                     "success_probability": "<float 0..1>",
-                    "expected_input_tokens": "<integer >= 0>",
-                    "expected_cache_read_tokens": "<integer >= 0>",
-                    "expected_output_tokens": "<integer >= 0>",
+                    "input_token_band": list(token_band_names("input")),
+                    "cache_read_token_band": list(
+                        token_band_names("cache_read")
+                    ),
+                    "output_token_band": list(token_band_names("output")),
                 }
                 for route in routes
             ],

@@ -19,7 +19,7 @@ def test_ui_names_training_contract_and_commands() -> None:
     html = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
 
     assert "Qwen/Qwen3.5-0.8B + LoRA" in html
-    assert "expected_cache_read_tokens" in html
+    assert "cache_read_token_band" in html
     assert "format-training-data" in html
     assert "train-sft" in html
     assert "evaluate-trained" in html

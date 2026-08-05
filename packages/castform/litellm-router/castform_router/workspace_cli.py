@@ -92,6 +92,34 @@ def main(argv: list[str] | None = None) -> int:
         help="repository to reserve for evaluation (repeatable)",
     )
 
+    scaffold_sft_parser = subparsers.add_parser(
+        "scaffold-model-router-sft",
+        help="scaffold SFT data directly from castform-ai/model-router",
+    )
+    scaffold_sft_parser.add_argument(
+        "source",
+        type=Path,
+        help="local checkout of castform-ai/model-router",
+    )
+    scaffold_sft_parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("training_runs/model-router-sft"),
+        help="new training workspace (default: training_runs/model-router-sft)",
+    )
+    scaffold_sft_parser.add_argument(
+        "--model",
+        action="append",
+        required=True,
+        help="canonical model-router route to include (repeatable)",
+    )
+    scaffold_sft_parser.add_argument(
+        "--eval-ratio",
+        type=float,
+        default=0.5,
+        help="newest fraction held out within each repository (default: 0.5)",
+    )
+
     train_parser = subparsers.add_parser(
         "train-sft",
         help="fine-tune the configured Qwen 0.8B router with LoRA",
@@ -136,6 +164,21 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
+        if args.command == "scaffold-model-router-sft":
+            from castform_router.model_router_scaffold import (
+                scaffold_model_router_sft,
+                summary_json,
+            )
+
+            result = scaffold_model_router_sft(
+                args.source,
+                output_dir=args.output,
+                models=tuple(args.model),
+                eval_ratio=args.eval_ratio,
+            )
+            print(summary_json(result))
+            return 0
+
         if args.command == "evaluate-trained":
             from castform_router.trained_evaluator import (
                 evaluate_trained_router,
@@ -195,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
                     workspace
                     / "router"
                     / "checkpoints"
-                    / "qwen35-08b-sft-v1"
+                    / "qwen35-08b-sft-v2"
                 ),
                 model_name=args.model,
                 epochs=args.epochs,

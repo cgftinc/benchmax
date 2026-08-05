@@ -12,9 +12,10 @@ from castform_router.router_protocol import (
     OpenAICompatibleRouteScorer,
     model_request_payload,
     model_response_json_schema,
+    model_response_payload,
     parse_model_response,
 )
-from castform_router.types import HarnessRouteRequest
+from castform_router.types import HarnessRoutePrediction, HarnessRouteRequest
 
 
 def test_learned_request_excludes_live_price_and_gateway_alias() -> None:
@@ -42,17 +43,38 @@ def test_system_prompt_preserves_policy_boundary() -> None:
     assert "Return only compact JSON" in SYSTEM_PROMPT
 
 
+def test_response_payload_serializes_token_bands() -> None:
+    payload = model_response_payload(
+        router_model_version="test-v2",
+        predictions=(
+            HarnessRoutePrediction(
+                route_id=ROUTES[0].route_id,
+                success_probability=0.7,
+                expected_input_tokens=300_000,
+                expected_cache_read_tokens=0,
+                expected_output_tokens=5_000,
+            ),
+        ),
+    )
+
+    prediction = payload["predictions"][0]
+    assert payload["schema_version"] == "2"
+    assert prediction["input_token_band"] == "256k_1m"
+    assert prediction["cache_read_token_band"] == "zero"
+    assert prediction["output_token_band"] == "4k_8k"
+
+
 def test_router_response_requires_every_candidate() -> None:
     value = {
-        "schema_version": "1",
-        "router_model_version": "qwen35-08b-sft-v1",
+        "schema_version": "2",
+        "router_model_version": "qwen35-08b-sft-v2",
         "predictions": [
             {
                 "route_id": route.route_id,
                 "success_probability": 0.8,
-                "expected_input_tokens": 100,
-                "expected_cache_read_tokens": 20,
-                "expected_output_tokens": 30,
+                "input_token_band": "under_64k",
+                "cache_read_token_band": "zero",
+                "output_token_band": "under_4k",
             }
             for route in ROUTES
         ],
@@ -63,8 +85,34 @@ def test_router_response_requires_every_candidate() -> None:
         expected_route_ids=tuple(route.route_id for route in ROUTES),
     )
 
-    assert version == "qwen35-08b-sft-v1"
+    assert version == "qwen35-08b-sft-v2"
     assert len(predictions) == len(ROUTES)
+    assert predictions[0].expected_total_tokens == 34_816
+
+
+def test_router_response_keeps_legacy_v1_compatibility() -> None:
+    route_ids = tuple(route.route_id for route in ROUTES)
+    value = {
+        "schema_version": "1",
+        "router_model_version": "legacy-v1",
+        "predictions": [
+            {
+                "route_id": route_id,
+                "success_probability": 0.8,
+                "expected_input_tokens": 100,
+                "expected_cache_read_tokens": 20,
+                "expected_output_tokens": 30,
+            }
+            for route_id in route_ids
+        ],
+    }
+
+    version, predictions = parse_model_response(
+        value,
+        expected_route_ids=route_ids,
+    )
+
+    assert version == "legacy-v1"
     assert predictions[0].expected_total_tokens == 150
 
 
@@ -80,20 +128,22 @@ def test_response_schema_is_strict_and_route_specific() -> None:
     assert predictions["items"]["properties"]["route_id"]["enum"] == list(
         route_ids
     )
+    assert "input_token_band" in predictions["items"]["required"]
+    assert "expected_input_tokens" not in predictions["items"]["properties"]
 
 
 def test_parser_rejects_fields_outside_frozen_contract() -> None:
     route_ids = tuple(route.route_id for route in ROUTES)
     value = {
-        "schema_version": "1",
+        "schema_version": "2",
         "router_model_version": "test-router",
         "predictions": [
             {
                 "route_id": route_id,
                 "success_probability": 0.8,
-                "expected_input_tokens": 100,
-                "expected_cache_read_tokens": 20,
-                "expected_output_tokens": 30,
+                "input_token_band": "under_64k",
+                "cache_read_token_band": "zero",
+                "output_token_band": "under_4k",
             }
             for route_id in route_ids
         ],
@@ -116,15 +166,15 @@ class _SchemaCaptureHandler(BaseHTTPRequestHandler):
         request = json.loads(self.received["messages"][1]["content"])
         content = json.dumps(
             {
-                "schema_version": "1",
-                "router_model_version": "test-router-v1",
+                "schema_version": "2",
+                "router_model_version": "test-router-v2",
                 "predictions": [
                     {
                         "route_id": route["route_id"],
                         "success_probability": 0.8,
-                        "expected_input_tokens": 100,
-                        "expected_cache_read_tokens": 20,
-                        "expected_output_tokens": 30,
+                        "input_token_band": "under_64k",
+                        "cache_read_token_band": "zero",
+                        "output_token_band": "under_4k",
                     }
                     for route in request["candidate_routes"]
                 ],
