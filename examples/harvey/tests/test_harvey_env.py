@@ -11,12 +11,13 @@ from benchmax.envs.harbor import (
 from harbor import EnvironmentType, TrialAgentConfig, TrialVerifierConfig
 from harness.harvey_agent import HarveyHarnessAgent
 from main import (
+    HARVEY_LAB_DATASET_REF,
     HarveyLabHarborEnv,
     _verifier_env_for_provider,
 )
 
 
-def test_harvey_constructor_uses_latest_dataset_and_native_harness() -> None:
+def test_harvey_constructor_uses_pinned_dataset_and_native_harness() -> None:
     credentials = ModalCredentials("modal-id", "modal-secret")
 
     env = HarveyLabHarborEnv(
@@ -26,7 +27,7 @@ def test_harvey_constructor_uses_latest_dataset_and_native_harness() -> None:
     )
 
     assert env._dataset.name == "harveyai/lab"
-    assert env._dataset.ref == "latest"
+    assert env._dataset.ref == HARVEY_LAB_DATASET_REF
     assert env._eval_ratio == 0.1
     assert env._sandbox_credentials is credentials
     trial = env._trial
@@ -125,6 +126,7 @@ def test_harvey_harness_stays_lean_by_default() -> None:
     harness = harvey_main.harvey_harness()
 
     assert {name for name, _ in harness.source.files} == {
+        "autocompact.py",
         "harvey_agent.py",
         "harvey_runtime.py",
     }

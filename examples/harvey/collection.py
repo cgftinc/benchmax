@@ -74,29 +74,26 @@ def enrich_records(
     return records
 
 
-def aggregate_shards(
-    output_dir: Path,
-    *,
-    split_seed: str = "harvey-autocompact-v1",
-) -> dict[str, Any]:
-    """Build task-disjoint default and passed-only train/eval JSONL files."""
+def aggregate_shards(output_dir: Path) -> dict[str, Any]:
+    """Put every collected Harbor-train record in the SFT training file.
+
+    The source environment already reserves a deterministic Harbor evaluation
+    split. Creating another holdout here would unnecessarily remove source
+    training tasks from SFT and would not represent the untouched final eval.
+    ``eval.jsonl`` remains as an empty compatibility file for the upload path.
+    """
 
     output_dir = Path(output_dir)
     rows: list[dict[str, Any]] = []
     for shard in sorted((output_dir / "shards").glob("*.jsonl")):
         rows.extend(_read_jsonl(shard))
 
-    task_ids = sorted(
-        {str(row["example_id"]) for row in rows},
-        key=lambda value: _split_key(value, split_seed),
-    )
-    eval_count = max(1, round(len(task_ids) * 0.1)) if len(task_ids) > 1 else 0
-    eval_ids = set(task_ids[:eval_count])
+    task_ids = sorted({str(row["example_id"]) for row in rows})
     rows.sort(key=lambda row: str(row["id"]))
 
     outputs = {
-        "train": [row for row in rows if row["example_id"] not in eval_ids],
-        "eval": [row for row in rows if row["example_id"] in eval_ids],
+        "train": rows,
+        "eval": [],
     }
     passed = {
         split: [row for row in split_rows if _is_passed(row)]
@@ -124,10 +121,10 @@ def aggregate_shards(
 
     manifest = {
         "schema_version": 1,
-        "split_seed": split_seed,
+        "source_split": "train",
         "task_count": len(task_ids),
         "task_id_digest": hashlib.sha256("\n".join(sorted(task_ids)).encode()).hexdigest(),
-        "eval_task_count": len(eval_ids),
+        "eval_task_count": 0,
         "outcome_count": len(outcomes),
         "record_count": len(rows),
         "passed_record_count": sum(len(value) for value in passed.values()),
@@ -155,6 +152,7 @@ async def collect_trajectories(
     max_concurrent_tasks: int,
     max_compactions: int,
     resume: bool,
+    dataset_ref: str,
 ) -> dict[str, Any]:
     """Collect the Harbor train split and materialize scored SFT shards."""
 
@@ -237,6 +235,8 @@ async def collect_trajectories(
     manifest["collection"] = {
         "model": model,
         "base_url": base_url,
+        "dataset_ref": dataset_ref,
+        "dataset_split": "train",
         "dataset_size": len(dataset),
         "max_examples": max_examples,
         "rollouts_per_task": rollouts_per_task,
@@ -259,10 +259,6 @@ def _trajectory_path(trial_dir: Path) -> Path | None:
 def _rollout_id(example_id: str, rollout_index: int) -> str:
     digest = hashlib.sha256(example_id.encode("utf-8")).hexdigest()[:16]
     return f"harvey-{digest}-r{rollout_index}"
-
-
-def _split_key(example_id: str, seed: str) -> str:
-    return hashlib.sha256(f"{seed}\0{example_id}".encode()).hexdigest()
 
 
 def _is_passed(row: Mapping[str, Any]) -> bool:

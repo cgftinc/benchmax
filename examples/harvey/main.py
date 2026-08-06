@@ -1,6 +1,6 @@
 """Harvey LAB Harbor environment using Harvey's native harness loop.
 
-The dataset (harveyai/lab@latest) resolves through Harbor at trainer runtime,
+The pinned Harvey dataset resolves through Harbor at trainer runtime,
 so only the environment bundle is uploaded. Validation runs real Modal sandbox
 trials. All credentials are mandatory CLI arguments
 (--modal-token-id / --modal-token-secret / --judge-api-key); they are bundled
@@ -47,6 +47,7 @@ _HARNESS_SOURCE = BundledAgentSource.from_directory(
     files=("autocompact.py", "harvey_agent.py", "harvey_runtime.py"),
 )
 _ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+HARVEY_LAB_DATASET_REF = "sha256:5cbe32ed0ce44c7244191ff764bda7e54b9e6b106726a1cf438b1009080e1628"
 
 
 def harvey_harness(
@@ -200,7 +201,9 @@ class HarveyLabHarborEnv(HarborEnv):
             if value is not None
         }
         super().__init__(
-            dataset=DatasetConfig(name="harveyai/lab", ref="latest"),
+            # Pin the 1,251-task snapshot so the content-hash-ordered 90/10
+            # split is identical across collection and evaluation runs.
+            dataset=DatasetConfig(name="harveyai/lab", ref=HARVEY_LAB_DATASET_REF),
             eval_ratio=eval_ratio,
             trial=HarborTrialTemplate(
                 agent=harness
@@ -263,9 +266,7 @@ def _constructor_args(args: argparse.Namespace) -> dict[str, Any]:
         constructor_args.update(
             {
                 "max_concurrent_trials": args.max_concurrent_trials,
-                "trials_dir": str(
-                    Path(args.output_dir).expanduser().resolve() / "trials"
-                ),
+                "trials_dir": str(Path(args.output_dir).expanduser().resolve() / "trials"),
             }
         )
     return constructor_args
@@ -401,6 +402,7 @@ def collect(args: argparse.Namespace, env: HarveyLabHarborEnv) -> dict[str, Any]
             max_concurrent_tasks=args.max_concurrent_trials,
             max_compactions=args.max_compactions,
             resume=args.resume,
+            dataset_ref=HARVEY_LAB_DATASET_REF,
         )
     )
     print(json.dumps(manifest, indent=2, sort_keys=True))

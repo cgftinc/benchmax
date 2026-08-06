@@ -70,10 +70,14 @@ uv run python main.py collect --yes \
 ```
 
 Use `--max-examples 1` for a smoke run and `--resume` to skip completed
-per-rollout shards. The output includes raw trajectories, deterministic
-`train.jsonl`/`eval.jsonl`, passed-only views, and `manifest.json`. The split
-is by Harvey task id, so a compaction triplet can never cross splits. The
-separate 126-task Harbor evaluation split is not read.
+per-rollout shards. The Harvey dataset is pinned to an immutable 1,251-task
+snapshot. Harbor orders tasks by content hash and reserves the first 10%
+(126 tasks) for final evaluation; collection reads all remaining 1,125
+training tasks. Every accepted call-level record is written to `train.jsonl`.
+`eval.jsonl` is an empty upload-compatibility file because the untouched
+126-task Harbor evaluation split is evaluated through the environment rather
+than collected for SFT. Raw trajectories, passed-only views, and
+`manifest.json` are also written.
 
 Launch SFT from an existing collection with the same credentials:
 
