@@ -26,6 +26,12 @@ Before changing a stage, load its skill:
 | validation and baseline review | `.claude/skills/verify-environment/SKILL.md` |
 | bundle, upload and launch | `.claude/skills/launch-run/SKILL.md` |
 | status, curves, rollouts and logs | `.claude/skills/view-progress/SKILL.md` |
+| supervised finetuning from labeled data | `.claude/skills/train-sft/SKILL.md` |
+
+If the user already has the completions the model should imitate (labeled
+conversations, transcripts, input→output pairs), that is **supervised
+finetuning** — read the `train-sft` skill and skip the RL loop above entirely:
+SFT has no environment, validate stage, or rewards.
 
 ## Project contract
 

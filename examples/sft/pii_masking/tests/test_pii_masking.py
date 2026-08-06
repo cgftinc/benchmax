@@ -166,6 +166,23 @@ class TestCli:
         assert calls["upload"][1] == "pii-sft"
         assert calls["launch"] == (uploaded, "pii-sft", SftTrainingConfig())
 
+    def test_platform_rejection_exits_cleanly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from castform.platform.exceptions import JobLaunchError
+
+        monkeypatch.setattr(example, "stream_source_rows", lambda: iter(synthetic_rows(4)))
+
+        def rejected_upload(*, dataset: SftDataset, run_name: str) -> UploadedSftAssets:
+            raise JobLaunchError("SFT launch is not enabled", 403)
+
+        monkeypatch.setattr(example, "upload_sft_assets", rejected_upload)
+        exit_code = example.main(
+            ["--rows", "4", "--output", str(tmp_path / "t.jsonl"), "--launch", "--run-name", "x"]
+        )
+        assert exit_code == 1
+        assert "launch rejected by the platform" in capsys.readouterr().err
+
 
 def _fail_if_called(name: str) -> Any:
     def _fail(*args: Any, **kwargs: Any) -> None:

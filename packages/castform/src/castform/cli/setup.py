@@ -38,6 +38,7 @@ _SKILLS = (
     "verify-environment",
     "launch-run",
     "view-progress",
+    "train-sft",
 )
 
 # Where each agent looks for the per-stage skills. Claude Code auto-loads

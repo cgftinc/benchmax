@@ -155,7 +155,19 @@ def main(argv: list[str] | None = None) -> int:
         print("re-run with --launch --run-name <name> to upload and start a paid run")
         return 0
 
-    run_id = launch(dataset, args.run_name)
+    from castform.platform.exceptions import AuthenticationError, JobLaunchError
+
+    try:
+        run_id = launch(dataset, args.run_name)
+    except JobLaunchError as exc:
+        print(f"launch rejected by the platform: {exc}", file=sys.stderr)
+        return 1
+    except AuthenticationError as exc:
+        print(
+            f"not signed in ({exc}); run `castform login` and retry",
+            file=sys.stderr,
+        )
+        return 1
     print(f"launched SFT run {run_id}")
     return 0
 
