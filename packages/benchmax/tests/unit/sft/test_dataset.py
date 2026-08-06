@@ -529,6 +529,14 @@ class TestMetadata:
             [{"messages": [user(), assistant()], "metadata": {"nested": {"_castform_run": 1}}}]
         )
 
+    def test_tools_key_reserved_for_runtime(self) -> None:
+        issues = issues_of({"messages": [user(), assistant()], "metadata": {"tools": [{"x": 1}]}})
+        assert 'metadata key "tools" is reserved' in issues[0].message
+        # Nested occurrences are user data, not the runtime slot.
+        SftDataset.from_rows(
+            [{"messages": [user(), assistant()], "metadata": {"inner": {"tools": 1}}}]
+        )
+
     def test_size_cap(self) -> None:
         big = {"messages": [user(), assistant()], "metadata": {"blob": "x" * 66_000}}
         assert_single_issue([big], "$.metadata", "metadata canonical size")

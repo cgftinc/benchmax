@@ -399,6 +399,15 @@ def _validate_metadata(row: dict[str, object], emit: Emit) -> None:
                 "$.metadata",
                 f"metadata key {key!r} uses the reserved {RESERVED_METADATA_PREFIX!r} prefix",
             )
+        # The training runtime stores the row's tool definitions under
+        # metadata["tools"]; a user value there would bypass preflight and
+        # reach the chat template unvalidated.
+        if key == "tools":
+            emit(
+                "$.metadata",
+                'metadata key "tools" is reserved for the training runtime; '
+                "declare tools at the top level of the row",
+            )
     try:
         size = len(canonical_json_bytes(metadata))
     except (TypeError, ValueError):
