@@ -22,6 +22,16 @@ from .environment_assets import _validate_blob_path
 
 __all__ = ["SftTrainingConfig", "UploadedSftAssets", "upload_sft_assets"]
 
+_LR_DECAY_STYLES = frozenset({"constant", "cosine"})
+
+# Rank 128 trains but fused QKV expands it past serving MAX_LORA_RANK caps, so
+# it stays platform-only; these mirror the server's public set.
+_PUBLIC_LORA_RANKS = frozenset({32, 64})
+
+# Megatron needs global_batch_size divisible by the data-parallel width, which
+# is 4 on the fixed SFT topology. Mirrors the server; the server is authority.
+_DATA_PARALLEL_SIZE = 4
+
 
 @dataclass(frozen=True)
 class UploadedSftAssets:
@@ -53,6 +63,17 @@ class SftTrainingConfig:
     max_context_tokens: int = 8192
     save_interval: int = 20
     seed: int = 42
+    # v1.1 knobs. ``None`` means "not sent": the field is omitted from
+    # ``as_args()`` entirely, so the platform stamps nothing and the trainer
+    # keeps the model config's value. An untouched config therefore still
+    # produces exactly the v1 five-key payload.
+    lr_decay_style: str | None = None
+    min_lr: float | None = None
+    warmup_ratio: float | None = None
+    adam_beta2: float | None = None
+    grad_clip: float | None = None
+    lora_rank: int | None = None
+    global_batch_size: int | None = None
 
     def __post_init__(self) -> None:
         self._require_int("num_epochs", self.num_epochs, 1, 100)
@@ -65,6 +86,26 @@ class SftTrainingConfig:
         self._require_int("save_interval", self.save_interval, 1, 10_000)
         self._require_int("seed", self.seed, 0, 2_147_483_647)
 
+        if self.lr_decay_style is not None and self.lr_decay_style not in _LR_DECAY_STYLES:
+            raise ValueError(f"lr_decay_style must be one of {', '.join(sorted(_LR_DECAY_STYLES))}")
+        self._require_optional_number("min_lr", self.min_lr, 0.0, None)
+        if self.min_lr is not None and self.min_lr >= rate:
+            raise ValueError("min_lr must be less than learning_rate")
+        self._require_optional_number("warmup_ratio", self.warmup_ratio, 0.0, 0.5)
+        self._require_optional_number("adam_beta2", self.adam_beta2, 0.9, 0.999)
+        self._require_optional_number("grad_clip", self.grad_clip, None, 10.0, exclusive_minimum=0.0)
+        if self.lora_rank is not None and self.lora_rank not in _PUBLIC_LORA_RANKS:
+            raise ValueError(
+                f"lora_rank must be one of {', '.join(str(r) for r in sorted(_PUBLIC_LORA_RANKS))}"
+            )
+        if self.global_batch_size is not None:
+            self._require_int("global_batch_size", self.global_batch_size, _DATA_PARALLEL_SIZE, 64)
+            if self.global_batch_size % _DATA_PARALLEL_SIZE:
+                raise ValueError(
+                    f"global_batch_size must be a multiple of {_DATA_PARALLEL_SIZE} "
+                    "(the data-parallel width of the fixed SFT topology)"
+                )
+
     @staticmethod
     def _require_int(name: str, value: object, minimum: int, maximum: int) -> None:
         if isinstance(value, bool) or not isinstance(value, int):
@@ -72,16 +113,57 @@ class SftTrainingConfig:
         if not minimum <= value <= maximum:
             raise ValueError(f"{name} must be between {minimum} and {maximum}")
 
-    def as_args(self) -> dict[str, int | float]:
-        """The resolved public ``args`` object for the SFT launch request."""
+    @staticmethod
+    def _require_optional_number(
+        name: str,
+        value: object,
+        minimum: float | None,
+        maximum: float | None,
+        *,
+        exclusive_minimum: float | None = None,
+    ) -> None:
+        """Range-check a v1.1 knob, leaving ``None`` (not sent) untouched."""
 
-        return {
+        if value is None:
+            return
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError(f"{name} must be a number")
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+        if minimum is not None and value < minimum:
+            raise ValueError(f"{name} must be at least {minimum}")
+        if exclusive_minimum is not None and value <= exclusive_minimum:
+            raise ValueError(f"{name} must be greater than {exclusive_minimum}")
+        if maximum is not None and value > maximum:
+            raise ValueError(f"{name} must be at most {maximum}")
+
+    def as_args(self) -> dict[str, int | float | str]:
+        """The resolved public ``args`` object for the SFT launch request.
+
+        Unset v1.1 knobs are omitted entirely rather than serialized as null,
+        so an untouched config still produces the exact v1 five-key payload.
+        """
+
+        args: dict[str, int | float | str] = {
             "num_epochs": self.num_epochs,
             "learning_rate": self.learning_rate,
             "max_context_tokens": self.max_context_tokens,
             "save_interval": self.save_interval,
             "seed": self.seed,
         }
+        for name in (
+            "lr_decay_style",
+            "min_lr",
+            "warmup_ratio",
+            "adam_beta2",
+            "grad_clip",
+            "lora_rank",
+            "global_batch_size",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                args[name] = value
+        return args
 
 
 def upload_sft_assets(

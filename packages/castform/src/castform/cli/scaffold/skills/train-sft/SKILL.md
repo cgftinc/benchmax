@@ -70,10 +70,23 @@ turns contribute to the loss.
 | `max_context_tokens` | 256–8192 (hard cap) | 8192 |
 | `save_interval` (steps) | 1–10000 | 20 |
 | `seed` | 0–2147483647 | 42 |
+| `lr_decay_style` | `"constant"` or `"cosine"` | unset — keeps the platform default |
+| `min_lr` | ≥ 0 and below `learning_rate` | unset |
+| `warmup_ratio` | 0–0.5 of total steps | unset |
+| `adam_beta2` | 0.9–0.999 | unset |
+| `grad_clip` | (0, 10] | unset |
+| `lora_rank` | 32 or 64 | unset — keeps the platform's fixed policy |
 
-Model (`Qwen/Qwen3.5-4B`), LoRA policy, and GPU topology are platform-owned —
-do not invent knobs for them. A row that renders past `max_context_tokens`
-tokens fails the run's preflight; trim long rows up front.
+Every arg below `seed` is optional and unset by default: leave one out and the
+platform's own value applies, so an untouched config behaves exactly as before
+these knobs existed. Do not set one just to restate a default.
+
+`lora_rank` picks the adapter's rank; alpha is always derived as 2x and is not
+a knob. Rank 128 is not accepted — it trains, but serving cannot load it.
+
+Model (`Qwen/Qwen3.5-4B`) and GPU topology are platform-owned — do not invent
+knobs for them. A row that renders past `max_context_tokens` tokens fails the
+run's preflight; trim long rows up front.
 
 ## Cost and consent
 

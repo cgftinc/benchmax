@@ -153,6 +153,80 @@ class TestSftTrainingConfig:
             seed=2_147_483_647,
         )
 
+    def test_unset_fields_omitted_from_as_args(self) -> None:
+        # Unset v1.1 knobs must vanish from the payload, not serialize as
+        # null: the platform reads presence, and a null would look like a
+        # deliberate choice overriding the model config.
+        args = SftTrainingConfig(adam_beta2=0.95).as_args()
+        assert args["adam_beta2"] == 0.95
+        for absent in (
+            "lr_decay_style",
+            "min_lr",
+            "warmup_ratio",
+            "grad_clip",
+            "lora_rank",
+            "global_batch_size",
+        ):
+            assert absent not in args
+
+    def test_global_batch_size_presence_tracked(self) -> None:
+        assert "global_batch_size" not in SftTrainingConfig().as_args()
+        for gbs in (4, 8, 12, 64):
+            assert SftTrainingConfig(global_batch_size=gbs).as_args()["global_batch_size"] == gbs
+
+    def test_v28_shape_serializes_completely(self) -> None:
+        assert SftTrainingConfig(
+            learning_rate=6e-5,
+            lr_decay_style="cosine",
+            min_lr=2e-5,
+            warmup_ratio=0.05,
+            adam_beta2=0.95,
+            grad_clip=0.5,
+            lora_rank=64,
+        ).as_args() == {
+            "num_epochs": 1,
+            "learning_rate": 6e-5,
+            "max_context_tokens": 8192,
+            "save_interval": 20,
+            "seed": 42,
+            "lr_decay_style": "cosine",
+            "min_lr": 2e-5,
+            "warmup_ratio": 0.05,
+            "adam_beta2": 0.95,
+            "grad_clip": 0.5,
+            "lora_rank": 64,
+        }
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"lr_decay_style": "linear"},
+            {"min_lr": -1e-6},
+            # A floor at or above the peak makes the schedule meaningless.
+            {"learning_rate": 1e-5, "min_lr": 1e-5},
+            {"warmup_ratio": 0.51},
+            {"warmup_ratio": -0.01},
+            {"adam_beta2": 0.89},
+            {"adam_beta2": 1.0},
+            {"grad_clip": 0},
+            {"grad_clip": 10.1},
+            # 128 trains but cannot be served; alpha is never a caller input.
+            {"lora_rank": 128},
+            {"lora_rank": 16},
+            {"global_batch_size": 10},
+            {"global_batch_size": 5},
+            {"global_batch_size": 0},
+            {"global_batch_size": 68},
+        ],
+    )
+    def test_v11_out_of_range_values_rejected(self, kwargs: dict[str, Any]) -> None:
+        with pytest.raises(ValueError):
+            SftTrainingConfig(**kwargs)
+
+    def test_client_mirror_matches_server_lora_set(self) -> None:
+        for rank in (32, 64):
+            assert SftTrainingConfig(lora_rank=rank).as_args()["lora_rank"] == rank
+
 
 class TestLaunchSftRun:
     def _client(self, handler) -> TrainerClient:
