@@ -97,9 +97,7 @@ def test_launch_training_run_forwards_runtime_secrets_outside_args():
     )
 
     assert run_id == "run-with-secret"
-    assert captured["body"]["extraSecrets"] == {
-        "NEON_CORPUS_DSN_RO": "postgresql://ro@host/db"
-    }
+    assert captured["body"]["extraSecrets"] == {"NEON_CORPUS_DSN_RO": "postgresql://ro@host/db"}
     assert "NEON_CORPUS_DSN_RO" not in captured["body"]["args"]
 
 

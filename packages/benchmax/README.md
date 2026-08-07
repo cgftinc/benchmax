@@ -16,6 +16,12 @@ all benchmax environments implement the same dataset and rollout contracts. choo
 
 most custom environments should extend `BaseEnv`. most Harbor users configure `HarborEnv` directly rather than subclassing it.
 
+## sft datasets
+
+supervised finetuning does not use an environment. construct a validated
+[`benchmax.sft.SftDataset`](src/benchmax/sft/README.md) from chat-format rows and upload it
+through the castform package; validation is strict and all-or-nothing.
+
 ## architecture
 
 an environment defines its dataset and how a group of rollouts runs against each example.

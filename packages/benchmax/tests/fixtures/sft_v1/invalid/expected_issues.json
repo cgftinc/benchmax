@@ -1,0 +1,170 @@
+{
+  "all_masked": [
+    {
+      "line": 1,
+      "location": "$.messages",
+      "message": "at least one assistant message with weight 1 (or omitted weight) is required",
+      "row": 0
+    }
+  ],
+  "bad_arguments": [
+    {
+      "line": 1,
+      "location": "$.messages[1].tool_calls[0].function.arguments",
+      "message": "arguments must decode as a JSON object",
+      "row": 0
+    },
+    {
+      "line": 2,
+      "location": "$.messages[1].tool_calls[0].function.arguments",
+      "message": "arguments must decode as JSON: invalid JSON: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+      "row": 1
+    }
+  ],
+  "bad_weight": [
+    {
+      "line": 1,
+      "location": "$.messages[1].weight",
+      "message": "weight must be the integer 0 or 1",
+      "row": 0
+    },
+    {
+      "line": 1,
+      "location": "$.messages",
+      "message": "at least one assistant message with weight 1 (or omitted weight) is required",
+      "row": 0
+    },
+    {
+      "line": 2,
+      "location": "$.messages[1].weight",
+      "message": "weight must be the integer 0 or 1",
+      "row": 1
+    },
+    {
+      "line": 2,
+      "location": "$.messages",
+      "message": "at least one assistant message with weight 1 (or omitted weight) is required",
+      "row": 1
+    },
+    {
+      "line": 3,
+      "location": "$.messages[1].weight",
+      "message": "weight must be the integer 0 or 1",
+      "row": 2
+    },
+    {
+      "line": 3,
+      "location": "$.messages",
+      "message": "at least one assistant message with weight 1 (or omitted weight) is required",
+      "row": 2
+    }
+  ],
+  "deep_nesting": [
+    {
+      "line": 1,
+      "location": "$.metadata.deep[0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0][0]",
+      "message": "JSON nesting exceeds 64 levels",
+      "row": 0
+    }
+  ],
+  "duplicate_keys": [
+    {
+      "line": 1,
+      "location": "$",
+      "message": "duplicate object key 'messages'",
+      "row": 0
+    }
+  ],
+  "empty": [
+    {
+      "line": null,
+      "location": "$",
+      "message": "dataset contains no rows",
+      "row": null
+    }
+  ],
+  "legacy_prompt_completion": [
+    {
+      "line": 1,
+      "location": "$",
+      "message": "unknown top-level key(s): completion, prompt",
+      "row": 0
+    },
+    {
+      "line": 1,
+      "location": "$",
+      "message": "messages is required",
+      "row": 0
+    }
+  ],
+  "lone_surrogate": [
+    {
+      "line": 1,
+      "location": "$.messages[0].content",
+      "message": "string contains a lone surrogate",
+      "row": 0
+    }
+  ],
+  "missing_tool_result": [
+    {
+      "line": 1,
+      "location": "$.messages[1].tool_calls",
+      "message": "tool call id(s) 'c1' have no tool result before the next non-tool message",
+      "row": 0
+    }
+  ],
+  "multimodal": [
+    {
+      "line": 1,
+      "location": "$.messages[0].content",
+      "message": "content must be a string",
+      "row": 0
+    }
+  ],
+  "nonfinite_number": [
+    {
+      "line": 1,
+      "location": "$",
+      "message": "non-finite number literal 'NaN' is not allowed",
+      "row": 0
+    },
+    {
+      "line": 2,
+      "location": "$.metadata.x",
+      "message": "number must be finite",
+      "row": 1
+    }
+  ],
+  "tool_result_out_of_order": [
+    {
+      "line": 1,
+      "location": "$.messages[2].tool_call_id",
+      "message": "tool result for id 'b' is out of declaration order",
+      "row": 0
+    }
+  ],
+  "tools_missing_for_calls": [
+    {
+      "line": 1,
+      "location": "$.tools",
+      "message": "tools must be a non-empty list when any message makes a tool call",
+      "row": 0
+    }
+  ],
+  "undefined_tool_function": [
+    {
+      "line": 1,
+      "location": "$.messages[1].tool_calls[0].function.name",
+      "message": "tool call references undefined function 'missing'",
+      "row": 0
+    }
+  ],
+  "unknown_tool_call_id": [
+    {
+      "line": 1,
+      "location": "$.messages[2].tool_call_id",
+      "message": "tool result references unknown tool_call_id 'ghost'",
+      "row": 0
+    }
+  ]
+}

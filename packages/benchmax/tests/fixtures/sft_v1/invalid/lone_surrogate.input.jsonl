@@ -1,0 +1,1 @@
+{"messages": [{"role": "user", "content": "bad \ud800 text"}, {"role": "assistant", "content": "a"}]}
