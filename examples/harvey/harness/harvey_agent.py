@@ -184,6 +184,7 @@ class HarveyHarnessAgent(BaseAgent):
         self.host_runtime_path = self._optional_path(
             runtime_path or self._env("HARBOR_HARVEY_RUNTIME_PATH")
         )
+        self.host_autocompact_path: Path | None = None
         self.container_harvey_root = (
             container_harvey_root
             or self._env("HARBOR_HARVEY_CONTAINER_ROOT")
@@ -245,6 +246,14 @@ class HarveyHarnessAgent(BaseAgent):
 
         if self.host_runtime_path and self.host_runtime_path.exists():
             await environment.upload_file(self.host_runtime_path, self.container_runtime_path)
+        if self.host_autocompact_path and self.host_autocompact_path.exists():
+            container_autocompact_path = str(
+                Path(self.container_runtime_path).with_name("autocompact.py")
+            )
+            await environment.upload_file(
+                self.host_autocompact_path,
+                container_autocompact_path,
+            )
 
     async def run(
         self,
@@ -280,6 +289,10 @@ class HarveyHarnessAgent(BaseAgent):
                 self.host_runtime_path = candidate
         if self.host_runtime_path is None or not self.host_runtime_path.is_file():
             raise RuntimeError("harvey_runtime.py is missing from the bundle")
+        autocompact_path = Path(__file__).with_name("autocompact.py")
+        if not autocompact_path.is_file():
+            raise RuntimeError("autocompact.py is missing from the bundle")
+        self.host_autocompact_path = autocompact_path
 
     def _prepare_harvey_source(self) -> Path:
         """Clone Harvey's sparse harness source once per trainer host."""

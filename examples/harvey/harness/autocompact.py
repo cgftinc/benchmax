@@ -52,7 +52,14 @@ tool sequence, unresolved fact extraction, or before exact facts and authorities
 have been preserved. A summary must preserve the deliverable, jurisdiction,
 parties, dates, numbers, material facts, authorities and source locations,
 inspected and remaining documents, conclusions and uncertainties, artifact
-paths, verification status, and next action. Never rely on a hidden rubric."""
+paths, verification status, and next action. A continuation is valid only when
+it uses the compacted context to perform the next unfinished action without
+repeating completed exploration, dropping preserved constraints, or claiming
+access to hidden history. Repair a continuation by returning one complete
+OpenAI-format assistant message. Never rely on a hidden rubric."""
+
+JUDGE_TOOL_NAME = "submit_judge_decision"
+JUDGE_RESPONSE_EXCERPT_CHARS = 4_000
 
 
 class Adapter(Protocol):
@@ -118,7 +125,9 @@ class NoopJudge:
 
 
 class JudgeProtocolError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, attempts: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.attempts = copy.deepcopy(attempts or [])
 
 
 class HTTPJudge:
@@ -155,10 +164,10 @@ class HTTPJudge:
             "max_compactions": max_compactions,
             "visible_context": visible_context,
             "candidate": candidate,
-            "response_schema": {
-                "decision": "keep | replace_with_compact",
-                "reason_code": "short machine-readable code",
-            },
+            "instructions": (
+                "Keep the candidate when it is the appropriate next action. Choose "
+                "replace_with_compact only at a valid completed phase boundary."
+            ),
         }
         decision = self._request(payload)
         choice = decision.get("decision")
@@ -173,11 +182,10 @@ class HTTPJudge:
                 "protocol": ANNOTATION_PROTOCOL,
                 "visible_context": visible_context,
                 "candidate": candidate,
-                "response_schema": {
-                    "decision": "keep | repair",
-                    "corrected_summary": "required for repair",
-                    "reason_code": "short machine-readable code",
-                },
+                "instructions": (
+                    "Keep a complete and accurate summary. Otherwise repair it and "
+                    "return the full corrected summary, including its required header."
+                ),
             }
         )
         choice = decision.get("decision")
@@ -194,25 +202,34 @@ class HTTPJudge:
                 "protocol": ANNOTATION_PROTOCOL,
                 "visible_context": visible_context,
                 "candidate": candidate,
-                "response_schema": {
-                    "decision": "keep | repair",
-                    "corrected_message": "required assistant message for repair",
-                    "reason_code": "short machine-readable code",
-                },
+                "instructions": (
+                    "Keep a continuation that correctly advances from the compacted "
+                    "state. Otherwise repair it by returning a complete assistant "
+                    "message with role, content, and tool_calls fields."
+                ),
             }
         )
         choice = decision.get("decision")
         if choice not in {"keep", "repair"}:
             raise JudgeProtocolError(f"invalid continuation judge decision: {choice!r}")
         if choice == "repair":
-            _validate_assistant_message(decision.get("corrected_message"))
+            _validate_assistant_message(
+                decision.get("corrected_message"),
+                label="corrected continuation",
+            )
         return decision
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
         last_error: Exception | None = None
-        for _attempt in range(2):
+        failures: list[dict[str, Any]] = []
+        retry_feedback: dict[str, str] | None = None
+        for attempt in range(2):
+            text = ""
             try:
-                text = self._provider_request(payload)
+                request_payload = copy.deepcopy(payload)
+                if retry_feedback is not None:
+                    request_payload["retry_feedback"] = retry_feedback
+                text = self._provider_request(request_payload)
                 parsed = json.loads(_extract_json(text))
                 if not isinstance(parsed, dict):
                     raise JudgeProtocolError("judge response must be a JSON object")
@@ -220,8 +237,23 @@ class HTTPJudge:
                 return parsed
             except (httpx.HTTPError, json.JSONDecodeError, JudgeProtocolError, ValueError) as error:
                 last_error = error
+                failure = {
+                    "attempt": attempt + 1,
+                    "error": str(error),
+                    "response_excerpt": _response_excerpt(text, error),
+                }
+                failures.append(failure)
+                retry_feedback = {
+                    "error": str(error),
+                    "previous_response_excerpt": failure["response_excerpt"],
+                    "instruction": (
+                        "Correct the prior response so it satisfies the supplied strict "
+                        "tool schema and the semantic requirements."
+                    ),
+                }
         raise JudgeProtocolError(
-            f"judge returned invalid output twice: {last_error}"
+            f"judge returned invalid output twice: {last_error}",
+            attempts=failures,
         ) from last_error
 
     @staticmethod
@@ -234,21 +266,23 @@ class HTTPJudge:
         if kind == "summary":
             if choice not in {"keep", "repair"}:
                 raise JudgeProtocolError(f"invalid summary judge decision: {choice!r}")
-            if choice == "repair" and not isinstance(
-                decision.get("corrected_summary"), str
-            ):
+            if choice == "repair" and not isinstance(decision.get("corrected_summary"), str):
                 raise JudgeProtocolError("summary repair omitted corrected_summary")
             return
         if kind == "continuation":
             if choice not in {"keep", "repair"}:
                 raise JudgeProtocolError(f"invalid continuation judge decision: {choice!r}")
             if choice == "repair":
-                _validate_assistant_message(decision.get("corrected_message"))
+                _validate_assistant_message(
+                    decision.get("corrected_message"),
+                    label="corrected continuation",
+                )
             return
         raise JudgeProtocolError(f"unknown judge request kind: {kind!r}")
 
     def _provider_request(self, payload: dict[str, Any]) -> str:
         prompt = json.dumps(payload, ensure_ascii=False)
+        schema = _judge_response_schema(str(payload.get("kind")))
         if self.provider == "anthropic":
             response = httpx.post(
                 "https://api.anthropic.com/v1/messages",
@@ -260,8 +294,23 @@ class HTTPJudge:
                 json={
                     "model": self.model,
                     "max_tokens": 4096,
-                    "system": "Return only the requested JSON object.",
+                    "system": (
+                        "Review the supplied trajectory state and submit exactly one "
+                        "decision through the provided tool."
+                    ),
                     "messages": [{"role": "user", "content": prompt}],
+                    "tools": [
+                        {
+                            "name": JUDGE_TOOL_NAME,
+                            "description": "Submit the validated judge decision.",
+                            "input_schema": schema,
+                        }
+                    ],
+                    "tool_choice": {
+                        "type": "tool",
+                        "name": JUDGE_TOOL_NAME,
+                        "disable_parallel_tool_use": True,
+                    },
                 },
                 timeout=self.timeout,
             )
@@ -270,11 +319,14 @@ class HTTPJudge:
             usage = body.get("usage", {})
             self.input_tokens += int(usage.get("input_tokens", 0))
             self.output_tokens += int(usage.get("output_tokens", 0))
-            return "".join(
-                item.get("text", "")
+            tool_uses = [
+                item
                 for item in body.get("content", [])
-                if item.get("type") == "text"
-            )
+                if item.get("type") == "tool_use" and item.get("name") == JUDGE_TOOL_NAME
+            ]
+            if len(tool_uses) != 1:
+                raise JudgeProtocolError(f"judge must call {JUDGE_TOOL_NAME!r} exactly once")
+            return json.dumps(tool_uses[0].get("input"), ensure_ascii=False)
 
         base_url = self.base_url or "https://api.openai.com/v1"
         response = httpx.post(
@@ -283,9 +335,31 @@ class HTTPJudge:
             json={
                 "model": self.model,
                 "messages": [
-                    {"role": "system", "content": "Return only the requested JSON object."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "Review the supplied trajectory state and submit exactly one "
+                            "decision through the provided function."
+                        ),
+                    },
                     {"role": "user", "content": prompt},
                 ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": JUDGE_TOOL_NAME,
+                            "description": "Submit the validated judge decision.",
+                            "strict": True,
+                            "parameters": schema,
+                        },
+                    }
+                ],
+                "tool_choice": {
+                    "type": "function",
+                    "function": {"name": JUDGE_TOOL_NAME},
+                },
+                "parallel_tool_calls": False,
             },
             timeout=self.timeout,
         )
@@ -294,7 +368,121 @@ class HTTPJudge:
         usage = body.get("usage", {})
         self.input_tokens += int(usage.get("prompt_tokens", 0))
         self.output_tokens += int(usage.get("completion_tokens", 0))
-        return body["choices"][0]["message"].get("content", "")
+        message = body["choices"][0]["message"]
+        tool_calls = [
+            call
+            for call in message.get("tool_calls") or []
+            if call.get("type") == "function"
+            and call.get("function", {}).get("name") == JUDGE_TOOL_NAME
+        ]
+        if len(tool_calls) != 1:
+            raise JudgeProtocolError(f"judge must call {JUDGE_TOOL_NAME!r} exactly once")
+        return str(tool_calls[0]["function"].get("arguments", ""))
+
+
+def _judge_response_schema(kind: str) -> dict[str, Any]:
+    reason_code = {
+        "type": "string",
+        "description": (
+            "A concise snake_case audit code such as keep_next_action or "
+            "continuation_repeats_completed_work."
+        ),
+    }
+    if kind == "action":
+        return {
+            "type": "object",
+            "properties": {
+                "decision": {
+                    "type": "string",
+                    "enum": ["keep", "replace_with_compact"],
+                },
+                "reason_code": reason_code,
+            },
+            "required": ["decision", "reason_code"],
+            "additionalProperties": False,
+        }
+    if kind == "summary":
+        return {
+            "type": "object",
+            "properties": {
+                "decision": {"type": "string", "enum": ["keep", "repair"]},
+                "corrected_summary": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "The full corrected summary for repair, including the required "
+                        "header; null when the candidate is kept."
+                    ),
+                },
+                "reason_code": reason_code,
+            },
+            "required": ["decision", "corrected_summary", "reason_code"],
+            "additionalProperties": False,
+        }
+    if kind == "continuation":
+        function_call = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "arguments": {
+                    "type": "string",
+                    "description": "JSON-encoded function arguments.",
+                },
+            },
+            "required": ["name", "arguments"],
+            "additionalProperties": False,
+        }
+        tool_call = {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "type": {"type": "string", "enum": ["function"]},
+                "function": function_call,
+            },
+            "required": ["id", "type", "function"],
+            "additionalProperties": False,
+        }
+        assistant_message = {
+            "type": "object",
+            "properties": {
+                "role": {"type": "string", "enum": ["assistant"]},
+                "content": {"type": ["string", "null"]},
+                "tool_calls": {
+                    "anyOf": [
+                        {"type": "array", "items": tool_call},
+                        {"type": "null"},
+                    ]
+                },
+            },
+            "required": ["role", "content", "tool_calls"],
+            "additionalProperties": False,
+        }
+        return {
+            "type": "object",
+            "properties": {
+                "decision": {"type": "string", "enum": ["keep", "repair"]},
+                "corrected_message": {
+                    "anyOf": [assistant_message, {"type": "null"}],
+                    "description": (
+                        "The complete corrected assistant message for repair; null when "
+                        "the candidate is kept."
+                    ),
+                },
+                "reason_code": reason_code,
+            },
+            "required": ["decision", "corrected_message", "reason_code"],
+            "additionalProperties": False,
+        }
+    raise JudgeProtocolError(f"unknown judge request kind: {kind!r}")
+
+
+def _response_excerpt(text: str, error: Exception) -> str:
+    response_text = text
+    if not response_text and isinstance(error, httpx.HTTPStatusError):
+        response_text = error.response.text
+    stripped = response_text.strip()
+    if len(stripped) <= JUDGE_RESPONSE_EXCERPT_CHARS:
+        return stripped
+    return stripped[:JUDGE_RESPONSE_EXCERPT_CHARS] + "...[truncated]"
 
 
 def run_autocompact_agent(
@@ -415,16 +603,36 @@ def run_autocompact_agent(
             turn_count += 1
             total_input_tokens += int(continuation_response.input_tokens)
             total_output_tokens += int(continuation_response.output_tokens)
-            continuation_decision = judge.review_continuation(
-                compacted_context,
-                continuation_response.message,
-            )
+            try:
+                continuation_decision = judge.review_continuation(
+                    compacted_context,
+                    continuation_response.message,
+                )
+            except JudgeProtocolError:
+                audit_steps.append(
+                    {
+                        "kind": "compaction_error",
+                        "stage": "continuation_review",
+                        "event_id": event_id,
+                        "source_context": pre_context,
+                        "summary_prompt": summary_prompt,
+                        "candidate_summary": summary_response.text,
+                        "summary_decision": copy.deepcopy(summary_decision),
+                        "corrected_summary": corrected_summary,
+                        "compacted_context": compacted_context,
+                        "candidate_continuation": continuation_response.message,
+                    }
+                )
+                raise
             corrected_continuation = (
                 continuation_response.message
                 if continuation_decision["decision"] == "keep"
                 else continuation_decision["corrected_message"]
             )
-            _validate_assistant_message(corrected_continuation)
+            _validate_assistant_message(
+                corrected_continuation,
+                label="corrected continuation",
+            )
             continuation_calls = _tool_calls(corrected_continuation)
             tool_messages = (
                 _execute_tools(adapter, tool_executor, continuation_calls)
@@ -490,8 +698,12 @@ def run_autocompact_agent(
                 [copy.deepcopy(corrected_continuation), *copy.deepcopy(tool_messages)]
             ]
     except JudgeProtocolError as error:
+        finished_cleanly = False
         termination_reason = "judge_error"
-        audit_steps.append({"kind": "error", "error": str(error)})
+        error_step: dict[str, Any] = {"kind": "error", "error": str(error)}
+        if error.attempts:
+            error_step["judge_attempts"] = copy.deepcopy(error.attempts)
+        audit_steps.append(error_step)
     finally:
         trajectory = {
             "schema_version": SCHEMA_VERSION,
@@ -587,9 +799,7 @@ def _execute_tools(adapter, tool_executor, calls):
     for call in calls:
         if call["name"] == "compact":
             raise JudgeProtocolError("nested compact call must be handled by the context manager")
-        results.append(
-            (call["id"], tool_executor.execute(call["name"], call["arguments"]))
-        )
+        results.append((call["id"], tool_executor.execute(call["name"], call["arguments"])))
     return adapter.make_tool_result_messages(results)
 
 
@@ -679,11 +889,11 @@ def _openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _validate_assistant_message(message: Any) -> None:
+def _validate_assistant_message(message: Any, *, label: str = "assistant action") -> None:
     if not isinstance(message, dict) or message.get("role") != "assistant":
-        raise JudgeProtocolError("corrected action must be an assistant message")
+        raise JudgeProtocolError(f"{label} must be an assistant message")
     if not message.get("content") and not message.get("tool_calls"):
-        raise JudgeProtocolError("assistant message must contain content or tool_calls")
+        raise JudgeProtocolError(f"{label} must contain content or tool_calls")
 
 
 def _extract_json(text: str) -> str:

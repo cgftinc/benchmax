@@ -54,10 +54,17 @@ _TERMINATION_REASON_BY_EXCEPTION = {
     "SandboxBuildFailedError": "sandbox_error",
     "VerifierTimeoutError": "verifier_timeout",
 }
-# Every scorable budget stop a harness may self-report; "finished" defers to
-# exception classification instead.
+# Every terminal reason a harness may self-report; "finished" defers to
+# exception classification instead. Non-scorable reasons are converted to
+# zero-reward outcomes in _rollout_attempt.
 _HARNESS_REPORTED_TERMINATION_REASONS = frozenset(
-    {"context_exceeded", "output_exceeded", "max_turns_exceeded", "tool_budget_exceeded"}
+    {
+        "context_exceeded",
+        "judge_error",
+        "max_turns_exceeded",
+        "output_exceeded",
+        "tool_budget_exceeded",
+    }
 )
 
 
@@ -360,6 +367,19 @@ def _rollout_attempt(
             error=detail,
         )
 
+    if termination_reason not in Environment.scorable_termination_reasons:
+        detail = f"the harness reported {termination_reason}"
+        logger.error(
+            "harbor.rollout.zero_reward rollout_id=%s error=%s",
+            rollout_id,
+            detail,
+        )
+        return _zero_reward_rollout(
+            rollout_id,
+            termination_reason=termination_reason,
+            error=detail,
+        )
+
     normalized_rewards = {str(key): float(value) for key, value in rewards.items()}
     rewardkit_criteria = _rewardkit_criteria(trial_dir)
     if "partial_credit" not in normalized_rewards and "reward" in normalized_rewards:
@@ -391,7 +411,7 @@ def _zero_reward_rollout(
 
 
 def _harness_reported_reason(metadata: object) -> str | None:
-    """The harness's self-reported budget stop, if it declared one.
+    """The harness's self-reported terminal reason, if it declared one.
 
     The generic contract is ``metadata["termination_reason"]``; the legacy
     ``harvey_metrics.termination_reason`` key stays as a fallback. A clean
