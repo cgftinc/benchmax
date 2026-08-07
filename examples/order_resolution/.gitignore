@@ -1,0 +1,7 @@
+artifacts/*
+!artifacts/.gitkeep
+.env*
+data/eval.jsonl
+data/olist*
+data/v2/eval.jsonl
+

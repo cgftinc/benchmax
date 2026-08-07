@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>order resolution baseline</title>
+    <style>
+      :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+      body { margin: 2rem auto; max-width: 72rem; padding: 0 1rem; line-height: 1.45; }
+      h1, h2 { letter-spacing: -0.02em; }
+      .decision { border: 1px solid currentColor; border-radius: 0.5rem; padding: 1rem; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border-bottom: 1px solid color-mix(in srgb, currentColor 25%, transparent); padding: 0.65rem; text-align: left; }
+      pre { overflow: auto; padding: 1rem; background: color-mix(in srgb, CanvasText 8%, Canvas); }
+      .muted { opacity: 0.7; }
+    </style>
+  </head>
+  <body>
+    <h1>order resolution baseline</h1>
+    <p class="muted">generated {{generated_at}}</p>
+    <section class="decision">
+      <h2>headroom decision: {{decision}}</h2>
+      <p>{{decision_detail}}</p>
+    </section>
+    <h2>full held-out matrix</h2>
+    <table>
+      <thead><tr><th>arm</th><th>successes</th><th>success</th><th>infra failures</th><th>forbidden mutation</th><th>structured reply</th></tr></thead>
+      <tbody>{{arm_rows}}</tbody>
+    </table>
+    <h2>preselected demos</h2>
+    <table>
+      <thead><tr><th>task</th><th>cell</th><th>results</th></tr></thead>
+      <tbody>{{demo_rows}}</tbody>
+    </table>
+    <h2>signal probe</h2>
+    <pre>{{signal_json}}</pre>
+  </body>
+</html>
