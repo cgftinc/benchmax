@@ -81,10 +81,9 @@ class SftTrainingConfig:
     max_context_tokens: int = 8192
     save_interval: int = 20
     seed: int = 42
-    # v1.1 knobs. ``None`` means "not sent": the field is omitted from
-    # ``as_args()`` entirely, so the platform stamps nothing and the trainer
-    # keeps the model config's value. An untouched config therefore still
-    # produces exactly the v1 five-key payload.
+    # Optional knobs. ``None`` means "not sent": the field is omitted from
+    # ``as_args()``, so the platform stamps nothing and the trainer keeps the
+    # model config's value.
     lr_decay_style: str | None = None
     min_lr: float | None = None
     warmup_ratio: float | None = None
@@ -115,7 +114,9 @@ class SftTrainingConfig:
             raise ValueError("min_lr must be less than learning_rate")
         self._require_optional_number("warmup_ratio", self.warmup_ratio, 0.0, 0.5)
         self._require_optional_number("adam_beta2", self.adam_beta2, 0.9, 0.999)
-        self._require_optional_number("grad_clip", self.grad_clip, None, 10.0, exclusive_minimum=0.0)
+        self._require_optional_number(
+            "grad_clip", self.grad_clip, None, 10.0, exclusive_minimum=0.0
+        )
         if self.lora_rank is not None and self.lora_rank not in _PUBLIC_LORA_RANKS:
             raise ValueError(
                 f"lora_rank must be one of {', '.join(str(r) for r in sorted(_PUBLIC_LORA_RANKS))}"
@@ -144,7 +145,7 @@ class SftTrainingConfig:
         *,
         exclusive_minimum: float | None = None,
     ) -> None:
-        """Range-check a v1.1 knob, leaving ``None`` (not sent) untouched."""
+        """Range-check an optional knob, leaving ``None`` (not sent) untouched."""
 
         if value is None:
             return
@@ -162,8 +163,8 @@ class SftTrainingConfig:
     def as_args(self) -> dict[str, int | float | str]:
         """The resolved public ``args`` object for the SFT launch request.
 
-        Unset v1.1 knobs are omitted entirely rather than serialized as null,
-        so an untouched config still produces the exact v1 five-key payload.
+        Unset knobs are omitted rather than serialized as null: the platform
+        reads presence, so a null would read as a deliberate override.
         """
 
         args: dict[str, int | float | str] = {
@@ -234,7 +235,7 @@ def upload_sft_assets(
     The blob layout is content-addressed like RL datasets:
     ``datasets/<run_name>/<digest16>/train.jsonl`` where ``digest16`` is the
     first 16 hex chars of :func:`sft_assets_digest` — the train digest alone
-    when there is no eval set, so v1 prefixes are unchanged. An eval set is
+    when there is no eval set, so train-only prefixes are unchanged. An eval set is
     written to ``eval.jsonl`` under the same prefix. Auth, retry, and
     path-safety ride the same :class:`StorageClient` mechanism as RL uploads.
 
@@ -277,7 +278,8 @@ def upload_sft_assets(
     if eval_dataset is not None:
         if len(eval_dataset.rows) > MAX_EVAL_ROWS:
             raise ValueError(
-                f"eval_dataset has {len(eval_dataset.rows)} rows, above the {MAX_EVAL_ROWS}-row limit"
+                f"eval_dataset has {len(eval_dataset.rows)} rows, "
+                f"above the {MAX_EVAL_ROWS}-row limit"
             )
         eval_payload = eval_dataset.to_jsonl_bytes()
         eval_digest = hashlib.sha256(eval_payload).hexdigest()

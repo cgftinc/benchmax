@@ -159,9 +159,7 @@ class TestSftTrainingConfig:
         )
 
     def test_unset_fields_omitted_from_as_args(self) -> None:
-        # Unset v1.1 knobs must vanish from the payload, not serialize as
-        # null: the platform reads presence, and a null would look like a
-        # deliberate choice overriding the model config.
+        # Unset knobs must vanish from the payload, not serialize as null.
         args = SftTrainingConfig(adam_beta2=0.95).as_args()
         assert args["adam_beta2"] == 0.95
         for absent in (
@@ -336,7 +334,14 @@ class TestEvalAssets:
 
     def test_eval_set_lands_beside_train_under_a_combined_prefix(self) -> None:
         train = SftDataset.from_rows(
-            [{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}]
+            [
+                {
+                    "messages": [
+                        {"role": "user", "content": "q"},
+                        {"role": "assistant", "content": "a"},
+                    ]
+                }
+            ]
         )
         evalset = self._eval_dataset()
         storage = FakeStorageClient()
@@ -365,10 +370,19 @@ class TestEvalAssets:
         # The prefix pins the FULL data identity, so an overwrite at the
         # train-only prefix cannot attach an eval set to a launched run.
         train = SftDataset.from_rows(
-            [{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}]
+            [
+                {
+                    "messages": [
+                        {"role": "user", "content": "q"},
+                        {"role": "assistant", "content": "a"},
+                    ]
+                }
+            ]
         )
         train_only = upload_sft_assets(
-            dataset=train, run_name="s", storage_client=FakeStorageClient()  # type: ignore[arg-type]
+            dataset=train,
+            run_name="s",
+            storage_client=FakeStorageClient(),  # type: ignore[arg-type]
         )
         with_eval = upload_sft_assets(
             dataset=train,
@@ -379,10 +393,17 @@ class TestEvalAssets:
         assert train_only.dataset_path != with_eval.dataset_path
 
     def test_train_only_prefix_is_unchanged(self) -> None:
-        # v1 prefixes must stay byte-stable: sft_assets_digest with no eval
-        # set is exactly the train digest.
+        # Train-only prefixes must stay byte-stable: with no eval set,
+        # sft_assets_digest is exactly the train digest.
         train = SftDataset.from_rows(
-            [{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}]
+            [
+                {
+                    "messages": [
+                        {"role": "user", "content": "q"},
+                        {"role": "assistant", "content": "a"},
+                    ]
+                }
+            ]
         )
         digest = hashlib.sha256(train.to_jsonl_bytes()).hexdigest()
         assert sft_assets_digest(digest) == digest
@@ -395,7 +416,14 @@ class TestEvalAssets:
     def test_oversized_eval_set_fails_before_upload(self) -> None:
         storage = FakeStorageClient()
         train = SftDataset.from_rows(
-            [{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}]
+            [
+                {
+                    "messages": [
+                        {"role": "user", "content": "q"},
+                        {"role": "assistant", "content": "a"},
+                    ]
+                }
+            ]
         )
         with pytest.raises(ValueError, match="above the 2048-row limit"):
             upload_sft_assets(

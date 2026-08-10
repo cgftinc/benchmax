@@ -476,12 +476,10 @@ class TrainerClient:
             "args": resolved.as_args(),
         }
 
-        # The MARKER is what turns eval on, and it rides the uploaded assets
-        # rather than the config — a caller cannot request eval against a
-        # prefix that has no eval.jsonl. Train identity travels WITH the marker
-        # and only then: the platform needs it to derive the pass cap and
-        # re-derive the prefix, while a request without eval stays exactly the
-        # v1 body.
+        # The MARKER turns eval on and rides the uploaded assets, not the
+        # config: no eval.jsonl in the prefix, no eval. Train identity is sent
+        # only alongside the marker, since the platform needs it to derive the
+        # pass cap and re-derive the prefix.
         if assets.eval_digest is not None and assets.eval_row_count is not None:
             if assets.row_count is None:
                 raise ValueError(
