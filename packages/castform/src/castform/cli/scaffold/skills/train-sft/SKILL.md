@@ -76,6 +76,8 @@ turns contribute to the loss.
 | `adam_beta2` | 0.9–0.999 | unset |
 | `grad_clip` | (0, 10] | unset |
 | `lora_rank` | 32 or 64 | unset — keeps the platform's fixed policy |
+| `global_batch_size` | 4–64, multiple of 4 | unset — 4 |
+| `eval_interval` (steps) | 1–10000; only with an eval set | unset — derived from `save_interval` |
 
 Every arg below `seed` is optional and unset by default: leave one out and the
 platform's own value applies, so an untouched config behaves exactly as before
@@ -87,6 +89,31 @@ a knob. Rank 128 is not accepted — it trains, but serving cannot load it.
 Model (`Qwen/Qwen3.5-4B`) and GPU topology are platform-owned — do not invent
 knobs for them. A row that renders past `max_context_tokens` tokens fails the
 run's preflight; trim long rows up front.
+
+## Held-out eval (optional)
+
+Pass a second dataset to score during training:
+
+```python
+assets = upload_sft_assets(dataset=train, eval_dataset=held_out, run_name="...")
+```
+
+The eval set is scored on the live weights between training steps and plotted
+as `eval/loss` beside `train/loss`. Rules worth knowing before you offer it:
+
+- **At most 2048 rows**, under the same per-row limits as training rows. The
+  bound is a compute bound, not a taste one — eval runs on the training GPUs
+  and pauses training while it does.
+- **It is never billed.** Eval forward passes cost the user nothing, which is
+  also why the size and cadence are capped rather than left open.
+- **Cadence defaults to `save_interval`**, so by default every eval lands on a
+  checkpoint. Set `eval_interval` only to make it sparser; a much denser
+  cadence is rejected at launch.
+- An eval set is part of the data identity: changing it produces a different
+  upload prefix, and a resumed run must keep the one it started with.
+
+Skip it for small or exploratory runs — a held-out split costs training rows,
+and `train/loss` alone answers "is this learning at all".
 
 ## Cost and consent
 
@@ -102,9 +129,10 @@ this account — surface that to the user rather than retrying.
 ## Monitor
 
 Same as any run (`view-progress` skill): `castform runs status <id>`, and
-`castform runs scalars <id>` — watch `train/loss` fall; there are no rollouts,
-evals, or reward curves for SFT runs. The run page shows loss, dataset prefix,
-and config only.
+`castform runs scalars <id>` — watch `train/loss` fall, and `eval/loss` too
+when the run has an eval set. There are no rollouts or reward curves for SFT
+runs. The run page shows loss, dataset prefix, and config; runs with an eval
+set also get an eval tab, chart-only.
 
 ## Reference
 
