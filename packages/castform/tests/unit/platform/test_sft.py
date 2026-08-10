@@ -15,6 +15,7 @@ from castform.platform import (
     UploadedSftAssets,
     upload_sft_assets,
 )
+from castform.platform.sft import MAX_EVAL_ROWS, sft_assets_digest
 
 
 def _dataset() -> SftDataset:
@@ -59,8 +60,12 @@ class TestUploadSftAssets:
             dataset_path=f"datasets/support-sft/{digest[:16]}",
             dataset_format="benchmax-sft-v1",
             content_digest=digest,
+            row_count=1,
         )
         assert uploaded.dataset_format == SFT_DATASET_FORMAT
+        # No eval set was uploaded, so nothing marks one.
+        assert uploaded.eval_digest is None
+        assert uploaded.eval_row_count is None
 
     def test_equivalent_datasets_share_a_prefix(self) -> None:
         storage = FakeStorageClient()
@@ -311,3 +316,164 @@ class TestLaunchSftRun:
 
         with pytest.raises(JobLaunchError, match="not enabled"):
             self._client(handler).launch_sft_run(assets=self._assets(), name="n")
+
+
+class TestEvalAssets:
+    """Uploading an eval set, and the marker it makes the launch send."""
+
+    def _eval_dataset(self, count: int = 3) -> SftDataset:
+        return SftDataset.from_rows(
+            [
+                {
+                    "messages": [
+                        {"role": "user", "content": f"eq{i}"},
+                        {"role": "assistant", "content": f"ea{i}"},
+                    ]
+                }
+                for i in range(count)
+            ]
+        )
+
+    def test_eval_set_lands_beside_train_under_a_combined_prefix(self) -> None:
+        train = SftDataset.from_rows(
+            [{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}]
+        )
+        evalset = self._eval_dataset()
+        storage = FakeStorageClient()
+
+        uploaded = upload_sft_assets(
+            dataset=train,
+            eval_dataset=evalset,
+            run_name="support-sft",
+            storage_client=storage,  # type: ignore[arg-type]
+        )
+
+        train_digest = hashlib.sha256(train.to_jsonl_bytes()).hexdigest()
+        eval_digest = hashlib.sha256(evalset.to_jsonl_bytes()).hexdigest()
+        prefix = f"datasets/support-sft/{sft_assets_digest(train_digest, eval_digest)[:16]}"
+
+        assert [path for path, _, _ in storage.uploads] == [
+            f"{prefix}/train.jsonl",
+            f"{prefix}/eval.jsonl",
+        ]
+        assert uploaded.dataset_path == prefix
+        assert uploaded.eval_digest == eval_digest
+        assert uploaded.eval_row_count == 3
+        assert uploaded.row_count == 1
+
+    def test_adding_an_eval_set_moves_the_prefix(self) -> None:
+        # The prefix pins the FULL data identity, so an overwrite at the
+        # train-only prefix cannot attach an eval set to a launched run.
+        train = SftDataset.from_rows(
+            [{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}]
+        )
+        train_only = upload_sft_assets(
+            dataset=train, run_name="s", storage_client=FakeStorageClient()  # type: ignore[arg-type]
+        )
+        with_eval = upload_sft_assets(
+            dataset=train,
+            eval_dataset=self._eval_dataset(),
+            run_name="s",
+            storage_client=FakeStorageClient(),  # type: ignore[arg-type]
+        )
+        assert train_only.dataset_path != with_eval.dataset_path
+
+    def test_train_only_prefix_is_unchanged(self) -> None:
+        # v1 prefixes must stay byte-stable: sft_assets_digest with no eval
+        # set is exactly the train digest.
+        train = SftDataset.from_rows(
+            [{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}]
+        )
+        digest = hashlib.sha256(train.to_jsonl_bytes()).hexdigest()
+        assert sft_assets_digest(digest) == digest
+
+    def test_combined_digest_is_framing_unambiguous(self) -> None:
+        a, b = "a" * 64, "b" * 64
+        assert sft_assets_digest(a, b) != sft_assets_digest(b, a)
+        assert sft_assets_digest(a, b) != a
+
+    def test_oversized_eval_set_fails_before_upload(self) -> None:
+        storage = FakeStorageClient()
+        train = SftDataset.from_rows(
+            [{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}]
+        )
+        with pytest.raises(ValueError, match="above the 2048-row limit"):
+            upload_sft_assets(
+                dataset=train,
+                eval_dataset=self._eval_dataset(MAX_EVAL_ROWS + 1),
+                run_name="s",
+                storage_client=storage,  # type: ignore[arg-type]
+            )
+        assert storage.uploads == []
+
+
+class TestEvalLaunchWire:
+    """What the launch sends when the uploaded assets carry an eval set."""
+
+    def _client(self, handler) -> TrainerClient:
+        client = TrainerClient(api_key="test-key", base_url="https://example.invalid")
+        client._http_client = httpx.Client(
+            base_url="https://example.invalid",
+            headers={"Authorization": "Bearer test-key"},
+            transport=httpx.MockTransport(handler),
+        )
+        return client
+
+    def _eval_assets(self) -> UploadedSftAssets:
+        return UploadedSftAssets(
+            dataset_path="datasets/support-sft/0123456789abcdef",
+            dataset_format=SFT_DATASET_FORMAT,
+            content_digest="0" * 64,
+            row_count=400,
+            eval_digest="1" * 64,
+            eval_row_count=100,
+        )
+
+    def _capture(self, assets: UploadedSftAssets, config: SftTrainingConfig | None = None) -> dict:
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            return httpx.Response(202, json={"runId": "run-1", "trainingMethod": "sft"})
+
+        self._client(handler).launch_sft_run(assets=assets, name="support-sft", config=config)
+        return captured["body"]
+
+    def test_marker_and_train_identity_travel_together(self) -> None:
+        body = self._capture(self._eval_assets())
+        assert body["eval"] == {"rows": 100, "digest": "1" * 64}
+        # The platform derives the pass cap and re-derives the prefix from
+        # these, so they are mandatory exactly when the marker is present.
+        assert body["dataset"]["digest"] == "0" * 64
+        assert body["dataset"]["rows"] == 400
+
+    def test_eval_interval_rides_args_when_sent(self) -> None:
+        body = self._capture(self._eval_assets(), SftTrainingConfig(eval_interval=50))
+        assert body["args"]["eval_interval"] == 50
+
+    def test_unset_eval_interval_is_omitted_so_the_platform_derives_it(self) -> None:
+        body = self._capture(self._eval_assets())
+        assert "eval_interval" not in body["args"]
+
+    def test_eval_interval_without_an_eval_set_is_refused_locally(self) -> None:
+        # Fails before the request rather than earning a 400: the caller's
+        # mistake is knowable here.
+        assets = UploadedSftAssets(
+            dataset_path="datasets/support-sft/0123456789abcdef",
+            dataset_format=SFT_DATASET_FORMAT,
+            content_digest="0" * 64,
+            row_count=400,
+        )
+        with pytest.raises(ValueError, match="no eval set"):
+            self._capture(assets, SftTrainingConfig(eval_interval=50))
+
+    def test_no_eval_set_keeps_the_v1_body(self) -> None:
+        assets = UploadedSftAssets(
+            dataset_path="datasets/support-sft/0123456789abcdef",
+            dataset_format=SFT_DATASET_FORMAT,
+            content_digest="0" * 64,
+            row_count=400,
+        )
+        body = self._capture(assets)
+        assert set(body) == {"name", "dataset", "args"}
+        assert set(body["dataset"]) == {"format", "path"}

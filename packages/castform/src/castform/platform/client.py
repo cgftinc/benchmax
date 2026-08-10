@@ -466,17 +466,41 @@ class TrainerClient:
         resolved = config if config is not None else SftTrainingConfig()
         if not isinstance(resolved, SftTrainingConfig):
             raise TypeError(f"config must be an SftTrainingConfig, got {type(config).__name__}")
-        response = self._http_client.post(
-            "/v1/train/runs/sft",
-            json={
-                "name": name,
-                "dataset": {
-                    "format": assets.dataset_format,
-                    "path": assets.dataset_path,
-                },
-                "args": resolved.as_args(),
-            },
-        )
+        dataset: dict[str, Any] = {
+            "format": assets.dataset_format,
+            "path": assets.dataset_path,
+        }
+        body: dict[str, Any] = {
+            "name": name,
+            "dataset": dataset,
+            "args": resolved.as_args(),
+        }
+
+        # The MARKER is what turns eval on, and it rides the uploaded assets
+        # rather than the config — a caller cannot request eval against a
+        # prefix that has no eval.jsonl. Train identity travels WITH the marker
+        # and only then: the platform needs it to derive the pass cap and
+        # re-derive the prefix, while a request without eval stays exactly the
+        # v1 body.
+        if assets.eval_digest is not None and assets.eval_row_count is not None:
+            if assets.row_count is None:
+                raise ValueError(
+                    "assets carry an eval set but no train row_count; re-upload with "
+                    "upload_sft_assets so the launch can be range-checked"
+                )
+            dataset["digest"] = assets.content_digest
+            dataset["rows"] = assets.row_count
+            body["eval"] = {
+                "rows": assets.eval_row_count,
+                "digest": assets.eval_digest,
+            }
+        elif resolved.eval_interval is not None:
+            raise ValueError(
+                "eval_interval was set but the uploaded assets carry no eval set; "
+                "pass eval_dataset=... to upload_sft_assets or drop eval_interval"
+            )
+
+        response = self._http_client.post("/v1/train/runs/sft", json=body)
         self._handle_response_errors(response)
         return response.json()["runId"]
 
