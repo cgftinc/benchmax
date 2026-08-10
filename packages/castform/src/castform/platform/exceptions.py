@@ -16,6 +16,18 @@ class AuthenticationError(TrainerError):
     pass
 
 
+class ClientUnsupportedError(TrainerError):
+    """Server will never satisfy this request from this client (HTTP 410/501).
+
+    Deliberately NOT a :class:`RolloutServerError`: a 5xx is transient and worth
+    a retry, this is not. It means the endpoint was retired server-side and the
+    installed client predates that migration, so the only fix is an upgrade.
+    Retrying burns the caller's time and hides the real cause.
+    """
+
+    pass
+
+
 class JobLaunchError(TrainerError):
     """Failed to launch a training job."""
 

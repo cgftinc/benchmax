@@ -23,6 +23,7 @@ from castform import config
 from .credentials import TokenProvider, resolve_token_provider
 from .exceptions import (
     AuthenticationError,
+    ClientUnsupportedError,
     JobLaunchError,
     RolloutError,
     RolloutNotFound,
@@ -31,6 +32,30 @@ from .exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 410 Gone / 501 Not Implemented: the route was retired server-side. Checked
+# before the generic 5xx branch, which would otherwise type 501 as retryable.
+_RETIRED_ENDPOINT_STATUSES = (410, 501)
+
+
+def _raise_if_client_unsupported(message: str, status_code: int) -> None:
+    """Raise :class:`ClientUnsupportedError` when the server retired this route.
+
+    Every status-code classifier in this module calls this first, so a retired
+    endpoint reads the same regardless of which client hit it.
+
+    Args:
+        message:     Server-supplied error text, already extracted or truncated.
+        status_code: HTTP status of the response.
+    """
+    if status_code in _RETIRED_ENDPOINT_STATUSES:
+        raise ClientUnsupportedError(
+            f"{message}\n"
+            "This endpoint no longer exists on the server — your castform "
+            "client is out of date. Upgrade with "
+            "`pip install --upgrade castform`, then retry.",
+            status_code,
+        )
 
 
 @dataclass(frozen=True)
@@ -175,6 +200,7 @@ class StorageClient:
         if response.status_code == 401:
             raise AuthenticationError(message, response.status_code)
 
+        _raise_if_client_unsupported(message, response.status_code)
         raise TrainerError(message, response.status_code)
 
     def _get_upload_url(
@@ -356,6 +382,7 @@ class TrainerClient:
         if response.status_code == 401:
             raise AuthenticationError(message, response.status_code)
 
+        _raise_if_client_unsupported(message, response.status_code)
         raise JobLaunchError(message, response.status_code)
 
     def launch_training_run(
@@ -808,6 +835,7 @@ class RolloutClient:
                     raise AuthenticationError(body[:300], response.status_code)
                 if response.status_code == 404:
                     raise RolloutNotFound(body[:300], response.status_code)
+                _raise_if_client_unsupported(body[:300], response.status_code)
                 if 500 <= response.status_code < 600:
                     raise RolloutServerError(body[:300], response.status_code)
                 raise RolloutError(body[:300], response.status_code)

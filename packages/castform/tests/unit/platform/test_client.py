@@ -15,7 +15,9 @@ from castform.platform.client import (
 )
 from castform.platform.exceptions import (
     AuthenticationError,
+    ClientUnsupportedError,
     RolloutError,
+    RolloutServerError,
 )
 
 # ---------------------------------------------------------------------------
@@ -376,6 +378,73 @@ def test_trainer_client_resolves_bearer_per_request():
     client.list_launch_args()
     client.list_launch_args()
     assert seen == ["Bearer tok-1", "Bearer tok-2"]
+
+
+# ---------------------------------------------------------------------------
+# Retired endpoints (410/501) — non-retryable, distinct from transient 5xx
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [410, 501])
+def test_trainer_client_raises_client_unsupported_on_retired_endpoint(status):
+    """A retired route must not surface as a generic JobLaunchError."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": "gone", "code": "NOT_IMPLEMENTED"})
+
+    trainer = _make_trainer_with_transport(handler)
+    with pytest.raises(ClientUnsupportedError, match="upgrade castform"):
+        trainer.list_launch_args()
+
+
+@pytest.mark.parametrize("status", [410, 501])
+def test_storage_client_raises_client_unsupported_on_retired_endpoint(status):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": "gone"})
+
+    client = StorageClient(api_key="k", base_url="https://example.invalid")
+    client._http_client = httpx.Client(
+        base_url="https://example.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(ClientUnsupportedError, match="upgrade castform"):
+        client._get_upload_url("f.json", "application/json")
+
+
+def test_run_group_501_is_not_typed_as_retryable(monkeypatch):
+    """501 must escape the 5xx branch: retrying a retired route never succeeds.
+
+    Regression guard for the 2026-07-29 group-native migration, where clients
+    predating it hit a 501 stub typed as transient and retried for an hour.
+    """
+    monkeypatch.setenv("CASTFORM_BASE_DOMAIN", "castform.com")
+    import httpx as httpx_mod
+
+    class _FakeResp:
+        status_code = 501
+
+        def read(self):
+            return b'{"error":"gone","code":"NOT_IMPLEMENTED"}'
+
+    class _CM:
+        def __enter__(self):
+            return _FakeResp()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(httpx_mod, "stream", lambda *a, **k: _CM())
+
+    client = RolloutClient(api_key="k")
+    with pytest.raises(ClientUnsupportedError) as exc:
+        client.run_group(
+            samples=2,
+            env_cls_path="env/cls.pkl",
+            env_metadata_path="env/meta.json",
+            verbose=False,
+        )
+    assert not isinstance(exc.value, RolloutServerError)
+    assert exc.value.status_code == 501
 
 
 # ---------------------------------------------------------------------------
