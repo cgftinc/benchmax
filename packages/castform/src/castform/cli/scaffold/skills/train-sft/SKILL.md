@@ -79,7 +79,7 @@ turns contribute to the loss.
 | `global_batch_size` | 4–64, multiple of 4 | unset — 4 |
 | `eval_interval` (steps) | 1–10000; only with an eval set | unset — derived from `save_interval` |
 
-Every arg below `seed` is optional and unset by default: leave one out and the
+Every arg whose default reads `unset` is optional: leave it out and the
 platform's own value applies, so an untouched config behaves exactly as before
 these knobs existed. Do not set one just to restate a default.
 
