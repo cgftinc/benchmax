@@ -8,9 +8,10 @@ from unittest.mock import AsyncMock, patch
 
 import cloudpickle
 import pytest
-from benchmax.envs import BaseRollout, StaticBearerAuth
 from benchmax.rag.env import RagEnv, _extract_answer_block
 from benchmax.rag.search import SearchClient
+
+from benchmax.envs import BaseRollout, StaticBearerAuth
 from benchmax.rewards import Judge, RubricEvaluation
 
 JUDGE_ARGS = {
@@ -113,14 +114,15 @@ class TestInit:
         env = _make_env()
         assert env._w_correctness == pytest.approx(1.0)
         assert env._w_retrieval_hit == pytest.approx(0.3)
-        assert env._w_citation_precision == pytest.approx(0.3)
+        assert env._w_citation_recall == pytest.approx(0.3)
+        assert env._w_citation_grounding == pytest.approx(0.2)
         assert env._w_length == pytest.approx(0.2)
 
     def test_removed_weight_kwargs_fail_loudly(self):
         # The pre-audit weights are GONE, not aliased. **kwargs would swallow
         # them silently (caller's weights become no-ops), so __init__ rejects
         # them explicitly.
-        for kwarg in ("w_conciseness", "w_citation_recall", "w_search_efficiency"):
+        for kwarg in ("w_conciseness", "w_citation_precision", "w_search_efficiency"):
             with pytest.raises(TypeError, match="unexpected keyword argument"):
                 _make_env(**{kwarg: 0.5})
 
@@ -221,6 +223,18 @@ def _msgs(content):
     return [{"role": "assistant", "content": content}]
 
 
+def _rag_msgs(answer: str, *tool_sources: str):
+    """Build the minimum rollout messages needed for source-gated rewards."""
+    tool_lines = [
+        f"{i}. -- [source: {source}]\n   Content: retrieved text"
+        for i, source in enumerate(tool_sources, 1)
+    ]
+    return [
+        {"role": "tool", "tool_call_id": "call-search", "content": "\n".join(tool_lines)},
+        {"role": "assistant", "content": answer},
+    ]
+
+
 async def _compute_reward(env, rollout_id, messages, example_args):
     return await type(env).compute_reward(
         env,
@@ -245,7 +259,7 @@ class TestComputeReward:
             _compute_reward(
                 env,
                 "r1",
-                _msgs("The answer is <answer>42 [Source: doc_a]</answer>"),
+                _rag_msgs("The answer is <answer>42 [Source: doc_a]</answer>", "doc_a"),
                 {
                     "question": "What?",
                     "ground_truth": "42",
@@ -253,12 +267,13 @@ class TestComputeReward:
                 },
             )
         )
-        # Exactly the audited 4-component shape — no conciseness/recall/
-        # search_efficiency keys in the default reward.
+        # Exactly the audited source-gated shape — no conciseness,
+        # citation_precision, or search_efficiency keys in the default reward.
         assert set(result) == {
             "answer_correctness",
             "retrieval_hit",
-            "citation_precision",
+            "citation_recall",
+            "citation_grounding",
             "answer_length",
         }
 
@@ -273,8 +288,12 @@ class TestComputeReward:
             _compute_reward(
                 env,
                 "r1",
-                _msgs("<answer>partial</answer>"),
-                {"question": "Q?", "ground_truth": "full answer"},
+                _rag_msgs("<answer>partial</answer>", "doc_a"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "full answer",
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
+                },
             )
         )
         assert result["answer_correctness"] == pytest.approx(1.0)  # 0.5 * 2.0
@@ -291,8 +310,12 @@ class TestComputeReward:
             _compute_reward(
                 env,
                 "r1",
-                _msgs("<answer>wrong</answer>"),
-                {"question": "Q?", "ground_truth": "right"},
+                _rag_msgs("<answer>wrong</answer>", "doc_a"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "right",
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
+                },
             )
         )
         assert result["answer_length"] == 0.0
@@ -311,8 +334,12 @@ class TestComputeReward:
             _compute_reward(
                 env,
                 "r1",
-                _msgs(f"<answer>{short}</answer>"),
-                {"question": "Q?", "ground_truth": "42"},
+                _rag_msgs(f"<answer>{short}</answer>", "doc_a"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "42",
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
+                },
             )
         )
         assert result["answer_length"] == pytest.approx(1.0 - len(short) / 600)
@@ -323,8 +350,12 @@ class TestComputeReward:
             _compute_reward(
                 env,
                 "r1",
-                _msgs(f"<answer>{long}</answer>"),
-                {"question": "Q?", "ground_truth": "42"},
+                _rag_msgs(f"<answer>{long}</answer>", "doc_a"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "42",
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
+                },
             )
         )
         assert result["answer_length"] == 0.0
@@ -351,14 +382,45 @@ class TestComputeReward:
         "benchmax.rag.env.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
-    def test_citation_exact_match(self, mock_eval):
-        mock_eval.return_value = RubricEvaluation(1.0, "", "")
-        env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
+    def test_answer_citation_without_tool_source_short_circuits_before_judge(self, mock_eval):
+        # The stricter default refuses answer-from-memory: citing the gold source
+        # is not enough unless the source appeared in search tool output.
+        env = _make_env()
         result = asyncio.run(
             _compute_reward(
                 env,
                 "r1",
-                _msgs("<answer>Found it [Source: statute_a] [Source: statute_b]</answer>"),
+                _msgs("<answer>42 [Source: doc_a]</answer>"),
+                {
+                    "question": "Q?",
+                    "ground_truth": "42",
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
+                },
+            )
+        )
+        assert all(v == 0.0 for v in result.values())
+        mock_eval.assert_not_awaited()
+
+    @patch(
+        "benchmax.rag.env.evaluate_single_rubric",
+        new_callable=AsyncMock,
+    )
+    def test_retrieval_and_citations_exact_match(self, mock_eval):
+        mock_eval.return_value = RubricEvaluation(1.0, "", "")
+        env = _make_env(
+            w_retrieval_hit=1.0,
+            w_citation_recall=1.0,
+            w_citation_grounding=1.0,
+        )
+        result = asyncio.run(
+            _compute_reward(
+                env,
+                "r1",
+                _rag_msgs(
+                    "<answer>Found it [Source: statute_a] [Source: statute_b]</answer>",
+                    "statute_a",
+                    "statute_b",
+                ),
                 {
                     "question": "Q?",
                     "ground_truth": "answer",
@@ -370,7 +432,8 @@ class TestComputeReward:
             )
         )
         assert result["retrieval_hit"] == pytest.approx(1.0)
-        assert result["citation_precision"] == pytest.approx(1.0)
+        assert result["citation_recall"] == pytest.approx(1.0)
+        assert result["citation_grounding"] == pytest.approx(1.0)
 
     @patch(
         "benchmax.rag.env.evaluate_single_rubric",
@@ -380,12 +443,19 @@ class TestComputeReward:
         # The default canonicalizer is LOOSE (id-hash OR title-path): a cited
         # 'docs/Statute_A.md' matches a bare 'statute_a' gold file id.
         mock_eval.return_value = RubricEvaluation(1.0, "", "")
-        env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
+        env = _make_env(
+            w_retrieval_hit=1.0,
+            w_citation_recall=1.0,
+            w_citation_grounding=1.0,
+        )
         result = asyncio.run(
             _compute_reward(
                 env,
                 "r1",
-                _msgs("<answer>Found it [Source: docs/Statute_A.md]</answer>"),
+                _rag_msgs(
+                    "<answer>Found it [Source: docs/Statute_A.md]</answer>",
+                    "docs/Statute_A.md",
+                ),
                 {
                     "question": "Q?",
                     "ground_truth": "answer",
@@ -396,20 +466,25 @@ class TestComputeReward:
             )
         )
         assert result["retrieval_hit"] == pytest.approx(1.0)
-        assert result["citation_precision"] == pytest.approx(1.0)
+        assert result["citation_recall"] == pytest.approx(1.0)
+        assert result["citation_grounding"] == pytest.approx(1.0)
 
     @patch(
         "benchmax.rag.env.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
-    def test_citation_partial_recall(self, mock_eval):
+    def test_partial_retrieval_and_citation_recall(self, mock_eval):
         mock_eval.return_value = RubricEvaluation(1.0, "", "")
-        env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
+        env = _make_env(
+            w_retrieval_hit=1.0,
+            w_citation_recall=1.0,
+            w_citation_grounding=1.0,
+        )
         result = asyncio.run(
             _compute_reward(
                 env,
                 "r1",
-                _msgs("<answer>Found it [Source: statute_a]</answer>"),
+                _rag_msgs("<answer>Found it [Source: statute_a]</answer>", "statute_a"),
                 {
                     "question": "Q?",
                     "ground_truth": "answer",
@@ -421,20 +496,47 @@ class TestComputeReward:
             )
         )
         assert result["retrieval_hit"] == pytest.approx(0.5)
-        assert result["citation_precision"] == pytest.approx(1.0)
+        assert result["citation_recall"] == pytest.approx(0.5)
+        assert result["citation_grounding"] == pytest.approx(1.0)
+
+    @patch(
+        "benchmax.rag.env.evaluate_single_rubric",
+        new_callable=AsyncMock,
+    )
+    def test_citation_grounding_penalizes_unretrieved_citations(self, mock_eval):
+        mock_eval.return_value = RubricEvaluation(1.0, "", "")
+        env = _make_env(w_citation_recall=1.0, w_citation_grounding=1.0)
+        result = asyncio.run(
+            _compute_reward(
+                env,
+                "r1",
+                _rag_msgs(
+                    "<answer>Found it [Source: doc_a] [Source: doc_b]</answer>",
+                    "doc_a",
+                ),
+                {
+                    "question": "Q?",
+                    "ground_truth": "answer",
+                    "reference_chunks": [{"content": "...", "metadata": {"file": "doc_a"}}],
+                },
+            )
+        )
+        assert result["citation_recall"] == pytest.approx(1.0)
+        assert result["citation_grounding"] == pytest.approx(0.5)
 
     @patch(
         "benchmax.rag.env.evaluate_single_rubric",
         new_callable=AsyncMock,
     )
     def test_gated_rewards_scaled_by_partial_correctness(self, mock_eval):
-        # correctness=0.5. The GATED components (precision, length) scale by
+        # correctness=0.5. The GATED components (citation, length) scale by
         # correctness; retrieval_hit does NOT (it's ungated by design).
         mock_eval.return_value = RubricEvaluation(0.5, "", "")
         env = _make_env(
             w_correctness=1.0,
             w_retrieval_hit=1.0,
-            w_citation_precision=1.0,
+            w_citation_recall=1.0,
+            w_citation_grounding=1.0,
             w_length=1.0,
         )
         answer = "partial [Source: doc_a]"
@@ -442,7 +544,7 @@ class TestComputeReward:
             _compute_reward(
                 env,
                 "r1",
-                _msgs(f"<answer>{answer}</answer>"),
+                _rag_msgs(f"<answer>{answer}</answer>", "doc_a"),
                 {
                     "question": "Q?",
                     "ground_truth": "full",
@@ -450,9 +552,10 @@ class TestComputeReward:
                 },
             )
         )
-        assert result["answer_correctness"] == pytest.approx(0.5)  # not gated
+        assert result["answer_correctness"] == pytest.approx(0.5)  # source gate satisfied
         assert result["retrieval_hit"] == pytest.approx(1.0)  # UNGATED: full recall
-        assert result["citation_precision"] == pytest.approx(0.5)  # 1.0 * 1.0 * 0.5
+        assert result["citation_recall"] == pytest.approx(0.5)  # 1.0 * 1.0 * 0.5
+        assert result["citation_grounding"] == pytest.approx(0.5)
         assert result["answer_length"] == pytest.approx((1.0 - len(answer) / 600) * 0.5)
 
     @patch(
@@ -460,15 +563,19 @@ class TestComputeReward:
         new_callable=AsyncMock,
     )
     def test_retrieval_hit_survives_wrong_answer(self, mock_eval):
-        # The core audit fix: correctness=0 → the GATED precision is zeroed, but
-        # the UNGATED retrieval_hit still credits citing the gold source.
+        # The core audit fix: correctness=0 → the GATED components are zeroed,
+        # but the UNGATED retrieval_hit still credits retrieving the gold source.
         mock_eval.return_value = RubricEvaluation(0.0, "", "")
-        env = _make_env(w_retrieval_hit=1.0, w_citation_precision=1.0)
+        env = _make_env(
+            w_retrieval_hit=1.0,
+            w_citation_recall=1.0,
+            w_citation_grounding=1.0,
+        )
         result = asyncio.run(
             _compute_reward(
                 env,
                 "r1",
-                _msgs("<answer>wrong [Source: doc_a]</answer>"),
+                _rag_msgs("<answer>wrong [Source: doc_a]</answer>", "doc_a"),
                 {
                     "question": "Q?",
                     "ground_truth": "right",
@@ -478,7 +585,9 @@ class TestComputeReward:
         )
         assert result["answer_correctness"] == 0.0
         assert result["retrieval_hit"] == pytest.approx(1.0)  # UNGATED
-        assert result["citation_precision"] == 0.0  # gated → 0
+        assert result["citation_recall"] == 0.0  # gated -> 0
+        assert result["citation_grounding"] == 0.0  # gated -> 0
+        assert result["answer_length"] == 0.0
 
     @patch(
         "benchmax.rag.env.evaluate_single_rubric",
@@ -492,7 +601,7 @@ class TestComputeReward:
                 _compute_reward(
                     env,
                     "r1",
-                    _msgs("<answer>42 [Source: doc_a]</answer>"),
+                    _rag_msgs("<answer>42 [Source: doc_a]</answer>", "doc_a"),
                     {
                         "question": "Q?",
                         "ground_truth": "42",
@@ -563,6 +672,38 @@ class TestCitationScoring:
         )
         assert recall == pytest.approx(1.0)
         assert precision == pytest.approx(1.0)
+
+    def test_score_retrieval_uses_tool_sources(self):
+        env = _make_env()
+        score = env._score_retrieval(
+            "1. -- [source: doc_a]\n2. -- [source: doc_b]",
+            [
+                {"content": "...", "metadata": {"file": "doc_a"}},
+                {"content": "...", "metadata": {"file": "doc_c"}},
+            ],
+        )
+        assert score == pytest.approx(0.5)
+
+    def test_score_citation_grounding_uses_tool_sources(self):
+        env = _make_env()
+        score = env._score_citation_grounding(
+            "answer [Source: doc_a] [Source: doc_b]",
+            "1. -- [source: doc_a]",
+        )
+        assert score == pytest.approx(0.5)
+
+    def test_score_rag_sources_uses_env_canonicalizer(self):
+        env = _make_env()
+        scores = env._score_rag_sources(
+            "answer [Source: docs/Geography.md] [Source: extra]",
+            "1. -- [source: geography]",
+            [{"content": "...", "metadata": {"file": "Geography.md"}}],
+        )
+        assert scores == {
+            "retrieval_hit": pytest.approx(1.0),
+            "citation_recall": pytest.approx(1.0),
+            "citation_grounding": pytest.approx(0.5),
+        }
 
 
 class TestExtractAnswerBlock:
@@ -668,9 +809,13 @@ from benchmax.rag.env import (  # noqa: E402
     canonicalize_source_id_loose,
     extract_answer_block,
     extract_reference_ids,
+    extract_source_ids,
     judge_answer_quality,
     parse_citations,
+    score_citation_grounding,
     score_citations,
+    score_rag_sources,
+    score_retrieval_sources,
     score_search_efficiency,
 )
 
@@ -704,8 +849,37 @@ class TestFreeRewardHelpers:
 
     def test_parse_and_reference_id_helpers(self):
         assert parse_citations("x [Source: p ] y") == {"p"}
+        assert extract_source_ids("tool output [source: p ]") == {"p"}
         assert extract_reference_ids([{"metadata": {"file_path": " q "}}]) == {"q"}
         assert canonicalize_source_id("  z  ") == "z"
+
+    def test_score_retrieval_sources(self):
+        chunks = [
+            {"metadata": {"file": "a"}},
+            {"metadata": {"file": "b"}},
+        ]
+        assert score_retrieval_sources("hit [Source: a]", chunks) == pytest.approx(0.5)
+
+    def test_score_citation_grounding(self):
+        assert score_citation_grounding(
+            "answer [Source: a] [Source: b]",
+            "tool [Source: a]",
+        ) == pytest.approx(0.5)
+
+    def test_score_rag_sources(self):
+        chunks = [
+            {"metadata": {"file": "a"}},
+            {"metadata": {"file": "b"}},
+        ]
+        assert score_rag_sources(
+            "answer [Source: a] [Source: c]",
+            "tool [Source: a]",
+            chunks,
+        ) == {
+            "retrieval_hit": pytest.approx(0.5),
+            "citation_recall": pytest.approx(0.5),
+            "citation_grounding": pytest.approx(0.5),
+        }
 
     def test_canonicalize_source_id_loose(self):
         # id-hash OR title-path: lowercase, strip dir prefix + extension.
