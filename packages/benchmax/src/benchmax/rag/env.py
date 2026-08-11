@@ -1,15 +1,16 @@
 """RagEnv — retrieval-augmented generation environment for RL training.
 
-The default reward is the AUDITED 4-component shape (one LLM judge call, the rest
+The default reward is the AUDITED 5-component shape (one LLM judge call, the rest
 deterministic):
-1. **answer_correctness** — LLM judge scores factual accuracy (the GATE)
-2. **retrieval_hit** — fraction of gold sources cited in the final ``<answer>``
-   block (UNGATED: citing gold is rewarded even on a wrong answer, so the model
-   keeps learning to search). An answer-side proxy for retrieval — raw tool
-   traffic is never inspected.
-3. **citation_precision** — fraction of cited sources that are gold (gated on
-   correctness)
-4. **answer_length** — deterministic brevity term (gated on correctness; replaces
+1. **retrieval_hit** — fraction of gold sources surfaced in search tool output
+   (UNGATED dense search signal)
+2. **answer_correctness** — LLM judge factual score, gated to zero unless
+   ``retrieval_hit`` is positive
+3. **citation_recall** — fraction of gold sources cited in the final
+   ``<answer>`` block (gated on correctness)
+4. **citation_grounding** — fraction of cited sources that appeared in retrieved
+   tool output (gated on correctness)
+5. **answer_length** — deterministic brevity term (gated on correctness; replaces
    the LLM conciseness judge)
 
 Optional components are available as opt-in helpers (:data:`CONCISENESS_RUBRIC`,
@@ -29,6 +30,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from benchmax.rag.search import SearchClient
+
 from benchmax.envs import (
     BaseEnv,
     BaseRollout,
@@ -42,7 +45,6 @@ from benchmax.envs import (
     Tool,
     canonical_example_id,
 )
-from benchmax.rag.search import SearchClient
 from benchmax.rewards import (
     Judge,
     Rubric,
@@ -224,6 +226,13 @@ def parse_citations(
     text: str, *, canonicalize: Callable[[str], str] = canonicalize_source_id
 ) -> set[str]:
     """Parse ``[Source: <id>]`` citations from the model's answer."""
+    return extract_source_ids(text, canonicalize=canonicalize)
+
+
+def extract_source_ids(
+    text: str, *, canonicalize: Callable[[str], str] = canonicalize_source_id
+) -> set[str]:
+    """Parse ``[Source: <id>]`` labels from answer text or tool output."""
     ids: set[str] = set()
     for match in _CITATION_RE.finditer(text or ""):
         cid = canonicalize(match.group(1).strip())
@@ -271,6 +280,39 @@ def score_citations(
     return recall, precision
 
 
+def score_retrieval_sources(
+    tool_text: str,
+    reference_chunks: list[dict[str, Any]],
+    *,
+    canonicalize: Callable[[str], str] = canonicalize_source_id,
+) -> float:
+    """Recall of gold source ids present in retrieved tool output.
+
+    This is the default ``retrieval_hit`` signal. It rewards finding the right
+    source even before the answer is correct, but it is based on actual tool
+    output rather than citations written from memory.
+    """
+    ref_ids = extract_reference_ids(reference_chunks, canonicalize=canonicalize)
+    if not ref_ids:
+        return 0.0
+    retrieved_ids = extract_source_ids(tool_text, canonicalize=canonicalize)
+    return len(retrieved_ids & ref_ids) / len(ref_ids)
+
+
+def score_citation_grounding(
+    answer_text: str,
+    tool_text: str,
+    *,
+    canonicalize: Callable[[str], str] = canonicalize_source_id,
+) -> float:
+    """Precision of answer citations against sources actually retrieved."""
+    cited_ids = parse_citations(answer_text, canonicalize=canonicalize)
+    if not cited_ids:
+        return 0.0
+    retrieved_ids = extract_source_ids(tool_text, canonicalize=canonicalize)
+    return len(cited_ids & retrieved_ids) / len(cited_ids)
+
+
 def score_search_efficiency(
     *,
     calls: int,
@@ -300,12 +342,13 @@ def score_search_efficiency(
 
 
 class RagEnv(BaseEnv):
-    """Backend-agnostic RAG environment with a four-component reward.
+    """Backend-agnostic RAG environment with a source-gated reward.
 
-    ``answer_correctness`` (one LLM judge call) is the GATE: every component
-    EXCEPT ``retrieval_hit`` is × correctness, so brevity/precision can't be
-    earned on a wrong answer. ``retrieval_hit`` is UNGATED — citing a gold
-    source is rewarded even when the answer is wrong. ``answer_length`` is a
+    ``retrieval_hit`` is the ungated search signal: it measures whether tool
+    output contained gold sources. ``answer_correctness`` is the gate: the LLM
+    judge score is zeroed unless ``retrieval_hit`` is positive, so the model
+    cannot answer from memory and still earn correctness. Citation and brevity
+    rewards are then multiplied by correctness. ``answer_length`` is a
     deterministic brevity term (no second judge call).
 
     Requires an LLM judge for correctness scoring.
@@ -320,9 +363,10 @@ class RagEnv(BaseEnv):
         judge_timeout: Timeout for judge API calls.
         w_correctness: Weight for the correctness component (the gate).
         w_retrieval_hit: Weight for the UNGATED retrieval_hit component (recall
-            of gold sources among the final-answer citations — a proxy for
-            retrieval; tool traffic is not inspected).
-        w_citation_precision: Weight for citation precision (gated).
+            of gold sources in search tool output).
+        w_citation_recall: Weight for cited-gold recall (gated).
+        w_citation_grounding: Weight for citations grounded in retrieved output
+            (gated).
         w_length: Weight for the deterministic brevity component (gated).
         max_search_calls: Hard search call budget (advertised in the prompt).
     """
@@ -333,7 +377,8 @@ class RagEnv(BaseEnv):
     _ZERO_REWARDS = {
         "answer_correctness": 0.0,
         "retrieval_hit": 0.0,
-        "citation_precision": 0.0,
+        "citation_recall": 0.0,
+        "citation_grounding": 0.0,
         "answer_length": 0.0,
     }
     SYSTEM_PROMPT_TEMPLATE = """\
@@ -391,7 +436,8 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         judge_timeout: float = 30.0,
         w_correctness: float = 1.0,
         w_retrieval_hit: float = 0.3,
-        w_citation_precision: float = 0.3,
+        w_citation_recall: float = 0.3,
+        w_citation_grounding: float = 0.2,
         w_length: float = 0.2,
         max_search_calls: int = 10,
         max_turns: int | None = None,
@@ -424,7 +470,8 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         )
         self._w_correctness = w_correctness
         self._w_retrieval_hit = w_retrieval_hit
-        self._w_citation_precision = w_citation_precision
+        self._w_citation_recall = w_citation_recall
+        self._w_citation_grounding = w_citation_grounding
         self._w_length = w_length
         self._max_search_calls = max_search_calls
 
@@ -528,12 +575,12 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         self,
         rollout: BaseRollout,
     ) -> dict[str, float]:
-        """The audited 4-component reward.
+        """The audited source-gated RAG reward.
 
-        ``answer_correctness`` (from the judge rubric) is the GATE: every
-        component EXCEPT ``retrieval_hit`` is × correctness, so brevity/precision
-        can't be earned on a wrong answer. ``retrieval_hit`` is UNGATED — citing
-        a gold source is rewarded even when the answer is wrong.
+        ``retrieval_hit`` measures gold sources in tool output and stays
+        ungated. ``answer_correctness`` is zeroed unless retrieval found at
+        least one gold source. Citation and brevity rewards are gated by that
+        source-grounded correctness.
         """
         # No committed answer is a valid terminal attempt with zero reward.
         answer = _extract_answer_block(extract_completion_text(rollout.messages))
@@ -552,6 +599,14 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
             answer[:200],
         )
 
+        tool_text = self._tool_text(rollout.messages)
+        retrieval_hit = self._score_retrieval(tool_text, reference_chunks)
+        if retrieval_hit <= 0:
+            rewards = dict(self._ZERO_REWARDS)
+            rewards["retrieval_hit"] = self._w_retrieval_hit * retrieval_hit
+            logger.info("[RagEnv] rewards=%s", rewards)
+            return rewards
+
         # A judge/verifier failure is infrastructure failure, not evidence that
         # the model earned a zero. Let it propagate to the rollout executor.
         result = await evaluate_single_rubric(
@@ -563,12 +618,18 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         )
         correctness = clip01(result.score)
 
-        recall, precision = self._score_citations(answer, reference_chunks)
+        citation_recall, _citation_gold_precision = self._score_citations(
+            answer, reference_chunks
+        )
+        citation_grounding = self._score_citation_grounding(answer, tool_text)
         length_score = clip01(1.0 - len(answer) / ANSWER_LENGTH_CAP)
         rewards: dict[str, float] = {
             "answer_correctness": self._w_correctness * correctness,
-            "retrieval_hit": self._w_retrieval_hit * recall,
-            "citation_precision": self._w_citation_precision * precision * correctness,
+            "retrieval_hit": self._w_retrieval_hit * retrieval_hit,
+            "citation_recall": self._w_citation_recall * citation_recall * correctness,
+            "citation_grounding": (
+                self._w_citation_grounding * citation_grounding * correctness
+            ),
             "answer_length": self._w_length * length_score * correctness,
         }
         logger.info("[RagEnv] rewards=%s", rewards)
@@ -678,6 +739,26 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         helper, honoring a subclass's ``_canonicalize_id`` override."""
         return score_citations(answer_text, reference_chunks, canonicalize=self._canonicalize_id)
 
+    def _score_retrieval(
+        self,
+        tool_text: str,
+        reference_chunks: list[dict[str, Any]],
+    ) -> float:
+        """Gold-source recall in tool output, honoring ``_canonicalize_id``."""
+        return score_retrieval_sources(
+            tool_text, reference_chunks, canonicalize=self._canonicalize_id
+        )
+
+    def _score_citation_grounding(
+        self,
+        answer_text: str,
+        tool_text: str,
+    ) -> float:
+        """Answer-citation precision against retrieved tool sources."""
+        return score_citation_grounding(
+            answer_text, tool_text, canonicalize=self._canonicalize_id
+        )
+
     def _extract_reference_ids(self, reference_chunks: list[dict[str, Any]]) -> set[str]:
         """Document-level source IDs from reference chunks (uses ``_canonicalize_id``,
         which subclasses may override for corpus-specific extraction)."""
@@ -686,6 +767,10 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     def _parse_citations(self, text: str) -> set[str]:
         """Parse ``[Source: <id>]`` citations, honoring ``_canonicalize_id``."""
         return parse_citations(text, canonicalize=self._canonicalize_id)
+
+    def _parse_source_ids(self, text: str) -> set[str]:
+        """Parse ``[Source: <id>]`` labels, honoring ``_canonicalize_id``."""
+        return extract_source_ids(text, canonicalize=self._canonicalize_id)
 
     def _canonicalize_id(self, source_id: str) -> str:
         """Normalize a source ID (default: the loose id-hash OR title-path
@@ -697,3 +782,9 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _tool_text(messages: Messages) -> str:
+        return "\n".join(
+            str(m.get("content") or "") for m in messages if m.get("role") == "tool"
+        )
