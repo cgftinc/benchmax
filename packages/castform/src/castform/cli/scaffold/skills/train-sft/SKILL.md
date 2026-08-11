@@ -67,7 +67,7 @@ turns contribute to the loss.
 |---|---|---|
 | `num_epochs` | 1–100 | 1 |
 | `learning_rate` | (0, 0.1] | 1e-5 |
-| `max_context_tokens` | 256–8192 (hard cap) | 8192 |
+| `max_context_tokens` | 256–8192, or 32768 / 65536 / 131072 (long context — must be enabled on the platform) | 8192 |
 | `save_interval` (steps) | 1–10000 | 20 |
 | `seed` | 0–2147483647 | 42 |
 | `lr_decay_style` | `"constant"` or `"cosine"` | unset — keeps the platform default |
@@ -76,7 +76,7 @@ turns contribute to the loss.
 | `adam_beta2` | 0.9–0.999 | unset |
 | `grad_clip` | (0, 10] | unset |
 | `lora_rank` | 32 or 64 | unset — keeps the platform's fixed policy |
-| `global_batch_size` | 4–64, multiple of 4 | unset — 4 |
+| `global_batch_size` | 4–64, multiple of 4 at `max_context_tokens` ≤ 8192; 1–64 at a long-context rung (the platform picks the topology, so it decides divisibility) | unset — 4 |
 | `eval_interval` (steps) | 1–10000; only with an eval set | unset — derived from `save_interval` |
 
 Every arg whose default reads `unset` is optional: leave it out and the

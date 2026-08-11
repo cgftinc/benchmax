@@ -38,6 +38,18 @@ _PUBLIC_LORA_RANKS = frozenset({32, 64})
 # is 4 on the fixed SFT topology. Mirrors the server; the server is authority.
 _DATA_PARALLEL_SIZE = 4
 
+# Context sizing. At or below the v1 ceiling any value is accepted; above it,
+# only the frozen ladder rungs exist. Mirrors the server's shape.
+#
+# The server-side flag that gates long context is deliberately NOT modelled
+# here. A flag-off platform rejects anything above 8192 whatever the SDK
+# version, so mirroring the flag would only let this client go stale against a
+# value it cannot observe. This range says which values are WELL-FORMED, not
+# which are currently enabled.
+V1_MAX_CONTEXT_TOKENS = 8192
+MIN_CONTEXT_TOKENS = 256
+LONG_CONTEXT_LADDER = (32768, 65536, 131072)
+
 # Eval rows the platform accepts. Mirrored here so an oversized set fails
 # before the upload rather than at launch; the server is the authority and
 # re-counts the real bytes.
@@ -103,7 +115,7 @@ class SftTrainingConfig:
             raise ValueError("learning_rate must be a number")
         if not math.isfinite(rate) or rate <= 0 or rate > 0.1:
             raise ValueError("learning_rate must be finite, greater than 0, and at most 0.1")
-        self._require_int("max_context_tokens", self.max_context_tokens, 256, 8192)
+        self._require_context_tokens(self.max_context_tokens)
         self._require_int("save_interval", self.save_interval, 1, 10_000)
         self._require_int("seed", self.seed, 0, 2_147_483_647)
 
@@ -122,8 +134,26 @@ class SftTrainingConfig:
                 f"lora_rank must be one of {', '.join(str(r) for r in sorted(_PUBLIC_LORA_RANKS))}"
             )
         if self.global_batch_size is not None:
-            self._require_int("global_batch_size", self.global_batch_size, _DATA_PARALLEL_SIZE, 64)
-            if self.global_batch_size % _DATA_PARALLEL_SIZE:
+            # The divisibility rule depends on the data-parallel width, and DP
+            # depends on the context-parallel size the SERVER resolves from the
+            # context bucket. In the v1 range CP is always 1, so DP is always 4
+            # and the rule is knowable here. Above the v1 ceiling it is not:
+            # the platform picks CP per rung, DP narrows to 2 or 1, and batch
+            # sizes this client would reject become legal.
+            #
+            # Rather than mirror the context->CP table — which would let this
+            # client go stale against a server-owned mapping, exactly the
+            # split-brain that has already cost this project two paid launches
+            # — only the range is enforced above the ceiling and the server
+            # decides divisibility.
+            in_v1_range = (
+                isinstance(self.max_context_tokens, int)
+                and not isinstance(self.max_context_tokens, bool)
+                and self.max_context_tokens <= V1_MAX_CONTEXT_TOKENS
+            )
+            minimum = _DATA_PARALLEL_SIZE if in_v1_range else 1
+            self._require_int("global_batch_size", self.global_batch_size, minimum, 64)
+            if in_v1_range and self.global_batch_size % _DATA_PARALLEL_SIZE:
                 raise ValueError(
                     f"global_batch_size must be a multiple of {_DATA_PARALLEL_SIZE} "
                     "(the data-parallel width of the fixed SFT topology)"
@@ -135,6 +165,33 @@ class SftTrainingConfig:
             raise ValueError(f"{name} must be an integer")
         if not minimum <= value <= maximum:
             raise ValueError(f"{name} must be between {minimum} and {maximum}")
+
+    @staticmethod
+    def _require_context_tokens(value: object) -> None:
+        """Free range up to the v1 ceiling, frozen ladder rungs above it.
+
+        Two shapes rather than one range because that is what the server
+        enforces: below the ceiling every value has been runnable since v1,
+        while above it only the rungs with measured calibration evidence exist
+        — an arbitrary 40000 is refused there, not clamped.
+
+        Whether a rung is currently ENABLED is a server-side flag this client
+        deliberately does not model, so a well-formed value here can still be
+        refused at launch. That is the intended split: the SDK rejects what can
+        never work, the platform decides what works today.
+        """
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("max_context_tokens must be an integer")
+        if MIN_CONTEXT_TOKENS <= value <= V1_MAX_CONTEXT_TOKENS:
+            return
+        if value in LONG_CONTEXT_LADDER:
+            return
+        raise ValueError(
+            f"max_context_tokens must be between {MIN_CONTEXT_TOKENS} and "
+            f"{V1_MAX_CONTEXT_TOKENS}, or one of "
+            f"{', '.join(str(v) for v in LONG_CONTEXT_LADDER)} "
+            f"(long context must be enabled on the platform for those)"
+        )
 
     @staticmethod
     def _require_optional_number(
