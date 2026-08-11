@@ -28,7 +28,7 @@ import math
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from benchmax.rag.search import SearchClient
 
@@ -143,6 +143,14 @@ SEARCH_EFFICIENCY_DECAY_RATE = 0.2
 # bonus; shorter (still-correct) answers earn more. Dense signal on every correct
 # rollout, no second LLM call.
 ANSWER_LENGTH_CAP = 600
+
+
+class RagSourceScores(TypedDict):
+    """Source-level scores used by the default RAG reward."""
+
+    retrieval_hit: float
+    citation_recall: float
+    citation_grounding: float
 
 
 # ----------------------------------------------------------------------------
@@ -311,6 +319,38 @@ def score_citation_grounding(
         return 0.0
     retrieved_ids = extract_source_ids(tool_text, canonicalize=canonicalize)
     return len(cited_ids & retrieved_ids) / len(cited_ids)
+
+
+def score_rag_sources(
+    answer_text: str,
+    tool_text: str,
+    reference_chunks: list[dict[str, Any]],
+    *,
+    canonicalize: Callable[[str], str] = canonicalize_source_id,
+) -> RagSourceScores:
+    """Source scores composed by the default :class:`RagEnv` reward.
+
+    Keeps ``score_citations`` conventional — citation recall/precision against
+    gold refs — while exposing the stricter source-gated RAG shape by name.
+    """
+    citation_recall, _citation_gold_precision = score_citations(
+        answer_text,
+        reference_chunks,
+        canonicalize=canonicalize,
+    )
+    return {
+        "retrieval_hit": score_retrieval_sources(
+            tool_text,
+            reference_chunks,
+            canonicalize=canonicalize,
+        ),
+        "citation_recall": citation_recall,
+        "citation_grounding": score_citation_grounding(
+            answer_text,
+            tool_text,
+            canonicalize=canonicalize,
+        ),
+    }
 
 
 def score_search_efficiency(
@@ -600,7 +640,8 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         )
 
         tool_text = self._tool_text(rollout.messages)
-        retrieval_hit = self._score_retrieval(tool_text, reference_chunks)
+        source_scores = self._score_rag_sources(answer, tool_text, reference_chunks)
+        retrieval_hit = source_scores["retrieval_hit"]
         if retrieval_hit <= 0:
             rewards = dict(self._ZERO_REWARDS)
             rewards["retrieval_hit"] = self._w_retrieval_hit * retrieval_hit
@@ -618,17 +659,19 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         )
         correctness = clip01(result.score)
 
-        citation_recall, _citation_gold_precision = self._score_citations(
-            answer, reference_chunks
-        )
-        citation_grounding = self._score_citation_grounding(answer, tool_text)
         length_score = clip01(1.0 - len(answer) / ANSWER_LENGTH_CAP)
         rewards: dict[str, float] = {
             "answer_correctness": self._w_correctness * correctness,
             "retrieval_hit": self._w_retrieval_hit * retrieval_hit,
-            "citation_recall": self._w_citation_recall * citation_recall * correctness,
+            "citation_recall": (
+                self._w_citation_recall
+                * source_scores["citation_recall"]
+                * correctness
+            ),
             "citation_grounding": (
-                self._w_citation_grounding * citation_grounding * correctness
+                self._w_citation_grounding
+                * source_scores["citation_grounding"]
+                * correctness
             ),
             "answer_length": self._w_length * length_score * correctness,
         }
@@ -757,6 +800,20 @@ tags. Cite your sources inline using [Source: <source_id>] next to each claim.
         """Answer-citation precision against retrieved tool sources."""
         return score_citation_grounding(
             answer_text, tool_text, canonicalize=self._canonicalize_id
+        )
+
+    def _score_rag_sources(
+        self,
+        answer_text: str,
+        tool_text: str,
+        reference_chunks: list[dict[str, Any]],
+    ) -> RagSourceScores:
+        """Default source-gated RAG scores, honoring ``_canonicalize_id``."""
+        return score_rag_sources(
+            answer_text,
+            tool_text,
+            reference_chunks,
+            canonicalize=self._canonicalize_id,
         )
 
     def _extract_reference_ids(self, reference_chunks: list[dict[str, Any]]) -> set[str]:

@@ -692,6 +692,19 @@ class TestCitationScoring:
         )
         assert score == pytest.approx(0.5)
 
+    def test_score_rag_sources_uses_env_canonicalizer(self):
+        env = _make_env()
+        scores = env._score_rag_sources(
+            "answer [Source: docs/Geography.md] [Source: extra]",
+            "1. -- [source: geography]",
+            [{"content": "...", "metadata": {"file": "Geography.md"}}],
+        )
+        assert scores == {
+            "retrieval_hit": pytest.approx(1.0),
+            "citation_recall": pytest.approx(1.0),
+            "citation_grounding": pytest.approx(0.5),
+        }
+
 
 class TestExtractAnswerBlock:
     def test_normal_closed_block(self):
@@ -801,6 +814,7 @@ from benchmax.rag.env import (  # noqa: E402
     parse_citations,
     score_citation_grounding,
     score_citations,
+    score_rag_sources,
     score_retrieval_sources,
     score_search_efficiency,
 )
@@ -851,6 +865,21 @@ class TestFreeRewardHelpers:
             "answer [Source: a] [Source: b]",
             "tool [Source: a]",
         ) == pytest.approx(0.5)
+
+    def test_score_rag_sources(self):
+        chunks = [
+            {"metadata": {"file": "a"}},
+            {"metadata": {"file": "b"}},
+        ]
+        assert score_rag_sources(
+            "answer [Source: a] [Source: c]",
+            "tool [Source: a]",
+            chunks,
+        ) == {
+            "retrieval_hit": pytest.approx(0.5),
+            "citation_recall": pytest.approx(0.5),
+            "citation_grounding": pytest.approx(0.5),
+        }
 
     def test_canonicalize_source_id_loose(self):
         # id-hash OR title-path: lowercase, strip dir prefix + extension.
