@@ -15,7 +15,11 @@ from castform.platform import (
     UploadedSftAssets,
     upload_sft_assets,
 )
-from castform.platform.sft import MAX_EVAL_ROWS, sft_assets_digest
+from castform.platform.sft import (
+    LONG_CONTEXT_LADDER,
+    MAX_EVAL_ROWS,
+    sft_assets_digest,
+)
 
 
 def _dataset() -> SftDataset:
@@ -137,6 +141,7 @@ class TestSftTrainingConfig:
             {"learning_rate": True},
             {"max_context_tokens": 255},
             {"max_context_tokens": 8193},
+            {"max_context_tokens": 16384},
             {"max_context_tokens": False},
             {"save_interval": 0},
             {"save_interval": 10_001},
@@ -505,3 +510,72 @@ class TestEvalLaunchWire:
         body = self._capture(assets)
         assert set(body) == {"name", "dataset", "args"}
         assert set(body["dataset"]) == {"format", "path"}
+
+
+class TestLongContextLadder:
+    """The client-side range after the 2026-08-11 context->CP freeze.
+
+    Two shapes, mirroring the server: a free range up to the v1 ceiling, and
+    discrete rungs above it. The gating FLAG is deliberately not modelled — a
+    value can be well-formed here and still be refused at launch.
+    """
+
+    def test_v1_range_still_free(self) -> None:
+        for value in (256, 4096, 8192):
+            assert SftTrainingConfig(max_context_tokens=value).max_context_tokens == value
+
+    def test_every_frozen_rung_is_accepted(self) -> None:
+        for value in LONG_CONTEXT_LADDER:
+            assert SftTrainingConfig(max_context_tokens=value).max_context_tokens == value
+
+    def test_off_ladder_values_above_the_ceiling_are_refused(self) -> None:
+        # Not clamped: above the ceiling only calibrated rungs exist, so an
+        # arbitrary value is a mistake rather than a request to round down.
+        for value in (8193, 16384, 40000, 131073):
+            with pytest.raises(ValueError, match="max_context_tokens"):
+                SftTrainingConfig(max_context_tokens=value)
+
+    def test_below_the_floor_is_still_refused(self) -> None:
+        with pytest.raises(ValueError, match="max_context_tokens"):
+            SftTrainingConfig(max_context_tokens=255)
+
+    def test_a_long_context_config_serialises_the_value(self) -> None:
+        args = SftTrainingConfig(max_context_tokens=131072, global_batch_size=10).as_args()
+        assert args["max_context_tokens"] == 131072
+        assert args["global_batch_size"] == 10
+
+    def test_v1_config_as_args_is_unchanged(self) -> None:
+        # The release gate: an untouched v1 config must serialise exactly as
+        # before, or every existing caller's payload shifts under them.
+        assert SftTrainingConfig().as_args() == {
+            "num_epochs": 1,
+            "learning_rate": 1e-5,
+            "max_context_tokens": 8192,
+            "save_interval": 20,
+            "seed": 42,
+        }
+
+
+class TestBatchSizeAcrossContextBuckets:
+    """gbs divisibility is knowable client-side only in the v1 range."""
+
+    def test_v1_range_still_enforces_multiple_of_four(self) -> None:
+        # CP is always 1 below the ceiling, so DP is always 4 and the rule is
+        # certain. Keeping it preserves v1's fail-fast ergonomics.
+        with pytest.raises(ValueError, match="multiple of 4"):
+            SftTrainingConfig(max_context_tokens=8192, global_batch_size=10)
+
+    def test_long_rungs_defer_divisibility_to_the_server(self) -> None:
+        # Above the ceiling the platform picks CP per rung and DP narrows, so
+        # batch sizes this client would have rejected become legal. Mirroring
+        # the context->CP table here would let the SDK go stale against a
+        # server-owned mapping.
+        for context in LONG_CONTEXT_LADDER:
+            cfg = SftTrainingConfig(max_context_tokens=context, global_batch_size=10)
+            assert cfg.as_args()["global_batch_size"] == 10
+
+    def test_range_still_bounded_on_long_rungs(self) -> None:
+        # Relaxing divisibility is not relaxing the range.
+        for bad in (0, 65, -4):
+            with pytest.raises(ValueError, match="global_batch_size"):
+                SftTrainingConfig(max_context_tokens=131072, global_batch_size=bad)
