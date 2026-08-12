@@ -93,6 +93,13 @@ def prepare(output: Path, rows: int, source_rows: Iterable[Mapping[str, object]]
     return dataset
 
 
+# Stated explicitly rather than left to the platform default: the public SDK
+# contract accepts ranks 32 and 64, while an unset rank inherits a legacy
+# platform value outside that range. A tutorial whose documented path cannot be
+# served back is worse than no tutorial.
+LORA_RANK = 64
+
+
 def launch(dataset: SftDataset, run_name: str) -> str:
     """Upload the validated dataset and start a paid SFT run."""
 
@@ -100,7 +107,7 @@ def launch(dataset: SftDataset, run_name: str) -> str:
     return TrainerClient().launch_sft_run(
         assets=uploaded,
         name=run_name,
-        config=SftTrainingConfig(),
+        config=SftTrainingConfig(lora_rank=LORA_RANK),
     )
 
 

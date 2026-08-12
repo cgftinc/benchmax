@@ -31,8 +31,50 @@ and writes canonical JSONL locally. nothing is uploaded.
 uv run --group sft-example python -m pii_masking.main --rows 256 --output train.jsonl --launch --run-name pii-masking-sft
 ```
 
-the model (Qwen3.5-4B), LoRA policy, and GPU topology are platform-owned; the
-example passes only the default `SftTrainingConfig` choices.
+the model (Qwen3.5-4B) and GPU topology are platform-owned. the example passes
+the default `SftTrainingConfig` choices plus an **explicit `lora_rank=64`**.
+
+that rank is deliberate, not decorative. the public SDK contract accepts ranks 32
+and 64; leaving the rank unset inherits a legacy platform value outside that
+range, which a public serving replica cannot load back. an example whose
+documented path trains something you cannot then serve is worse than no example,
+so the rank is stated rather than inherited.
+
+## the benchmark workflow (separate from the tutorial)
+
+the tutorial above stays small on purpose. measuring a base-versus-SFT result
+honestly needs sampling, provenance, durable inference, alignment, and scoring —
+all of which live beside the tutorial in `benchmark.py` rather than inside it, so
+that reading `main.py` still teaches you the SFT path and nothing else.
+
+```bash
+uv run --group sft-example python -m pii_masking.benchmark <command>
+```
+
+| command | what it does | boundary |
+|---|---|---|
+| `prepare` | freeze samples, write `protocol.json` | networked, free |
+| `launch` | upload datasets, start one SFT run | **paid** |
+| `preflight-adapter` | load + attest the terminal adapter, no generation | mutates a shared cache |
+| `evaluate` | fill missing request identities for one phase | **paid** |
+| `score` | recompute the report from the journal | offline |
+
+the workflow separates two kinds of fact. *protocol* facts are decisions made
+before any model output exists — sources, samples, prompts, request shape,
+training config. they canonicalize to exact bytes, and `protocol_id` is the
+sha-256 of those bytes, so a changed decision produces a **new** protocol rather
+than an edited one. *execution* facts append to a hash-chained
+`execution-events.jsonl`; `execution.json` is a view recomputed from that chain
+and is never the authority.
+
+`--allow-network` and `--yes` guard against accidental invocation — a mistyped
+command, a reran shell line. they are not approval. every networked, paid, or
+mutating step needs a human decision independent of which flags a script can
+type.
+
+generated artifacts (raw source rows, prompts, responses, journals) stay under
+ignored `outputs/`; anything committed or published carries only aggregates,
+hashes, identifiers, and required attribution.
 
 ## source data and attribution
 

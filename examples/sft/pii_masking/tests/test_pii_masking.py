@@ -164,7 +164,7 @@ class TestCli:
 
         assert exit_code == 0
         assert calls["upload"][1] == "pii-sft"
-        assert calls["launch"] == (uploaded, "pii-sft", SftTrainingConfig())
+        assert calls["launch"] == (uploaded, "pii-sft", SftTrainingConfig(lora_rank=64))
 
     def test_platform_rejection_exits_cleanly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -206,3 +206,22 @@ class TestReadmeAttribution:
         assert "cost warning" in text
         assert "cancellation" in text
         assert "pii-masking-300k" in text
+
+
+class TestLoraRank:
+    """The tutorial's documented path must be servable, not just launchable."""
+
+    def test_launch_config_states_rank_64_explicitly(self) -> None:
+        assert example.LORA_RANK == 64
+
+    def test_rank_is_inside_the_public_sdk_contract(self) -> None:
+        # An unset rank inherits a legacy platform value outside this set, which
+        # a public serving replica cannot load back.
+        assert example.LORA_RANK in {32, 64}
+        assert SftTrainingConfig(lora_rank=example.LORA_RANK).lora_rank == 64
+
+    def test_rank_reaches_the_launch_config(self) -> None:
+        import inspect
+
+        source = inspect.getsource(example.launch)
+        assert "SftTrainingConfig(lora_rank=LORA_RANK)" in source
