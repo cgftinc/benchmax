@@ -599,3 +599,63 @@ class TestAdapterPreflight:
     def test_base_digest_drift_is_rejected(self):
         with pytest.raises(InferenceError, match="live base digest"):
             self.preflight(self.good_response(base={"manifest_digest": "drifted"}))
+
+
+class TestUsageSummary:
+    def test_usage_and_latency_roll_up_per_arm(self, tmp_path):
+        from pii_masking.benchmark_inference import usage_summary
+
+        endpoint = FakeEndpoint(
+            default=SendResult(
+                status=200, content="ok", usage={"prompt_tokens": 10, "completion_tokens": 5}
+            )
+        )
+        run(make_runner(tmp_path, endpoint), samples(3))
+
+        summary = usage_summary(tmp_path / "predictions.jsonl")
+
+        assert set(summary) == {BASE_MODEL_KEY, SFT_MODEL_KEY}
+        assert summary[BASE_MODEL_KEY]["requests"] == 3
+        assert summary[BASE_MODEL_KEY]["total_tokens"] == 45
+        assert "p95_latency" in summary[BASE_MODEL_KEY]
+
+    def test_failed_attempts_are_excluded_from_usage(self, tmp_path):
+        from pii_masking.benchmark_inference import usage_summary
+
+        endpoint = FakeEndpoint(default=SendResult(status=400))
+        run(make_runner(tmp_path, endpoint), samples(2))
+
+        assert usage_summary(tmp_path / "predictions.jsonl") == {}
+
+
+class TestJournalJoinability:
+    def test_records_carry_the_sample_uid_and_arm(self, tmp_path):
+        endpoint = FakeEndpoint()
+        run(make_runner(tmp_path, endpoint), samples(2))
+
+        ends = [
+            r
+            for r in PredictionJournal(tmp_path / "predictions.jsonl").records()
+            if r["record"] == "attempt_end"
+        ]
+
+        assert ends, "expected terminal records"
+        for record in ends:
+            # A journal of opaque digests cannot be scored: both keys are needed
+            # to join a response back to its row and its model.
+            assert record["sample_uid"].startswith("task-a:")
+            assert record["model_key"] in {BASE_MODEL_KEY, SFT_MODEL_KEY}
+
+    def test_every_row_and_arm_pair_appears_exactly_once(self, tmp_path):
+        endpoint = FakeEndpoint()
+        run(make_runner(tmp_path, endpoint), samples(3))
+
+        ends = [
+            r
+            for r in PredictionJournal(tmp_path / "predictions.jsonl").records()
+            if r["record"] == "attempt_end" and r["outcome"] == OUTCOME_SUCCESS
+        ]
+        pairs = [(r["sample_uid"], r["model_key"]) for r in ends]
+
+        assert len(pairs) == 6
+        assert len(set(pairs)) == 6

@@ -49,7 +49,11 @@ PREDICTION_EVENT_DOMAIN = b"castform-prediction-event-v1\0"
 # every record has the same shape and a truncated file cannot look like a start.
 GENESIS_DIGEST = "0" * 64
 
-BENCHMARK_SOURCES = ("piimb-ai4privacy", "openpii-validation")
+# PIIMB is deliberately not selectable. It is CC BY-NC 4.0, the commercial-use
+# decision was never recorded, and it publishes no model numbers to compare
+# against — so there is no reason to reach for it. Its source adapter remains
+# in benchmark_selection.py, unreachable from the CLI.
+BENCHMARK_SOURCES = ("openpii-validation",)
 
 
 class ProtocolError(RuntimeError):

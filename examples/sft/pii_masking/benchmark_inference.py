@@ -299,6 +299,8 @@ class PredictionJournal:
         latency: float = 0.0,
         content: str | None = None,
         usage: Mapping[str, Any] | None = None,
+        model_key: str | None = None,
+        sample_uid: str | None = None,
     ) -> None:
         record: dict[str, Any] = {
             "record": ATTEMPT_END,
@@ -316,6 +318,12 @@ class PredictionJournal:
             ).hexdigest()
         if usage is not None:
             record["usage"] = dict(usage)
+        if model_key is not None:
+            record["model_key"] = model_key
+        # Without this the journal is a set of opaque digests: scoring could not
+        # join a response back to the row it answered.
+        if sample_uid is not None:
+            record["sample_uid"] = sample_uid
         self._append(record)
 
     def records(self) -> list[dict[str, Any]]:
@@ -502,7 +510,9 @@ class PairedRunner:
         ordered = sorted(self.arms, key=lambda arm: arm.key != BASE_MODEL_KEY)
         return ordered if base_first else list(reversed(ordered))
 
-    async def _attempt_one(self, identity: RequestIdentity, request: Mapping[str, Any]) -> bool:
+    async def _attempt_one(
+        self, identity: RequestIdentity, request: Mapping[str, Any], model_key: str
+    ) -> bool:
         """Run the retry loop for one identity. Returns True on canonical success."""
         digest = identity.digest
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -524,6 +534,8 @@ class PairedRunner:
                 latency=latency,
                 content=result.content if outcome == OUTCOME_SUCCESS else None,
                 usage=result.usage,
+                model_key=model_key,
+                sample_uid=identity.sample_uid,
             )
             self.pause.record_attempt(outcome == OUTCOME_RETRYABLE)
 
@@ -566,7 +578,7 @@ class PairedRunner:
                 self.max_observed_concurrency = max(self.max_observed_concurrency, self._in_flight)
                 self.issued_order.append((sample.sample_uid, arm.key))
                 try:
-                    await self._attempt_one(identity, requests[arm.key])
+                    await self._attempt_one(identity, requests[arm.key], arm.key)
                 finally:
                     self._in_flight -= 1
 
@@ -673,3 +685,37 @@ def evaluate(protocol: Any, protocol_dir: Any, *, phase: str) -> dict[str, Any]:
         f"the {phase} phase requires a live serving endpoint and credentials; "
         "run it from the execution worktree (Slices 9-11 of the plan)"
     )
+
+
+def usage_summary(path: Path) -> dict[str, Any]:
+    """Roll up per-arm request counts, tokens, and latency from the journal.
+
+    Reports tokens rather than money: a dollar figure needs live per-model rates,
+    which belong to whoever runs the comparison, not to this file. Latency is
+    nearest-rank so every reported value is one actually observed.
+    """
+    per_model: dict[str, dict[str, Any]] = {}
+    for record in PredictionJournal(path).records():
+        if record.get("record") != ATTEMPT_END or record.get("outcome") != OUTCOME_SUCCESS:
+            continue
+        key = str(record.get("model_key") or "unknown")
+        bucket = per_model.setdefault(
+            key,
+            {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "latencies": []},
+        )
+        bucket["requests"] += 1
+        usage = record.get("usage") or {}
+        bucket["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
+        bucket["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+        bucket["latencies"].append(float(record.get("latency") or 0.0))
+
+    summary: dict[str, Any] = {}
+    for key, bucket in sorted(per_model.items()):
+        latencies = sorted(bucket.pop("latencies"))
+        summary[key] = {
+            **bucket,
+            "total_tokens": bucket["prompt_tokens"] + bucket["completion_tokens"],
+            "p50_latency": latencies[max(0, (len(latencies) - 1) // 2)] if latencies else 0.0,
+            "p95_latency": nearest_rank_p95(latencies),
+        }
+    return summary

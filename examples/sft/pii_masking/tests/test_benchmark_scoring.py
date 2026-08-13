@@ -43,10 +43,17 @@ class TestSegmentation:
 
         assert [s.kind for s in segments] == [PLACEHOLDER, LITERAL]
 
-    def test_placeholders_separated_by_a_literal_stay_separate(self):
-        segments = segment_output("[NAME_1] [PHONE_1]")
+    def test_placeholders_separated_by_real_text_stay_separate(self):
+        segments = segment_output("[NAME_1] and [PHONE_1]")
 
         assert [s.kind for s in segments] == [PLACEHOLDER, LITERAL, PLACEHOLDER]
+
+    def test_placeholders_separated_only_by_whitespace_merge(self):
+        # "[TITLE] [GIVENNAME] [SURNAME]" over a four-token name has several
+        # equally valid splits that all mask the same characters, so the run is
+        # treated as one label-agnostic span.
+        assert [s.kind for s in segment_output("[NAME_1] [PHONE_1]")] == [PLACEHOLDER]
+        assert [s.kind for s in segment_output("[A_1]\t[B_1]\n[C_1]")] == [PLACEHOLDER]
 
     def test_index_zero_is_a_valid_placeholder(self):
         assert [s.kind for s in segment_output("[NAME_0]")] == [PLACEHOLDER]
@@ -411,3 +418,144 @@ class TestAlignThenScore:
         assert metrics["recall"] == 1.0
         assert metrics["precision"] == pytest.approx(3 / 12)
         assert metrics["fpr"] == pytest.approx(9 / 9)
+
+
+class TestLeakRate:
+    """Aggregate recall can look healthy while many documents each leak."""
+
+    def test_a_fully_masked_document_does_not_leak(self):
+        counters = TaskCounters()
+        counters.add(source_length=10, gold=[(0, 4)], predicted=[(0, 4)])
+
+        assert task_metrics(counters)["leak_rate"] == 0.0
+
+    def test_a_partially_masked_document_leaks(self):
+        counters = TaskCounters()
+        counters.add(source_length=10, gold=[(0, 4)], predicted=[(0, 2)])
+
+        assert task_metrics(counters)["leak_rate"] == 1.0
+
+    def test_documents_without_pii_are_excluded_from_the_denominator(self):
+        counters = TaskCounters()
+        counters.add(source_length=10, gold=[], predicted=[])
+        counters.add(source_length=10, gold=[(0, 4)], predicted=[(0, 4)])
+
+        metrics = task_metrics(counters)
+
+        assert metrics["documents_with_pii"] == 1
+        assert metrics["leak_rate"] == 0.0
+
+    def test_leak_rate_is_not_implied_by_character_recall(self):
+        counters = TaskCounters()
+        # One huge fully-masked document plus three small leaky ones: character
+        # recall stays high while most documents leak.
+        counters.add(source_length=1000, gold=[(0, 900)], predicted=[(0, 900)])
+        for _ in range(3):
+            counters.add(source_length=10, gold=[(0, 4)], predicted=[(0, 3)])
+
+        metrics = task_metrics(counters)
+
+        assert metrics["recall"] > 0.98
+        assert metrics["leak_rate"] == pytest.approx(0.75)
+
+    def test_an_invalid_output_leaks_every_entity(self):
+        counters = TaskCounters()
+        counters.add(source_length=10, gold=[(0, 4)], predicted=[], status=INVALID_NO_ALIGNMENT)
+
+        assert task_metrics(counters)["leak_rate"] == 1.0
+
+
+class TestMultiTokenNameAlignment:
+    """The case that made 57% of real documents unscoreable before the fix."""
+
+    def test_a_three_placeholder_name_aligns_uniquely(self):
+        result = align(
+            "Miss Zarya Sunja Smoter, hello", "[TITLE_1] [GIVENNAME_1] [SURNAME_1], hello"
+        )
+
+        assert result.status == VALID
+        assert result.intervals == ((0, 23),)
+
+    def test_the_merged_run_includes_internal_whitespace(self):
+        result = align("Ada Lovelace here", "[GIVENNAME_1] [SURNAME_1] here")
+
+        # The space inside the redacted name is part of the masked region.
+        assert result.intervals == ((0, 12),)
+
+    def test_placeholders_separated_by_words_still_align_separately(self):
+        result = align("Ada and Bob here", "[NAME_1] and [NAME_2] here")
+
+        assert result.intervals == ((0, 3), (8, 11))
+
+    def test_gold_and_predictions_use_the_same_rule(self):
+        source = "Miss Zarya Sunja Smoter"
+        gold = align(source, "[TITLE_1] [GIVENNAME_1] [SURNAME_1]")
+        # A model that splits the name differently reaches the same characters.
+        pred = align(source, "[TITLE_1] [NAME_1]")
+
+        assert gold.status == VALID and pred.status == VALID
+        assert gold.intervals == pred.intervals
+
+
+class TestLenientGrammar:
+    """Strict asks 'did it follow the contract'; lenient asks 'did it find the PII'."""
+
+    SOURCE = "Please contact Ada Lovelace at ada@example.com or 555-0142."
+    SPANS = ((15, 27), (31, 46), (50, 58))
+
+    def test_strict_rejects_a_foreign_label_vocabulary(self):
+        from pii_masking.benchmark_scoring import STRICT_PLACEHOLDER_PATTERN
+
+        out = "Please contact [PERSON_NAME] at [EMAIL_ADDRESS] or [PHONE_NUMBER]."
+
+        assert align(self.SOURCE, out, STRICT_PLACEHOLDER_PATTERN).status == INVALID_NO_ALIGNMENT
+
+    def test_strict_rejects_angle_brackets(self):
+        from pii_masking.benchmark_scoring import STRICT_PLACEHOLDER_PATTERN
+
+        out = "Please contact <NAME> at <EMAIL> or <PHONE>."
+
+        assert align(self.SOURCE, out, STRICT_PLACEHOLDER_PATTERN).status == INVALID_NO_ALIGNMENT
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            "Please contact [PERSON_NAME] at [EMAIL_ADDRESS] or [PHONE_NUMBER].",
+            "Please contact <NAME> at <EMAIL> or <PHONE>.",
+            "Please contact [GIVENNAME_1] [SURNAME_1] at [EMAIL_1] or [TELEPHONENUM_1].",
+        ],
+    )
+    def test_lenient_finds_the_same_spans_regardless_of_vocabulary(self, output):
+        from pii_masking.benchmark_scoring import LENIENT_PLACEHOLDER_PATTERN
+
+        result = align(self.SOURCE, output, LENIENT_PLACEHOLDER_PATTERN)
+
+        assert result.status == VALID
+        assert result.intervals == self.SPANS
+
+    def test_gold_parses_identically_under_both_grammars(self):
+        from pii_masking.benchmark_scoring import (
+            LENIENT_PLACEHOLDER_PATTERN,
+            STRICT_PLACEHOLDER_PATTERN,
+        )
+
+        gold = "Please contact [GIVENNAME_1] [SURNAME_1] at [EMAIL_1] or [TELEPHONENUM_1]."
+
+        assert (
+            align(self.SOURCE, gold, STRICT_PLACEHOLDER_PATTERN).intervals
+            == align(self.SOURCE, gold, LENIENT_PLACEHOLDER_PATTERN).intervals
+        )
+
+    @pytest.mark.parametrize("text", ["<ada@example.com>", "<html>", "<p>", "a < b and c > d"])
+    def test_lenient_does_not_swallow_ordinary_angle_bracket_text(self, text):
+        from pii_masking.benchmark_scoring import LENIENT_PLACEHOLDER_PATTERN
+
+        assert LENIENT_PLACEHOLDER_PATTERN.search(text) is None
+
+    def test_lenient_still_requires_a_consistent_alignment(self):
+        from pii_masking.benchmark_scoring import LENIENT_PLACEHOLDER_PATTERN
+
+        # Leniency is about the label vocabulary, not about accepting rewrites.
+        out = "Sure! Here you go: Please contact <NAME>."
+
+        assert align(self.SOURCE, out, LENIENT_PLACEHOLDER_PATTERN).status == INVALID_NO_ALIGNMENT

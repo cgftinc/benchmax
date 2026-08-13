@@ -25,8 +25,20 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-# Frozen grammar. Index zero is valid: `[NAME_0]` appears in real fixtures.
-PLACEHOLDER_PATTERN = re.compile(r"\[(?:[A-Z][A-Z0-9]*)(?:_[0-9]+)?\]")
+# The dataset's own contract: `[LABEL]` or `[LABEL_N]`, square brackets, index
+# zero valid (`[NAME_0]` appears in real fixtures). Scoring against this asks
+# "did the model follow the exact output contract it was trained on?"
+STRICT_PLACEHOLDER_PATTERN = re.compile(r"\[(?:[A-Z][A-Z0-9]*)(?:_[0-9]+)?\]")
+
+# Any uppercase bracketed placeholder, whatever the label vocabulary or bracket
+# style -- `[PERSON_NAME]`, `<NAME>`, `[EMAIL_ADDRESS]`. Scoring against this
+# asks the different question "did the model find the right characters?", which
+# is the only fair way to compare a model that was never told the vocabulary.
+# Uppercase-only on purpose: it must not swallow `<ada@example.com>` or `<html>`.
+LENIENT_PLACEHOLDER_PATTERN = re.compile(r"\[[A-Z][A-Z0-9_]*\]|<[A-Z][A-Z0-9_]*>")
+
+# Default stays strict; callers opt into lenient explicitly.
+PLACEHOLDER_PATTERN = STRICT_PLACEHOLDER_PATTERN
 
 ALIGNMENT_VERSION = "pii-mask-alignment-v1"
 SCORING_VERSION = "pii-mask-scoring-v1"
@@ -56,23 +68,31 @@ class Segment:
     text: str
 
 
-def segment_output(output: str) -> list[Segment]:
+def segment_output(output: str, pattern: re.Pattern[str] = PLACEHOLDER_PATTERN) -> list[Segment]:
     """Split output into alternating literal and placeholder-run segments.
 
-    Adjacent placeholders collapse into a single run. Their individual
-    boundaries are not recoverable from the text — `[A][B]` could split the
-    covered characters anywhere — so treating them as one label-agnostic run is
-    the only claim the output actually supports.
+    Placeholders collapse into a single run when nothing but whitespace
+    separates them. Their individual boundaries are not recoverable from the
+    text — `[TITLE] [GIVENNAME] [SURNAME]` over `Miss Zarya Sunja Smoter` can
+    put the given-name/surname split in more than one place, and every reading
+    masks the same characters — so one label-agnostic run is the only claim the
+    output actually supports.
+
+    Without this, over half of real OpenPII documents have several equally valid
+    parses and would be rejected as ambiguous, including the ground-truth
+    masking itself. The internal whitespace is counted as masked, which is what
+    a redacted name actually looks like; gold and predictions go through this
+    same function, so neither side gains an advantage.
     """
     segments: list[Segment] = []
     position = 0
-    for match in PLACEHOLDER_PATTERN.finditer(output):
+    for match in pattern.finditer(output):
         literal = output[position : match.start()]
-        if literal:
+        # A whitespace-only gap between two placeholders is absorbed into the
+        # open run rather than anchoring it.
+        if literal and not (segments and segments[-1].kind == PLACEHOLDER and not literal.strip()):
             segments.append(Segment(LITERAL, literal))
-        if segments and segments[-1].kind == PLACEHOLDER:
-            pass  # adjacent placeholder: already covered by the open run
-        else:
+        if not (segments and segments[-1].kind == PLACEHOLDER):
             segments.append(Segment(PLACEHOLDER, ""))
         position = match.end()
 
@@ -150,12 +170,12 @@ def _enumerate(
     _enumerate(source, segments, index + 1, position, spans, found)
 
 
-def align(source: str, output: str) -> Alignment:
+def align(source: str, output: str, pattern: re.Pattern[str] = PLACEHOLDER_PATTERN) -> Alignment:
     """Map one masked output back onto source character intervals.
 
     Returns exactly one alignment or an invalid status. Never guesses.
     """
-    segments = segment_output(output)
+    segments = segment_output(output, pattern)
 
     if not any(segment.kind == PLACEHOLDER for segment in segments):
         # A no-placeholder output claims the source contained nothing to mask,
@@ -229,6 +249,8 @@ class TaskCounters:
     overlap_chars: int = 0
     text_chars: int = 0
     documents: int = 0
+    documents_with_pii: int = 0
+    leaked_documents: int = 0
     invalid_documents: int = 0
     invalid_by_class: dict[str, int] = field(default_factory=dict)
 
@@ -251,6 +273,16 @@ class TaskCounters:
         self.true_chars += total_length(merged_gold)
         self.predicted_chars += total_length(merged_predicted)
         self.overlap_chars += overlap_length(merged_gold, merged_predicted)
+
+        # Per-document leak: any gold character this document left unmasked.
+        # Aggregate recall can look healthy while a large share of documents
+        # each leak something, which is the number a privacy reader cares about.
+        document_true = total_length(merged_gold)
+        if document_true:
+            self.documents_with_pii += 1
+            if overlap_length(merged_gold, merged_predicted) < document_true:
+                self.leaked_documents += 1
+
         if status != VALID:
             self.invalid_documents += 1
             self.invalid_by_class[status] = self.invalid_by_class.get(status, 0) + 1
@@ -295,10 +327,17 @@ def task_metrics(counters: TaskCounters) -> dict[str, Any]:
             counters.invalid_documents / counters.documents if counters.documents else 0.0
         ),
         "invalid_by_class": dict(sorted(counters.invalid_by_class.items())),
+        "documents_with_pii": counters.documents_with_pii,
+        "leaked_documents": counters.leaked_documents,
+        "leak_rate": (
+            counters.leaked_documents / counters.documents_with_pii
+            if counters.documents_with_pii
+            else 0.0
+        ),
     }
 
 
-_AVERAGED_KEYS = ("precision", "recall", "f1", "f2", "fpr", "invalid_rate")
+_AVERAGED_KEYS = ("precision", "recall", "f1", "f2", "fpr", "invalid_rate", "leak_rate")
 
 
 def task_average(per_task: Mapping[str, Mapping[str, Any]]) -> dict[str, float]:
