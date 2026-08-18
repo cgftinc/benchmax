@@ -1,6 +1,6 @@
 [project]
 name = "castform"
-version = "0.2.4"
+version = "0.2.5"
 description = "SDK and CLI for the Castform training platform"
 readme = "README.md"
 authors = [{ name = "castie@castform.com" }]
