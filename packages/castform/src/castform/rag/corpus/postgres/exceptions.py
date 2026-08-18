@@ -24,10 +24,14 @@ class AuthenticationError(CorpusAPIError):
 
 
 class CorpusLimitError(CorpusAPIError):
-    """Maximum corpus limit (20) reached."""
+    """Per-user corpus limit reached. The server owns the number, not us."""
 
-    def __init__(self, existing_corpora: list[Corpus] | None = None):
-        super().__init__("Maximum of 20 corpora per user reached", 400)
+    def __init__(
+        self,
+        existing_corpora: list[Corpus] | None = None,
+        message: str | None = None,
+    ):
+        super().__init__(message or "Per-user corpus limit reached", 400)
         self.existing_corpora = existing_corpora or []
 
 

@@ -192,8 +192,8 @@ class CorpusClient:
             raise AuthenticationError(message)
 
         if response.status_code == 400:
-            if "Maximum of 20 corpora" in message:
-                raise CorpusLimitError()
+            if "corpora per user" in message:
+                raise CorpusLimitError(message=message)
             if "Chunk limit exceeded" in message:
                 raise CorpusAPIError(message, 400)
             raise CorpusAPIError(message, 400)
@@ -215,7 +215,7 @@ class CorpusClient:
             Corpus object with id, name, timestamps
 
         Raises:
-            CorpusLimitError: If max 20 corpora limit reached
+            CorpusLimitError: If the per-user corpus limit is reached
             AuthenticationError: If API key is invalid
         """
         response = await self._request("POST", "/v1/corpora", json={"name": name})
@@ -312,7 +312,7 @@ class CorpusClient:
     async def _interactive_corpus_selection(self, new_name: str, existing: list[Corpus]) -> Corpus:
         """Interactive corpus selection for Jupyter notebooks."""
         print("\n" + "=" * 60)
-        print("CORPUS LIMIT REACHED (max 5)")
+        print("CORPUS LIMIT REACHED")
         print("=" * 60)
         print("\nExisting corpora:")
 
