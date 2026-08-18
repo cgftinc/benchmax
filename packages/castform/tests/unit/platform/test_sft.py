@@ -579,3 +579,32 @@ class TestBatchSizeAcrossContextBuckets:
         for bad in (0, 65, -4):
             with pytest.raises(ValueError, match="global_batch_size"):
                 SftTrainingConfig(max_context_tokens=131072, global_batch_size=bad)
+
+
+class TestSftModelSelection:
+    """`model` is optional; omitting it must leave v1 callers untouched."""
+
+    def test_omitted_model_is_not_sent(self) -> None:
+        assert SftTrainingConfig().model is None
+
+    def test_supported_models_accepted(self) -> None:
+        for name in ("Qwen/Qwen3.5-4B", "Qwen/Qwen3.5-35B-A3B", "google/gemma-4-26B-A4B-it"):
+            assert SftTrainingConfig(model=name).model == name
+
+    def test_unregistered_model_rejected(self) -> None:
+        with pytest.raises(ValueError, match="model must be one of"):
+            SftTrainingConfig(model="acme/not-a-model")
+
+    def test_batch_width_follows_the_selected_model(self) -> None:
+        # The default keeps the exact v1 rule: multiples of 4.
+        SftTrainingConfig(global_batch_size=8)
+        with pytest.raises(ValueError, match="multiple of 4"):
+            SftTrainingConfig(global_batch_size=6)
+
+        # An 8-GPU model has DP 8 at CP1, so 4 is no longer legal even though it
+        # is legal for the default model. Catching that here is the point of
+        # mirroring the server's table: otherwise the launch fails server-side
+        # after the upload.
+        SftTrainingConfig(model="google/gemma-4-26B-A4B-it", global_batch_size=8)
+        with pytest.raises(ValueError, match="multiple of 8"):
+            SftTrainingConfig(model="google/gemma-4-26B-A4B-it", global_batch_size=4)

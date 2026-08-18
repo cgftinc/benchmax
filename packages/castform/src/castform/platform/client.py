@@ -475,6 +475,10 @@ class TrainerClient:
             "dataset": dataset,
             "args": resolved.as_args(),
         }
+        # Sibling of dataset/args, not an arg: the platform resolves topology
+        # from it before validating anything that depends on the topology.
+        if resolved.model is not None:
+            body["model"] = resolved.model
 
         # The MARKER turns eval on and rides the uploaded assets, not the
         # config: no eval.jsonl in the prefix, no eval. Train identity is sent

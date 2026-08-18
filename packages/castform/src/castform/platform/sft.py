@@ -34,9 +34,21 @@ _LR_DECAY_STYLES = frozenset({"constant", "cosine"})
 # it stays platform-only; these mirror the server's public set.
 _PUBLIC_LORA_RANKS = frozenset({32, 64})
 
-# Megatron needs global_batch_size divisible by the data-parallel width, which
-# is 4 on the fixed SFT topology. Mirrors the server; the server is authority.
-_DATA_PARALLEL_SIZE = 4
+# Megatron needs global_batch_size divisible by the data-parallel width. That
+# width is actor_gpus / CP, and v1 runs at CP1, so it equals the model's actor
+# GPU count. Mirrors the server's SFT_ACTOR_GPUS_BY_MODEL; the server is
+# authority. A stale mirror here does not corrupt a run -- the server still
+# rejects -- but it breaks this class's promise to fail before any request.
+_ACTOR_GPUS_BY_MODEL = {
+    "Qwen/Qwen3.5-4B": 4,
+    "Qwen/Qwen3.5-35B-A3B": 8,
+    "google/gemma-4-26B-A4B-it": 8,
+}
+
+# Absent `model` means the platform default, which is the only model v1 ran.
+_DEFAULT_MODEL = "Qwen/Qwen3.5-4B"
+_SUPPORTED_MODELS = frozenset(_ACTOR_GPUS_BY_MODEL)
+_DATA_PARALLEL_SIZE = _ACTOR_GPUS_BY_MODEL[_DEFAULT_MODEL]
 
 # Context sizing. At or below the v1 ceiling any value is accepted; above it,
 # only the frozen ladder rungs exist. Mirrors the server's shape.
@@ -82,9 +94,10 @@ class UploadedSftAssets:
 class SftTrainingConfig:
     """The genuine caller choices for a v1 SFT run.
 
-    Everything else — model, LoRA rank/alpha, batch size, GPU topology,
-    optimizer, checkpoint layout, stop policy — is platform-owned and not
-    accepted here. Ranges mirror the platform's public argument table so bad
+    ``model`` selects among the models the platform will train; omitting it
+    keeps the platform default, so existing callers are unaffected. Everything
+    else — LoRA rank/alpha, GPU topology, optimizer, checkpoint layout, stop
+    policy — remains platform-owned and is not accepted here. Ranges mirror the platform's public argument table so bad
     values fail before any request; the server remains authoritative.
     """
 
@@ -93,6 +106,8 @@ class SftTrainingConfig:
     max_context_tokens: int = 8192
     save_interval: int = 20
     seed: int = 42
+    # ``None`` means "not sent", so the platform applies its own default.
+    model: str | None = None
     # Optional knobs. ``None`` means "not sent": the field is omitted from
     # ``as_args()``, so the platform stamps nothing and the trainer keeps the
     # model config's value.
@@ -118,6 +133,9 @@ class SftTrainingConfig:
         self._require_context_tokens(self.max_context_tokens)
         self._require_int("save_interval", self.save_interval, 1, 10_000)
         self._require_int("seed", self.seed, 0, 2_147_483_647)
+
+        if self.model is not None and self.model not in _SUPPORTED_MODELS:
+            raise ValueError(f"model must be one of {', '.join(sorted(_SUPPORTED_MODELS))}")
 
         if self.lr_decay_style is not None and self.lr_decay_style not in _LR_DECAY_STYLES:
             raise ValueError(f"lr_decay_style must be one of {', '.join(sorted(_LR_DECAY_STYLES))}")
@@ -151,12 +169,13 @@ class SftTrainingConfig:
                 and not isinstance(self.max_context_tokens, bool)
                 and self.max_context_tokens <= V1_MAX_CONTEXT_TOKENS
             )
-            minimum = _DATA_PARALLEL_SIZE if in_v1_range else 1
+            width = _ACTOR_GPUS_BY_MODEL[self.model or _DEFAULT_MODEL]
+            minimum = width if in_v1_range else 1
             self._require_int("global_batch_size", self.global_batch_size, minimum, 64)
-            if in_v1_range and self.global_batch_size % _DATA_PARALLEL_SIZE:
+            if in_v1_range and self.global_batch_size % width:
                 raise ValueError(
-                    f"global_batch_size must be a multiple of {_DATA_PARALLEL_SIZE} "
-                    "(the data-parallel width of the fixed SFT topology)"
+                    f"global_batch_size must be a multiple of {width} "
+                    f"(the data-parallel width of {self.model or _DEFAULT_MODEL})"
                 )
 
     @staticmethod
