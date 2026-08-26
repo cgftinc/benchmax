@@ -89,6 +89,19 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
 
         return []
 
+    async def list_tools_for_rollout(
+        self,
+        init_rollout_args: Mapping[str, Any] | None = None,
+    ) -> list[Tool]:
+        """Return the tools advertised for one example.
+
+        Mixed-task environments may override this hook to select tools from
+        the example arguments. The default preserves the environment-wide
+        :meth:`list_tools` contract for existing environments.
+        """
+
+        return await self.list_tools()
+
     async def run_tool(self, rollout_id: str, tool_name: str, **tool_args: Any) -> Any:
         """Execute one model-requested tool."""
 
@@ -143,7 +156,7 @@ class BaseEnv(Environment[JsonRow, BaseRollout], ABC):
         messages, example_args = _prepare_example(request.example.payload)
 
         async with self.rollout_context(request.rollout_id, request.example):
-            tools = await self.list_tools()
+            tools = await self.list_tools_for_rollout(example_args)
             async with _model_client(request) as client:
                 tool_calls_used = 0
 

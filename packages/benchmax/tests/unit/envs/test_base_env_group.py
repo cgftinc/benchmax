@@ -524,6 +524,64 @@ async def test_base_env_dispatches_an_advertised_tool_and_continues() -> None:
     assert env.tool_calls == [("rollout-1", "multiply", {"left": 6, "right": 7})]
 
 
+async def test_base_env_resolves_tools_per_example_without_schema_leakage() -> None:
+    class MixedTaskEnv(_ToolMathEnv):
+        def __init__(self) -> None:
+            super().__init__(max_tool_calls=1)
+            self.resolved_row_kinds: list[str] = []
+
+        async def list_tools_for_rollout(
+            self,
+            init_rollout_args: Mapping[str, Any] | None = None,
+        ) -> list[Tool]:
+            row_kind = None if init_rollout_args is None else init_rollout_args.get("row_kind")
+            if not isinstance(row_kind, str):
+                raise ValueError("row_kind is required")
+            self.resolved_row_kinds.append(row_kind)
+            if row_kind == "instruction_following":
+                return []
+            if row_kind == "ui":
+                return await self.list_tools()
+            raise ValueError(f"unsupported row_kind: {row_kind}")
+
+    examples = {
+        row_kind: Example(
+            id=f"mixed-{row_kind}",
+            payload={
+                "prompt_messages": [{"role": "user", "content": "answer"}],
+                "answer": "42",
+                "row_kind": row_kind,
+            },
+        )
+        for row_kind in ("ui", "instruction_following")
+    }
+    env = MixedTaskEnv()
+
+    with LocalModelServer(
+        lambda session_id, call_index, body: (200, completion_response(content="42")),
+    ) as server:
+        outcomes = {}
+        for row_kind, example in examples.items():
+            group = await env.run_group(
+                [
+                    RolloutRequest(
+                        rollout_id=row_kind,
+                        example=example,
+                        model="test-model",
+                        base_url=server.base_url(row_kind),
+                        model_auth=StaticBearerAuth(f"session-key-{row_kind}"),
+                    )
+                ]
+            )
+            outcomes.update(group)
+
+    request_bodies = {request.session_id: request.body for request in server.requests}
+    assert request_bodies["ui"]["tools"][0]["function"]["name"] == "multiply"
+    assert "tools" not in request_bodies["instruction_following"]
+    assert sorted(env.resolved_row_kinds) == ["instruction_following", "ui"]
+    assert all(outcome.rewards == {"correctness": 1.0} for outcome in outcomes.values())
+
+
 async def test_model_authored_tool_errors_are_returned_to_the_model() -> None:
     tool_calls = [
         {
