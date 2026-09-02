@@ -136,9 +136,9 @@ class AimeMiniSweHarborEnv(HarborEnv):
 
 # ── Runnable entrypoint ──────────────────────────────────────────────────────
 
-MODEL = "Qwen/Qwen3.6-35B-A3B"
+MODEL = "Qwen/Qwen3.5-4B"
 VALIDATE_MODEL = "gpt-5.4-mini"
-TRAINING_ARGS = {"model": MODEL, "num_epochs": 1}
+TRAINING_ARGS = {"model": MODEL}
 
 
 def _constructor_args(args: argparse.Namespace) -> dict[str, Any]:
