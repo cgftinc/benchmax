@@ -1,0 +1,19 @@
+{
+  "name": "benchmax-aime-cloudflare-sandbox",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "0.12.9"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260828.1",
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.2",
+    "wrangler": "^4.34.0"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "benchmax-aime-sandbox",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "traces": { "enabled": false }
+  },
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 128
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "Sandbox", "name": "Sandbox" },
+      { "class_name": "WarmPool", "name": "WarmPool" }
+    ]
+  },
+  "migrations": [
+    { "new_sqlite_classes": ["Sandbox"], "tag": "v1" },
+    { "new_sqlite_classes": ["WarmPool"], "tag": "v2" }
+  ],
+  "vars": {
+    "SANDBOX_TRANSPORT": "rpc",
+    "WARM_POOL_TARGET": "0",
+    "WARM_POOL_REFRESH_INTERVAL": "10000",
+    "WARM_POOL_MAX_INSTANCES": "128",
+    "WARM_POOL_SCALE_BATCH_SIZE": "5"
+  },
+  "preview_urls": false
+}

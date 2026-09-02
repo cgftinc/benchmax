@@ -1,9 +1,9 @@
 """AIME Harbor environment using the offline-installed Mini-SWE agent.
 
 The dataset (aime/aime@latest) resolves through Harbor at trainer runtime, so
-only the environment bundle is uploaded. Validation runs real Modal sandbox
-trials. Modal credentials are mandatory CLI arguments; they are bundled into
-the environment constructor args so trainer-side trials can reach Modal.
+only the environment bundle is uploaded. Validation runs real Modal or
+Cloudflare sandbox trials. Provider credentials ride in the environment bundle
+so trainer-side trials can reach the selected sandbox service.
 
 Import-safe: stages run only from the ``if __name__ == "__main__"`` block.
 """
@@ -13,18 +13,24 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from types import ModuleType
+from typing import Any, Literal
 
+import cloudflare_environment as cloudflare_adapter
+import cloudflare_transport
 from benchmax.envs.environment import Environment
 from benchmax.envs.harbor import (
     BundledAgentSource,
     BundledHarborAgent,
+    CustomSandboxCredentials,
     HarborEnv,
     HarborTrialTemplate,
     ModalCredentials,
+    SandboxCredentials,
 )
 from castform.platform import ensure_session, upload_assets
 from harbor import (
@@ -37,6 +43,8 @@ from harbor import (
 from harness.aime_agent import MINI_SWE_AGENT_VERSION
 
 from benchmax.bundle import dump_bundle
+
+_CLOUDFLARE_LOCAL_MODULES = (cloudflare_transport, cloudflare_adapter)
 
 _HARNESS_SOURCE = BundledAgentSource.from_directory(
     Path(__file__).parent / "harness",
@@ -62,21 +70,54 @@ def mini_swe_harness(*, max_timeout_secs: float | None = None) -> BundledHarborA
     )
 
 
+SandboxProvider = Literal["modal", "cloudflare"]
+
+
+def _prepare_cloudflare_modules_for_ray() -> None:
+    """Carry the example-local adapter through Trainer's second Ray pickle."""
+
+    for module in _CLOUDFLARE_LOCAL_MODULES:
+        if not isinstance(module, ModuleType):
+            raise TypeError("Cloudflare local module capture received a non-module")
+        sys.modules[module.__name__] = module
+    try:
+        from ray import cloudpickle as ray_cloudpickle
+    except ImportError:
+        return
+    for module in _CLOUDFLARE_LOCAL_MODULES:
+        ray_cloudpickle.register_pickle_by_value(module)
+
+
 class AimeMiniSweHarborEnv(HarborEnv):
-    """AIME latest on Modal; the agent harness defaults to the offline Mini-SWE loop."""
+    """AIME latest on Modal or Cloudflare with the bundled Mini-SWE loop."""
 
     def __init__(
         self,
         *,
-        sandbox_credentials: ModalCredentials,
+        sandbox_credentials: SandboxCredentials,
+        sandbox_provider: SandboxProvider = "modal",
         harness: BundledHarborAgent | None = None,
         max_agent_timeout_secs: float | None = None,
+        max_concurrent_trials: int | None = 128,
     ) -> None:
         if harness is not None and max_agent_timeout_secs is not None:
             raise ValueError(
                 "max_agent_timeout_secs applies only to the default harness; "
                 "set max_timeout_sec on the custom harness config instead"
             )
+        if sandbox_provider == "modal":
+            if not isinstance(sandbox_credentials, ModalCredentials):
+                raise TypeError("Modal AIME requires ModalCredentials")
+            environment = TrialEnvironmentConfig(type=EnvironmentType.MODAL)
+        elif sandbox_provider == "cloudflare":
+            if sandbox_credentials.provider != "cloudflare":
+                raise ValueError("Cloudflare AIME requires cloudflare credentials")
+            _prepare_cloudflare_modules_for_ray()
+            environment = TrialEnvironmentConfig(
+                import_path="cloudflare_environment:AimeCloudflareEnvironment"
+            )
+        else:
+            raise ValueError(f"unsupported sandbox_provider: {sandbox_provider}")
         super().__init__(
             dataset=DatasetConfig(name="aime/aime", ref="latest"),
             eval_ratio=0.1,
@@ -84,14 +125,12 @@ class AimeMiniSweHarborEnv(HarborEnv):
                 agent=harness
                 if harness is not None
                 else mini_swe_harness(max_timeout_secs=max_agent_timeout_secs),
-                environment=TrialEnvironmentConfig(
-                    type=EnvironmentType.MODAL,
-                ),
+                environment=environment,
                 verifier=TrialVerifierConfig(),
                 trials_dir=Path("/tmp/castform-aime-harbor-trials"),
             ),
             sandbox_credentials=sandbox_credentials,
-            max_concurrent_trials=1000,
+            max_concurrent_trials=max_concurrent_trials,
         )
 
 
@@ -99,17 +138,65 @@ class AimeMiniSweHarborEnv(HarborEnv):
 
 MODEL = "Qwen/Qwen3.5-4B"
 VALIDATE_MODEL = "gpt-5.4-mini"
-RUNTIME_DEPENDENCIES = ["harbor[modal]>=0.18.0,<0.19"]
-RUN_NAME = "aime"
 TRAINING_ARGS = {"model": MODEL}
 
 
 def _constructor_args(args: argparse.Namespace) -> dict[str, Any]:
+    if args.sandbox_provider == "modal":
+        if not args.modal_token_id or not args.modal_token_secret:
+            raise SystemExit("Modal requires --modal-token-id and --modal-token-secret")
+        credentials: SandboxCredentials = ModalCredentials(
+            token_id=args.modal_token_id,
+            token_secret=args.modal_token_secret,
+        )
+    else:
+        api_url = args.cloudflare_sandbox_api_url or os.environ.get("CLOUDFLARE_SANDBOX_API_URL")
+        api_key = args.cloudflare_sandbox_api_key or os.environ.get("CLOUDFLARE_SANDBOX_API_KEY")
+        if not api_url or not api_key:
+            raise SystemExit(
+                "Cloudflare requires CLOUDFLARE_SANDBOX_API_URL and "
+                "CLOUDFLARE_SANDBOX_API_KEY (environment variables or CLI flags)"
+            )
+        credentials = CustomSandboxCredentials(
+            provider="cloudflare",
+            values={
+                "CLOUDFLARE_SANDBOX_API_URL": api_url.rstrip("/"),
+                "CLOUDFLARE_SANDBOX_API_KEY": api_key,
+            },
+        )
     return {
-        "sandbox_credentials": ModalCredentials(
-            token_id=args.modal_token_id, token_secret=args.modal_token_secret
-        ),
+        "sandbox_credentials": credentials,
+        "sandbox_provider": args.sandbox_provider,
     }
+
+
+def _runtime_dependencies(provider: SandboxProvider) -> list[str]:
+    if provider == "modal":
+        return ["harbor[modal]>=0.18.0,<0.19"]
+    return ["harbor>=0.18.0,<0.19", "httpx>=0.27.0"]
+
+
+def _local_modules(provider: SandboxProvider) -> list[ModuleType]:
+    return list(_CLOUDFLARE_LOCAL_MODULES) if provider == "cloudflare" else []
+
+
+def _preflight_cloudflare(constructor_args: dict[str, Any]) -> None:
+    if constructor_args["sandbox_provider"] != "cloudflare":
+        return
+    import httpx
+
+    values = constructor_args["sandbox_credentials"].host_environment()
+    response = httpx.get(
+        f"{values['CLOUDFLARE_SANDBOX_API_URL']}/v1/openapi.json",
+        headers={"Authorization": f"Bearer {values['CLOUDFLARE_SANDBOX_API_KEY']}"},
+        timeout=30,
+    )
+    if response.is_error:
+        raise SystemExit(
+            f"Cloudflare Sandbox preflight failed (HTTP {response.status_code}): "
+            f"{response.text[:200]}"
+        )
+    print("Cloudflare Sandbox preflight: bridge credentials accepted")
 
 
 def generate_data(*, force: bool) -> None:
@@ -134,7 +221,7 @@ def validate(env: AimeMiniSweHarborEnv, uploaded_assets: Any) -> Any:
     return report
 
 
-def launch(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
+def launch(uploaded_assets: Any, *, assume_yes: bool, run_name: str) -> str | None:
     from castform import config
     from castform.platform.client import TrainerClient
 
@@ -146,7 +233,7 @@ def launch(uploaded_assets: Any, *, assume_yes: bool) -> str | None:
 
     with TrainerClient() as trainer:
         run_id = trainer.launch_training_run(
-            name=RUN_NAME,
+            name=run_name,
             launcher_args=TRAINING_ARGS,
             **dataclasses.asdict(uploaded_assets),
         )
@@ -204,14 +291,25 @@ def main(argv: list[str] | None = None) -> int:
         help="skip the launch confirmation",
     )
     parser.add_argument(
+        "--sandbox-provider",
+        choices=("modal", "cloudflare"),
+        default="modal",
+    )
+    parser.add_argument(
         "--modal-token-id",
-        required=True,
         help="Modal token id for sandbox trials (bundled into constructor args).",
     )
     parser.add_argument(
         "--modal-token-secret",
-        required=True,
         help="Modal token secret for sandbox trials (bundled into constructor args).",
+    )
+    parser.add_argument(
+        "--cloudflare-sandbox-api-url",
+        help="deployed AIME Sandbox bridge URL (defaults to environment)",
+    )
+    parser.add_argument(
+        "--cloudflare-sandbox-api-key",
+        help="AIME Sandbox bridge bearer key (defaults to environment)",
     )
     args = parser.parse_args(argv)
     total_stages = {"data": 1, "validate": 4, "launch": 5}[args.action]
@@ -224,15 +322,18 @@ def main(argv: list[str] | None = None) -> int:
     # Built after the data early-return: harvey's harness capture clones the
     # LAB tree, which the data stage must not pay for.
     constructor_args = _constructor_args(args)
+    _preflight_cloudflare(constructor_args)
     ensure_session()
     print(f"[stage 2/{total_stages}] bundling environment")
     bundled_environment = dump_bundle(
         AimeMiniSweHarborEnv,
         constructor_args=constructor_args,
-        pip_dependencies=RUNTIME_DEPENDENCIES,
+        pip_dependencies=_runtime_dependencies(args.sandbox_provider),
+        local_modules=_local_modules(args.sandbox_provider),
     )
+    run_name = f"aime-{args.sandbox_provider}"
     print(f"[stage 3/{total_stages}] uploading environment")
-    uploaded_assets = upload_assets(bundle=bundled_environment, run_name=RUN_NAME)
+    uploaded_assets = upload_assets(bundle=bundled_environment, run_name=run_name)
     print(f"  env_cls_path: {uploaded_assets.env_cls_path}")
     print(f"  env_metadata_path: {uploaded_assets.env_metadata_path}")
     print(f"  dataset_path: {uploaded_assets.dataset_path}")
@@ -242,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.action == "launch":
         print(f"[stage 5/{total_stages}] launching training")
-        launch(uploaded_assets, assume_yes=args.yes)
+        launch(uploaded_assets, assume_yes=args.yes, run_name=run_name)
     return 0
 
 

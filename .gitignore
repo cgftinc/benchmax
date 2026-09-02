@@ -28,6 +28,12 @@ env/
 venv/
 ENV/
 
+# Node / Cloudflare Workers
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+
 # IDE
 .idea/
 .vscode/
