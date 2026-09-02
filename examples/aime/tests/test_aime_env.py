@@ -2,11 +2,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from benchmax.bundle import dump_bundle, load_bundle
-from benchmax.envs.harbor import BundledAgentSource, BundledHarborAgent, ModalCredentials
+from benchmax.envs.harbor import (
+    BundledAgentSource,
+    BundledHarborAgent,
+    CustomSandboxCredentials,
+    ModalCredentials,
+)
+from cloudflare_environment import AIME_IMAGE, validate_aime_environment
 from harbor import EnvironmentType, TrialAgentConfig
 from harness.aime_agent import MINI_SWE_AGENT_VERSION, prefetch_wheels
 from main import AimeMiniSweHarborEnv
+
+from benchmax.bundle import dump_bundle, load_bundle
 
 
 def test_aime_constructor_uses_latest_dataset_and_bundled_agent() -> None:
@@ -33,6 +40,44 @@ def test_aime_agent_timeout_flows_into_trial_config() -> None:
     )
 
     assert env._trial.agent.config.max_timeout_sec == 120.0
+
+
+def test_aime_constructor_selects_cloudflare_custom_environment() -> None:
+    credentials = CustomSandboxCredentials(
+        provider="cloudflare",
+        values={
+            "CLOUDFLARE_SANDBOX_API_URL": "https://sandbox.example.workers.dev",
+            "CLOUDFLARE_SANDBOX_API_KEY": "sandbox-key",
+        },
+    )
+
+    env = AimeMiniSweHarborEnv(
+        sandbox_credentials=credentials,
+        sandbox_provider="cloudflare",
+    )
+
+    assert env._sandbox_credentials is credentials
+    assert env._trial.environment.type is None
+    assert env._trial.environment.import_path == "cloudflare_environment:AimeCloudflareEnvironment"
+
+
+def test_cloudflare_contract_accepts_aime_fixed_dockerfile(tmp_path: Path) -> None:
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    (environment / "Dockerfile").write_text(
+        f"# benchmark canary\n\nFROM {AIME_IMAGE}\n\nWORKDIR /app\n\nENV TEST_DIR=/tests\n"
+    )
+
+    validate_aime_environment(environment)
+
+
+def test_cloudflare_contract_rejects_another_image(tmp_path: Path) -> None:
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    (environment / "Dockerfile").write_text("FROM ubuntu:latest\n")
+
+    with pytest.raises(ValueError, match="verified fixed Dockerfile"):
+        validate_aime_environment(environment)
 
 
 def _custom_harness() -> BundledHarborAgent:

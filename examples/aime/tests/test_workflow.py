@@ -28,7 +28,7 @@ def test_launch_reuses_the_assets_that_were_validated(monkeypatch) -> None:
     monkeypatch.setattr(
         example,
         "dump_bundle",
-        lambda cls, *, constructor_args, pip_dependencies: (
+        lambda cls, *, constructor_args, pip_dependencies, local_modules: (
             calls.append(("bundle", constructor_args)) or bundled_environment
         ),
     )
@@ -45,7 +45,7 @@ def test_launch_reuses_the_assets_that_were_validated(monkeypatch) -> None:
     monkeypatch.setattr(
         example,
         "launch",
-        lambda received, **kwargs: calls.append(("launch", received)) or "run-id",
+        lambda received, **kwargs: calls.append(("launch", (received, kwargs))) or "run-id",
     )
     monkeypatch.setattr(example, "ensure_session", lambda: None)
 
@@ -53,21 +53,34 @@ def test_launch_reuses_the_assets_that_were_validated(monkeypatch) -> None:
     assert calls == [
         (
             "bundle",
-            {"sandbox_credentials": ModalCredentials("modal-id", "modal-secret")},
+            {
+                "sandbox_credentials": ModalCredentials("modal-id", "modal-secret"),
+                "sandbox_provider": "modal",
+            },
         ),
-        ("upload", {"bundle": bundled_environment, "run_name": "aime"}),
+        ("upload", {"bundle": bundled_environment, "run_name": "aime-modal"}),
         ("validate", uploaded_assets),
-        ("launch", uploaded_assets),
+        (
+            "launch",
+            (
+                uploaded_assets,
+                {"assume_yes": True, "run_name": "aime-modal"},
+            ),
+        ),
     ]
 
 
-def test_main_requires_credential_arguments(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit):
-        example.main(["data"])
+def test_data_does_not_require_sandbox_credentials() -> None:
+    assert example.main(["data"]) == 0
 
-    stderr = capsys.readouterr().err
-    for name in ("--modal-token-id", "--modal-token-secret"):
-        assert name in stderr
+
+def test_validate_requires_selected_provider_credentials(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit, match="Modal requires"):
+        example.main(["validate"])
+
+    assert "generating data" in capsys.readouterr().out
 
 
 def test_print_validation_surfaces_contract_diagnostics(capsys) -> None:

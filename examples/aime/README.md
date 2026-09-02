@@ -1,6 +1,6 @@
 # aime
 
-a harbor environment built with [`HarborEnv`](../../packages/benchmax/src/benchmax/envs/harbor/README.md) where an offline-installed mini-swe agent solves AIME competition math inside modal sandboxes.
+a harbor environment built with [`HarborEnv`](../../packages/benchmax/src/benchmax/envs/harbor/README.md) where an offline-installed mini-swe agent solves AIME competition math inside Modal or prepared Cloudflare sandboxes.
 
 ## example task
 
@@ -16,6 +16,8 @@ answer: 738
 
 ## launch training
 
+### Modal
+
 ```bash
 cd examples/aime
 
@@ -30,23 +32,55 @@ uv run python main.py launch --modal-token-id $MODAL_TOKEN_ID --modal-token-secr
 uv run python main.py validate --modal-token-id $MODAL_TOKEN_ID --modal-token-secret $MODAL_TOKEN_SECRET
 ```
 
-the dataset (aime/aime@latest) resolves through harbor at trainer runtime, so launch only uploads the environment bundle, validates it, then asks for confirmation before spending credits (pass `--yes` to skip). the modal credentials are mandatory arguments and are bundled into the constructor args so trainer-side trials can reach modal.
+### Cloudflare Standard-2
 
-validate stops after the checks: it runs sample rollouts with a standard model, locally and in a hosted sandbox, just to confirm the environment runs end to end. both locations run real modal sandbox trials.
+All 60 tasks in `aime/aime@latest` have the same Dockerfile-only image, so the
+Cloudflare option is a prepared-image deployment rather than a dynamic builder.
+Deploy [`cloudflare/`](cloudflare/) once, then use the returned Worker URL and
+the bearer key supplied through `SANDBOX_API_KEY`:
+
+```bash
+cd examples/aime/cloudflare
+npm install
+npx wrangler secret put SANDBOX_API_KEY
+npm run deploy
+
+cd ..
+export CLOUDFLARE_SANDBOX_API_URL=https://benchmax-aime-sandbox.<subdomain>.workers.dev
+export CLOUDFLARE_SANDBOX_API_KEY=<same-bearer-key>
+
+uv run python main.py validate --sandbox-provider cloudflare
+uv run python main.py launch --sandbox-provider cloudflare
+```
+
+The Worker uses Standard-2 containers, disables the warm pool, and sleeps idle
+containers after 30 minutes. The adapter verifies every task Dockerfile before
+starting a prepared container; a changed image or extra build-context file
+fails closed.
+
+the dataset (aime/aime@latest) resolves through harbor at trainer runtime, so launch only uploads the environment bundle, validates it, then asks for confirmation before spending credits (pass `--yes` to skip). credentials for the selected sandbox provider are bundled into the constructor args.
+
+validate stops after the checks: it runs sample rollouts with a standard model, locally and in a hosted sandbox, just to confirm the environment runs end to end. both locations run real trials with the selected sandbox provider.
 
 ## environment
 
 ```python
 class AimeMiniSweHarborEnv(HarborEnv):
-    def __init__(..., harness=None):
+    def __init__(..., sandbox_provider="modal", harness=None):
         super().__init__(
             dataset=DatasetConfig(name="aime/aime", ref="latest"),
             trial=HarborTrialTemplate(
                 agent=harness or mini_swe_harness(),
-                environment=TrialEnvironmentConfig(type=EnvironmentType.MODAL),
+                environment=(
+                    TrialEnvironmentConfig(type=EnvironmentType.MODAL)
+                    if sandbox_provider == "modal"
+                    else TrialEnvironmentConfig(
+                        import_path="cloudflare_environment:AimeCloudflareEnvironment"
+                    )
+                ),
                 verifier=TrialVerifierConfig(),
             ),
-            sandbox_credentials=ModalCredentials(...),
+            sandbox_credentials=...,
         )
 ```
 
