@@ -37,12 +37,17 @@ uv run python main.py validate --modal-token-id $MODAL_TOKEN_ID --modal-token-se
 All 60 tasks in `aime/aime@latest` have the same Dockerfile-only image, so the
 Cloudflare option is a prepared-image deployment rather than a dynamic builder.
 Deploy [`cloudflare/`](cloudflare/) once, then use the returned Worker URL and
-the bearer key supplied through `SANDBOX_API_KEY`:
+the bearer key supplied through `SANDBOX_API_KEY`. Docker must be running, and
+Wrangler must be authenticated for the target account (for automation, export
+`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`):
 
 ```bash
 cd examples/aime/cloudflare
 npm install
+# This creates and immediately deploys a Worker version with the secret.
 npx wrangler secret put SANDBOX_API_KEY
+# The explicit deploy builds and pushes the prepared container image; Wrangler
+# preserves the secret set above.
 npm run deploy
 
 cd ..
