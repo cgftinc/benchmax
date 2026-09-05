@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import cloudpickle
 import pytest
-from benchmax.envs import BaseRollout
+from benchmax.auth import StaticBearerAuth
+from benchmax.bundle import dump_bundle
+from benchmax.envs import BaseRollout, Example, RolloutRequest
+from benchmax.envs.base import env as base_env
 from main import MathEnv
+from openai.types.chat import ChatCompletion
 
 
 def _write_rows(path: Path, rows: list[dict[str, str]]) -> None:
@@ -79,3 +85,82 @@ async def test_reward_requires_a_tool_and_correct_numeric_answer() -> None:
     assert await score("42.0", used_tool=True) == 1.0
     assert await score("41", used_tool=True) == 0.0
     assert await score("42", used_tool=False) == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("turn_limit", "reason", "reward", "expected_calls", "serialized"),
+    [
+        (3, "max_turns_exceeded", 0.0, 3, False),
+        (None, "finished", 1.0, 4, False),
+        (None, "finished", 1.0, 4, True),
+    ],
+)
+async def test_three_dependent_tools_leave_a_final_answer_turn(
+    monkeypatch, turn_limit, reason, reward, expected_calls, serialized
+) -> None:
+    if serialized:
+        env_cls, constructor_args = cloudpickle.loads(dump_bundle(MathEnv).pickled)
+        env = env_cls(**constructor_args)
+    else:
+        env = MathEnv()
+    if turn_limit is not None:
+        env.max_turns = turn_limit
+    operations = [("subtract", 36, 12), ("divide", 24, 6), ("add", 4, 9)]
+    calls = 0
+
+    @asynccontextmanager
+    async def model_client(request):
+        yield None
+
+    async def completion(**kwargs):
+        nonlocal calls
+        if calls < len(operations):
+            name, a, b = operations[calls]
+            message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"call-{calls}",
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps({"a": a, "b": b})},
+                    }
+                ],
+            }
+            finish_reason = "tool_calls"
+        else:
+            assert kwargs["messages"][-1]["content"] == "13"
+            message = {"role": "assistant", "content": "<answer>13</answer>"}
+            finish_reason = "stop"
+        calls += 1
+        return ChatCompletion.model_validate(
+            {
+                "id": f"completion-{calls}",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "test",
+                "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+            }
+        )
+
+    monkeypatch.setattr(base_env, "_model_client", model_client)
+    monkeypatch.setattr(base_env, "_create_chat_completion", completion)
+    outcome = await env.run_rollout(
+        RolloutRequest(
+            rollout_id="three-tools",
+            model="test",
+            base_url="http://unused.invalid/v1",
+            model_auth=StaticBearerAuth("test-key"),
+            example=Example(
+                id="three-tools",
+                payload={
+                    "prompt_messages": [{"role": "user", "content": "(36 - 12) ÷ 6 + 9"}],
+                    "answer": "13",
+                },
+            ),
+        )
+    )
+    assert outcome.termination_reason == reason
+    assert outcome.rewards == {"correctness": reward}
+    assert calls == expected_calls

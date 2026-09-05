@@ -41,7 +41,8 @@ TOOL_PADDING_CHARS = 1_000
 class MathEnv(BaseEnv):
     """Solve mixed arithmetic with four tools."""
 
-    max_turns = 3
+    # Three dependent arithmetic operations still need a final answer turn.
+    max_turns = 4
 
     def __init__(self) -> None:
         super().__init__()
